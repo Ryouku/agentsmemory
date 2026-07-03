@@ -1,6 +1,6 @@
 // Package usage meters and enforces per-workspace request quotas. A free
 // project allows a fixed number of metered MCP requests per calendar month
-// (10,000 by default); this package counts them and decides when a workspace
+// (1,000 by default); this package counts them and decides when a workspace
 // has hit its ceiling. It is a separate bounded context so the cap policy lives
 // in one place and both the MCP tools (enforcement) and the dashboard
 // (display) read from the same counters.

@@ -357,7 +357,7 @@ func landingHero(d LandingData) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if !d.SignedIn {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "<p class=\"lp-cta-note\">Free plan · 10,000 requests / month · no card required ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "<p class=\"lp-cta-note\">Free plan · 1,000 requests / month · no card required ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

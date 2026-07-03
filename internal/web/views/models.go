@@ -677,7 +677,7 @@ func landingPlans() []plan {
 		{
 			Name: "Free", Price: "€0", Period: "forever",
 			Tagline: "For solo agents and side projects.",
-			Points:  []string{"10,000 requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
+			Points:  []string{"1,000 requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
 		},
 		{
 			Name: "Pro", Price: "€50", Period: "/ month",
@@ -758,7 +758,7 @@ func landingFAQ() []faqItem {
 		},
 		{
 			"What does agent memory cost to start?",
-			"The Free plan is free forever with 10,000 requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
+			"The Free plan is free forever with 1,000 requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
 		},
 		{
 			"Why does agent memory cost money?",

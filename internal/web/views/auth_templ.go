@@ -313,7 +313,7 @@ func RegisterPage(d AuthData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<div class=\"auth\"><div class=\"auth-card card\"><p class=\"eyebrow\">Get started</p><h1>Create account</h1><p class=\"sub\">Spin up a free project — 10,000 requests every month.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<div class=\"auth\"><div class=\"auth-card card\"><p class=\"eyebrow\">Get started</p><h1>Create account</h1><p class=\"sub\">Spin up a free project — 1,000 requests every month.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
