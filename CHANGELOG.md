@@ -131,3 +131,4 @@
 - 2026-08-15 `e2ec920` feat(web): /sandboxes — per-agent isolated install guide
 - 2026-08-15 `f27f770` docs: pi agent — install, sandbox and the bridge extension
 - 2026-08-15 `6091732` polish(web): let the /sandboxes headline wrap naturally
+- 2026-08-15 `f923e5a` chore(changelog): record the pi agent work
