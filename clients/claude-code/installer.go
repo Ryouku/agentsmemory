@@ -150,6 +150,7 @@ type Installer struct {
 	scope          string        // Claude MCP/plugin scope (user|local|project)
 	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
 	copyGlobal     bool          // seed the target from the agent's global config dir
+	sharedAuth     bool          // link credentials back to the global config dir
 	recommended    bool          // also install codebase-memory + eidos + codex
 	yes            bool          // non-interactive: never prompt
 	dryRun         bool          // print instead of doing
@@ -238,6 +239,7 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		scope:          c.String("scope"),
 		token:          c.String("token"),
 		copyGlobal:     c.Bool("copy"),
+		sharedAuth:     c.Bool("shared-auth"),
 		recommended:    c.Bool("recommended"),
 		yes:            c.Bool("yes"),
 		dryRun:         dryRun,
@@ -260,6 +262,11 @@ func (i *Installer) run() error {
 	// Seeding runs before anything of ours is written, so the kit's own files
 	// (which the copy never overwrites) land on top of the inherited config.
 	if err := i.seedFromGlobal(); err != nil {
+		return err
+	}
+	// Sharing comes after the copy: --copy may have just written a private
+	// snapshot of the credentials, and a link supersedes a snapshot.
+	if err := i.linkSharedAuth(); err != nil {
 		return err
 	}
 

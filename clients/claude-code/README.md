@@ -127,6 +127,7 @@ the sandbox name is forwarded to the agent untouched.
 | `--global` | — | Install into the agent's global config dir non-interactively (skips the mode prompt); mutually exclusive with `--sandbox`/`--claude-dir`. |
 | `--sandbox <name>` | — | Install into `~/.sandboxes/<name>` (isolated mode). |
 | `--copy` | off | Seed the target from the agent's global config — logins, MCP servers, plugins, skills, settings. Needs `--sandbox`/`--config-dir`. |
+| `--shared-auth` | off | Link the target's credential files to the global config, so one login serves every sandbox. |
 | `--recommended` | off | Also install codebase-memory, eidos, codex (eidos + codex are Claude-only). |
 | `--token <key>` | `$AGENTSMEMORY_TOKEN` | agentsmemory workspace token. |
 | `--mcp-url <url>` | `https://aiagentmemory.dev/mcp` | agentsmemory MCP endpoint. |
@@ -282,6 +283,45 @@ A Stop hook registration inherited from the source config dir is retired
 automatically: it points at *that* dir's script, so left alone it would fire the
 memory checkpoint twice per stop.
 
+## Sharing one login across sandboxes (`--shared-auth`)
+
+`--copy` gives a sandbox a *snapshot* of your credentials; when a token expires
+you re-authenticate in each sandbox separately. `--shared-auth` links them
+instead:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --shared-auth
+# ~/.sandboxes/acme/auth.json         -> ~/.pi/agent/auth.json
+# ~/.sandboxes/acme/models-store.json -> ~/.pi/agent/models-store.json
+```
+
+Log in anywhere — the global agent or any sandbox — and every sandbox sees it at
+once. What gets linked is per agent:
+
+| Agent | Credential files | Note |
+|---|---|---|
+| Claude Code | `.credentials.json` | On macOS credentials live in the login **keychain**, which every config dir already shares — the flag reports there is nothing to link. |
+| Codex | `auth.json` | |
+| pi | `auth.json`, `models-store.json` | The model store rides along, or a sandbox is authenticated for models it does not list. |
+
+An existing credential file in the target is moved aside (`.bak.<ts>`) before the
+link replaces it, and a link that is already correct is left alone, so re-running
+the install is a no-op.
+
+**The one failure mode**, and how you find out: an agent that rewrites
+credentials by replacing the file (write a temp file, rename over the target)
+destroys the link, and the sandbox silently stops sharing. pi writes in place
+(`writeFileSync`), so it writes *through* the link — verified. For any agent that
+does not, `aiagentmemory run` checks the link on every launch and tells you:
+
+```
+aiagentmemory: auth.json no longer shared with the global config (the agent replaced the link)
+  re-share with: aiagentmemory install --agent pi --config-dir ~/.sandboxes/acme --shared-auth --yes
+```
+
+Nothing is repaired automatically — which side holds the credential you want is
+your call, not ours.
+
 ## Updating
 
 Upgrading the CLI is **binary-only** — you do not re-run `install`, so nothing
@@ -340,6 +380,45 @@ Two rules the copy follows:
 A Stop hook registration inherited from the source config dir is retired
 automatically: it points at *that* dir's script, so left alone it would fire the
 memory checkpoint twice per stop.
+
+## Sharing one login across sandboxes (`--shared-auth`)
+
+`--copy` gives a sandbox a *snapshot* of your credentials; when a token expires
+you re-authenticate in each sandbox separately. `--shared-auth` links them
+instead:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --shared-auth
+# ~/.sandboxes/acme/auth.json         -> ~/.pi/agent/auth.json
+# ~/.sandboxes/acme/models-store.json -> ~/.pi/agent/models-store.json
+```
+
+Log in anywhere — the global agent or any sandbox — and every sandbox sees it at
+once. What gets linked is per agent:
+
+| Agent | Credential files | Note |
+|---|---|---|
+| Claude Code | `.credentials.json` | On macOS credentials live in the login **keychain**, which every config dir already shares — the flag reports there is nothing to link. |
+| Codex | `auth.json` | |
+| pi | `auth.json`, `models-store.json` | The model store rides along, or a sandbox is authenticated for models it does not list. |
+
+An existing credential file in the target is moved aside (`.bak.<ts>`) before the
+link replaces it, and a link that is already correct is left alone, so re-running
+the install is a no-op.
+
+**The one failure mode**, and how you find out: an agent that rewrites
+credentials by replacing the file (write a temp file, rename over the target)
+destroys the link, and the sandbox silently stops sharing. pi writes in place
+(`writeFileSync`), so it writes *through* the link — verified. For any agent that
+does not, `aiagentmemory run` checks the link on every launch and tells you:
+
+```
+aiagentmemory: auth.json no longer shared with the global config (the agent replaced the link)
+  re-share with: aiagentmemory install --agent pi --config-dir ~/.sandboxes/acme --shared-auth --yes
+```
+
+Nothing is repaired automatically — which side holds the credential you want is
+your call, not ours.
 
 ## Updating a binary too old to have `update`
 

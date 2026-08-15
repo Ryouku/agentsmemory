@@ -99,6 +99,11 @@ func installCommand() *cli.Command {
 					"(no history, logs or caches). Requires --sandbox or --config-dir",
 			},
 			&cli.BoolFlag{
+				Name: "shared-auth",
+				Usage: "link the sandbox's credential files to the agent's global config, so one login serves every sandbox " +
+					"(Claude on macOS already shares its keychain). Requires --sandbox or --config-dir",
+			},
+			&cli.BoolFlag{
 				Name:  "recommended",
 				Usage: "also install the recommended extensions: codebase-memory MCP, eidos + codex plugins",
 			},

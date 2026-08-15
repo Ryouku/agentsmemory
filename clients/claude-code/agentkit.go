@@ -51,6 +51,13 @@ type agentKit struct {
 	// commandHint shows the user how the installed commands are invoked. Codex
 	// namespaces prompt files under `/prompts:`, Claude does not.
 	commandHint string
+
+	// authFiles are the credential files this agent keeps inside its config dir,
+	// which `--shared-auth` links back to the global config so one login serves
+	// every sandbox. Empty means the agent stores credentials outside the config
+	// dir entirely — Claude Code on macOS keeps them in the login Keychain, which
+	// is already shared, so there is nothing to link.
+	authFiles []string
 }
 
 // claudeKit is the Claude Code layout: ~/.claude, commands/, CLAUDE.md + @import,
@@ -65,6 +72,10 @@ var claudeKit = agentKit{
 	hooksFile:      "settings.json",
 	supportsImport: true,
 	commandHint:    "/M",
+	// Claude Code stores its OAuth credentials in the OS keychain on macOS and in
+	// .credentials.json elsewhere. Linking the file is a no-op on macOS (it never
+	// exists) and the right thing on Linux, so naming it costs nothing.
+	authFiles: []string{".credentials.json"},
 }
 
 // codexKit is the codex-cli layout: ~/.codex, prompts/, AGENTS.md with the
@@ -81,6 +92,7 @@ var codexKit = agentKit{
 	// protocol has to live in the managed block rather than beside it.
 	supportsImport: false,
 	commandHint:    "/prompts:M",
+	authFiles:      []string{"auth.json"},
 }
 
 // piKit is the pi-coding-agent layout: ~/.pi/agent, prompts/, AGENTS.md with the
@@ -105,6 +117,10 @@ var piKit = agentKit{
 	supportsImport: false,
 	// pi prompt templates are invoked by bare name — no `/prompts:` namespace.
 	commandHint: "/M",
+	// models-store.json rides along with auth.json: it holds which provider models
+	// have been added, so sharing one without the other leaves a sandbox
+	// authenticated for models it does not list.
+	authFiles: []string{"auth.json", "models-store.json"},
 }
 
 // resolveAgentKits maps the --agent value to the kits to install. Multi-agent
