@@ -116,4 +116,4 @@
 - 2026-07-02 `894b48b` fix(load-skill): load skill into session, don't write a stale file
 - 2026-08-15 `60c294c` feat(cli): add projects + inspect commands to check workspace data
 - 2026-08-15 `f4b9ce7` feat(cli): run <name> falls back to launching a named agent CLI
-- 2026-08-15 `f4b9ce7` feat(cli): run <name> falls back to launching a named agent CLI (claude/codex/gemini)
+- 2026-08-15 `1c313e6` chore(changelog): record the run agent-name fallback
