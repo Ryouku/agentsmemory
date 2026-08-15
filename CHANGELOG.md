@@ -143,3 +143,4 @@
 - 2026-08-15 `288c6f6` feat(cli): --copy seeds a sandbox from the agent's global config
 - 2026-08-15 `2219551` feat(cli): --shared-auth links credentials to the global config
 - 2026-08-15 `3732752` feat(web): /sandboxes documents --copy and --shared-auth
+- 2026-08-15 `d86801f` Merge feat/install-copy-global: --copy and --shared-auth
