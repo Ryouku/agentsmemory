@@ -24,6 +24,7 @@ templ SandboxesPage(d LandingData) {
 				@sandboxesWhy()
 				@sandboxesSwitcher()
 				@sandboxesInherit()
+				@sandboxesProject()
 				@sandboxesMatrix()
 				@sandboxesEveryAgent()
 			</main>
@@ -265,6 +266,67 @@ templ sandboxesInherit() {
 					Linked credentials survive an agent that writes them in place. If one
 					ever replaces the link with a file, <span class="mono">aiagentmemory run</span>
 					says so at launch and prints the command that re-shares it.
+				</li>
+			</ul>
+		</div>
+	</section>
+}
+
+// sandboxesProject documents `init` / `load`: pinning a repository to a sandbox
+// without committing the sandbox name. It sits after the inherit band because it
+// answers the question that follows setting a sandbox up — "now how does the rest
+// of the team open this?" — and reuses the same card grid and notes list, so the
+// band costs no new CSS.
+//
+// The notes carry the two rules a reader cannot infer from the cards: which layer
+// wins when several name a sandbox, and that a missing one is an error rather
+// than a quiet fall back to the global config.
+templ sandboxesProject() {
+	<section class="lp-section" id="project">
+		<div class="lp-wrap">
+			<header class="lp-head">
+				<p class="eyebrow">Pin a project</p>
+				<h2>Your repo remembers how it launches</h2>
+				<p class="lp-head-sub">
+					Record the launch once and open it with
+					<span class="mono">aiagentmemory load</span>. The agent and its flags are a
+					team decision and get committed; the sandbox name is a fact about your
+					machine and never leaves it — so a teammate who calls their sandbox
+					something else still gets the same setup.
+				</p>
+			</header>
+			<div class="lp-model-grid">
+				for _, g := range sandboxProject() {
+					<article class="lp-model card">
+						<h3>{ g.Title }</h3>
+						<p class="sb-card-cmd">{ g.Cmd }</p>
+						<ul class="lp-plan-list">
+							for _, it := range g.Items {
+								<li>{ it }</li>
+							}
+						</ul>
+					</article>
+				}
+			</div>
+			<ul class="sb-notes">
+				<li>
+					When more than one layer names a sandbox, the most specific wins:
+					<span class="mono">--sandbox</span> beats
+					<span class="mono">$AIAGENTMEMORY_SANDBOX</span>, which beats
+					<span class="mono">~/.sandboxes/agents</span>, which beats
+					<span class="mono">.aiagentmemory.local</span>, which beats the committed
+					<span class="mono">.aiagentmemory</span>. Every launch prints which one it used.
+				</li>
+				<li>
+					Both lookups walk up from where you are, so
+					<span class="mono">load</span> works from any subdirectory of the project —
+					and one entry on a parent directory can pin a whole tree of repositories,
+					with a per-project entry still overriding it.
+				</li>
+				<li>
+					With no sandbox on any layer, <span class="mono">load</span> stops and tells
+					you to run <span class="mono">init</span>. It never falls back to your global
+					config: launching unpinned would defeat the point while looking like success.
 				</li>
 			</ul>
 		</div>

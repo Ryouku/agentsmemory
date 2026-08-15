@@ -752,6 +752,10 @@ func landingFAQ() []faqItem {
 			"Yes. Each workspace gets its own physically separate Qdrant collection, named by a hash of the team id. There is no shared collection to mis-filter, so memory cannot leak across tenants.",
 		},
 		{
+			"Do my teammates need my sandbox name?",
+			"No, and that is deliberate. `aiagentmemory init` splits the record in two: the agent and its flags go into a .aiagentmemory file you commit, while your sandbox name is written to ~/.sandboxes/agents on your machine alone. A teammate clones the repository, runs init once with whatever they call their own sandbox, and `aiagentmemory load` then opens the same agent with the same flags inside their own isolated config. Nothing about your machine travels in the repository, so a committed launch config can never point someone at a sandbox that does not exist for them.",
+		},
+		{
 			"Can I migrate an existing memory palace?",
 			"Yes. A read-only exporter streams an existing local Python mempalace — drawers, diary, closets, knowledge-graph facts and tunnels — into your workspace over /import. The server re-embeds each memory and rebuilds the graph, and the import is idempotent.",
 		},
@@ -865,6 +869,19 @@ func landingInstallGroups() []installGroup {
 				"--copy brings your logins, MCP servers, plugins, skills and settings",
 				"History, logs and caches stay behind; nothing already there is overwritten",
 				"--shared-auth links credentials instead — log in once, every sandbox sees it",
+			},
+		},
+		// The daily command, not an install step — but it belongs beside them
+		// because the decision it settles ("can this be committed?") is made at
+		// install time. The split is the point: flags are shared, the sandbox
+		// name is not, so the card leads with what lands in the repository.
+		{
+			Title: "Per project — commit it",
+			Cmd:   "aiagentmemory init --sandbox acme -- --model opus",
+			Items: []string{
+				"Records the agent and its flags in .aiagentmemory — commit that file",
+				"Your sandbox name stays on your machine, never in the repository",
+				"Everyone then runs load: same agent and flags, their own sandbox",
 			},
 		},
 	}
@@ -986,6 +1003,36 @@ func sandboxCommands() []cmdRef {
 		{"aiagentmemory install --agent pi|codex|both|all", "Choose which agent CLIs the kit is wired into."},
 		{"aiagentmemory run [--agent codex|pi] <name>", "Open an agent in that sandbox — args pass through to the CLI."},
 		{"aiagentmemory wrap [--agent codex|pi]", "Open an agent against its own global config instead."},
+		{"aiagentmemory init --sandbox <name> [-- agent flags]", "Record this project's launch: agent and flags committed, sandbox name kept local."},
+		{"aiagentmemory load [-- extra flags]", "Open the recorded agent and sandbox from anywhere inside the project."},
+	}
+}
+
+// sandboxProject is the "pin a project" band: what a recorded launch puts in the
+// repository versus what stays on one machine. That split is the entire reason
+// the feature exists — a committed sandbox name would be wrong on every machine
+// but its author's — so the two cards are named for the two owners rather than
+// for the two commands.
+func sandboxProject() []installGroup {
+	return []installGroup{
+		{
+			Title: "Committed — the team's half",
+			Cmd:   "aiagentmemory init --sandbox acme --agent codex -- --model opus",
+			Items: []string{
+				"Writes .aiagentmemory: which agent, and the flags it launches with",
+				"Everything after -- is stored verbatim and replayed by load",
+				"Safe to commit — it names no sandbox and carries no token",
+			},
+		},
+		{
+			Title: "Machine-local — your half",
+			Cmd:   "~/.sandboxes/agents",
+			Items: []string{
+				"One line per project: its absolute path, then your sandbox name",
+				"Never in the repository, so it needs no .gitignore entry",
+				"An entry on a parent directory covers every project beneath it",
+			},
+		},
 	}
 }
 
@@ -1064,6 +1111,8 @@ func landingCommands() []cmdRef {
 		{"aiagentmemory install --agent codex|pi|all", "Same kit, other agent CLIs — see the sandbox guide."},
 		{"aiagentmemory install --sandbox <name> --copy", "Seed it from your global config — logins, MCP servers, plugins, skills, settings."},
 		{"aiagentmemory install --sandbox <name> --shared-auth", "Link credentials back to the global config — one login serves every sandbox."},
+		{"aiagentmemory init --sandbox <name>", "Record how this project launches — commit the file, keep your sandbox name local."},
+		{"aiagentmemory load", "Open this project's agent, sandbox and flags in one command."},
 		{"aiagentmemory run <name>", "Open Claude in a sandbox — no re-install; args pass through to claude."},
 		{"aiagentmemory wrap", "Open Claude against the global config."},
 	}
