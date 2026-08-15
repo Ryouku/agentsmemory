@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -45,6 +46,8 @@ func main() {
 		Commands: []*cli.Command{
 			installCommand(),
 			updateCommand(),
+			initCommand(),
+			loadCommand(),
 			runCommand(),
 			wrapCommand(),
 			mcpCommand(),
@@ -167,6 +170,182 @@ func installCommand() *cli.Command {
 			return nil
 		},
 	}
+}
+
+// initCommand builds `init` — record how this project should be launched, so
+// everyone working on it types one command instead of remembering a sandbox name
+// and a flag list.
+//
+// The record is deliberately split in two. The agent and its flags are a
+// team-wide decision and go into ./.aiagentmemory, which is meant to be
+// committed. The sandbox name is a fact about THIS machine — a teammate names
+// their sandbox differently — so it goes into ~/.sandboxes/agents keyed by the
+// project's absolute path, where it needs no .gitignore entry and can never
+// travel to someone else's clone.
+func initCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "init",
+		Usage:     "record this project's launch config: aiagentmemory init [--sandbox <name>] [--agent claude] [-- agent args...]",
+		ArgsUsage: "[-- agent args...]",
+		Description: "Pin a project to a sandbox:  aiagentmemory init --sandbox acme\n" +
+			"With agent flags:            aiagentmemory init --sandbox acme -- --model opus\n" +
+			"For codex instead:           aiagentmemory init --sandbox acme --agent codex\n\n" +
+			"Writes ./" + projectConfigFile + " (agent + flags, safe to commit) and records the\n" +
+			"sandbox in ~/.sandboxes/" + agentRegistryFile + " (this machine only). Everything after --\n" +
+			"is stored verbatim and handed to the agent by `aiagentmemory load`.",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "sandbox",
+				Usage: "sandbox this project launches with, recorded in ~/.sandboxes/" + agentRegistryFile + " (this machine only)",
+			},
+			&cli.StringFlag{
+				Name:  "agent",
+				Usage: "agent CLI to launch: claude | codex | pi (recorded in " + projectConfigFile + ")",
+			},
+		},
+		Action: func(_ context.Context, c *cli.Command) error {
+			dir, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("determine the project directory: %w", err)
+			}
+
+			// Validate both names now rather than at launch: init is where the
+			// user is looking, and a typo caught here saves a confusing failure
+			// from `load` days later.
+			agent := c.String("agent")
+			if agent != "" {
+				kit, err := resolveAgentKit(agent)
+				if err != nil {
+					return err
+				}
+				agent = kit.name
+			}
+			sandbox := c.String("sandbox")
+			if sandbox != "" {
+				if err := validSandboxName(sandbox); err != nil {
+					return err
+				}
+			}
+
+			cfg := projectConfig{agent: agent, args: c.Args().Slice()}
+			path := filepath.Join(dir, projectConfigFile)
+			if err := os.WriteFile(path, renderProjectConfig(cfg), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", path, err)
+			}
+			fmt.Printf("wrote %s (agent %s)\n", projectConfigFile, agentOrDefault(agent))
+			if len(cfg.args) > 0 {
+				fmt.Printf("  agent flags: %s\n", formatArgs(cfg.args))
+			}
+
+			if sandbox == "" {
+				fmt.Printf("no --sandbox given: set yours with `aiagentmemory init --sandbox <name>` before `load`\n")
+				return nil
+			}
+			if err := writeAgentRegistry(dir, sandbox); err != nil {
+				return err
+			}
+			fmt.Printf("recorded sandbox %q for %s in ~/.sandboxes/%s\n", sandbox, dir, agentRegistryFile)
+
+			// A missing sandbox is a warning, not a failure: recording intent
+			// before creating the sandbox is a legitimate order to work in, and
+			// `load` is the command that refuses to launch without one.
+			if !dirExists(sandboxDir(sandbox)) {
+				fmt.Fprintf(os.Stderr, "aiagentmemory: warning — sandbox %q does not exist yet\n", sandbox)
+				fmt.Fprintf(os.Stderr, "  create it: aiagentmemory install --agent %s --sandbox %s\n", agentOrDefault(agent), sandbox)
+				return nil
+			}
+			fmt.Printf("launch it with: aiagentmemory load\n")
+			return nil
+		},
+	}
+}
+
+// loadCommand builds `load` — launch the agent this project was `init`ed with.
+// It resolves the sandbox across every layer (see resolveLaunch) and then hands
+// off to the same planRun/execAgent path `run` uses, so environment passthrough,
+// the workspace token hand-off and the shared-auth warning behave identically.
+func loadCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "load",
+		Usage:     "launch the agent recorded for this project: aiagentmemory load [-- extra agent args...]",
+		ArgsUsage: "[-- extra agent args...]",
+		Description: "Reads ./" + projectConfigFile + " for the agent and its flags, and resolves the\n" +
+			"sandbox in this order, most specific first:\n" +
+			"  --sandbox  >  $" + sandboxEnvVar + "  >  ~/.sandboxes/" + agentRegistryFile + "  >  " + projectLocalFile + "  >  " + projectConfigFile + "\n\n" +
+			"Arguments after -- are appended to the recorded flags, so they win when\n" +
+			"the same flag appears in both.",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "sandbox",
+				Usage: "launch this sandbox instead of the recorded one (overrides every file)",
+			},
+			&cli.StringFlag{
+				Name:  "agent",
+				Usage: "launch this agent instead of the recorded one: claude | codex | pi",
+			},
+		},
+		Action: func(_ context.Context, c *cli.Command) error {
+			dir, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("determine the project directory: %w", err)
+			}
+			shared, local, projectDir := findProjectConfig(dir)
+			// A missing registry is normal (nothing pinned yet on this machine),
+			// so an unreadable one contributes no entry rather than failing the
+			// launch — the layers below it may still resolve a sandbox.
+			registry, _ := os.ReadFile(agentRegistryPath())
+
+			res, err := resolveLaunch(launchInputs{
+				flagSandbox: c.String("sandbox"),
+				flagAgent:   c.String("agent"),
+				envSandbox:  os.Getenv(sandboxEnvVar),
+				registry:    lookupAgentRegistry(registry, dir),
+				local:       local,
+				shared:      shared,
+				extraArgs:   c.Args().Slice(),
+			})
+			if err != nil {
+				return err
+			}
+			kit, err := resolveAgentKit(res.agent)
+			if err != nil {
+				return err
+			}
+
+			plan, err := planRun(kit, res.sandbox, dirExists(sandboxDir(res.sandbox)))
+			if err != nil {
+				return err
+			}
+			if plan.configDir == "" {
+				// planRun falls back to launching an agent of the same name when
+				// the sandbox is missing, which is right for `run claude` but
+				// wrong here: a project pinned to a sandbox that no longer exists
+				// must say so, not quietly run against the global config.
+				return fmt.Errorf("sandbox %q (from %s) does not exist — create it with `aiagentmemory install --agent %s --sandbox %s`",
+					res.sandbox, res.origin, kit.name, res.sandbox)
+			}
+
+			// stdout belongs to the agent we are about to become, so the summary
+			// goes to stderr. It names the origin because five layers can supply
+			// the sandbox and only one of them wins.
+			fmt.Fprintf(os.Stderr, "aiagentmemory: %s in sandbox %s (from %s)\n", kit.name, res.sandbox, res.origin)
+			if projectDir != "" && projectDir != dir {
+				// Launching from a subdirectory is supported, but say which
+				// project's flags were picked up — the answer is not on screen.
+				fmt.Fprintf(os.Stderr, "  config: %s\n", filepath.Join(projectDir, projectConfigFile))
+			}
+			return execAgent(kit, plan, res.args)
+		},
+	}
+}
+
+// agentOrDefault names the agent for user-facing output, spelling out the
+// default rather than printing an empty string when none was recorded.
+func agentOrDefault(agent string) string {
+	if agent == "" {
+		return agentClaude
+	}
+	return agent
 }
 
 // runCommand builds `run [--agent codex] <name> [agent args...]` — launch an agent

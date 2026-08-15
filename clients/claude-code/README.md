@@ -108,6 +108,8 @@ aiagentmemory install [flags]                  install the kit (global, or --san
 aiagentmemory install --agent codex [flags]    same, into ~/.codex (or --agent both)
 aiagentmemory install --agent pi [flags]       same, into ~/.pi/agent (or --agent all)
 aiagentmemory update [flags]                   replace the binary in place (configs untouched)
+aiagentmemory init --sandbox <name> [-- args]  record how THIS project launches
+aiagentmemory load [-- extra args]             launch this project's agent + sandbox + flags
 aiagentmemory run <name> [args]                run Claude against sandbox ~/.sandboxes/<name>
 aiagentmemory run --agent codex <name> [args]  run codex against that sandbox (pins CODEX_HOME)
 aiagentmemory run --agent pi <name> [args]     run pi against that sandbox (pins PI_CODING_AGENT_DIR)
@@ -526,6 +528,81 @@ ANTHROPIC_MODEL=... aiagentmemory run claude  # so is this
 
 The only variable `run` adds is `CLAUDE_CONFIG_DIR`, set to the sandbox dir (and
 left alone in global mode).
+
+## Per-project launch (`init` / `load`)
+
+`run acme --model opus --append-system-prompt "..."` is a lot to retype, and the
+sandbox name in it is **personal** — your teammate's sandbox for the same repo is
+called something else. `init` records the launch once, `load` performs it:
+
+```bash
+cd ~/code/myproj
+aiagentmemory init --sandbox acme --agent claude -- --model opus
+aiagentmemory load          # → claude, in sandbox acme, with --model opus
+```
+
+Everything after `--` is stored verbatim and handed to the agent by `load`.
+
+### What is written where
+
+The two halves of a launch have different owners, so they live in different files:
+
+| File | Holds | Commit it? |
+|------|-------|------------|
+| `<project>/.aiagentmemory` | `agent=` and `args=` — the team-wide choice | **yes** |
+| `~/.sandboxes/agents` | `<project dir>=<sandbox>`, one line per project | no — machine-local |
+| `<project>/.aiagentmemory.local` | optional personal override, same format | no — git-ignore it |
+
+The sandbox name is deliberately **absent** from the committed file. If it were
+there, every teammate who named their sandbox differently would launch the wrong
+config — or nothing at all. They run `aiagentmemory init --sandbox <their-name>`
+once and the shared file never changes.
+
+### Which sandbox wins
+
+`load` resolves the sandbox from the first layer that has one, most specific
+first, and prints which layer it used:
+
+```text
+--sandbox  >  $AIAGENTMEMORY_SANDBOX  >  ~/.sandboxes/agents  >  .aiagentmemory.local  >  .aiagentmemory
+```
+
+```bash
+aiagentmemory load --sandbox other            # one-off, this launch only
+AIAGENTMEMORY_SANDBOX=other aiagentmemory load # same, from the environment
+aiagentmemory load -- --verbose                # extra args appended after the recorded ones
+```
+
+`--agent` and the recorded `args` follow the same ladder minus the env var; a
+personal `args=` replaces the committed list whole rather than merging into it.
+With no sandbox on any layer, `load` fails and tells you to run `init` — it never
+falls back to the global config, since launching unpinned would defeat the point
+while looking like success.
+
+### One entry can cover a whole tree
+
+The registry is matched by **nearest ancestor**, so a single line pins every
+repository beneath a directory, and a per-repo line still overrides it:
+
+```text
+# ~/.sandboxes/agents
+/Users/me/code=work            # every repo under ~/code launches in "work"
+/Users/me/code/myproj=acme     # …except myproj, which launches in "acme"
+```
+
+Both lookups walk upward, so `load` behaves identically from the repository root
+and from a directory deep inside it — it finds the nearest `.aiagentmemory` and
+names the file it used when that is not your current directory.
+
+### `init` flags
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--sandbox <name>` | — | Sandbox this project launches with. Recorded in `~/.sandboxes/agents`, never in the committed file. Warns (does not fail) if the sandbox does not exist yet. |
+| `--agent <name>` | `claude` | Agent to launch: `claude`, `codex` or `pi`. Recorded in `.aiagentmemory`. |
+
+`init` is declarative — it rewrites `.aiagentmemory` from the flags you give it,
+so re-running it without `--` args clears any previously recorded agent flags.
 
 ## The Stop hook
 
