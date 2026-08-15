@@ -145,3 +145,5 @@
 - 2026-08-15 `3732752` feat(web): /sandboxes documents --copy and --shared-auth
 - 2026-08-15 `d86801f` Merge feat/install-copy-global: --copy and --shared-auth
 - 2026-08-15 `51893da` chore(changelog): record the copy/shared-auth merge
+- 2026-08-15 `0835268` chore(changelog): record the v0.0.52 merge
+- 2026-08-15 `d3e4d0b` feat(migrate): --wing exports one wing, read from the palace sqlite
