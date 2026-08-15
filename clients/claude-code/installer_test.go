@@ -394,25 +394,25 @@ func TestInstallCodexCore(t *testing.T) {
 
 	// The token is persisted for the wrapper to export, and must not be readable
 	// by anyone else — codex reads it from the environment, not from its config.
-	tokenPath := filepath.Join(dir, codexTokenFile)
+	tokenPath := filepath.Join(dir, tokenFile)
 	info, err := os.Stat(tokenPath)
 	if err != nil {
-		t.Fatalf("stat %s: %v", codexTokenFile, err)
+		t.Fatalf("stat %s: %v", tokenFile, err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("%s mode = %#o, want 0600", codexTokenFile, perm)
+		t.Errorf("%s mode = %#o, want 0600", tokenFile, perm)
 	}
 	raw, err := os.ReadFile(tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(raw)), codexTokenEnvVar+"=TESTTOK"; got != want {
+	if got, want := strings.TrimSpace(string(raw)), tokenEnvVar+"=TESTTOK"; got != want {
 		t.Errorf("token file = %q, want %q", got, want)
 	}
 
 	want := []string{
 		"mcp remove agentsmemory",
-		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + tokenEnvVar,
 	}
 	if got := renderAll(rr.calls); !equalStrings(got, want) {
 		t.Errorf("command sequence mismatch\n got: %v\nwant: %v", got, want)
@@ -436,7 +436,7 @@ func TestInstallCodexRecommended(t *testing.T) {
 
 	want := []string{
 		"mcp remove agentsmemory",
-		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + tokenEnvVar,
 		"SHELL: " + codebaseMemoryInstall,
 		"mcp remove codebasememory",
 		"mcp add codebasememory -- " + expandTilde(codebaseMemoryBin),

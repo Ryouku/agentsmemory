@@ -16,6 +16,12 @@ import (
 // and also the relative install path under the target config dir.
 const hookAsset = "hooks/agentsmemory-stop-hook.sh"
 
+// piExtensionAsset is the embedded pi bridge extension, installed at the same
+// relative path under the target config dir — pi auto-discovers any *.ts under
+// <config dir>/extensions. It is pi's stand-in for both the MCP registration and
+// the Stop hook, neither of which pi supports natively.
+const piExtensionAsset = "extensions/agentsmemory.ts"
+
 const (
 	// bootstrapAsset is the embedded always-on protocol; bootstrapFile is the name
 	// it is installed under in the target config dir; memoryImportLine is the line
@@ -27,18 +33,24 @@ const (
 )
 
 const (
-	// codexTokenEnvVar is the environment variable codex reads the workspace
-	// bearer token from. Unlike `claude mcp add`, `codex mcp add` has no
-	// static-header flag: an HTTP MCP server is authed with
-	// `bearer_token_env_var`, i.e. codex stores the variable NAME and reads the
-	// value from its own environment at launch.
-	codexTokenEnvVar = "AGENTSMEMORY_TOKEN"
+	// tokenEnvVar is the environment variable an agent reads the workspace bearer
+	// token from. Two agents need it: unlike `claude mcp add`, `codex mcp add` has
+	// no static-header flag, so an HTTP MCP server is authed with
+	// `bearer_token_env_var` — codex stores the variable NAME and reads the value
+	// from its own environment at launch — and pi has no MCP client at all, so our
+	// bridge extension reads the same variable.
+	tokenEnvVar = "AGENTSMEMORY_TOKEN"
 
-	// codexTokenFile is where we persist that token (0600) inside CODEX_HOME, so
-	// `aiagentmemory run --agent codex` can export it without the user wiring up
-	// a shell rc. Kept beside the config it belongs to, so deleting a sandbox
-	// deletes its token with it.
-	codexTokenFile = "agentsmemory.env"
+	// mcpURLEnvVar tells the pi bridge extension which endpoint to talk to. Only
+	// pi needs it: Claude and codex store the URL in their own MCP config, but
+	// the extension has no config of its own to read.
+	mcpURLEnvVar = "AGENTSMEMORY_MCP_URL"
+
+	// tokenFile is where we persist that token (0600) inside the agent's config
+	// dir, so `aiagentmemory run` can export it without the user wiring up a shell
+	// rc. Kept beside the config it belongs to, so deleting a sandbox deletes its
+	// token with it.
+	tokenFile = "agentsmemory.env"
 )
 
 // commandRunner executes external commands on behalf of the installer. It is an
@@ -115,8 +127,8 @@ func (d dryRunner) runShell(script string) error {
 // hook, wires up the agentsmemory MCP, and (with recommended=true) installs the
 // companion extensions.
 type Installer struct {
-	kit            agentKit      // which agent CLI we are installing for (claude|codex)
-	targetDir      string        // agent config dir to install into (~/.claude, ~/.codex or a sandbox)
+	kit            agentKit      // which agent CLI we are installing for (claude|codex|pi)
+	targetDir      string        // agent config dir to install into (~/.claude, ~/.codex, ~/.pi/agent or a sandbox)
 	sandboxName    string        // non-empty in isolated mode; drives messaging + run hint
 	explicitTarget bool          // true when --sandbox/--config-dir pinned the target ⇒ skip the mode prompt
 	agentBin       string        // resolved agent CLI name to drive for mcp/plugin ops
@@ -247,9 +259,15 @@ func (i *Installer) run() error {
 	}
 
 	i.step("3/4  recommended extensions")
-	if i.recommended {
+	switch {
+	case i.kit.name == agentPi:
+		// Both companions need something pi does not have: codebase-memory is a
+		// stdio MCP server and eidos/codex are Claude plugin marketplaces. Say so
+		// instead of running an installer whose output nothing would consume.
+		fmt.Fprintln(i.out, "  none for pi: codebase-memory is a stdio MCP and eidos/codex are Claude plugins — pi supports neither")
+	case i.recommended:
 		i.installRecommended()
-	} else {
+	default:
 		fmt.Fprintf(i.out, "  skipped (pass --recommended to add %s)\n", extensionsList(i.kit))
 	}
 
@@ -277,6 +295,13 @@ func (i *Installer) writeAssets() error {
 			return err
 		}
 		i.ok("command %s", i.commandLabel(name))
+	}
+
+	// An agent with no hook system gets no hook script: pi retired hooks/ in
+	// favour of extensions, so its end-of-turn checkpoint ships inside the bridge
+	// extension (see registerPiMCP) and a stray .sh here would only confuse.
+	if i.kit.hooksFile == "" {
+		return nil
 	}
 
 	hook, err := assets.ReadFile(hookAsset)
@@ -315,6 +340,11 @@ func (i *Installer) writeFile(path string, data []byte, perm os.FileMode) error 
 // Codex additionally gates non-managed hooks behind a trust review: the hook is
 // listed but skipped until it is trusted in `/hooks`. summary() says so.
 func (i *Installer) registerStopHook() error {
+	if i.kit.hooksFile == "" {
+		// pi has no hook system at all; the checkpoint rides in the extension.
+		i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
+		return nil
+	}
 	hookCmd := "bash " + i.hookPath()
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	if i.dryRun {
@@ -347,10 +377,14 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 		fmt.Fprintf(i.out, "  add it later: %s\n", i.mcpAddHint())
 		return nil
 	}
-	if i.kit.name == agentCodex {
+	switch i.kit.name {
+	case agentCodex:
 		return i.registerCodexMCP(token)
+	case agentPi:
+		return i.registerPiMCP(token)
+	default:
+		return i.registerClaudeMCP(token)
 	}
-	return i.registerClaudeMCP(token)
 }
 
 // registerClaudeMCP registers the remote MCP with the Claude CLI, which takes the
@@ -380,42 +414,83 @@ func (i *Installer) registerClaudeMCP(token string) error {
 // also carries their plugins, hook trust hashes and shell policy, and passing it
 // on argv would leak it to `ps`.
 func (i *Installer) registerCodexMCP(token string) error {
-	if err := i.writeFile(i.codexTokenPath(), []byte(codexTokenEnvVar+"="+token+"\n"), 0o600); err != nil {
+	if err := i.writeFile(i.tokenPath(), []byte(tokenEnvVar+"="+token+"\n"), 0o600); err != nil {
 		return err
 	}
-	i.ok("stored workspace token in %s (0600)", codexTokenFile)
+	i.ok("stored workspace token in %s (0600)", tokenFile)
 
 	// Same remove-then-add shape as Claude: `codex mcp add` fails on a name that
 	// already exists, and `remove` fails when nothing is there — so ignore that one.
 	i.agent(true, "mcp", "remove", mcpName)
-	if err := i.agent(false, "mcp", "add", mcpName, "--url", i.mcpURL, "--bearer-token-env-var", codexTokenEnvVar); err != nil {
+	if err := i.agent(false, "mcp", "add", mcpName, "--url", i.mcpURL, "--bearer-token-env-var", tokenEnvVar); err != nil {
 		return err
 	}
-	i.ok("registered MCP %q → %s (token via $%s)", mcpName, i.mcpURL, codexTokenEnvVar)
+	i.ok("registered MCP %q → %s (token via $%s)", mcpName, i.mcpURL, tokenEnvVar)
+	return nil
+}
+
+// registerPiMCP wires the remote MCP into pi. pi ships no MCP client — it
+// "intentionally does not include built-in MCP" and points at extensions instead
+// — so there is no `pi mcp add` to call. Instead we install our bridge extension
+// into <config dir>/extensions, where pi auto-discovers it: at startup it lists
+// the remote tools and re-registers each one as a native pi tool, so `am_*` calls
+// in the memory protocol work unchanged. The same extension carries the
+// end-of-turn checkpoint that the Stop hook provides on the other agents.
+//
+// The extension reads its endpoint and token from the environment (it has no
+// config of its own), so both are persisted 0600 beside it and exported by
+// `aiagentmemory run --agent pi`. Nothing is passed on argv, which would leak the
+// token to `ps`.
+func (i *Installer) registerPiMCP(token string) error {
+	ext, err := assets.ReadFile(piExtensionAsset)
+	if err != nil {
+		return err // embed guarantees presence; an error here is a build bug
+	}
+	if err := i.writeFile(filepath.Join(i.targetDir, piExtensionAsset), ext, 0o644); err != nil {
+		return err
+	}
+	i.ok("installed pi bridge extension %s", piExtensionAsset)
+
+	env := fmt.Sprintf("%s=%s\n%s=%s\n", tokenEnvVar, token, mcpURLEnvVar, i.mcpURL)
+	if err := i.writeFile(i.tokenPath(), []byte(env), 0o600); err != nil {
+		return err
+	}
+	i.ok("stored workspace token + endpoint in %s (0600)", tokenFile)
+	i.ok("bridged MCP %q → %s (token via $%s)", mcpName, i.mcpURL, tokenEnvVar)
 	return nil
 }
 
 // resolveAgentCLI picks the CLI binary to drive for the kit, honouring the
-// per-agent override flag (--claude-bin / --codex-bin) and its env var.
+// per-agent override flag (--claude-bin / --codex-bin / --pi-bin) and its env var.
 func resolveAgentCLI(kit agentKit, c *cli.Command) (string, error) {
-	if kit.name == agentCodex {
+	switch kit.name {
+	case agentCodex:
 		return resolveKitBin(kit, c.String("codex-bin"), kitBinEnv(kit))
+	case agentPi:
+		return resolveKitBin(kit, c.String("pi-bin"), kitBinEnv(kit))
+	default:
+		return resolveKitBin(kit, c.String("claude-bin"), kitBinEnv(kit))
 	}
-	return resolveKitBin(kit, c.String("claude-bin"), kitBinEnv(kit))
 }
 
-// codexTokenPath is where the workspace token is persisted inside CODEX_HOME.
-func (i *Installer) codexTokenPath() string { return filepath.Join(i.targetDir, codexTokenFile) }
+// tokenPath is where the workspace token is persisted inside CODEX_HOME.
+func (i *Installer) tokenPath() string { return filepath.Join(i.targetDir, tokenFile) }
 
 // mcpAddHint is the command a user runs to add the MCP later, when they skipped
 // the token prompt. It mirrors exactly what the installer would have run.
 func (i *Installer) mcpAddHint() string {
-	if i.kit.name == agentCodex {
+	switch i.kit.name {
+	case agentCodex:
 		return fmt.Sprintf("%s=<token> %s mcp add %s --url %s --bearer-token-env-var %s",
-			codexTokenEnvVar, i.agentBin, mcpName, i.mcpURL, codexTokenEnvVar)
+			tokenEnvVar, i.agentBin, mcpName, i.mcpURL, tokenEnvVar)
+	case agentPi:
+		// pi has no `mcp add`; the bridge is our own extension plus its env file,
+		// so the way to add it later is to re-run this installer with a token.
+		return fmt.Sprintf("aiagentmemory install --agent pi --config-dir %s --token <token>", i.targetDir)
+	default:
+		return fmt.Sprintf("%s mcp add --transport http %s %s --header \"Authorization: Bearer <token>\"",
+			i.agentBin, mcpName, i.mcpURL)
 	}
-	return fmt.Sprintf("%s mcp add --transport http %s %s --header \"Authorization: Bearer <token>\"",
-		i.agentBin, mcpName, i.mcpURL)
 }
 
 // registerMemoryBootstrap installs the always-on operating protocol so the
@@ -652,6 +727,9 @@ func (i *Installer) commandLabel(assetName string) string {
 
 // extensionsLabel describes whether the recommended extensions are included.
 func (i *Installer) extensionsLabel() string {
+	if i.kit.name == agentPi {
+		return "core only (pi takes neither a stdio MCP nor Claude plugins)"
+	}
 	if i.recommended {
 		return "core + recommended (" + extensionsList(i.kit) + ")"
 	}
@@ -689,6 +767,19 @@ func (i *Installer) summary() {
 	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
 		i.commandLabel("M.md"), i.commandLabel("am.md"))
 
+	if i.kit.name == agentPi {
+		fmt.Fprintln(i.out, "  - pi has no MCP client: the memory tools arrive through the bridge extension in extensions/")
+		if i.sandboxName != "" {
+			// PI_CODING_AGENT_DIR relocates the whole agent dir, and pi keeps
+			// auth.json there — so an isolated config starts with no provider
+			// credentials of its own.
+			fmt.Fprintf(i.out, "  - a sandbox has its own auth.json: sign in inside it, or pass a provider key (PI_CODING_AGENT_DIR=%s pi)\n", i.targetDir)
+		}
+		fmt.Fprintln(i.out, "  - launching plain `pi`? export the token first, e.g. add to your shell rc:")
+		fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.tokenPath())
+		return
+	}
+
 	if i.kit.name != agentCodex {
 		return
 	}
@@ -699,5 +790,5 @@ func (i *Installer) summary() {
 		fmt.Fprintf(i.out, "  - a sandbox has its own login: CODEX_HOME=%s codex login\n", i.targetDir)
 	}
 	fmt.Fprintf(i.out, "  - launching plain `codex`? export the token first, e.g. add to your shell rc:\n")
-	fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.codexTokenPath())
+	fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.tokenPath())
 }

@@ -31,5 +31,9 @@ import "embed"
 // target config dir as agentsmemory-bootstrap.md and imports from CLAUDE.md, so
 // the memory-first workflow applies every session without typing /am.
 //
-//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh bootstrap.md
+// extensions/agentsmemory.ts is the pi bridge: pi ships no MCP client and no hook
+// system, so that one extension both re-registers the remote agentsmemory tools
+// natively and fires the end-of-turn memory checkpoint.
+//
+//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS

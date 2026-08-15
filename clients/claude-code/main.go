@@ -61,19 +61,22 @@ func main() {
 func installCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "install",
-		Usage: "install the kit globally (~/.claude, ~/.codex) or into an isolated --sandbox",
+		Usage: "install the kit globally (~/.claude, ~/.codex, ~/.pi/agent) or into an isolated --sandbox",
 		Description: "Global (default):   aiagentmemory install\n" +
 			"Isolated sandbox:   aiagentmemory install --sandbox <name> [--recommended]\n" +
 			"Codex instead:      aiagentmemory install --agent codex\n" +
-			"Both agents:        aiagentmemory install --agent both\n\n" +
+			"pi instead:         aiagentmemory install --agent pi\n" +
+			"Claude + codex:     aiagentmemory install --agent both\n" +
+			"Every agent:        aiagentmemory install --agent all\n\n" +
 			"The default install wires up our slash commands, the Stop hook, and the\n" +
 			"agentsmemory MCP. --recommended additionally installs the codebase-memory\n" +
-			"MCP and (Claude only) the eidos and codex plugins.",
+			"MCP and (Claude only) the eidos and codex plugins. pi has no MCP client and\n" +
+			"no hooks, so it gets a bridge extension that provides both.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "agent",
 				Value: agentClaude,
-				Usage: "agent CLI to install for: claude | codex | both",
+				Usage: "agent CLI to install for: claude | codex | pi | both (claude+codex) | all",
 			},
 			&cli.BoolFlag{
 				Name:  "global",
@@ -118,6 +121,11 @@ func installCommand() *cli.Command {
 				Name:    "codex-bin",
 				Sources: cli.EnvVars("AIAGENTMEMORY_CODEX_BIN"),
 				Usage:   "codex CLI binary to drive (default: codex)",
+			},
+			&cli.StringFlag{
+				Name:    "pi-bin",
+				Sources: cli.EnvVars("AIAGENTMEMORY_PI_BIN"),
+				Usage:   "pi CLI binary to drive (default: pi)",
 			},
 			&cli.BoolFlag{
 				Name:    "yes",
@@ -165,7 +173,7 @@ func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "run",
 		Usage:           "run an agent against a sandbox: aiagentmemory run [--agent codex] <name> [agent args...]",
-		ArgsUsage:       "[--agent claude|codex] <name> [agent args...]",
+		ArgsUsage:       "[--agent claude|codex|pi] <name> [agent args...]",
 		SkipFlagParsing: true,
 		Action: func(_ context.Context, c *cli.Command) error {
 			kit, args, err := takeAgentFlag(c.Args().Slice())
@@ -197,7 +205,7 @@ func wrapCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "wrap",
 		Usage:           "run an agent against its global config: aiagentmemory wrap [--agent codex] [agent args...]",
-		ArgsUsage:       "[--agent claude|codex] [agent args...]",
+		ArgsUsage:       "[--agent claude|codex|pi] [agent args...]",
 		SkipFlagParsing: true,
 		Action: func(_ context.Context, c *cli.Command) error {
 			kit, args, err := takeAgentFlag(c.Args().Slice())
@@ -228,7 +236,7 @@ func takeAgentFlag(args []string) (agentKit, []string, error) {
 		return claudeKit, args, nil // e.g. --agentfoo: not ours, pass it through
 	}
 	if len(args) < 2 {
-		return agentKit{}, nil, errors.New("--agent needs a value: claude or codex")
+		return agentKit{}, nil, errors.New("--agent needs a value: claude, codex or pi")
 	}
 	kit, err := resolveAgentKit(args[1])
 	return kit, args[2:], err
