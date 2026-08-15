@@ -84,8 +84,11 @@ func installCommand() *cli.Command {
 				Usage: "install into an isolated config at ~/.sandboxes/<name> instead of the global ~/.claude",
 			},
 			&cli.StringFlag{
-				Name:  "claude-dir",
-				Usage: "override the target Claude config dir (ignored when --sandbox is set)",
+				Name: "claude-dir",
+				// config-dir is the name that reads right for codex; claude-dir stays
+				// the primary so existing scripts and docs keep working.
+				Aliases: []string{"config-dir"},
+				Usage:   "override the target agent config dir (ignored when --sandbox is set)",
 			},
 			&cli.BoolFlag{
 				Name:  "recommended",
