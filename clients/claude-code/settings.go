@@ -13,11 +13,17 @@ import (
 // ensureStopHook registers hookCmd as a Claude Code Stop hook in the settings
 // JSON at path, idempotently. It preserves any existing settings, backs the file
 // up (timestamped) before writing, and never adds a duplicate entry for the same
-// command. It returns true if it added the hook, false if it was already present.
+// command. It returns true if it changed the file.
+//
+// obsoleteCmd, when non-empty, names a command this install supersedes: any Stop
+// entry running it is dropped in the same read-modify-write. That is what keeps a
+// relocated hook script from leaving a second entry behind, pointing at a file the
+// install just deleted — which would fail on every stop rather than fail loudly
+// once.
 //
 // This is the Go replacement for the jq block in the old install.sh — same
 // behaviour and same on-disk shape, with no external jq dependency.
-func ensureStopHook(path, hookCmd string) (bool, error) {
+func ensureStopHook(path, hookCmd, obsoleteCmd string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -41,18 +47,21 @@ func ensureStopHook(path, hookCmd string) (bool, error) {
 		return false, err
 	}
 
-	if stopHookPresent(stop, hookCmd) {
+	pruned, dropped := dropStopHook(stop, obsoleteCmd)
+	if stopHookPresent(pruned, hookCmd) && !dropped {
 		return false, nil
 	}
 
-	// Append a matcher-less Stop entry carrying our command — the same shape
-	// Claude Code writes and the same shape the old install.sh produced.
-	entry := map[string]any{
-		"hooks": []any{
-			map[string]any{"type": "command", "command": hookCmd},
-		},
+	if !stopHookPresent(pruned, hookCmd) {
+		// Append a matcher-less Stop entry carrying our command — the same shape
+		// Claude Code writes and the same shape the old install.sh produced.
+		pruned = append(pruned, map[string]any{
+			"hooks": []any{
+				map[string]any{"type": "command", "command": hookCmd},
+			},
+		})
 	}
-	hooks["Stop"] = append(stop, entry)
+	hooks["Stop"] = pruned
 	settings["hooks"] = hooks
 
 	// Back up the original before writing, mirroring install.sh's .bak.<ts>.
@@ -102,6 +111,47 @@ func childArray(m map[string]any, key string) ([]any, error) {
 	default:
 		return nil, fmt.Errorf("settings key %q is %T, expected an array", key, v)
 	}
+}
+
+// dropStopHook returns stop without any entry that runs cmd, and reports whether
+// anything was removed. An entry that carries other hooks alongside cmd keeps
+// those: only the matching hook is taken out, so a user who added their own
+// command next to ours does not lose it. An empty cmd is a no-op, which is what
+// callers with nothing to supersede pass.
+func dropStopHook(stop []any, cmd string) ([]any, bool) {
+	if cmd == "" {
+		return stop, false
+	}
+	out := make([]any, 0, len(stop))
+	dropped := false
+	for _, entry := range stop {
+		em, ok := entry.(map[string]any)
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		inner, ok := em["hooks"].([]any)
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		kept := make([]any, 0, len(inner))
+		for _, h := range inner {
+			if hm, ok := h.(map[string]any); ok {
+				if c, _ := hm["command"].(string); c == cmd {
+					dropped = true
+					continue
+				}
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) == 0 {
+			continue // the entry existed only to run cmd
+		}
+		em["hooks"] = kept
+		out = append(out, em)
+	}
+	return out, dropped
 }
 
 // stopHookPresent reports whether any Stop entry already registers command cmd,

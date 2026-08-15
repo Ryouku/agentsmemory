@@ -135,3 +135,5 @@
 - 2026-08-15 `7f1e4c3` Merge feat/pi-agent-sandbox: pi agent support + /sandboxes guide
 - 2026-08-15 `b597817` chore(changelog): record the pi merge
 - 2026-08-15 `9716c39` chore(changelog): record b597817
+- 2026-08-15 `8019cc9` chore(changelog): record 9716c39
+- 2026-08-15 `d72cba4` fix(cli): install the Stop hook flat, so pi stops halting on hooks/

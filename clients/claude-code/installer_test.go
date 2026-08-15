@@ -100,14 +100,14 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	}
 
 	// Commands + hook must be on disk.
-	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookAsset} {
+	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
 	}
 
 	// Stop hook must be registered pointing at the installed hook.
-	wantCmd := "bash " + filepath.Join(dir, hookAsset)
+	wantCmd := "bash " + filepath.Join(dir, hookFile)
 	if !stopHookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered", wantCmd)
 	}
@@ -366,7 +366,7 @@ func TestInstallCodexCore(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", hookAsset} {
+	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", hookFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
@@ -375,7 +375,7 @@ func TestInstallCodexCore(t *testing.T) {
 		t.Error("codex install wrote a commands/ dir; codex reads prompts/")
 	}
 
-	wantCmd := "bash " + filepath.Join(dir, hookAsset)
+	wantCmd := "bash " + filepath.Join(dir, hookFile)
 	if !stopHookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered in hooks.json", wantCmd)
 	}
@@ -486,7 +486,7 @@ func TestInstallPiCore(t *testing.T) {
 
 	// No hook script and no hook JSON: pi has neither, and a stray .sh would only
 	// suggest a gate that never fires.
-	if _, err := os.Stat(filepath.Join(dir, hookAsset)); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, hookFile)); err == nil {
 		t.Error("pi install wrote a Stop-hook script; pi has no hook system")
 	}
 	for _, name := range []string{"settings.json", "hooks.json"} {
@@ -550,6 +550,73 @@ func TestPiGlobalConfigDirNested(t *testing.T) {
 	home := "/home/u"
 	if got, want := piKit.globalConfigDir(home), filepath.Join(home, ".pi", "agent"); got != want {
 		t.Errorf("piKit.globalConfigDir = %q, want %q", got, want)
+	}
+}
+
+// TestInstallMigratesLegacyHookDir covers the upgrade path for a config dir
+// created before the hook was relocated: the old hooks/ directory must be gone
+// (pi halts its launch on one, and sandboxes are shared), the script must live
+// flat in the config dir, and the stale Stop entry pointing at the deleted file
+// must be pruned rather than left to fail on every stop.
+func TestInstallMigratesLegacyHookDir(t *testing.T) {
+	inst, _, dir := newTestInstaller(t, false)
+
+	legacy := filepath.Join(dir, legacyHookRel)
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("#!/usr/bin/env bash\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyCmd := "bash " + legacy
+	if _, err := ensureStopHook(filepath.Join(dir, "settings.json"), legacyCmd, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "hooks")); err == nil {
+		t.Error("hooks/ still exists after install; pi halts its launch on it")
+	}
+	if _, err := os.Stat(filepath.Join(dir, hookFile)); err != nil {
+		t.Errorf("relocated hook not written: %v", err)
+	}
+
+	stop := readStop(t, filepath.Join(dir, "settings.json"))
+	if stopHookPresent(stop, legacyCmd) {
+		t.Error("the stale Stop entry survived; it would run a deleted file on every stop")
+	}
+	if want := "bash " + filepath.Join(dir, hookFile); !stopHookPresent(stop, want) {
+		t.Errorf("relocated Stop hook %q not registered", want)
+	}
+}
+
+// TestLegacyHookDirKeptWhenNotOnlyOurs guards the destructive edge: a hooks/
+// directory holding the user's own script keeps that script (and the directory).
+// Their files outweigh our warning.
+func TestLegacyHookDirKeptWhenNotOnlyOurs(t *testing.T) {
+	inst, _, dir := newTestInstaller(t, false)
+
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{filepath.Base(legacyHookRel), "user-own-hook.sh"} {
+		if err := os.WriteFile(filepath.Join(hooksDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(hooksDir, "user-own-hook.sh")); err != nil {
+		t.Errorf("the user's own hook was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, legacyHookRel)); err == nil {
+		t.Error("our legacy hook script should still have been removed")
 	}
 }
 
