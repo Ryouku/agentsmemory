@@ -232,18 +232,20 @@ A request without a valid token comes back as a fail-closed
 
 ---
 
-## Connect Claude Code or Codex (the `aiagentmemory` kit)
+## Connect Claude Code, Codex or pi (the `aiagentmemory` kit)
 
-The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code) —
-or [Codex](https://developers.openai.com/codex) — into your workspace: it installs
-the memory-grounded slash commands (`/M`, `/am`, `/load-skill`) and the Stop hook,
-registers the agentsmemory MCP, and can wrap the agent CLI so each project runs
-against its own isolated configuration. It replaces the old shell installer;
-everything ships in one downloadable binary.
+The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code),
+[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
+workspace: it installs the memory-grounded slash commands (`/M`, `/am`,
+`/load-skill`) and the Stop hook, registers the agentsmemory MCP, and can wrap the
+agent CLI so each project runs against its own isolated configuration. It replaces
+the old shell installer; everything ships in one downloadable binary.
 
 Claude is the default. `--agent codex` installs the same kit into codex's layout
-(`~/.codex`, `prompts/`, `AGENTS.md`, `hooks.json`), and `--agent both` does both
-— see [Codex](#codex-agent-codex).
+(`~/.codex`, `prompts/`, `AGENTS.md`, `hooks.json`) and `--agent pi` into pi's
+(`~/.pi/agent`, `prompts/`, `AGENTS.md`, a bridge extension). `--agent both` is
+Claude + codex; `--agent all` is all three — see [Codex](#codex-agent-codex) and
+[pi](#pi-agent-pi).
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
 
@@ -345,6 +347,34 @@ Two things codex needs that Claude does not, both printed by the installer:
 `aiagentmemory run --agent codex …`; for plain `codex`, source it from your shell
 rc. A codex sandbox is a whole `CODEX_HOME`, so it also needs its own login:
 `CODEX_HOME=~/.sandboxes/acme codex login`.
+
+### pi (`--agent pi`)
+
+pi looks like codex — `prompts/` for commands, `AGENTS.md` for memory — except
+that it ships **no MCP client and no hooks**, both by design. So the installer
+writes a bridge extension into `<config dir>/extensions/agentsmemory.ts`: at
+startup it handshakes with your workspace MCP, lists the tools, and re-registers
+each one as a native pi tool, so `am_*` calls work unchanged. The same extension
+fires the end-of-turn memory checkpoint that the Stop hook fires elsewhere.
+
+```bash
+aiagentmemory install --agent pi                   # into ~/.pi/agent
+aiagentmemory install --agent all --sandbox acme   # one sandbox, all three agents
+aiagentmemory run --agent pi acme                  # launch pi with PI_CODING_AGENT_DIR pinned
+```
+
+| | Codex | pi |
+|---|---|---|
+| Config dir | `~/.codex` (`CODEX_HOME`) | `~/.pi/agent` (`PI_CODING_AGENT_DIR`) |
+| Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` |
+| Stop hook | `hooks.json` | none — the checkpoint ships in the extension |
+| MCP | native, `--bearer-token-env-var` | bridged by the extension |
+
+The token and endpoint are written to `<config dir>/agentsmemory.env` (`0600`)
+and exported by `aiagentmemory run --agent pi …`. A pi sandbox is the whole agent
+dir including `auth.json`, so it starts with no provider credentials.
+`--recommended` adds nothing for pi: codebase-memory is a stdio MCP and the
+eidos/codex plugins are Claude marketplaces.
 
 ---
 
