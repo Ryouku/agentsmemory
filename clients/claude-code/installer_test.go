@@ -569,7 +569,7 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyCmd := "bash " + legacy
-	if _, err := ensureStopHook(filepath.Join(dir, "settings.json"), legacyCmd, ""); err != nil {
+	if _, err := ensureStopHook(filepath.Join(dir, "settings.json"), legacyCmd, nil); err != nil {
 		t.Fatal(err)
 	}
 

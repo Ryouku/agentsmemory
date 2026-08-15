@@ -35,7 +35,7 @@ func TestEnsureStopHookFreshFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
 
-	added, err := ensureStopHook(path, cmd, "")
+	added, err := ensureStopHook(path, cmd, nil)
 	if err != nil {
 		t.Fatalf("ensureStopHook: %v", err)
 	}
@@ -55,10 +55,10 @@ func TestEnsureStopHookIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
 
-	if _, err := ensureStopHook(path, cmd, ""); err != nil {
+	if _, err := ensureStopHook(path, cmd, nil); err != nil {
 		t.Fatalf("first ensureStopHook: %v", err)
 	}
-	added, err := ensureStopHook(path, cmd, "")
+	added, err := ensureStopHook(path, cmd, nil)
 	if err != nil {
 		t.Fatalf("second ensureStopHook: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestEnsureStopHookPreservesExisting(t *testing.T) {
 	}
 
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
-	added, err := ensureStopHook(path, cmd, "")
+	added, err := ensureStopHook(path, cmd, nil)
 	if err != nil {
 		t.Fatalf("ensureStopHook: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestEnsureStopHookMalformedRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ensureStopHook(path, "bash /x.sh", ""); err == nil {
+	if _, err := ensureStopHook(path, "bash /x.sh", nil); err == nil {
 		t.Fatal("ensureStopHook accepted malformed JSON, want an error")
 	}
 	got, _ := os.ReadFile(path)

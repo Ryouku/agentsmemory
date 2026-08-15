@@ -126,6 +126,8 @@ the sandbox name is forwarded to the agent untouched.
 | `--agent <name>` | `claude` | Agent to install for: `claude`, `codex`, `pi`, `both` (claude+codex) or `all`. |
 | `--global` | — | Install into the agent's global config dir non-interactively (skips the mode prompt); mutually exclusive with `--sandbox`/`--claude-dir`. |
 | `--sandbox <name>` | — | Install into `~/.sandboxes/<name>` (isolated mode). |
+| `--copy` | off | Seed the target from the agent's global config — logins, MCP servers, plugins, skills, settings. Needs `--sandbox`/`--config-dir`. |
+| `--shared-auth` | off | Link the target's credential files to the global config, so one login serves every sandbox. |
 | `--recommended` | off | Also install codebase-memory, eidos, codex (eidos + codex are Claude-only). |
 | `--token <key>` | `$AGENTSMEMORY_TOKEN` | agentsmemory workspace token. |
 | `--mcp-url <url>` | `https://aiagentmemory.dev/mcp` | agentsmemory MCP endpoint. |
@@ -244,6 +246,82 @@ aiagentmemory run --agent pi myproject      # sign in inside it, or pass --api-k
 All three agents can share one sandbox (`--agent all --sandbox myproject`) — no
 two of them collide on a filename.
 
+## Inheriting your global setup (`--copy`)
+
+A fresh sandbox starts empty: signed out, no MCP servers, no plugins, none of
+your skills. `--copy` seeds it from the agent's own global config dir before the
+kit is installed:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --copy       # from ~/.pi/agent
+aiagentmemory install --agent all --sandbox acme --copy      # each agent from its own global dir
+```
+
+**What travels:** credentials (`auth.json`, `models-store.json` — so pi arrives
+with your providers already logged in), `settings.json` / `config.toml`,
+`.claude.json` (which is where Claude keeps its MCP servers), `plugins/`,
+`skills/`, `extensions/`, `themes/`, `prompts/` and `commands/`.
+
+**What stays behind:** conversation and project state (`projects/`, `sessions/`,
+`history.jsonl`), logs and `*.sqlite*` stores, caches, `bin/` and other extracted
+binaries, `.bak` files. That exclusion is what makes the copy usable — a global
+`~/.codex` here is 795 MB, of which ~440 MB is runtime state.
+
+It is still not small: with plugins, expect roughly 230 MB (Claude) or 350 MB
+(codex) per sandbox. The installer prints the byte count it copied.
+
+Two rules the copy follows:
+
+- **It never overwrites.** Anything already in the target wins, so `--copy` on an
+  existing sandbox fills gaps rather than reverting your changes, and the kit's
+  own files are written afterwards, on top.
+- **Modes are preserved.** `auth.json` stays `0600`; a copied credential is never
+  widened. Note what that implies — **the sandbox can act as you** until you sign
+  it out. Copy your own config, not someone else's.
+
+A Stop hook registration inherited from the source config dir is retired
+automatically: it points at *that* dir's script, so left alone it would fire the
+memory checkpoint twice per stop.
+
+## Sharing one login across sandboxes (`--shared-auth`)
+
+`--copy` gives a sandbox a *snapshot* of your credentials; when a token expires
+you re-authenticate in each sandbox separately. `--shared-auth` links them
+instead:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --shared-auth
+# ~/.sandboxes/acme/auth.json         -> ~/.pi/agent/auth.json
+# ~/.sandboxes/acme/models-store.json -> ~/.pi/agent/models-store.json
+```
+
+Log in anywhere — the global agent or any sandbox — and every sandbox sees it at
+once. What gets linked is per agent:
+
+| Agent | Credential files | Note |
+|---|---|---|
+| Claude Code | `.credentials.json` | On macOS credentials live in the login **keychain**, which every config dir already shares — the flag reports there is nothing to link. |
+| Codex | `auth.json` | |
+| pi | `auth.json`, `models-store.json` | The model store rides along, or a sandbox is authenticated for models it does not list. |
+
+An existing credential file in the target is moved aside (`.bak.<ts>`) before the
+link replaces it, and a link that is already correct is left alone, so re-running
+the install is a no-op.
+
+**The one failure mode**, and how you find out: an agent that rewrites
+credentials by replacing the file (write a temp file, rename over the target)
+destroys the link, and the sandbox silently stops sharing. pi writes in place
+(`writeFileSync`), so it writes *through* the link — verified. For any agent that
+does not, `aiagentmemory run` checks the link on every launch and tells you:
+
+```
+aiagentmemory: auth.json no longer shared with the global config (the agent replaced the link)
+  re-share with: aiagentmemory install --agent pi --config-dir ~/.sandboxes/acme --shared-auth --yes
+```
+
+Nothing is repaired automatically — which side holds the credential you want is
+your call, not ours.
+
 ## Updating
 
 Upgrading the CLI is **binary-only** — you do not re-run `install`, so nothing
@@ -266,7 +344,83 @@ renamed over the old file — an atomic swap, so a failed or interrupted downloa
 leaves the working binary in place. Replacing a running binary is safe on macOS
 and Linux; an already-open session keeps running the old image.
 
-### Updating a binary too old to have `update`
+### Inheriting your global setup (`--copy`)
+
+A fresh sandbox starts empty: signed out, no MCP servers, no plugins, none of
+your skills. `--copy` seeds it from the agent's own global config dir before the
+kit is installed:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --copy       # from ~/.pi/agent
+aiagentmemory install --agent all --sandbox acme --copy      # each agent from its own global dir
+```
+
+**What travels:** credentials (`auth.json`, `models-store.json` — so pi arrives
+with your providers already logged in), `settings.json` / `config.toml`,
+`.claude.json` (which is where Claude keeps its MCP servers), `plugins/`,
+`skills/`, `extensions/`, `themes/`, `prompts/` and `commands/`.
+
+**What stays behind:** conversation and project state (`projects/`, `sessions/`,
+`history.jsonl`), logs and `*.sqlite*` stores, caches, `bin/` and other extracted
+binaries, `.bak` files. That exclusion is what makes the copy usable — a global
+`~/.codex` here is 795 MB, of which ~440 MB is runtime state.
+
+It is still not small: with plugins, expect roughly 230 MB (Claude) or 350 MB
+(codex) per sandbox. The installer prints the byte count it copied.
+
+Two rules the copy follows:
+
+- **It never overwrites.** Anything already in the target wins, so `--copy` on an
+  existing sandbox fills gaps rather than reverting your changes, and the kit's
+  own files are written afterwards, on top.
+- **Modes are preserved.** `auth.json` stays `0600`; a copied credential is never
+  widened. Note what that implies — **the sandbox can act as you** until you sign
+  it out. Copy your own config, not someone else's.
+
+A Stop hook registration inherited from the source config dir is retired
+automatically: it points at *that* dir's script, so left alone it would fire the
+memory checkpoint twice per stop.
+
+## Sharing one login across sandboxes (`--shared-auth`)
+
+`--copy` gives a sandbox a *snapshot* of your credentials; when a token expires
+you re-authenticate in each sandbox separately. `--shared-auth` links them
+instead:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --shared-auth
+# ~/.sandboxes/acme/auth.json         -> ~/.pi/agent/auth.json
+# ~/.sandboxes/acme/models-store.json -> ~/.pi/agent/models-store.json
+```
+
+Log in anywhere — the global agent or any sandbox — and every sandbox sees it at
+once. What gets linked is per agent:
+
+| Agent | Credential files | Note |
+|---|---|---|
+| Claude Code | `.credentials.json` | On macOS credentials live in the login **keychain**, which every config dir already shares — the flag reports there is nothing to link. |
+| Codex | `auth.json` | |
+| pi | `auth.json`, `models-store.json` | The model store rides along, or a sandbox is authenticated for models it does not list. |
+
+An existing credential file in the target is moved aside (`.bak.<ts>`) before the
+link replaces it, and a link that is already correct is left alone, so re-running
+the install is a no-op.
+
+**The one failure mode**, and how you find out: an agent that rewrites
+credentials by replacing the file (write a temp file, rename over the target)
+destroys the link, and the sandbox silently stops sharing. pi writes in place
+(`writeFileSync`), so it writes *through* the link — verified. For any agent that
+does not, `aiagentmemory run` checks the link on every launch and tells you:
+
+```
+aiagentmemory: auth.json no longer shared with the global config (the agent replaced the link)
+  re-share with: aiagentmemory install --agent pi --config-dir ~/.sandboxes/acme --shared-auth --yes
+```
+
+Nothing is repaired automatically — which side holds the credential you want is
+your call, not ours.
+
+## Updating a binary too old to have `update`
 
 Releases before `update` existed have no self-update. Re-download it without
 running the installer — same result, no config touched:

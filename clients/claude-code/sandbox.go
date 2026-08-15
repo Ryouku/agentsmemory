@@ -126,6 +126,19 @@ func execAgent(kit agentKit, plan launchPlan, agentArgs []string) error {
 		env = setEnv(env, k, v)
 	}
 
+	// Shared credentials can stop being shared without anyone noticing: an agent
+	// that rewrites auth by replacing the file (rather than writing through the
+	// link) leaves a config dir that looks identical but no longer follows a
+	// global login. Say so on stderr — stdout belongs to the agent we are about to
+	// become — rather than repairing it here, since which side is authoritative is
+	// the user's call.
+	if broken := brokenSharedAuth(configDir); len(broken) > 0 {
+		fmt.Fprintf(os.Stderr, "aiagentmemory: %s no longer shared with the global config (the agent replaced the link)\n",
+			strings.Join(broken, ", "))
+		fmt.Fprintf(os.Stderr, "  re-share with: aiagentmemory install --agent %s --config-dir %s --shared-auth --yes\n",
+			kit.name, configDir)
+	}
+
 	// syscall.Exec never returns on success; on failure it returns the errno.
 	argv := append([]string{bin}, agentArgs...)
 	return syscall.Exec(path, argv, env)
