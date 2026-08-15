@@ -147,3 +147,4 @@
 - 2026-08-15 `51893da` chore(changelog): record the copy/shared-auth merge
 - 2026-08-15 `0835268` chore(changelog): record the v0.0.52 merge
 - 2026-08-15 `d3e4d0b` feat(migrate): --wing exports one wing, read from the palace sqlite
+- 2026-08-15 `1c94f42` Merge feat/export-wing-filter: --wing and a local sqlite source
