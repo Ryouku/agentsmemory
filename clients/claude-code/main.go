@@ -47,6 +47,7 @@ func main() {
 			updateCommand(),
 			runCommand(),
 			wrapCommand(),
+			mcpCommand(),
 		},
 	}
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
