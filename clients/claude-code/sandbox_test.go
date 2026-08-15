@@ -22,6 +22,7 @@ func TestPlanRun(t *testing.T) {
 		{"sandbox named claude still wins", "claude", true, "", sandboxDir("claude"), false},
 		{"agent fallback", "claude", false, "claude", "", false},
 		{"other allowlisted agent", "codex", false, "codex", "", false},
+		{"pi allowlisted", "pi", false, "pi", "", false},
 		{"unknown name keeps install hint", "acme", false, "", "", true},
 		{"invalid name rejected", "../escape", false, "", "", true},
 	}
