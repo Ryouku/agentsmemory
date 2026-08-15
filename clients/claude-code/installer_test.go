@@ -56,7 +56,8 @@ func newTestInstaller(t *testing.T, recommended bool) (*Installer, *recordingRun
 	rr := &recordingRunner{}
 	inst := &Installer{
 		targetDir:   dir,
-		claudeBin:   "claude",
+		kit:         claudeKit,
+		agentBin:    "claude",
 		mcpURL:      defaultMCPURL,
 		scope:       "user",
 		token:       "TESTTOK",
@@ -180,7 +181,7 @@ func TestResolveInstallTarget(t *testing.T) {
 		{sandbox: "proj"},
 		{claudeDir: "/x"},
 	} {
-		if _, _, _, err := resolveInstallTarget(true, tc.sandbox, tc.claudeDir, home); err == nil {
+		if _, _, _, err := resolveInstallTarget(claudeKit, true, tc.sandbox, tc.claudeDir, home); err == nil {
 			t.Errorf("resolveInstallTarget(global, %q, %q) = nil error, want conflict", tc.sandbox, tc.claudeDir)
 		}
 	}
@@ -202,7 +203,7 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, sandbox, explicit, err := resolveInstallTarget(tc.global, tc.sandbox, tc.claudeDir, home)
+			target, sandbox, explicit, err := resolveInstallTarget(claudeKit, tc.global, tc.sandbox, tc.claudeDir, home)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -214,7 +215,7 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 
 	// An invalid sandbox name is rejected here too (defense in depth with the CLI).
-	if _, _, _, err := resolveInstallTarget(false, "../escape", "", home); err == nil {
+	if _, _, _, err := resolveInstallTarget(claudeKit, false, "../escape", "", home); err == nil {
 		t.Error("resolveInstallTarget accepted an invalid sandbox name, want an error")
 	}
 }

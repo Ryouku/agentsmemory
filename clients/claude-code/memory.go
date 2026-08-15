@@ -20,27 +20,31 @@ const (
 	memEndMarker   = "<!-- END agentsmemory -->"
 )
 
-// ensureMemoryImport ensures the Claude memory file at path pulls in importLine
-// (e.g. "@agentsmemory-bootstrap.md") inside a managed marker block, idempotently.
-// It preserves any existing user content, backs the file up (timestamped) before
-// modifying, and never duplicates the block. It returns true if it wrote a change,
-// false if the block was already present and current.
+// ensureManagedBlock ensures the agent memory file at path carries body inside a
+// managed marker block, idempotently. It preserves any existing user content,
+// backs the file up (timestamped) before modifying, and never duplicates the
+// block. It returns true if it wrote a change, false if the block was already
+// present and current.
 //
-// This mirrors ensureStopHook's contract for settings.json: an append/merge that
+// This mirrors ensureStopHook's contract for the hooks JSON: an append/merge that
 // is safe to re-run and never clobbers a user's hand-written file. We use a
-// managed marker block (rather than the whole file) because CLAUDE.md is the
-// user's own memory — a global install must add one @import line, not overwrite
-// their instructions. Claude Code resolves an @import relative to the importing
-// file, so importLine names a sibling of path.
-func ensureMemoryImport(path, importLine string) (bool, error) {
+// managed marker block (rather than the whole file) because the memory file is
+// the user's own — a global install must add our section, not overwrite their
+// instructions.
+//
+// body is agent-specific. Claude Code resolves `@file.md` imports relative to the
+// importing file, so there body is a single import line naming a sibling of path.
+// Codex has no import directive in AGENTS.md, so there body is the protocol text
+// itself.
+func ensureManagedBlock(path, body string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
 	existing := string(raw)
 
-	// The block we want present: markers wrapping exactly the import line.
-	block := memBeginMarker + "\n" + importLine + "\n" + memEndMarker
+	// The block we want present: markers wrapping exactly our body.
+	block := memBeginMarker + "\n" + strings.TrimRight(body, "\n") + "\n" + memEndMarker
 
 	beginIdx := strings.Index(existing, memBeginMarker)
 	endIdx := strings.Index(existing, memEndMarker)

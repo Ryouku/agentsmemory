@@ -26,6 +26,21 @@ const (
 	memoryImportLine = "@agentsmemory-bootstrap.md"
 )
 
+const (
+	// codexTokenEnvVar is the environment variable codex reads the workspace
+	// bearer token from. Unlike `claude mcp add`, `codex mcp add` has no
+	// static-header flag: an HTTP MCP server is authed with
+	// `bearer_token_env_var`, i.e. codex stores the variable NAME and reads the
+	// value from its own environment at launch.
+	codexTokenEnvVar = "AGENTSMEMORY_TOKEN"
+
+	// codexTokenFile is where we persist that token (0600) inside CODEX_HOME, so
+	// `aiagentmemory run --agent codex` can export it without the user wiring up
+	// a shell rc. Kept beside the config it belongs to, so deleting a sandbox
+	// deletes its token with it.
+	codexTokenFile = "agentsmemory.env"
+)
+
 // commandRunner executes external commands on behalf of the installer. It is an
 // interface so tests can record calls and --dry-run can print them without ever
 // shelling out. Kept tiny on purpose (accept interfaces) so the whole install
@@ -100,10 +115,11 @@ func (d dryRunner) runShell(script string) error {
 // hook, wires up the agentsmemory MCP, and (with recommended=true) installs the
 // companion extensions.
 type Installer struct {
-	targetDir      string        // Claude config dir to install into (~/.claude or a sandbox)
+	kit            agentKit      // which agent CLI we are installing for (claude|codex)
+	targetDir      string        // agent config dir to install into (~/.claude, ~/.codex or a sandbox)
 	sandboxName    string        // non-empty in isolated mode; drives messaging + run hint
-	explicitTarget bool          // true when --sandbox/--claude-dir pinned the target ⇒ skip the mode prompt
-	claudeBin      string        // resolved Claude CLI name to drive for mcp/plugin ops
+	explicitTarget bool          // true when --sandbox/--config-dir pinned the target ⇒ skip the mode prompt
+	agentBin       string        // resolved agent CLI name to drive for mcp/plugin ops
 	mcpURL         string        // agentsmemory remote MCP endpoint
 	scope          string        // Claude MCP/plugin scope (user|local|project)
 	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
@@ -118,20 +134,26 @@ type Installer struct {
 
 // resolveInstallTarget picks the install target from the mode flags and reports
 // whether it was pinned on the command line. Precedence is --sandbox, then
-// --claude-dir, then an explicit --global, then the bare default (global
-// ~/.claude). explicit is true whenever the user named the target on the command
-// line; when it is false, run() offers the interactive mode prompt so a bare
-// `curl|bash` install isn't silently forced global.
+// --config-dir, then an explicit --global, then the bare default (the kit's
+// global dir: ~/.claude for Claude, ~/.codex for codex). explicit is true whenever
+// the user named the target on the command line; when it is false, run() offers
+// the interactive mode prompt so a bare `curl|bash` install isn't silently forced
+// global.
 //
-// --global is the flag form of the global choice: it pins ~/.claude and marks the
-// target explicit, so `install --global --token <t>` is fully non-interactive.
-// Because --global names the same target the bare default and the prompt would,
-// combining it with --sandbox or --claude-dir is ambiguous and rejected rather
-// than silently resolved. home is passed in (not read here) so the helper is pure
-// and testable.
-func resolveInstallTarget(global bool, sandbox, claudeDir, home string) (targetDir, sandboxName string, explicit bool, err error) {
-	if global && (sandbox != "" || claudeDir != "") {
-		return "", "", false, fmt.Errorf("--global cannot be combined with --sandbox or --claude-dir")
+// --global is the flag form of the global choice: it pins the kit's global dir and
+// marks the target explicit, so `install --global --token <t>` is fully
+// non-interactive. Because --global names the same target the bare default and the
+// prompt would, combining it with --sandbox or --config-dir is ambiguous and
+// rejected rather than silently resolved. home is passed in (not read here) so the
+// helper is pure and testable.
+//
+// A sandbox holds both agents' configs in one directory: Claude and codex never
+// share a filename (settings.json vs hooks.json, commands/ vs prompts/, CLAUDE.md
+// vs AGENTS.md), so `install --agent both --sandbox x` yields one dir that
+// CLAUDE_CONFIG_DIR and CODEX_HOME can each point at.
+func resolveInstallTarget(kit agentKit, global bool, sandbox, configDir, home string) (targetDir, sandboxName string, explicit bool, err error) {
+	if global && (sandbox != "" || configDir != "") {
+		return "", "", false, fmt.Errorf("--global cannot be combined with --sandbox or --config-dir")
 	}
 	switch {
 	case sandbox != "":
@@ -139,38 +161,39 @@ func resolveInstallTarget(global bool, sandbox, claudeDir, home string) (targetD
 			return "", "", false, err
 		}
 		return sandboxDir(sandbox), sandbox, true, nil
-	case claudeDir != "":
-		return claudeDir, "", true, nil
+	case configDir != "":
+		return configDir, "", true, nil
 	case global:
-		return filepath.Join(home, ".claude"), "", true, nil
+		return kit.globalConfigDir(home), "", true, nil
 	default:
-		return filepath.Join(home, ".claude"), "", false, nil
+		return kit.globalConfigDir(home), "", false, nil
 	}
 }
 
-// newInstaller builds an Installer from parsed CLI flags. It resolves the target
-// config dir (isolated sandbox vs global ~/.claude) and the Claude CLI to drive,
-// selecting a dry-run runner when --dry-run is set.
-func newInstaller(c *cli.Command, out io.Writer, in io.Reader) (*Installer, error) {
+// newInstaller builds an Installer for one agent kit from parsed CLI flags. It
+// resolves the target config dir (isolated sandbox vs the kit's global dir) and
+// the agent CLI to drive, selecting a dry-run runner when --dry-run is set.
+// `install --agent both` calls this once per kit.
+func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*Installer, error) {
 	// Resolve the install target (and whether it was pinned on the command line)
 	// from the mode flags. Kept as a pure helper so the precedence and the
 	// mutually-exclusive-flags rule are testable without CLI plumbing.
 	targetDir, sandboxName, explicitTarget, err := resolveInstallTarget(
-		c.Bool("global"), c.String("sandbox"), c.String("claude-dir"), homeDir())
+		kit, c.Bool("global"), c.String("sandbox"), c.String("claude-dir"), homeDir())
 	if err != nil {
 		return nil, err
 	}
 
 	dryRun := c.Bool("dry-run")
 
-	// We always register our MCP, which needs the Claude CLI, so resolve it now.
-	// Under --dry-run tolerate a missing CLI so the plan can still be printed.
-	claudeBin, err := resolveClaudeBin(c.String("claude-bin"))
+	// We always register our MCP, which needs the agent's own CLI, so resolve it
+	// now. Under --dry-run tolerate a missing CLI so the plan can still be printed.
+	agentBin, err := resolveAgentCLI(kit, c)
 	if err != nil {
 		if !dryRun {
 			return nil, err
 		}
-		claudeBin = "claude"
+		agentBin = kit.bin
 	}
 
 	var runner commandRunner = execRunner{out: out}
@@ -179,10 +202,11 @@ func newInstaller(c *cli.Command, out io.Writer, in io.Reader) (*Installer, erro
 	}
 
 	return &Installer{
+		kit:            kit,
 		targetDir:      targetDir,
 		sandboxName:    sandboxName,
 		explicitTarget: explicitTarget,
-		claudeBin:      claudeBin,
+		agentBin:       agentBin,
 		mcpURL:         c.String("mcp-url"),
 		scope:          c.String("scope"),
 		token:          c.String("token"),
@@ -226,7 +250,7 @@ func (i *Installer) run() error {
 	if i.recommended {
 		i.installRecommended()
 	} else {
-		fmt.Fprintln(i.out, "  skipped (pass --recommended to add codebase-memory, eidos, codex)")
+		fmt.Fprintf(i.out, "  skipped (pass --recommended to add %s)\n", extensionsList(i.kit))
 	}
 
 	i.step("4/4  done")
@@ -238,16 +262,21 @@ func (i *Installer) run() error {
 // target config dir. M.md and am.md are the bootstrap commands; load-skill.md is
 // the /load-skill nicety over the am_load_skill tool. The legacy agentsmemory.md
 // was retired and is intentionally not shipped.
+//
+// The same markdown serves both agents: codex reads top-level files in
+// <CODEX_HOME>/prompts with the same `description:` / `argument-hint:` front
+// matter and `$ARGUMENTS` expansion Claude uses for commands/, so only the
+// directory name (and the `/prompts:` invocation prefix) differs.
 func (i *Installer) writeAssets() error {
 	for _, name := range []string{"M.md", "am.md", "load-skill.md"} {
 		data, err := assets.ReadFile("commands/" + name)
 		if err != nil {
 			return err // embed guarantees presence; an error here is a build bug
 		}
-		if err := i.writeFile(filepath.Join(i.targetDir, "commands", name), data, 0o644); err != nil {
+		if err := i.writeFile(filepath.Join(i.targetDir, i.kit.commandsDir, name), data, 0o644); err != nil {
 			return err
 		}
-		i.ok("command /%s", strings.TrimSuffix(name, ".md"))
+		i.ok("command %s", i.commandLabel(name))
 	}
 
 	hook, err := assets.ReadFile(hookAsset)
@@ -277,20 +306,27 @@ func (i *Installer) writeFile(path string, data []byte, perm os.FileMode) error 
 	return os.WriteFile(path, data, perm)
 }
 
-// registerStopHook adds the Stop hook to the target settings.json, idempotently.
+// registerStopHook adds the Stop hook to the agent's hook JSON, idempotently —
+// settings.json for Claude, hooks.json for codex. Both take the same shape
+// ({"hooks":{"Stop":[{"hooks":[{"type":"command","command":…}]}]}}) and both hand
+// the hook a Stop event carrying stop_hook_active, which is what our script uses
+// for loop prevention, so one script and one merge serve both.
+//
+// Codex additionally gates non-managed hooks behind a trust review: the hook is
+// listed but skipped until it is trusted in `/hooks`. summary() says so.
 func (i *Installer) registerStopHook() error {
 	hookCmd := "bash " + i.hookPath()
-	settings := filepath.Join(i.targetDir, "settings.json")
+	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	if i.dryRun {
-		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", settings, hookCmd)
+		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
 		return nil
 	}
-	added, err := ensureStopHook(settings, hookCmd)
+	added, err := ensureStopHook(hooksFile, hookCmd)
 	if err != nil {
 		return err
 	}
 	if added {
-		i.ok("registered Stop hook in settings.json")
+		i.ok("registered Stop hook in %s", i.kit.hooksFile)
 	} else {
 		i.ok("Stop hook already registered")
 	}
@@ -299,34 +335,102 @@ func (i *Installer) registerStopHook() error {
 
 // registerAgentsMemoryMCP wires up the agentsmemory remote MCP. It resolves the
 // workspace token (flag/env, else an interactive prompt) and registers the HTTP
-// server with the Claude CLI in a single shot. This is the product's core value,
-// so it runs in the default install — not gated behind --recommended.
+// server with the agent's own CLI. This is the product's core value, so it runs in
+// the default install — not gated behind --recommended.
+//
+// The two CLIs authenticate an HTTP MCP server differently, so the registration
+// itself is the one step that genuinely diverges per agent.
 func (i *Installer) registerAgentsMemoryMCP() error {
 	token := i.resolveToken()
 	if token == "" {
 		fmt.Fprintln(i.out, "  no token provided — skipping agentsmemory MCP.")
-		fmt.Fprintf(i.out, "  add it later: %s mcp add --transport http %s %s --header \"Authorization: Bearer <token>\"\n",
-			i.claudeBin, mcpName, i.mcpURL)
+		fmt.Fprintf(i.out, "  add it later: %s\n", i.mcpAddHint())
 		return nil
 	}
+	if i.kit.name == agentCodex {
+		return i.registerCodexMCP(token)
+	}
+	return i.registerClaudeMCP(token)
+}
+
+// registerClaudeMCP registers the remote MCP with the Claude CLI, which takes the
+// bearer token inline as a header value.
+func (i *Installer) registerClaudeMCP(token string) error {
 	header := "Authorization: Bearer " + token
 	// `mcp add` is not idempotent by name, so remove any prior entry first
 	// (ignoring "not found") and then add cleanly, all in one shot.
-	i.claude(true, "mcp", "remove", "--scope", i.scope, mcpName)
-	if err := i.claude(false, "mcp", "add", "--transport", "http", "--scope", i.scope, mcpName, i.mcpURL, "--header", header); err != nil {
+	i.agent(true, "mcp", "remove", "--scope", i.scope, mcpName)
+	if err := i.agent(false, "mcp", "add", "--transport", "http", "--scope", i.scope, mcpName, i.mcpURL, "--header", header); err != nil {
 		return err
 	}
 	i.ok("registered MCP %q → %s", mcpName, i.mcpURL)
 	return nil
 }
 
+// registerCodexMCP registers the remote MCP with codex. `codex mcp add` has no
+// static-header flag: a streamable-HTTP server is authed with
+// --bearer-token-env-var, which persists the variable NAME in config.toml and
+// makes codex read the value from its environment at launch. So we register the
+// variable and persist the token itself (0600) inside CODEX_HOME, where
+// `aiagentmemory run --agent codex` picks it up. Users who launch plain `codex`
+// get the export line in summary().
+//
+// Writing the token to a file we own beats the alternatives: rewriting the user's
+// config.toml to hold a static Authorization header would reformat a file that
+// also carries their plugins, hook trust hashes and shell policy, and passing it
+// on argv would leak it to `ps`.
+func (i *Installer) registerCodexMCP(token string) error {
+	if err := i.writeFile(i.codexTokenPath(), []byte(codexTokenEnvVar+"="+token+"\n"), 0o600); err != nil {
+		return err
+	}
+	i.ok("stored workspace token in %s (0600)", codexTokenFile)
+
+	// Same remove-then-add shape as Claude: `codex mcp add` fails on a name that
+	// already exists, and `remove` fails when nothing is there — so ignore that one.
+	i.agent(true, "mcp", "remove", mcpName)
+	if err := i.agent(false, "mcp", "add", mcpName, "--url", i.mcpURL, "--bearer-token-env-var", codexTokenEnvVar); err != nil {
+		return err
+	}
+	i.ok("registered MCP %q → %s (token via $%s)", mcpName, i.mcpURL, codexTokenEnvVar)
+	return nil
+}
+
+// resolveAgentCLI picks the CLI binary to drive for the kit, honouring the
+// per-agent override flag (--claude-bin / --codex-bin) and its env var.
+func resolveAgentCLI(kit agentKit, c *cli.Command) (string, error) {
+	if kit.name == agentCodex {
+		return resolveKitBin(kit, c.String("codex-bin"), kitBinEnv(kit))
+	}
+	return resolveKitBin(kit, c.String("claude-bin"), kitBinEnv(kit))
+}
+
+// codexTokenPath is where the workspace token is persisted inside CODEX_HOME.
+func (i *Installer) codexTokenPath() string { return filepath.Join(i.targetDir, codexTokenFile) }
+
+// mcpAddHint is the command a user runs to add the MCP later, when they skipped
+// the token prompt. It mirrors exactly what the installer would have run.
+func (i *Installer) mcpAddHint() string {
+	if i.kit.name == agentCodex {
+		return fmt.Sprintf("%s=<token> %s mcp add %s --url %s --bearer-token-env-var %s",
+			codexTokenEnvVar, i.agentBin, mcpName, i.mcpURL, codexTokenEnvVar)
+	}
+	return fmt.Sprintf("%s mcp add --transport http %s %s --header \"Authorization: Bearer <token>\"",
+		i.agentBin, mcpName, i.mcpURL)
+}
+
 // registerMemoryBootstrap installs the always-on operating protocol so the
 // memory-first workflow applies every session without the user typing /am. It
 // writes our owned copy of the embedded protocol as agentsmemory-bootstrap.md and
-// merges a single managed @import line into CLAUDE.md. Claude Code loads
-// $CLAUDE_CONFIG_DIR/CLAUDE.md as user memory, so this applies both in a sandbox
-// (where we own the whole config dir) and in the global ~/.claude (where the merge
-// preserves the user's existing CLAUDE.md and only adds the import line).
+// merges a managed block into the agent's memory file. Both agents load that file
+// as user memory from their config dir, so this applies in a sandbox (where we own
+// the whole dir) and in the global dir (where the merge preserves whatever the
+// user already wrote).
+//
+// What goes in the block differs: Claude Code resolves `@file.md` imports, so it
+// gets a one-line import of the sibling protocol file — edit the file, every
+// session picks it up. Codex has no import directive in AGENTS.md, so the protocol
+// is inlined there instead; the sibling copy is still written, as the file the
+// block is regenerated from on the next install.
 func (i *Installer) registerMemoryBootstrap() error {
 	data, err := assets.ReadFile(bootstrapAsset)
 	if err != nil {
@@ -338,33 +442,40 @@ func (i *Installer) registerMemoryBootstrap() error {
 	}
 	i.ok("memory protocol %s", bootstrapFile)
 
-	// The @import lands in the user's memory file, so it goes through the managed
+	body := memoryImportLine
+	if !i.kit.supportsImport {
+		body = string(data)
+	}
+
+	// The block lands in the user's memory file, so it goes through the managed
 	// idempotent merge (not a blind overwrite). Under dry-run, print the intent —
 	// mirroring registerStopHook, which also can't preview through the merge.
-	claudeMd := filepath.Join(i.targetDir, "CLAUDE.md")
+	memoryPath := filepath.Join(i.targetDir, i.kit.memoryFile)
 	if i.dryRun {
-		fmt.Fprintf(i.out, "  would import %q into %s (managed block)\n", memoryImportLine, claudeMd)
+		fmt.Fprintf(i.out, "  would merge the memory protocol into %s (managed block)\n", memoryPath)
 		return nil
 	}
-	changed, err := ensureMemoryImport(claudeMd, memoryImportLine)
+	changed, err := ensureManagedBlock(memoryPath, body)
 	if err != nil {
 		return err
 	}
 	if changed {
-		i.ok("imported memory protocol into CLAUDE.md")
+		i.ok("merged memory protocol into %s", i.kit.memoryFile)
 	} else {
-		i.ok("CLAUDE.md already imports the memory protocol")
+		i.ok("%s already carries the memory protocol", i.kit.memoryFile)
 	}
 	return nil
 }
 
-// installRecommended installs the companion ecosystem: the codebase-memory MCP
-// (its own installer + registration) and the eidos and codex plugins. Each step
-// is best-effort — one already-installed plugin or a network hiccup should not
-// abort the whole install — so failures are reported, not fatal.
+// installRecommended installs the companion ecosystem. Both agents get the
+// codebase-memory MCP (its own installer + a stdio registration); Claude
+// additionally gets the eidos and codex plugins, which live in Claude plugin
+// marketplaces and have no codex equivalent. Each step is best-effort — one
+// already-installed plugin or a network hiccup should not abort the whole install
+// — so failures are reported, not fatal.
 func (i *Installer) installRecommended() {
 	// Register the stdio MCP only if its binary actually landed: if the upstream
-	// installer failed, pointing the Claude CLI at a missing path would register
+	// installer failed, pointing the agent CLI at a missing path would register
 	// a broken server. (--dry-run still shows the full plan.)
 	shellErr := i.runner.runShell(codebaseMemoryInstall)
 	if shellErr != nil {
@@ -374,8 +485,7 @@ func (i *Installer) installRecommended() {
 	}
 	bin := expandTilde(codebaseMemoryBin)
 	if shellErr == nil || i.dryRun {
-		i.claude(true, "mcp", "remove", "--scope", i.scope, codebaseMemoryName)
-		if err := i.claude(false, "mcp", "add", "--transport", "stdio", "--scope", i.scope, codebaseMemoryName, "--", bin); err != nil {
+		if err := i.addStdioMCP(codebaseMemoryName, bin); err != nil {
 			i.warn("register codebasememory MCP failed: %v", err)
 		} else {
 			i.ok("registered MCP %q → %s", codebaseMemoryName, bin)
@@ -384,14 +494,22 @@ func (i *Installer) installRecommended() {
 		i.warn("skipping codebasememory MCP registration — installer did not complete")
 	}
 
+	if i.kit.name == agentCodex {
+		// eidos and codex are Claude plugin marketplaces; codex has its own
+		// (openai-bundled) and carries no equivalent, so say what is not happening
+		// rather than silently installing less than the flag promises.
+		fmt.Fprintln(i.out, "  note: the eidos and codex plugins are Claude-only — nothing to install for codex")
+		return
+	}
+
 	// Marketplace add is effectively idempotent; ignore its error and let the
 	// install surface any real problem.
 	for _, p := range []struct{ marketplace, plugin string }{
 		{"agenticnotetaking/eidos", "eidos@eidos"},
 		{"openai/codex-plugin-cc", "codex@openai-codex"},
 	} {
-		i.claude(true, "plugin", "marketplace", "add", p.marketplace)
-		if err := i.claude(false, "plugin", "install", p.plugin); err != nil {
+		i.agent(true, "plugin", "marketplace", "add", p.marketplace)
+		if err := i.agent(false, "plugin", "install", p.plugin); err != nil {
 			i.warn("install plugin %s failed: %v", p.plugin, err)
 		} else {
 			i.ok("installed plugin %s", p.plugin)
@@ -399,14 +517,28 @@ func (i *Installer) installRecommended() {
 	}
 }
 
-// claude runs the resolved Claude CLI with CLAUDE_CONFIG_DIR pinned to the target
-// config dir, so MCP/plugin registration lands in the config we are installing
-// into (a sandbox or the global dir) rather than wherever the process happens to
-// point. When ignoreErr is true a failure is swallowed — used for the pre-emptive
-// `mcp remove` and `marketplace add` that legitimately fail when nothing exists.
-func (i *Installer) claude(ignoreErr bool, args ...string) error {
-	env := []string{"CLAUDE_CONFIG_DIR=" + i.targetDir}
-	if err := i.runner.run(i.claudeBin, args, env); err != nil && !ignoreErr {
+// addStdioMCP registers a local stdio MCP server, remove-then-add so a re-run is
+// idempotent. The two CLIs spell it differently: Claude scopes the entry and marks
+// the command with --transport stdio, codex infers stdio from a trailing command
+// and has no scope.
+func (i *Installer) addStdioMCP(name, bin string) error {
+	if i.kit.name == agentCodex {
+		i.agent(true, "mcp", "remove", name)
+		return i.agent(false, "mcp", "add", name, "--", bin)
+	}
+	i.agent(true, "mcp", "remove", "--scope", i.scope, name)
+	return i.agent(false, "mcp", "add", "--transport", "stdio", "--scope", i.scope, name, "--", bin)
+}
+
+// agent runs the resolved agent CLI with its config-dir env var (CLAUDE_CONFIG_DIR
+// or CODEX_HOME) pinned to the target dir, so MCP/plugin registration lands in the
+// config we are installing into (a sandbox or the global dir) rather than wherever
+// the process happens to point. When ignoreErr is true a failure is swallowed —
+// used for the pre-emptive `mcp remove` and `marketplace add` that legitimately
+// fail when nothing exists.
+func (i *Installer) agent(ignoreErr bool, args ...string) error {
+	env := []string{i.kit.configEnv + "=" + i.targetDir}
+	if err := i.runner.run(i.agentBin, args, env); err != nil && !ignoreErr {
 		return err
 	}
 	return nil
@@ -494,10 +626,11 @@ func (i *Installer) resolveToken() string {
 // banner prints the header block describing the install target and mode.
 func (i *Installer) banner() {
 	fmt.Fprintln(i.out, "== agentsmemory installer ==")
+	fmt.Fprintf(i.out, "agent       : %s\n", i.kit.name)
 	fmt.Fprintf(i.out, "mode        : %s\n", i.modeLabel())
 	fmt.Fprintf(i.out, "config dir  : %s\n", i.targetDir)
-	fmt.Fprintf(i.out, "claude CLI  : %s\n", i.claudeBin)
-	fmt.Fprintf(i.out, "extensions  : %s\n", extensionsLabel(i.recommended))
+	fmt.Fprintf(i.out, "agent CLI   : %s\n", i.agentBin)
+	fmt.Fprintf(i.out, "extensions  : %s\n", i.extensionsLabel())
 	if i.dryRun {
 		fmt.Fprintln(i.out, "dry-run     : no files written, no commands run")
 	}
@@ -508,30 +641,58 @@ func (i *Installer) modeLabel() string {
 	if i.sandboxName != "" {
 		return "isolated sandbox " + i.sandboxName
 	}
-	return "global (wrap your existing Claude)"
+	return fmt.Sprintf("global (wrap your existing %s)", i.kit.name)
+}
+
+// commandLabel renders how an installed command file is invoked in this agent —
+// "/M" on Claude, "/prompts:M" on codex, since codex namespaces prompt files.
+func (i *Installer) commandLabel(assetName string) string {
+	return strings.Replace(i.kit.commandHint, "M", strings.TrimSuffix(assetName, ".md"), 1)
 }
 
 // extensionsLabel describes whether the recommended extensions are included.
-func extensionsLabel(recommended bool) string {
-	if recommended {
-		return "core + recommended (codebase-memory, eidos, codex)"
+func (i *Installer) extensionsLabel() string {
+	if i.recommended {
+		return "core + recommended (" + extensionsList(i.kit) + ")"
 	}
 	return "core only"
+}
+
+// extensionsList names the companion extensions --recommended installs for the
+// kit. The eidos and codex plugins live in Claude plugin marketplaces, so a codex
+// install gets the codebase-memory MCP only.
+func extensionsList(kit agentKit) string {
+	if kit.name == agentCodex {
+		return "codebase-memory"
+	}
+	return "codebase-memory, eidos, codex"
 }
 
 func (i *Installer) step(title string)       { fmt.Fprintf(i.out, "\n> %s\n", title) }
 func (i *Installer) ok(f string, a ...any)   { fmt.Fprintf(i.out, "  [ok] "+f+"\n", a...) }
 func (i *Installer) warn(f string, a ...any) { fmt.Fprintf(i.out, "  [!!] "+f+"\n", a...) }
 
-// summary prints the closing next-steps block, tailored to the install mode.
+// summary prints the closing next-steps block, tailored to the agent and the
+// install mode. The codex lines carry two things Claude does not need: the hook
+// trust review codex requires before a non-managed hook runs, and the token env
+// var, which codex reads from its environment rather than from its config.
 func (i *Installer) summary() {
 	fmt.Fprintln(i.out)
 	fmt.Fprintln(i.out, "Next steps:")
 	if i.sandboxName != "" {
-		fmt.Fprintf(i.out, "  - launch Claude in this sandbox:  aiagentmemory run %s\n", i.sandboxName)
+		fmt.Fprintf(i.out, "  - launch it in this sandbox:  aiagentmemory run --agent %s %s\n", i.kit.name, i.sandboxName)
 	} else {
-		fmt.Fprintln(i.out, "  - restart Claude Code (or /reload) to pick up the new commands + hook")
+		fmt.Fprintf(i.out, "  - restart %s to pick up the new commands + hook\n", i.kit.name)
 	}
-	fmt.Fprintln(i.out, "  - the memory protocol auto-loads every session via CLAUDE.md — no need to type /am")
-	fmt.Fprintln(i.out, "  - run /M or /am with a task to run the full grounding sequence on demand")
+	fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session via %s — no need to type %s\n",
+		i.kit.memoryFile, i.commandLabel("am.md"))
+	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
+		i.commandLabel("M.md"), i.commandLabel("am.md"))
+
+	if i.kit.name != agentCodex {
+		return
+	}
+	fmt.Fprintln(i.out, "  - codex skips untrusted hooks: open /hooks in codex and trust the agentsmemory Stop hook")
+	fmt.Fprintf(i.out, "  - launching plain `codex`? export the token first, e.g. add to your shell rc:\n")
+	fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.codexTokenPath())
 }

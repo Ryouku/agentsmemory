@@ -27,7 +27,7 @@ func TestPlanRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan, err := planRun(tc.arg, tc.sandboxExists)
+			plan, err := planRun(claudeKit, tc.arg, tc.sandboxExists)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("planRun(%q, %v) = %+v, want an error", tc.arg, tc.sandboxExists, plan)
@@ -51,7 +51,7 @@ func TestResolveAgentBin(t *testing.T) {
 	t.Setenv("AIAGENTMEMORY_CLAUDE_BIN", "my-claude")
 
 	for _, name := range []string{"", "claude"} {
-		got, err := resolveAgentBin(name)
+		got, err := resolveAgentBin(claudeKit, name)
 		if err != nil {
 			t.Fatalf("resolveAgentBin(%q): %v", name, err)
 		}
@@ -60,7 +60,7 @@ func TestResolveAgentBin(t *testing.T) {
 		}
 	}
 
-	got, err := resolveAgentBin("codex")
+	got, err := resolveAgentBin(claudeKit, "codex")
 	if err != nil {
 		t.Fatalf("resolveAgentBin(codex): %v", err)
 	}
