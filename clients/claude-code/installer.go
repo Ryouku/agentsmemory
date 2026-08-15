@@ -149,6 +149,7 @@ type Installer struct {
 	mcpURL         string        // agentsmemory remote MCP endpoint
 	scope          string        // Claude MCP/plugin scope (user|local|project)
 	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
+	copyGlobal     bool          // seed the target from the agent's global config dir
 	recommended    bool          // also install codebase-memory + eidos + codex
 	yes            bool          // non-interactive: never prompt
 	dryRun         bool          // print instead of doing
@@ -236,6 +237,7 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		mcpURL:         c.String("mcp-url"),
 		scope:          c.String("scope"),
 		token:          c.String("token"),
+		copyGlobal:     c.Bool("copy"),
 		recommended:    c.Bool("recommended"),
 		yes:            c.Bool("yes"),
 		dryRun:         dryRun,
@@ -254,6 +256,12 @@ func (i *Installer) run() error {
 	// subsequent step reflect the chosen target. No-op unless we're interactive.
 	i.promptInstallMode()
 	i.banner()
+
+	// Seeding runs before anything of ours is written, so the kit's own files
+	// (which the copy never overwrites) land on top of the inherited config.
+	if err := i.seedFromGlobal(); err != nil {
+		return err
+	}
 
 	i.step("1/4  commands, memory protocol, Stop hook")
 	if err := i.writeAssets(); err != nil {
@@ -288,6 +296,67 @@ func (i *Installer) run() error {
 	i.step("4/4  done")
 	i.summary()
 	return nil
+}
+
+// seedFromGlobal copies the agent's existing global configuration into the
+// target dir before the kit is installed, so a fresh sandbox inherits the things
+// that are painful to recreate: the provider logins in auth.json, the MCP servers
+// and plugins already registered, custom skills, themes and settings.
+//
+// Only configuration travels. Conversation history, logs, caches and extracted
+// binaries are excluded (see skipCopy) — a global ~/.codex runs to hundreds of
+// megabytes, nearly all of it per-machine runtime state that a new sandbox is
+// better off without.
+//
+// Nothing already in the target is overwritten, so this is safe to re-run: the
+// copy fills gaps, the install then writes the kit on top.
+func (i *Installer) seedFromGlobal() error {
+	if !i.copyGlobal {
+		return nil
+	}
+	src := i.kit.globalConfigDir(homeDir())
+	// Copying the global dir onto itself would be a no-op at best; more likely the
+	// user meant --sandbox and would otherwise get a silent nothing.
+	if sameDir(src, i.targetDir) {
+		return fmt.Errorf("--copy needs a target other than the global config dir: pass --sandbox <name> or --config-dir <dir>")
+	}
+	if _, err := os.Stat(src); err != nil {
+		i.warn("--copy: no global %s config at %s — nothing to inherit", i.kit.name, src)
+		return nil
+	}
+
+	i.step("0/4  inherit the global " + i.kit.name + " config")
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would copy %s → %s (config, credentials, plugins and skills; no history, logs or caches)\n", src, i.targetDir)
+		return nil
+	}
+	stats, err := copyConfigTree(src, i.targetDir)
+	if err != nil {
+		// A partial copy is still useful, and the install that follows is what the
+		// user actually asked for — report and carry on rather than abort.
+		i.warn("--copy: %v (copied %d files before stopping)", err, stats.Files)
+		return nil
+	}
+	i.ok("copied %d files (%s) from %s", stats.Files, humanBytes(stats.Bytes), src)
+	if stats.Skipped > 0 {
+		i.ok("kept %d file(s) already in the target untouched", stats.Skipped)
+	}
+	fmt.Fprintln(i.out, "  note: credentials came too — this config can act as you until you sign it out")
+	return nil
+}
+
+// sameDir reports whether two paths name the same directory, resolving symlinks
+// so ~/.claude and a symlinked twin are not treated as different targets.
+func sameDir(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		ra = filepath.Clean(a)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		rb = filepath.Clean(b)
+	}
+	return ra == rb
 }
 
 // writeAssets writes the embedded slash commands and the Stop hook into the
@@ -409,15 +478,12 @@ func (i *Installer) registerStopHook() error {
 		return nil
 	}
 	hookCmd := "bash " + i.hookPath()
-	// Supersede the pre-relocation registration: the script it names has just
-	// been deleted, so leaving it would run a missing file on every stop.
-	obsolete := "bash " + i.legacyHookPath()
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	if i.dryRun {
 		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
 		return nil
 	}
-	changed, err := ensureStopHook(hooksFile, hookCmd, obsolete)
+	changed, err := ensureStopHook(hooksFile, hookCmd, foreignHookPredicate(hookCmd))
 	if err != nil {
 		return err
 	}
@@ -427,6 +493,18 @@ func (i *Installer) registerStopHook() error {
 		i.ok("Stop hook already registered")
 	}
 	return nil
+}
+
+// foreignHookPredicate matches any Stop registration of our hook script that is
+// not the one this install is writing. Two of those turn up: the pre-relocation
+// entry under hooks/ (whose script the install has just deleted), and an entry
+// inherited by --copy from another config dir (whose script still exists, so the
+// checkpoint would fire twice every stop). Both are ours to retire; a hook the
+// user wrote never matches, because the match is on our own filename.
+func foreignHookPredicate(keep string) func(string) bool {
+	return func(cmd string) bool {
+		return cmd != keep && strings.Contains(cmd, hookFile)
+	}
 }
 
 // registerAgentsMemoryMCP wires up the agentsmemory remote MCP. It resolves the

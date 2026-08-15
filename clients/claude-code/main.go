@@ -94,6 +94,11 @@ func installCommand() *cli.Command {
 				Usage:   "override the target agent config dir (ignored when --sandbox is set)",
 			},
 			&cli.BoolFlag{
+				Name: "copy",
+				Usage: "seed the sandbox from the agent's global config: logins, MCP servers, plugins, skills and settings " +
+					"(no history, logs or caches). Requires --sandbox or --config-dir",
+			},
+			&cli.BoolFlag{
 				Name:  "recommended",
 				Usage: "also install the recommended extensions: codebase-memory MCP, eidos + codex plugins",
 			},

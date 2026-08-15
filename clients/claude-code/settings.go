@@ -15,15 +15,16 @@ import (
 // up (timestamped) before writing, and never adds a duplicate entry for the same
 // command. It returns true if it changed the file.
 //
-// obsoleteCmd, when non-empty, names a command this install supersedes: any Stop
-// entry running it is dropped in the same read-modify-write. That is what keeps a
-// relocated hook script from leaving a second entry behind, pointing at a file the
-// install just deleted — which would fail on every stop rather than fail loudly
-// once.
+// isObsolete, when non-nil, marks commands this install supersedes: any Stop
+// entry running one is dropped in the same read-modify-write. Two cases need it,
+// both of which would otherwise leave a second entry behind — a relocated hook
+// script (the old entry then runs a deleted file), and a settings.json copied in
+// from another config dir with --copy (the old entry runs *that* dir's script, so
+// the hook fires twice per stop).
 //
 // This is the Go replacement for the jq block in the old install.sh — same
 // behaviour and same on-disk shape, with no external jq dependency.
-func ensureStopHook(path, hookCmd, obsoleteCmd string) (bool, error) {
+func ensureStopHook(path, hookCmd string, isObsolete func(cmd string) bool) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -47,7 +48,7 @@ func ensureStopHook(path, hookCmd, obsoleteCmd string) (bool, error) {
 		return false, err
 	}
 
-	pruned, dropped := dropStopHook(stop, obsoleteCmd)
+	pruned, dropped := dropStopHook(stop, isObsolete)
 	if stopHookPresent(pruned, hookCmd) && !dropped {
 		return false, nil
 	}
@@ -113,13 +114,13 @@ func childArray(m map[string]any, key string) ([]any, error) {
 	}
 }
 
-// dropStopHook returns stop without any entry that runs cmd, and reports whether
-// anything was removed. An entry that carries other hooks alongside cmd keeps
-// those: only the matching hook is taken out, so a user who added their own
-// command next to ours does not lose it. An empty cmd is a no-op, which is what
-// callers with nothing to supersede pass.
-func dropStopHook(stop []any, cmd string) ([]any, bool) {
-	if cmd == "" {
+// dropStopHook returns stop without any hook whose command isObsolete matches,
+// and reports whether anything was removed. An entry carrying other hooks
+// alongside the matched one keeps those: only the matching hook is taken out, so
+// a user's own command sitting beside ours survives. A nil predicate is a no-op,
+// which is what callers with nothing to supersede pass.
+func dropStopHook(stop []any, isObsolete func(string) bool) ([]any, bool) {
+	if isObsolete == nil {
 		return stop, false
 	}
 	out := make([]any, 0, len(stop))
@@ -138,7 +139,7 @@ func dropStopHook(stop []any, cmd string) ([]any, bool) {
 		kept := make([]any, 0, len(inner))
 		for _, h := range inner {
 			if hm, ok := h.(map[string]any); ok {
-				if c, _ := hm["command"].(string); c == cmd {
+				if c, _ := hm["command"].(string); isObsolete(c) {
 					dropped = true
 					continue
 				}

@@ -348,6 +348,21 @@ Two things codex needs that Claude does not, both printed by the installer:
 rc. A codex sandbox is a whole `CODEX_HOME`, so it also needs its own login:
 `CODEX_HOME=~/.sandboxes/acme codex login`.
 
+### Inheriting your global setup (`--copy`)
+
+A new sandbox starts signed out, with no MCP servers, plugins or skills. `--copy`
+seeds it from that agent's global config dir first:
+
+```bash
+aiagentmemory install --agent pi --sandbox acme --copy
+```
+
+Credentials, settings, `.claude.json` (Claude's MCP servers), plugins, skills,
+extensions and prompts travel; conversation history, logs, `*.sqlite*` stores and
+caches stay behind. Existing files in the target are never overwritten, modes are
+preserved (`auth.json` stays `0600`) — and note the consequence: **the sandbox can
+act as you** until you sign it out.
+
 ### pi (`--agent pi`)
 
 pi looks like codex — `prompts/` for commands, `AGENTS.md` for memory — except
