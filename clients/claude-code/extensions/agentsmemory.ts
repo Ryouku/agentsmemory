@@ -63,11 +63,16 @@ type McpTool = {
  */
 class McpClient {
   private sessionId?: string;
+  private readonly url: string;
+  private readonly token: string;
 
-  constructor(
-    private readonly url: string,
-    private readonly token: string,
-  ) {}
+  // Plain assignments rather than TypeScript parameter properties: pi loads this
+  // file through jiti, but a strip-only TS loader (node --experimental-strip-types,
+  // and anything else that erases types without transforming) rejects that sugar.
+  constructor(url: string, token: string) {
+    this.url = url;
+    this.token = token;
+  }
 
   /** initialize performs the MCP handshake and returns the server's tool list. */
   async initialize(): Promise<McpTool[]> {
