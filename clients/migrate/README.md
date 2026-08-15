@@ -32,9 +32,12 @@ sent over the wire.
 
 ## Prerequisites
 
-- **Python 3** on the machine that has your mempalace.
-- The **`mempalace` package importable** there (your existing install). If it
-  isn't on `sys.path`, pass `--mempalace-path /path/to/mempalace`.
+- **Python 3** on the machine that has your mempalace. Nothing else: the export
+  reads the palace's own `source_of_truth.sqlite`, so it needs no `mempalace`
+  install, no vector store and no network.
+- The **`mempalace` package** is only needed as a *fallback*, for a palace with
+  no local sqlite (pass `--mempalace-path /path/to/mempalace`, or force it with
+  `--via-package`).
 - Your **server URL** (e.g. `https://memory.example.com`) and a **project API
   key**. Create a project in the dashboard and **Reveal** its key, or copy the
   one printed in the server log on first boot.
@@ -104,8 +107,62 @@ finishes the rest rather than duplicating.
 | `--palace DIR` | your configured palace | Palace directory to export. |
 | `--kg-db PATH` | `~/.mempalace/knowledge_graph.sqlite3` | Knowledge-graph sqlite to export. |
 | `--mempalace-path DIR` | — | Where the `mempalace` package lives, if not already importable. |
+| `--wing NAME` | — | Export only this wing. Repeatable. |
+| `--list-wings` | — | Print the wings and their drawer counts, then exit. |
+| `--with-kg` | off | With `--wing`, also export knowledge-graph facts (see below). |
+| `--source-db PATH` | `<palace>/source_of_truth.sqlite` | The palace sqlite to read. |
+| `--via-package` | off | Read through the `mempalace` package instead of the sqlite. |
 
 Pass `--out` and `--push` together to keep a local copy *and* upload it.
+
+---
+
+## Exporting one wing
+
+Migrating a single project into a single workspace, rather than everything you
+have ever filed:
+
+```bash
+python mempalace_export.py --list-wings
+#   vvs-convos                       24068 drawers
+#   wing_forumchat                   4990 drawers
+#   wing_agentmemories               595 drawers
+
+python mempalace_export.py --wing wing_agentmemories --out one-wing.ndjson
+python mempalace_export.py --wing wing_agentmemories --push \
+  --server https://memory.example.com --token sk_live_xxx
+```
+
+`--wing` is repeatable (`--wing a --wing b`). Three things it does that a
+hand-rolled `jq` filter over a full bundle would get wrong:
+
+- **Tunnels need both endpoints.** The importer applies tunnels last and requires
+  each endpoint room to hold a drawer, so a tunnel leaving your selection would
+  fail on import. Those are dropped; a tunnel between two exported wings is kept.
+- **The manifest counts the filtered bundle**, not the palace, so the progress
+  total is the truth.
+- **A mistyped wing fails immediately**, listing the wings that exist, instead of
+  writing an empty bundle that looks like a successful migration.
+
+**Knowledge-graph facts carry no wing** — they are palace-global triples. With
+`--wing` they are therefore *excluded* by default: exporting one project should
+not sweep every other project's facts into that workspace. Pass `--with-kg` to
+include the whole graph anyway.
+
+---
+
+## Why it reads sqlite, not the vector store
+
+A palace keeps its durable copy of every drawer in `source_of_truth.sqlite` —
+wing, room, text and metadata, plus an embedding column the export ignores. The
+vector store (chroma, or a remote **qdrant**) is an *index* over that table.
+
+Going through the `mempalace` package would mean querying that index for data it
+merely points at: pointless locally, and slow-to-unusable when the backend is a
+remote qdrant. Reading the sqlite directly is what makes `--list-wings` an
+indexed `GROUP BY` (~0.1 s on a 33k-drawer palace) and a full export a single
+table scan (~1.3 s), entirely offline. The bundle carries **text only** either
+way — the server re-embeds with its own model.
 
 ---
 
