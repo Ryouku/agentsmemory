@@ -26,6 +26,9 @@ Two modes (combinable):
     python mempalace_export.py --push \\
         --server https://memory.example.com --token sk_live_xxx
 
+Pass ``--wing NAME`` (repeatable) to export only part of a palace — one project
+into one workspace, rather than everything you have ever filed.
+
 Run it where the ``mempalace`` package is importable (your existing install), or
 pass ``--mempalace-path /path/to/mempalace-frozen`` to point at it.
 """
@@ -103,15 +106,17 @@ def _iter_collection(col, batch=1000):
         offset += len(ids)
 
 
-def iter_drawers(get_collection, palace_path):
+def iter_drawers(get_collection, palace_path, wings=None):
     """Yield drawer records (diary entries included — they are just drawers with
-    a room and an agent/topic)."""
+    a room and an agent/topic). ``wings``, when given, keeps only those wings."""
     col = _open_collection(get_collection, palace_path)
     if col is None:
         print("  warning: could not open the drawer collection — skipping drawers", file=sys.stderr)
         return
     for _id, doc, meta in _iter_collection(col):
         if not doc:
+            continue
+        if wings is not None and meta.get("wing", "") not in wings:
             continue
         yield {
             "kind": "drawer",
@@ -130,13 +135,15 @@ def iter_drawers(get_collection, palace_path):
         }
 
 
-def iter_closets(get_closets_collection, palace_path):
-    """Yield closet pointer-index records."""
+def iter_closets(get_closets_collection, palace_path, wings=None):
+    """Yield closet pointer-index records, optionally limited to ``wings``."""
     col = _open_collection(get_closets_collection, palace_path)
     if col is None:
         return
     for _id, doc, meta in _iter_collection(col):
         if not doc:
+            continue
+        if wings is not None and meta.get("wing", "") not in wings:
             continue
         yield {
             "kind": "closet",
@@ -188,9 +195,15 @@ def iter_kg(kg_db):
         }
 
 
-def iter_tunnels(list_tunnels):
+def iter_tunnels(list_tunnels, wings=None):
     """Yield explicit (user-authored) cross-wing tunnels. Entity/topic tunnels are
-    derived state the SaaS regenerates after import, so they are not exported."""
+    derived state the SaaS regenerates after import, so they are not exported.
+
+    With ``wings`` set, BOTH endpoints must be inside the selection: the importer
+    defers tunnels until every drawer is in place and then validates that each
+    endpoint room actually holds one, so a tunnel leaving the exported wings would
+    fail there. Dropping it here is the difference between a clean import and an
+    error the user has to interpret."""
     try:
         tunnels = list_tunnels()
     except Exception:
@@ -202,6 +215,8 @@ def iter_tunnels(list_tunnels):
         tgt = t.get("target") or {}
         if not src.get("wing") or not tgt.get("wing"):
             continue
+        if wings is not None and (src["wing"] not in wings or tgt["wing"] not in wings):
+            continue
         yield {
             "kind": "tunnel",
             "source_wing": src.get("wing", ""),
@@ -212,21 +227,35 @@ def iter_tunnels(list_tunnels):
         }
 
 
-def _counts(get_collection, get_closets_collection, list_tunnels, palace_path, kg_db):
-    """Cheap up-front totals for the manifest, so the importer can show a real
-    progress bar. Each count is best-effort and defaults to 0."""
+def _counts(get_collection, get_closets_collection, list_tunnels, palace_path, kg_db,
+            wings=None, with_kg=True, drawer_counts=None):
+    """Up-front totals for the manifest, so the importer can show a real progress
+    bar. Each count is best-effort and defaults to 0.
+
+    Unfiltered, the collections answer with a cheap count(). With ``wings`` set
+    that count is the wrong number, so the collections are walked and matched
+    instead — one extra read-only pass, which is the price of a manifest that
+    describes the bundle actually being sent."""
     total = 0
-    try:
-        col = _open_collection(get_collection, palace_path)
-        total += col.count() if col else 0
-    except Exception:
-        pass
+    if wings is not None and drawer_counts is not None:
+        # The caller already surveyed the palace (to validate --wing), so the
+        # per-wing drawer counts are known: reuse them rather than walking a
+        # 30k-drawer collection a second time for the same answer.
+        total += sum(drawer_counts.get(w, 0) for w in wings)
+    else:
+        try:
+            col = _open_collection(get_collection, palace_path)
+            if col is not None:
+                total += col.count() if wings is None else _count_matching(col, wings)
+        except Exception:
+            pass
     try:
         cc = _open_collection(get_closets_collection, palace_path)
-        total += cc.count() if cc else 0
+        if cc is not None:
+            total += cc.count() if wings is None else _count_matching(cc, wings)
     except Exception:
         pass
-    if kg_db and os.path.isfile(kg_db):
+    if with_kg and kg_db and os.path.isfile(kg_db):
         try:
             conn = sqlite3.connect("file:%s?mode=ro" % kg_db, uri=True)
             total += conn.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
@@ -234,21 +263,52 @@ def _counts(get_collection, get_closets_collection, list_tunnels, palace_path, k
         except Exception:
             pass
     try:
-        total += sum(1 for t in (list_tunnels() or []) if t.get("kind", "explicit") == "explicit")
+        total += sum(1 for _ in iter_tunnels(list_tunnels, wings))
     except Exception:
         pass
     return total
 
 
-def records(mp, palace_path, kg_db):
+def _count_matching(col, wings):
+    """Count the records in a collection whose wing is in ``wings``."""
+    return sum(1 for _id, doc, meta in _iter_collection(col) if doc and meta.get("wing", "") in wings)
+
+
+def survey_wings(get_collection, palace_path):
+    """Return {wing: drawer count} for every wing that holds drawers.
+
+    Serves two jobs: --list-wings prints it, and --wing is checked against it, so
+    a mistyped name fails here instead of exporting a bundle of nothing that looks
+    like a successful migration."""
+    col = _open_collection(get_collection, palace_path)
+    counts = {}
+    if col is None:
+        return counts
+    for _id, doc, meta in _iter_collection(col):
+        if not doc:
+            continue
+        wing = meta.get("wing", "")
+        counts[wing] = counts.get(wing, 0) + 1
+    return counts
+
+
+def records(mp, palace_path, kg_db, wings=None, with_kg=True, drawer_counts=None):
     """The full export stream: a manifest line, then every record kind in the
-    order the importer needs (drawers first so tunnel endpoints exist)."""
-    total = _counts(mp.get_collection, mp.get_closets_collection, mp.list_tunnels, palace_path, kg_db)
+    order the importer needs (drawers first so tunnel endpoints exist).
+
+    ``wings`` limits drawers, closets and tunnels to a selection. Knowledge-graph
+    facts carry no wing — they are palace-global triples — so they are governed by
+    ``with_kg`` instead: excluded by default alongside a wing filter, because
+    "export this one project" should not sweep every other project's facts into
+    that workspace."""
+    total = _counts(mp.get_collection, mp.get_closets_collection, mp.list_tunnels,
+                    palace_path, kg_db, wings, with_kg, drawer_counts)
     yield {"kind": "manifest", "total": total, "source": "mempalace"}
-    yield from iter_drawers(mp.get_collection, palace_path)
-    yield from iter_closets(mp.get_closets_collection, palace_path)
-    yield from iter_kg(kg_db)
-    yield from iter_tunnels(mp.list_tunnels)
+    yield from iter_drawers(mp.get_collection, palace_path, wings)
+    yield from iter_closets(mp.get_closets_collection, palace_path, wings)
+    if with_kg:
+        yield from iter_kg(kg_db)
+    yield from iter_tunnels(mp.list_tunnels, wings)
 
 
 class _Mempalace:
@@ -262,6 +322,178 @@ class _Mempalace:
         self.get_collection = get_collection
         self.get_closets_collection = get_closets_collection
         self.list_tunnels = list_tunnels
+
+
+# --------------------------------------------------------------------------
+# Local source of truth
+#
+# A palace keeps its durable copy of every drawer in source_of_truth.sqlite —
+# wing, room, document text and metadata, with the embedding vector in a column
+# we do not read. The vector store (chroma, or a remote qdrant) is an INDEX over
+# that table, so exporting through the mempalace package means talking to a
+# service we have no use for: an export needs text, never vectors, and a remote
+# qdrant turns `--list-wings` into a network round trip per page.
+#
+# Reading the sqlite directly makes the export local, offline and fast — a wing
+# survey becomes one indexed GROUP BY (idx_drawers_coll_wing_room) instead of a
+# full walk of the collection.
+# --------------------------------------------------------------------------
+
+# Collection names are prefixed per palace (mempalace_<hash>_mempalace_drawers),
+# so the tables are matched by suffix rather than by full name.
+DRAWER_COLLECTION_SUFFIX = "mempalace_drawers"
+CLOSET_COLLECTION_SUFFIX = "mempalace_closets"
+
+
+def _locate_palace_file(name, palace_path):
+    """Find a palace-level file, searching the layouts mempalace actually uses.
+
+    ``palace_path`` points at the vector-store directory (e.g. ~/.mempalace/palace),
+    but the durable sqlite, tunnels.json and config.json sit one level up in the
+    mempalace home. Checking the parent — and the conventional ~/.mempalace last —
+    is what keeps this working across both layouts instead of silently falling back
+    to the slow path when the file was there all along."""
+    seen = []
+    for base in (palace_path, os.path.dirname(palace_path.rstrip(os.sep)),
+                 os.path.expanduser("~/.mempalace")):
+        if not base or base in seen:
+            continue
+        seen.append(base)
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(palace_path, name)  # non-existent: callers report it
+
+
+def _sqlite_ro(db):
+    """Open a database read-only, so an export can never modify a live palace."""
+    return sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+
+
+def _sqlite_records(db, suffix, wings):
+    """Yield (wing, room, document, metadata) for one collection, wings-filtered.
+
+    The wing filter runs in SQL rather than in Python: the table is indexed on
+    (collection, wing, room), so a single-wing export of a 33k-drawer palace reads
+    only the rows it will emit."""
+    sql = ("SELECT wing, room, document, metadata_json FROM drawers "
+           "WHERE collection LIKE ?")
+    params = ["%" + suffix]
+    if wings:
+        sql += " AND wing IN (%s)" % ",".join("?" for _ in wings)
+        params.extend(sorted(wings))
+    conn = _sqlite_ro(db)
+    try:
+        for wing, room, document, meta_json in conn.execute(sql, params):
+            if not document:
+                continue
+            try:
+                meta = json.loads(meta_json) if meta_json else {}
+            except ValueError:
+                meta = {}
+            yield wing or meta.get("wing", ""), room or meta.get("room", "general"), document, meta
+    finally:
+        conn.close()
+
+
+def iter_drawers_sqlite(db, wings=None):
+    """Yield drawer records straight from the local sqlite."""
+    for wing, room, document, meta in _sqlite_records(db, DRAWER_COLLECTION_SUFFIX, wings):
+        yield {
+            "kind": "drawer",
+            "wing": wing,
+            "room": room,
+            "source_file": meta.get("source_file", ""),
+            "chunk_index": int(meta.get("chunk_index", 0) or 0),
+            "content": document,
+            "entities": _as_entities(meta.get("entities")),
+            "filed_at": meta.get("filed_at", ""),
+            "content_date": meta.get("content_date", ""),
+            "agent": meta.get("agent", meta.get("added_by", "")),
+            "topic": meta.get("topic", ""),
+        }
+
+
+def iter_closets_sqlite(db, wings=None):
+    """Yield closet records straight from the local sqlite."""
+    for wing, room, document, meta in _sqlite_records(db, CLOSET_COLLECTION_SUFFIX, wings):
+        yield {
+            "kind": "closet",
+            "wing": wing,
+            "room": room,
+            "source_file": meta.get("source_file", ""),
+            "document": document,
+            "entities": _as_entities(meta.get("entities")),
+            "filed_at": meta.get("filed_at", ""),
+        }
+
+
+def survey_wings_sqlite(db):
+    """Return {wing: drawer count} with one indexed GROUP BY."""
+    conn = _sqlite_ro(db)
+    try:
+        rows = conn.execute(
+            "SELECT wing, COUNT(*) FROM drawers WHERE collection LIKE ? GROUP BY wing",
+            ["%" + DRAWER_COLLECTION_SUFFIX],
+        ).fetchall()
+    finally:
+        conn.close()
+    return {wing or "": n for wing, n in rows}
+
+
+def count_sqlite(db, suffix, wings):
+    """Count the rows one collection would contribute to the bundle."""
+    sql = "SELECT COUNT(*) FROM drawers WHERE collection LIKE ?"
+    params = ["%" + suffix]
+    if wings:
+        sql += " AND wing IN (%s)" % ",".join("?" for _ in wings)
+        params.extend(sorted(wings))
+    conn = _sqlite_ro(db)
+    try:
+        return conn.execute(sql, params).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def load_tunnels_json(path):
+    """Read explicit tunnels from the palace's tunnels.json.
+
+    Returns a callable so it plugs into iter_tunnels unchanged — the JSON records
+    already carry the kind/source/target shape the package's list_tunnels()
+    returns."""
+    def _list():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            return []
+        return data if isinstance(data, list) else []
+    return _list
+
+
+def records_sqlite(db, kg_db, tunnels_path, wings=None, with_kg=True):
+    """The export stream, read entirely from local files.
+
+    Same records, same order, same manifest contract as records(); only the
+    source differs."""
+    total = count_sqlite(db, DRAWER_COLLECTION_SUFFIX, wings)
+    total += count_sqlite(db, CLOSET_COLLECTION_SUFFIX, wings)
+    list_tunnels = load_tunnels_json(tunnels_path)
+    total += sum(1 for _ in iter_tunnels(list_tunnels, wings))
+    if with_kg and kg_db and os.path.isfile(kg_db):
+        try:
+            conn = _sqlite_ro(kg_db)
+            total += conn.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+            conn.close()
+        except Exception:
+            pass
+
+    yield {"kind": "manifest", "total": total, "source": "mempalace"}
+    yield from iter_drawers_sqlite(db, wings)
+    yield from iter_closets_sqlite(db, wings)
+    if with_kg:
+        yield from iter_kg(kg_db)
+    yield from iter_tunnels(list_tunnels, wings)
 
 
 def _default_palace_path():
@@ -460,6 +692,12 @@ def main(argv=None):
         description="Export a local mempalace and migrate it into the agentsmemory SaaS.",
     )
     ap.add_argument("--palace", default=None, help="Palace directory (default: your configured palace).")
+    ap.add_argument("--source-db", default=None,
+                    help="Palace source_of_truth.sqlite (default: <palace>/source_of_truth.sqlite). "
+                         "Read directly, so the export needs no vector store and no network.")
+    ap.add_argument("--via-package", action="store_true",
+                    help="Read through the mempalace package instead of the local sqlite "
+                         "(slower, and hits a remote vector store if the palace uses one).")
     ap.add_argument("--kg-db", default=None, help="Knowledge-graph sqlite path (default: ~/.mempalace/knowledge_graph.sqlite3).")
     ap.add_argument("--mempalace-path", default=None, help="Path to the mempalace package if it is not already importable.")
     ap.add_argument("--file", default=None, help="Push a previously exported NDJSON bundle (skips reading a palace).")
@@ -469,12 +707,21 @@ def main(argv=None):
     ap.add_argument("--token", default=os.environ.get("AGENTSMEMORY_TOKEN"), help="Project API token / Bearer (or set AGENTSMEMORY_TOKEN).")
     ap.add_argument("--batch", type=int, default=DEFAULT_BATCH,
                     help="Records per /import request (default %d). Lower it if a batch times out behind a proxy." % DEFAULT_BATCH)
+    ap.add_argument("--wing", action="append", default=None, metavar="NAME",
+                    help="Export only this wing (repeatable). Default: the whole palace.")
+    ap.add_argument("--with-kg", action="store_true",
+                    help="With --wing, also export knowledge-graph facts. They carry no wing, "
+                         "so this exports the WHOLE graph — every project's facts, not just this wing's.")
+    ap.add_argument("--list-wings", action="store_true",
+                    help="Print the wings that hold drawers, with their record counts, and exit.")
     args = ap.parse_args(argv)
     if args.batch < 1:
         ap.error("--batch must be >= 1")
 
-    if not args.out and not args.push:
-        ap.error("nothing to do: pass --out FILE and/or --push")
+    if args.with_kg and not args.wing:
+        ap.error("--with-kg only means something with --wing; a full export already includes the graph")
+    if not args.out and not args.push and not args.list_wings:
+        ap.error("nothing to do: pass --out FILE and/or --push (or --list-wings)")
     if args.push and (not args.server or not args.token):
         ap.error("--push requires --server and --token (or AGENTSMEMORY_TOKEN)")
 
@@ -490,27 +737,74 @@ def main(argv=None):
     if args.mempalace_path:
         sys.path.insert(0, os.path.abspath(os.path.expanduser(args.mempalace_path)))
 
-    try:
-        mp = _Mempalace()
-    except Exception as exc:
-        raise SystemExit(
-            "  could not import the mempalace package (%s).\n"
-            "  Run this where mempalace is installed, or pass --mempalace-path." % exc
-        )
-
     palace_path = os.path.abspath(os.path.expanduser(args.palace)) if args.palace else _default_palace_path()
     kg_db = os.path.abspath(os.path.expanduser(args.kg_db)) if args.kg_db else _default_kg_db()
+    source_db = (os.path.abspath(os.path.expanduser(args.source_db)) if args.source_db
+                 else _locate_palace_file("source_of_truth.sqlite", palace_path))
+
+    # Prefer the palace's own sqlite: it holds every drawer's text and metadata,
+    # needs no mempalace install, and — unlike the collection API — never reaches
+    # for a vector store the export has no use for.
+    use_sqlite = not args.via_package and os.path.isfile(source_db)
+    mp = None
+    if not use_sqlite:
+        try:
+            mp = _Mempalace()
+        except Exception as exc:
+            raise SystemExit(
+                "  no source_of_truth.sqlite at %s, and the mempalace package is not importable (%s).\n"
+                "  Pass --source-db, or run this where mempalace is installed (--mempalace-path)." % (source_db, exc)
+            )
+
+    tunnels_path = _locate_palace_file("tunnels.json", palace_path)
     print("  palace: %s" % palace_path)
+    print("  source: %s" % (source_db if use_sqlite else "mempalace package (vector store)"))
     print("  kg db:  %s" % (kg_db if os.path.isfile(kg_db) else "(none)"))
+
+    if args.list_wings:
+        counts = survey_wings_sqlite(source_db) if use_sqlite else survey_wings(mp.get_collection, palace_path)
+        for wing in sorted(counts, key=lambda w: (-counts[w], w)):
+            print("  %-32s %d drawers" % (wing or "(no wing)", counts[wing]))
+        return
+
+    wings = None
+    with_kg = True
+    drawer_counts = None
+    if args.wing:
+        wings = set(args.wing)
+        # Reject a mistyped wing here rather than shipping an empty bundle that
+        # looks like a successful migration.
+        if use_sqlite:
+            drawer_counts = survey_wings_sqlite(source_db)
+        else:
+            print("  surveying wings ...")
+            drawer_counts = survey_wings(mp.get_collection, palace_path)
+        known = drawer_counts
+        missing = sorted(w for w in wings if w not in known)
+        if missing:
+            raise SystemExit(
+                "  no such wing: %s\n  available: %s"
+                % (", ".join(missing), ", ".join(sorted(w for w in known if w)) or "(none)")
+            )
+        with_kg = bool(args.with_kg)
+        print("  wings:  %s" % ", ".join(sorted(wings)))
+        print("  kg:     %s" % (
+            "included (the WHOLE graph — facts carry no wing)" if with_kg
+            else "excluded (facts carry no wing; pass --with-kg to include them all)"))
 
     # Write a file first when asked, then push from it (re-reading the palace
     # twice is wasteful and non-atomic for a large export).
+    def stream():
+        if use_sqlite:
+            return records_sqlite(source_db, kg_db, tunnels_path, wings, with_kg)
+        return records(mp, palace_path, kg_db, wings, with_kg, drawer_counts)
+
     if args.out:
-        n = write_file(records(mp, palace_path, kg_db), args.out)
+        n = write_file(stream(), args.out)
         print("  wrote %d records -> %s" % (n, args.out))
 
     if args.push:
-        source = args.out if args.out else records(mp, palace_path, kg_db)
+        source = args.out if args.out else stream()
         print("  pushing to %s/import ..." % args.server.rstrip("/"))
         push(source, args.server, args.token, args.batch)
 
