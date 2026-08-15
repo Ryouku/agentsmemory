@@ -150,3 +150,4 @@
 - 2026-08-15 `1c94f42` Merge feat/export-wing-filter: --wing and a local sqlite source
 - 2026-08-15 `fc32f34` chore(changelog): record the exporter merge
 - 2026-08-15 `b8036bf` feat(cli): read-only `mcp` command so customers can call memory tools themselves
+- 2026-08-15 `7dc5183` docs(landing): document --copy and --shared-auth in the install section

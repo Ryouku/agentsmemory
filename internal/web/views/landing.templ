@@ -472,6 +472,12 @@ templ landingInstall() {
 						any time with <span class="mono">run &lt;name&gt;</span>, no re-install.
 					</p>
 					<p>
+						A sandbox needn't start from nothing: <span class="mono">--copy</span>
+						carries your global logins, MCP servers, plugins and skills into it, and
+						<span class="mono">--shared-auth</span> links its credentials back, so one
+						login serves every sandbox.
+					</p>
+					<p>
 						Not on Claude Code? The same kit installs into <b>Codex</b> and <b>pi</b>
 						with <span class="mono">--agent</span>.
 						<a class="lp-guide-link" href="/sandboxes">See the sandbox guide → <span class="mono">/sandboxes</span></a>

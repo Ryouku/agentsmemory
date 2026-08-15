@@ -853,6 +853,20 @@ func landingInstallGroups() []installGroup {
 				"codex plugin — independent review",
 			},
 		},
+		// The objection a sandbox raises is "so I start from nothing and log in
+		// again" — answered here rather than only on the /sandboxes guide, since
+		// this is where a visitor decides whether to install. The two flags
+		// compose on one command (the installer seeds first, then links), so they
+		// share a card instead of competing as alternatives.
+		{
+			Title: "Your existing setup — opt in",
+			Cmd:   "aiagentmemory install --sandbox acme --copy --shared-auth",
+			Items: []string{
+				"--copy brings your logins, MCP servers, plugins, skills and settings",
+				"History, logs and caches stay behind; nothing already there is overwritten",
+				"--shared-auth links credentials instead — log in once, every sandbox sees it",
+			},
+		},
 	}
 }
 
@@ -1048,6 +1062,8 @@ func landingCommands() []cmdRef {
 		{"aiagentmemory install", "Global — wire the kit into your existing ~/.claude."},
 		{"aiagentmemory install --sandbox <name>", "Isolated — a self-contained config under ~/.sandboxes/<name>."},
 		{"aiagentmemory install --agent codex|pi|all", "Same kit, other agent CLIs — see the sandbox guide."},
+		{"aiagentmemory install --sandbox <name> --copy", "Seed it from your global config — logins, MCP servers, plugins, skills, settings."},
+		{"aiagentmemory install --sandbox <name> --shared-auth", "Link credentials back to the global config — one login serves every sandbox."},
 		{"aiagentmemory run <name>", "Open Claude in a sandbox — no re-install; args pass through to claude."},
 		{"aiagentmemory wrap", "Open Claude against the global config."},
 	}
