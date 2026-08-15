@@ -572,15 +572,18 @@ type symptom struct{ Q, A string }
 type faqItem struct{ Q, A string }
 
 // landingNav lists the section anchors shown in the primary nav.
+// The hrefs are root-absolute ("/#what") rather than bare fragments because the
+// same nav is rendered on /sandboxes, where a bare "#what" would resolve against
+// that page and go nowhere.
 func landingNav() []navItem {
 	return []navItem{
-		{"#what", "What it is"},
-		{"#why", "Why memory"},
-		{"#model", "Data model"},
-		{"#features", "Features"},
-		{"#install", "Install"},
-		{"#pricing", "Pricing"},
-		{"#faq", "FAQ"},
+		{"/#what", "What it is"},
+		{"/#why", "Why memory"},
+		{"/#model", "Data model"},
+		{"/#install", "Install"},
+		{"/sandboxes", "Sandboxes"},
+		{"/#pricing", "Pricing"},
+		{"/#faq", "FAQ"},
 	}
 }
 
@@ -853,6 +856,159 @@ func landingInstallGroups() []installGroup {
 	}
 }
 
+// sandboxSpec is one row of an agent's sandbox spec sheet: what the thing is
+// ("Config dir") and where it lands for that agent ("~/.codex").
+type sandboxSpec struct{ K, V string }
+
+// sandboxAgent describes one agent CLI on the /sandboxes guide: how to install a
+// sandbox for it, how to open it, where the pieces land, and the caveats that are
+// true only for that agent. The values mirror the installer's agentKit table in
+// clients/claude-code/agentkit.go — if a kit changes there, this changes with it.
+type sandboxAgent struct {
+	Key     string        // switcher signal value: claude | codex | pi
+	Name    string        // display name
+	Tagline string        // one line on what makes this agent's install different
+	Install string        // the install command for an isolated sandbox
+	Launch  string        // the command that opens the sandbox
+	Specs   []sandboxSpec // the spec sheet rows
+	Notes   []string      // caveats a user hits only on this agent
+}
+
+// sandboxAgents is the guide's source of truth, in the same order the installer
+// resolves them for `--agent all`. Every value here was verified against the
+// shipping CLIs (Claude Code, codex-cli 0.137, pi 0.84.2) rather than inferred
+// from docs: the three differ in their config-dir variable, their commands dir,
+// whether their memory file resolves imports, and — most consequentially —
+// whether they speak MCP at all.
+func sandboxAgents() []sandboxAgent {
+	return []sandboxAgent{
+		{
+			Key:     "claude",
+			Name:    "Claude Code",
+			Tagline: "The reference install: native MCP, native hooks, and a memory file that resolves imports.",
+			Install: "aiagentmemory install --sandbox <name>",
+			Launch:  "aiagentmemory run <name>",
+			Specs: []sandboxSpec{
+				{"Config variable", "CLAUDE_CONFIG_DIR"},
+				{"Global config dir", "~/.claude"},
+				{"Slash commands", "commands/ — invoked /M, /am, /load-skill"},
+				{"Memory file", "CLAUDE.md — @imports the protocol beside it"},
+				{"Session gate", "settings.json — Stop hook"},
+				{"Our MCP", "native: claude mcp add --transport http, bearer header"},
+			},
+			Notes: []string{
+				"--recommended also installs the codebase-memory MCP and the eidos + codex plugins.",
+				"A sandbox keeps its own commands, settings, MCP servers and token — nothing leaks into ~/.claude.",
+			},
+		},
+		{
+			Key:     "codex",
+			Name:    "Codex",
+			Tagline: "Same shape as Claude, but the token travels through the environment and hooks need trusting.",
+			Install: "aiagentmemory install --agent codex --sandbox <name>",
+			Launch:  "aiagentmemory run --agent codex <name>",
+			Specs: []sandboxSpec{
+				{"Config variable", "CODEX_HOME"},
+				{"Global config dir", "~/.codex"},
+				{"Slash commands", "prompts/ — invoked /prompts:M"},
+				{"Memory file", "AGENTS.md — protocol inlined (no import directive)"},
+				{"Session gate", "hooks.json — Stop hook"},
+				{"Our MCP", "native: codex mcp add --bearer-token-env-var"},
+			},
+			Notes: []string{
+				"codex mcp add has no header flag, so the token is stored 0600 in agentsmemory.env and exported by run.",
+				"Codex skips untrusted hooks: open /hooks once and trust the agentsmemory Stop hook.",
+				"A sandbox is a whole CODEX_HOME — including auth.json — so it starts logged out: CODEX_HOME=<dir> codex login.",
+			},
+		},
+		{
+			Key:     "pi",
+			Name:    "pi",
+			Tagline: "pi ships no MCP client and no hooks by design, so the kit brings its own bridge extension.",
+			Install: "aiagentmemory install --agent pi --sandbox <name>",
+			Launch:  "aiagentmemory run --agent pi <name>",
+			Specs: []sandboxSpec{
+				{"Config variable", "PI_CODING_AGENT_DIR"},
+				{"Global config dir", "~/.pi/agent"},
+				{"Slash commands", "prompts/ — invoked /M"},
+				{"Memory file", "AGENTS.md — protocol inlined (no import directive)"},
+				{"Session gate", "none native — the checkpoint ships in the extension"},
+				{"Our MCP", "bridged: extensions/agentsmemory.ts registers each remote tool natively"},
+			},
+			Notes: []string{
+				"The bridge lists the workspace tools at startup and re-registers them as native pi tools, so am_* calls work unchanged.",
+				"A sandbox is the whole agent dir — including auth.json — so sign in inside it or pass a provider key.",
+				"--recommended adds nothing for pi: codebase-memory is a stdio MCP and eidos/codex are Claude plugins.",
+			},
+		},
+	}
+}
+
+// sandboxSpecLabels are the comparison table's row headings, derived from the
+// first agent rather than written out twice. Every agent lists the same spec keys
+// in the same order — sandboxAgents is written that way on purpose, and
+// TestSandboxSpecsAlign holds it to that — so row i of the table is spec i of
+// each agent.
+func sandboxSpecLabels() []string {
+	agents := sandboxAgents()
+	labels := make([]string, 0, len(agents[0].Specs))
+	for _, s := range agents[0].Specs {
+		labels = append(labels, s.K)
+	}
+	return labels
+}
+
+// sandboxAllCmd installs one sandbox that every supported agent can open. The
+// agents never collide on a filename inside it (settings.json vs hooks.json,
+// commands/ vs prompts/, CLAUDE.md vs AGENTS.md), which is what makes a single
+// shared directory safe.
+const sandboxAllCmd = "aiagentmemory install --agent all --sandbox <name> --recommended"
+
+// sandboxCommands is the launcher reference on the guide: the two install modes
+// and the two ways to open an agent afterwards.
+func sandboxCommands() []cmdRef {
+	return []cmdRef{
+		{"aiagentmemory install --sandbox <name>", "Create an isolated config at ~/.sandboxes/<name>."},
+		{"aiagentmemory install --agent pi|codex|both|all", "Choose which agent CLIs the kit is wired into."},
+		{"aiagentmemory run [--agent codex|pi] <name>", "Open an agent in that sandbox — args pass through to the CLI."},
+		{"aiagentmemory wrap [--agent codex|pi]", "Open an agent against its own global config instead."},
+	}
+}
+
+// clipboardExprKey is clipboardExprSignal for a page whose copy buttons are
+// generated in a loop: instead of one boolean per button it sets the shared
+// _copiedKey signal to this button's key, so only the clicked button confirms and
+// the page needs one signal rather than one per command.
+func clipboardExprKey(s, key string) string {
+	return "navigator.clipboard.writeText(" + jsString(s) +
+		"); $_copiedKey = " + jsString(key) + "; setTimeout(() => $_copiedKey = '', 1600)"
+}
+
+// sandboxWhy is the short case for isolated configs, used as the guide's lede
+// cards. Kept as data so the page template stays structural.
+func sandboxWhy() []installGroup {
+	return []installGroup{
+		{
+			Title: "One project, one config",
+			Cmd:   "~/.sandboxes/<name>",
+			Items: []string{
+				"Commands, settings and MCP servers scoped to this project",
+				"Its own workspace token — revoke it without touching the others",
+				"Delete the directory and the sandbox is gone, cleanly",
+			},
+		},
+		{
+			Title: "Your global agent, untouched",
+			Cmd:   "aiagentmemory install",
+			Items: []string{
+				"No sandbox? The kit merges into the config you already run",
+				"Managed blocks merge — your own memory file is preserved",
+				"Switch modes any time; the installer is idempotent",
+			},
+		},
+	}
+}
+
 // cmdRef is one row of the install command reference: the command and a
 // one-line description of what it does.
 type cmdRef struct{ Cmd, Desc string }
@@ -864,6 +1020,7 @@ func landingCommands() []cmdRef {
 	return []cmdRef{
 		{"aiagentmemory install", "Global — wire the kit into your existing ~/.claude."},
 		{"aiagentmemory install --sandbox <name>", "Isolated — a self-contained config under ~/.sandboxes/<name>."},
+		{"aiagentmemory install --agent codex|pi|all", "Same kit, other agent CLIs — see the sandbox guide."},
 		{"aiagentmemory run <name>", "Open Claude in a sandbox — no re-install; args pass through to claude."},
 		{"aiagentmemory wrap", "Open Claude against the global config."},
 	}
