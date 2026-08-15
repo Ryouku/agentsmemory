@@ -118,3 +118,4 @@
 - 2026-08-15 `f4b9ce7` feat(cli): run <name> falls back to launching a named agent CLI
 - 2026-08-15 `1c313e6` chore(changelog): record the run agent-name fallback
 - 2026-08-15 `3b29107` chore(changelog): drop duplicated run-fallback entry
+- 2026-08-15 `ace72b2` feat(cli): `aiagentmemory update` — in-place binary self-update

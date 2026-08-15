@@ -43,6 +43,7 @@ func main() {
 		Version: version,
 		Commands: []*cli.Command{
 			installCommand(),
+			updateCommand(),
 			runCommand(),
 			wrapCommand(),
 		},

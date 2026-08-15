@@ -96,6 +96,7 @@ hint so you can add it later.
 
 ```text
 aiagentmemory install [flags]        install the kit (global, or --sandbox <name>)
+aiagentmemory update [flags]         replace the binary in place (configs untouched)
 aiagentmemory run <name> [args]      run Claude against sandbox ~/.sandboxes/<name>
 aiagentmemory run claude [args]      no such sandbox → run Claude against the global config
 aiagentmemory wrap [args]            run Claude against the global config
@@ -118,6 +119,41 @@ aiagentmemory wrap [args]            run Claude against the global config
 
 `--dry-run` is the safe way to see exactly what will happen — every file write
 and every Claude CLI call is printed.
+
+## Updating
+
+Upgrading the CLI is **binary-only** — you do not re-run `install`, so nothing
+under `~/.claude` or `~/.sandboxes` is rewritten and your MCP registration,
+slash commands, Stop hook and workspace token stay exactly as they are:
+
+```bash
+aiagentmemory update              # upgrade to the latest release
+aiagentmemory update --check      # just report installed vs latest
+aiagentmemory update --version v0.0.46   # pin, or roll back
+```
+
+macOS note: if the binary lives somewhere you do not own (e.g. `/usr/local/bin`)
+the swap needs `sudo aiagentmemory update`; the default `~/.local/bin` install
+never does. Update a copy elsewhere with `--bin <path>`.
+
+How it works: the new asset is downloaded next to the current binary, run once
+with `--version` to prove it is intact and the right architecture, and only then
+renamed over the old file — an atomic swap, so a failed or interrupted download
+leaves the working binary in place. Replacing a running binary is safe on macOS
+and Linux; an already-open session keeps running the old image.
+
+### Updating a binary too old to have `update`
+
+Releases before `update` existed have no self-update. Re-download it without
+running the installer — same result, no config touched:
+
+```bash
+AIAGENTMEMORY_NO_INSTALL=1 curl -fsSL \
+  https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/clients/claude-code/install.sh | bash
+```
+
+`AIAGENTMEMORY_NO_INSTALL` is what makes it download-only; `AIAGENTMEMORY_VERSION`
+pins a tag and `AIAGENTMEMORY_BIN_DIR` changes the destination.
 
 ## Sandboxes
 
