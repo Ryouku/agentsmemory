@@ -132,3 +132,4 @@
 - 2026-08-15 `f27f770` docs: pi agent — install, sandbox and the bridge extension
 - 2026-08-15 `6091732` polish(web): let the /sandboxes headline wrap naturally
 - 2026-08-15 `f923e5a` chore(changelog): record the pi agent work
+- 2026-08-15 `7f1e4c3` Merge feat/pi-agent-sandbox: pi agent support + /sandboxes guide
