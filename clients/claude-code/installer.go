@@ -12,9 +12,23 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// hookAsset is the embedded Stop-hook path (relative to the binary's embed FS)
-// and also the relative install path under the target config dir.
+// hookAsset is the embedded Stop-hook path inside the binary's embed FS.
 const hookAsset = "hooks/agentsmemory-stop-hook.sh"
+
+const (
+	// hookFile is where the Stop hook is installed: flat in the config dir, not
+	// under hooks/. The directory name matters because a sandbox is shared — pi
+	// treats any hooks/ directory as its own deprecated layout and halts the
+	// launch on a "press any key to continue" deprecation notice, even though the
+	// directory is ours and has nothing to do with pi. Claude and codex register
+	// the hook by absolute path, so where it lives is ours to choose.
+	hookFile = "agentsmemory-stop-hook.sh"
+
+	// legacyHookRel is where installs before that change put the hook. It is
+	// removed on the next install (along with its now-stale Stop entry) so the
+	// pi warning stops firing on sandboxes created earlier.
+	legacyHookRel = "hooks/agentsmemory-stop-hook.sh"
+)
 
 // piExtensionAsset is the embedded pi bridge extension, installed at the same
 // relative path under the target config dir — pi auto-discovers any *.ts under
@@ -301,6 +315,7 @@ func (i *Installer) writeAssets() error {
 	// favour of extensions, so its end-of-turn checkpoint ships inside the bridge
 	// extension (see registerPiMCP) and a stray .sh here would only confuse.
 	if i.kit.hooksFile == "" {
+		i.notePiLegacyHook()
 		return nil
 	}
 
@@ -312,11 +327,59 @@ func (i *Installer) writeAssets() error {
 		return err
 	}
 	i.ok("hook %s", filepath.Base(i.hookPath()))
+	// Only a hook-owning kit relocates the script: it is the one that also
+	// re-registers the new path, so no agent is left pointing at a deleted file.
+	i.clearLegacyHook()
 	return nil
 }
 
+// notePiLegacyHook warns when a pi install finds a hooks/ directory it must not
+// touch. pi halts its launch on one, but the directory belongs to the Claude or
+// codex kit installed in this same (shared) config dir: deleting the script here
+// would leave that agent's Stop registration pointing at a missing file. So the
+// user is told which install re-locates it instead.
+func (i *Installer) notePiLegacyHook() {
+	if _, err := os.Stat(filepath.Join(i.targetDir, "hooks")); err != nil {
+		return
+	}
+	i.warn("pi halts on the hooks/ directory in %s", i.targetDir)
+	fmt.Fprintf(i.out, "       it belongs to the Claude/codex kit — re-run that install to relocate it:\n")
+	fmt.Fprintf(i.out, "         aiagentmemory install --agent both --config-dir %s --yes\n", i.targetDir)
+}
+
 // hookPath is the absolute install path of the Stop hook under the target dir.
-func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookAsset) }
+func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFile) }
+
+// legacyHookPath is where earlier installs wrote the hook, under hooks/.
+func (i *Installer) legacyHookPath() string { return filepath.Join(i.targetDir, legacyHookRel) }
+
+// clearLegacyHook removes the pre-relocation hook script and, if it leaves the
+// directory empty, the hooks/ directory itself — which is the whole point: pi
+// halts its launch on any hooks/ directory in a config dir it shares. The
+// directory is only removed when empty, so a hooks/ folder holding the user's own
+// scripts is left alone (they keep the warning, but losing their files would be
+// far worse).
+func (i *Installer) clearLegacyHook() {
+	legacy := i.legacyHookPath()
+	if _, err := os.Stat(legacy); err != nil {
+		return // nothing from an older install here
+	}
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would remove the legacy hook %s (pi halts on a hooks/ dir)\n", legacy)
+		return
+	}
+	if err := os.Remove(legacy); err != nil {
+		i.warn("could not remove the legacy hook %s: %v", legacy, err)
+		return
+	}
+	// os.Remove on a directory succeeds only when it is empty, which is exactly
+	// the condition we want — no need to read it first.
+	if err := os.Remove(filepath.Dir(legacy)); err == nil {
+		i.ok("removed the legacy hooks/ directory (pi halts on it)")
+	} else {
+		i.ok("removed the legacy hook script from hooks/")
+	}
+}
 
 // writeFile writes data to path with perm, creating parent dirs. Under dry-run
 // it prints the intended write instead of touching the filesystem.
@@ -346,16 +409,19 @@ func (i *Installer) registerStopHook() error {
 		return nil
 	}
 	hookCmd := "bash " + i.hookPath()
+	// Supersede the pre-relocation registration: the script it names has just
+	// been deleted, so leaving it would run a missing file on every stop.
+	obsolete := "bash " + i.legacyHookPath()
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	if i.dryRun {
 		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
 		return nil
 	}
-	added, err := ensureStopHook(hooksFile, hookCmd)
+	changed, err := ensureStopHook(hooksFile, hookCmd, obsolete)
 	if err != nil {
 		return err
 	}
-	if added {
+	if changed {
 		i.ok("registered Stop hook in %s", i.kit.hooksFile)
 	} else {
 		i.ok("Stop hook already registered")

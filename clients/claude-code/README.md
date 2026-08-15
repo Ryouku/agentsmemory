@@ -61,8 +61,10 @@ below), and `--agent codex` / `--agent both` to install for codex as well (see
   + eidos flavour).
 - `commands/am.md` → the **`/am`** bootstrap command (agentsmemory-native `am_*`
   tools).
-- `hooks/agentsmemory-stop-hook.sh` → the Stop hook, registered in
-  `settings.json` (idempotent, with a timestamped backup; no `jq` needed).
+- `agentsmemory-stop-hook.sh` → the Stop hook, registered in `settings.json`
+  (idempotent, with a timestamped backup; no `jq` needed). It sits flat in the
+  config dir, not under `hooks/`: a sandbox can be shared with pi, which halts
+  its launch on any `hooks/` directory it finds.
 - `agentsmemory-bootstrap.md` → the always-on operating protocol, pulled into
   the config dir's `CLAUDE.md` via a managed `@agentsmemory-bootstrap.md` import.
   Claude Code loads `$CLAUDE_CONFIG_DIR/CLAUDE.md` as user memory, so the
@@ -217,6 +219,20 @@ Two pi-specific notes:
    eidos/codex are Claude plugin marketplaces; pi takes neither. The installer
    says so rather than pretending.
 
+pi also **halts its launch on any `hooks/` directory** in the config dir — it
+reads one as its own deprecated layout and waits for a keypress. That is why the
+Claude/codex Stop hook installs flat as `<config dir>/agentsmemory-stop-hook.sh`;
+a config dir written by an older release still has `hooks/`, and re-running the
+Claude or codex install relocates the script and prunes the stale registration. A
+pi-only install will not delete it — the script belongs to another agent, whose
+registration would then point at nothing — it prints the command that will.
+
+One more shared-sandbox caveat: pi renames `commands/` to `prompts/` on startup
+**if `prompts/` does not exist**. Installing the pi (or codex) kit creates
+`prompts/`, so the rename never fires; but pointing pi at a Claude-only config dir
+will move Claude's slash commands out from under it. Install the kit for every
+agent that will open the sandbox.
+
 A pi **sandbox** is the whole agent dir, `auth.json` included, so it starts with
 no provider credentials:
 
@@ -333,7 +349,7 @@ Remove the installed pieces from the target config dir (`~/.claude` or
 
 ```bash
 rm ~/.claude/commands/M.md ~/.claude/commands/am.md
-rm ~/.claude/hooks/agentsmemory-stop-hook.sh
+rm ~/.claude/agentsmemory-stop-hook.sh
 rm ~/.claude/agentsmemory-bootstrap.md
 # then, in ~/.claude/CLAUDE.md, delete the managed block between
 #   <!-- BEGIN agentsmemory ... -->  and  <!-- END agentsmemory -->
