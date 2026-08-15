@@ -137,3 +137,4 @@
 - 2026-08-15 `9716c39` chore(changelog): record b597817
 - 2026-08-15 `8019cc9` chore(changelog): record 9716c39
 - 2026-08-15 `d72cba4` fix(cli): install the Stop hook flat, so pi stops halting on hooks/
+- 2026-08-15 `c2ae429` Merge fix/pi-hooks-dir-warning: relocate the Stop hook out of hooks/
