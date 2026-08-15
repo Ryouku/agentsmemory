@@ -41,39 +41,95 @@ func validSandboxName(name string) error {
 	return nil
 }
 
-// wrapClaude replaces the current process with the Claude CLI, optionally pinning
-// CLAUDE_CONFIG_DIR to an isolated sandbox config dir. It exec-replaces (rather
-// than spawning a child) so the terminal, signals, and exit code pass straight
-// through — Claude is a TUI, and `aiagentmemory run foo` should behave exactly
-// like running claude, only against foo's configuration.
+// agentCLIs is the allowlist of agent CLIs that `run <name>` may launch directly
+// when no sandbox by that name exists. It stays an explicit allowlist rather
+// than "any binary on PATH" so a typo'd sandbox name still fails loudly with the
+// install hint instead of silently exec'ing whatever shares the name.
+var agentCLIs = map[string]bool{
+	"claude": true,
+	"codex":  true,
+	"gemini": true,
+}
+
+// launchPlan is the resolved outcome of `run <name>`: which agent binary to exec
+// (empty means the configured Claude CLI) and which config dir to pin via
+// CLAUDE_CONFIG_DIR (empty means leave it alone, i.e. the global config).
+type launchPlan struct {
+	bin       string
+	configDir string
+}
+
+// planRun decides what `run <name>` launches. Sandboxes win: a name that has a
+// config dir under ~/.sandboxes always means that sandbox, so existing usage is
+// unchanged. Only when no such sandbox exists does a known agent name fall back
+// to launching that agent against the global config — so `aiagentmemory run
+// claude` does the obvious thing instead of failing on a sandbox nobody created.
 //
-// configDir == "" means global mode: leave CLAUDE_CONFIG_DIR untouched so Claude
-// uses its own default (~/.claude).
-func wrapClaude(configDir string, claudeArgs []string) error {
-	bin, err := resolveClaudeBin("")
+// sandboxExists is passed in rather than stat'ed here so the decision is pure
+// and testable without touching the filesystem.
+func planRun(name string, sandboxExists bool) (launchPlan, error) {
+	if err := validSandboxName(name); err != nil {
+		return launchPlan{}, err
+	}
+	if sandboxExists {
+		return launchPlan{configDir: sandboxDir(name)}, nil
+	}
+	if agentCLIs[name] {
+		return launchPlan{bin: name}, nil
+	}
+	return launchPlan{}, fmt.Errorf("sandbox config dir %s does not exist — run `aiagentmemory install --sandbox %s` first",
+		sandboxDir(name), name)
+}
+
+// dirExists reports whether p is an existing directory. Any stat error (missing,
+// permission denied, a plain file) counts as "no sandbox here", which is exactly
+// the condition planRun branches on.
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+// execAgent replaces the current process with the planned agent CLI, optionally
+// pinning CLAUDE_CONFIG_DIR to an isolated sandbox config dir. It exec-replaces
+// (rather than spawning a child) so the terminal, signals, and exit code pass
+// straight through — Claude is a TUI, and `aiagentmemory run foo` should behave
+// exactly like running claude, only against foo's configuration.
+//
+// The agent inherits this process's full environment, so shell-prefixed vars
+// (`SET_NEW_ENV=1 aiagentmemory run foo`) reach it unchanged; only
+// CLAUDE_CONFIG_DIR is layered on top.
+func execAgent(plan launchPlan, agentArgs []string) error {
+	bin, err := resolveAgentBin(plan.bin)
 	if err != nil {
 		return err
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
-		return fmt.Errorf("cannot find the Claude CLI %q on PATH: %w", bin, err)
+		return fmt.Errorf("cannot find the agent CLI %q on PATH: %w", bin, err)
 	}
 
 	env := os.Environ()
-	if configDir != "" {
-		if _, statErr := os.Stat(configDir); statErr != nil {
-			return fmt.Errorf("sandbox config dir %s does not exist — run `aiagentmemory install --sandbox %s` first",
-				configDir, filepath.Base(configDir))
-		}
+	if plan.configDir != "" {
 		// CLAUDE_CONFIG_DIR is how Claude Code relocates its entire config
 		// (settings, commands, MCP servers); setting it is what makes a sandbox
 		// an isolated Claude environment.
-		env = append(env, "CLAUDE_CONFIG_DIR="+configDir)
+		env = append(env, "CLAUDE_CONFIG_DIR="+plan.configDir)
 	}
 
 	// syscall.Exec never returns on success; on failure it returns the errno.
-	argv := append([]string{bin}, claudeArgs...)
+	argv := append([]string{bin}, agentArgs...)
 	return syscall.Exec(path, argv, env)
+}
+
+// resolveAgentBin maps a planned agent name to the binary to exec. An empty name
+// — and "claude" itself — goes through resolveClaudeBin so --claude-bin /
+// AIAGENTMEMORY_CLAUDE_BIN keeps steering which Claude build runs; any other
+// allowlisted agent is exec'd under its own name.
+func resolveAgentBin(name string) (string, error) {
+	if name == "" || name == "claude" {
+		return resolveClaudeBin("")
+	}
+	return name, nil
 }
 
 // resolveClaudeBin decides which Claude CLI to drive. Precedence: an explicit

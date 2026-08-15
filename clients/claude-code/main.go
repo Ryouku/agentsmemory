@@ -125,11 +125,17 @@ func installCommand() *cli.Command {
 // runCommand builds `run <name> [claude args...]` — launch Claude against an
 // isolated sandbox. SkipFlagParsing forwards every argument after the sandbox
 // name to Claude untouched, so `run foo -p "hi"` reaches Claude as `-p "hi"`.
+//
+// <name> is a sandbox first; if no such sandbox exists it may name an agent CLI
+// (see planRun), which makes `aiagentmemory run claude` launch Claude globally
+// rather than erroring on a sandbox nobody created. Either way the launched
+// agent inherits the caller's environment, so `SET_NEW_ENV=1 aiagentmemory run
+// …` passes that variable straight through.
 func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "run",
-		Usage:           "run Claude against a sandbox: aiagentmemory run <name> [claude args...]",
-		ArgsUsage:       "<name> [claude args...]",
+		Usage:           "run an agent against a sandbox: aiagentmemory run <name|claude> [agent args...]",
+		ArgsUsage:       "<name|claude> [agent args...]",
 		SkipFlagParsing: true,
 		Action: func(_ context.Context, c *cli.Command) error {
 			args := c.Args().Slice()
@@ -137,10 +143,16 @@ func runCommand() *cli.Command {
 				return errors.New("run: missing sandbox name (usage: aiagentmemory run <name> [claude args...])")
 			}
 			name := args[0]
-			if err := validSandboxName(name); err != nil {
+			plan, err := planRun(name, dirExists(sandboxDir(name)))
+			if err != nil {
 				return err
 			}
-			return wrapClaude(sandboxDir(name), args[1:])
+			if plan.configDir == "" {
+				// The fallback silently changes which config is in play, so say
+				// so on stderr — stdout belongs to the agent we are about to become.
+				fmt.Fprintf(os.Stderr, "aiagentmemory: no sandbox %q — launching %s with the global config\n", name, plan.bin)
+			}
+			return execAgent(plan, args[1:])
 		},
 	}
 }
@@ -155,8 +167,9 @@ func wrapCommand() *cli.Command {
 		ArgsUsage:       "[claude args...]",
 		SkipFlagParsing: true,
 		Action: func(_ context.Context, c *cli.Command) error {
-			// Empty configDir → let Claude use its own default; don't set CLAUDE_CONFIG_DIR.
-			return wrapClaude("", c.Args().Slice())
+			// Zero launchPlan → the configured Claude CLI, no CLAUDE_CONFIG_DIR
+			// override, so Claude uses its own default (~/.claude).
+			return execAgent(launchPlan{}, c.Args().Slice())
 		},
 	}
 }
