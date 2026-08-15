@@ -152,3 +152,4 @@
 - 2026-08-15 `b8036bf` feat(cli): read-only `mcp` command so customers can call memory tools themselves
 - 2026-08-15 `7dc5183` docs(landing): document --copy and --shared-auth in the install section
 - 2026-08-15 `fa0476c` feat(cli): per-project `init`/`load` — a repo remembers its agent, flags and (machine-local) sandbox
+- 2026-08-15 `25d7241` docs(web): document init/load on the landing page and the sandbox guide

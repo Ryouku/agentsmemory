@@ -54,6 +54,59 @@ func TestSandboxesPageCoversEveryAgent(t *testing.T) {
 	}
 }
 
+// TestSandboxesPageDocumentsProjectLaunch guards the #project band. The cards
+// alone cannot convey the two rules a reader would otherwise get wrong — which
+// layer wins, and that a missing sandbox is an error rather than a silent global
+// launch — so the notes are asserted alongside them.
+func TestSandboxesPageDocumentsProjectLaunch(t *testing.T) {
+	page := renderSandboxes(t)
+
+	if !strings.Contains(page, `id="project"`) {
+		t.Error("guide is missing the #project band")
+	}
+	for _, g := range sandboxProject() {
+		// esc: templ escapes the apostrophe in "the team's half".
+		if !strings.Contains(page, esc(g.Title)) {
+			t.Errorf("guide is missing the %q card", g.Title)
+		}
+		if !strings.Contains(page, esc(g.Cmd)) {
+			t.Errorf("guide is missing the command %q", g.Cmd)
+		}
+	}
+
+	// The split itself: one half is committed, the other never leaves the machine.
+	for _, want := range []string{
+		".aiagentmemory",
+		"~/.sandboxes/agents",
+		"Never in the repository",
+		"Safe to commit",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("guide does not state %q", want)
+		}
+	}
+
+	// The precedence chain must be spelled out, top layer to bottom.
+	for _, layer := range []string{"--sandbox", "$AIAGENTMEMORY_SANDBOX", "~/.sandboxes/agents", ".aiagentmemory.local"} {
+		if !strings.Contains(page, esc(layer)) {
+			t.Errorf("precedence chain is missing the %q layer", layer)
+		}
+	}
+	// …and the refusal, which is the behaviour a reader is most likely to assume
+	// wrongly.
+	if !strings.Contains(page, "never falls back") {
+		t.Error("guide does not say load refuses rather than launching unpinned")
+	}
+
+	// Both commands appear in the guide's reference list.
+	if !strings.Contains(page, esc("aiagentmemory init --sandbox <name> [-- agent flags]")) {
+		t.Error("command reference is missing the init row")
+	}
+	if !strings.Contains(page, esc("aiagentmemory load [-- extra flags]")) {
+		t.Error("command reference is missing the load row")
+	}
+}
+
 // TestSandboxesPageWorksWithoutDatastar guards the no-JavaScript floor: the first
 // agent's panel is visible on load, and the comparison table is rendered
 // unconditionally, so a visitor whose datastar runtime never arrives still gets

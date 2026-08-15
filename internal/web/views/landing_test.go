@@ -69,6 +69,49 @@ func TestLandingPageArguesCost(t *testing.T) {
 	}
 }
 
+// TestLandingPageDocumentsProjectLaunch guards the init/load story, whose whole
+// point is a split a visitor cannot guess: the agent and flags are committed, the
+// sandbox name is not. If the page ever implies the sandbox name travels in the
+// repository, it is documenting a design we deliberately rejected.
+func TestLandingPageDocumentsProjectLaunch(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		"aiagentmemory init --sandbox acme -- --model opus", // the install-breakdown card
+		".aiagentmemory", // the file that is committed
+		"Your sandbox name stays on your machine", // …and what is not
+		"Everyone then runs load",                 // why the split pays off
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("landing page is missing %q", want)
+		}
+	}
+
+	// The command reference lists both commands, with <name> HTML-escaped.
+	if !strings.Contains(html, "aiagentmemory init --sandbox &lt;name&gt;") {
+		t.Error("command reference is missing the init row")
+	}
+	if !strings.Contains(html, "aiagentmemory load") {
+		t.Error("command reference is missing the load row")
+	}
+
+	// The teammate question is the one a visitor actually has, so it must also
+	// reach the FAQ — which double-feeds the schema.org JSON-LD and is therefore
+	// the page's most citable surface.
+	const q = "Do my teammates need my sandbox name?"
+	if strings.Count(html, q) < 2 {
+		t.Errorf("%q should appear in both the FAQ accordion and the JSON-LD; found %d occurrence(s)",
+			q, strings.Count(html, q))
+	}
+	if !strings.Contains(html, "application/ld+json") {
+		t.Error("landing page is missing the schema.org JSON-LD block")
+	}
+}
+
 // TestLandingPageDocumentsInheritFlags guards the answer to "a sandbox means
 // starting from nothing and logging in again": --copy and --shared-auth must be
 // documented on the landing page itself, not only on the /sandboxes guide, since
