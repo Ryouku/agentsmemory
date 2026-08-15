@@ -87,6 +87,8 @@ func main() {
 			syncCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
+			projectsCommand(def),
+			inspectCommand(def),
 		},
 	}
 
