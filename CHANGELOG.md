@@ -115,3 +115,4 @@
 - 2026-07-02 `e1b9868` chore: update claude-mem activity indexes
 - 2026-07-02 `894b48b` fix(load-skill): load skill into session, don't write a stale file
 - 2026-07-03 `d58dd5f` chore(plans): lower Free plan cap 10,000 -> 1,000
+- 2026-07-03 `fa85cb7` chore(changelog): record Free plan cap change
