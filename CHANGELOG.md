@@ -122,3 +122,4 @@
 - 2026-08-15 `2077c2b` feat(cli): install --agent codex — codex namespace parity with Claude
 - 2026-08-15 `ec9f038` test(cli): cover the codex install path end to end
 - 2026-08-15 `704ae75` Merge feat/codex-install-namespace: install --agent codex|both
+- 2026-08-15 `337db2a` chore(changelog): record the codex install merge
