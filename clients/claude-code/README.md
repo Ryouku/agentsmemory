@@ -114,6 +114,8 @@ aiagentmemory run --agent pi <name> [args]     run pi against that sandbox (pins
 aiagentmemory run claude [args]                no such sandbox → run Claude against the global config
 aiagentmemory wrap [args]                      run Claude against the global config
 aiagentmemory wrap --agent codex [args]        run codex against ~/.codex
+aiagentmemory mcp                              list the memory tools you can call
+aiagentmemory mcp <tool> [arg] [-a k=v]        call one and print what it returns
 ```
 
 `--agent` is only read in the leading position of `run`/`wrap` — everything after
@@ -141,6 +143,51 @@ the sandbox name is forwarded to the agent untouched.
 
 `--dry-run` is the safe way to see exactly what will happen — every file write
 and every agent CLI call is printed.
+
+## Reading your memory from the shell (`mcp`)
+
+`aiagentmemory mcp` calls the memory tools yourself, against the same endpoint,
+with the same token, over the same transport your agents use — so what you see is
+what the agent sees. It is the way to check what a tool actually returns without
+asking an agent to relay it.
+
+```bash
+aiagentmemory mcp                                  # the tools you can call
+aiagentmemory mcp status                           # workspace, wings, quota
+aiagentmemory mcp search "auth bug"                # semantic recall
+aiagentmemory mcp search "auth bug" -a limit=3 -a wing=wing_api
+aiagentmemory mcp get_drawer <id>
+aiagentmemory mcp search "auth bug" | jq '.hits[].room'
+```
+
+- **The bare positional fills the tool's first required argument**, so
+  `mcp search "x"` means `-a query=x`. Everything else goes in as `-a key=value`
+  (repeatable). Values are typed from the tool's own schema — `-a limit=3` crosses
+  the wire as the number `3`.
+- **Tool names work with or without the `am_` prefix**: `mcp search` = `mcp
+  am_search`.
+- **Output is JSON on stdout**, indented and pipeable; notes and errors go to
+  stderr. `--raw` prints the whole MCP envelope instead, and `mcp --raw` prints
+  the full catalogue including every tool's input schema.
+- **It is read-only.** The endpoint exposes write tools, but the CLI refuses them
+  — a mistyped shell command must never mutate team memory. Ask your agent for
+  writes.
+- **The token is found for you**, in this order: `--token` /
+  `$AGENTSMEMORY_TOKEN`; then an install on this machine — `agentsmemory.env`
+  (codex, pi) or the `agentsmemory` MCP registration in `.claude.json` (Claude).
+  `--sandbox <name>` reads one sandbox's install, `--config-dir <dir>` any other.
+  With neither, `$HOME` and the three global config dirs are searched. The line on
+  stderr says which file the token came from.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `-a`, `--arg <k=v>` | — | Tool argument, repeatable. |
+| `--token <key>` | `$AGENTSMEMORY_TOKEN` | Workspace token (default: read from an install). |
+| `--sandbox <name>` | — | Take the token from `~/.sandboxes/<name>`. |
+| `--config-dir <dir>` | — | Take the token from an install in this dir. |
+| `--mcp-url <url>` | `$AGENTSMEMORY_MCP_URL` → `https://aiagentmemory.dev/mcp` | Endpoint to call. |
+| `--raw` | off | Print the MCP envelope (content blocks, `isError`) instead of the result. |
+| `--timeout <dur>` | `60s` | Give up on the endpoint after this long. |
 
 ## Codex
 

@@ -148,3 +148,5 @@
 - 2026-08-15 `0835268` chore(changelog): record the v0.0.52 merge
 - 2026-08-15 `d3e4d0b` feat(migrate): --wing exports one wing, read from the palace sqlite
 - 2026-08-15 `1c94f42` Merge feat/export-wing-filter: --wing and a local sqlite source
+- 2026-08-15 `fc32f34` chore(changelog): record the exporter merge
+- 2026-08-15 `b8036bf` feat(cli): read-only `mcp` command so customers can call memory tools themselves

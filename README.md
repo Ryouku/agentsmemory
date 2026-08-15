@@ -321,6 +321,26 @@ aiagentmemory wrap                         # run Claude against the global ~/.cl
 The Claude CLI it drives is resolved from `AIAGENTMEMORY_CLAUDE_BIN`, then
 `claude` on your `PATH`.
 
+### Read your memory from the shell
+
+`aiagentmemory mcp` calls the memory tools yourself — same endpoint, same token,
+same transport your agents use — so you can see exactly what a tool returns
+without asking an agent to relay it:
+
+```bash
+aiagentmemory mcp                          # the tools you can call
+aiagentmemory mcp status                   # workspace, wings, quota
+aiagentmemory mcp search "auth bug" -a limit=3
+aiagentmemory mcp search "auth bug" | jq '.hits[].room'
+```
+
+The bare positional fills the tool's first required argument; everything else is
+`-a key=value`. Output is indented JSON on stdout (notes go to stderr, so it
+pipes), and the workspace token is read from an install already on this machine —
+`--sandbox <name>` picks one. It is **read-only**: the write tools exist on the
+endpoint but the CLI refuses them, so a mistyped command can never mutate team
+memory. Full flag reference in [`clients/claude-code/README.md`](clients/claude-code/README.md).
+
 ### Codex (`--agent codex`)
 
 Codex is configured the same way Claude is, under different names, so the kit is
