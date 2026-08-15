@@ -68,3 +68,48 @@ func TestLandingPageArguesCost(t *testing.T) {
 		t.Error("why-it-costs FAQ did not reach the schema.org JSON-LD")
 	}
 }
+
+// TestLandingPageDocumentsInheritFlags guards the answer to "a sandbox means
+// starting from nothing and logging in again": --copy and --shared-auth must be
+// documented on the landing page itself, not only on the /sandboxes guide, since
+// this is where a visitor decides whether to install at all.
+func TestLandingPageDocumentsInheritFlags(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	// Both flags reach the page, and each says what it does rather than just
+	// appearing in a command.
+	for _, want := range []string{
+		"--copy",
+		"--shared-auth",
+		"logins, MCP servers, plugins",
+		"one login serves every sandbox",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("landing page is missing %q", want)
+		}
+	}
+
+	// The card carries the composed command: the installer seeds with --copy and
+	// then links credentials, so the two are documented together, not as rivals.
+	if !strings.Contains(html, "aiagentmemory install --sandbox acme --copy --shared-auth") {
+		t.Error("install breakdown is missing the composed --copy --shared-auth command")
+	}
+
+	// …and the command reference lists each flag on its own line.
+	if !strings.Contains(html, "aiagentmemory install --sandbox &lt;name&gt; --copy") {
+		t.Error("command reference is missing the --copy row")
+	}
+	if !strings.Contains(html, "aiagentmemory install --sandbox &lt;name&gt; --shared-auth") {
+		t.Error("command reference is missing the --shared-auth row")
+	}
+
+	// The copy must not overpromise: --copy leaves the bulk behind and never
+	// clobbers an existing sandbox, which is the invariant the installer holds.
+	if !strings.Contains(html, "nothing already there is overwritten") {
+		t.Error("landing page does not state the never-overwrite invariant")
+	}
+}
