@@ -138,3 +138,8 @@
 - 2026-08-15 `8019cc9` chore(changelog): record 9716c39
 - 2026-08-15 `d72cba4` fix(cli): install the Stop hook flat, so pi stops halting on hooks/
 - 2026-08-15 `c2ae429` Merge fix/pi-hooks-dir-warning: relocate the Stop hook out of hooks/
+- 2026-08-15 `cf5255b` chore(changelog): record the hook-relocation merge
+- 2026-08-15 `0d8116f` feat(cli): --copy seeds a sandbox from the agent's global config
+- 2026-08-15 `288c6f6` feat(cli): --copy seeds a sandbox from the agent's global config
+- 2026-08-15 `2219551` feat(cli): --shared-auth links credentials to the global config
+- 2026-08-15 `3732752` feat(web): /sandboxes documents --copy and --shared-auth
