@@ -12,6 +12,12 @@
 #
 #   curl -fsSL <url>/install.sh | bash -s -- --sandbox myproject --recommended
 #
+# The same binary installs the kit for Codex (~/.codex) instead of, or as well
+# as, Claude Code:
+#
+#   curl -fsSL <url>/install.sh | bash -s -- --agent codex
+#   curl -fsSL <url>/install.sh | bash -s -- --agent both
+#
 # To UPGRADE an existing setup, do not re-run this script: `aiagentmemory update`
 # swaps the binary in place and leaves ~/.claude, sandboxes, the MCP registration
 # and the token untouched. This script is for first installs (and for upgrading a

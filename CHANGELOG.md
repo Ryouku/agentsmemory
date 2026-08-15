@@ -119,3 +119,5 @@
 - 2026-08-15 `1c313e6` chore(changelog): record the run agent-name fallback
 - 2026-08-15 `3b29107` chore(changelog): drop duplicated run-fallback entry
 - 2026-08-15 `ace72b2` feat(cli): `aiagentmemory update` — in-place binary self-update
+- 2026-08-15 `2077c2b` feat(cli): install --agent codex — codex namespace parity with Claude
+- 2026-08-15 `ec9f038` test(cli): cover the codex install path end to end

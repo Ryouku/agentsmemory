@@ -232,13 +232,18 @@ A request without a valid token comes back as a fail-closed
 
 ---
 
-## Connect Claude Code (the `aiagentmemory` kit)
+## Connect Claude Code or Codex (the `aiagentmemory` kit)
 
-The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code)
-into your workspace — it installs the memory-grounded slash commands (`/M`,
-`/am`, `/load-skill`) and the Stop hook, registers the agentsmemory MCP, and can wrap the Claude
-CLI so each project runs against its own isolated configuration. It replaces the
-old shell installer; everything ships in one downloadable binary.
+The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code) —
+or [Codex](https://developers.openai.com/codex) — into your workspace: it installs
+the memory-grounded slash commands (`/M`, `/am`, `/load-skill`) and the Stop hook,
+registers the agentsmemory MCP, and can wrap the agent CLI so each project runs
+against its own isolated configuration. It replaces the old shell installer;
+everything ships in one downloadable binary.
+
+Claude is the default. `--agent codex` installs the same kit into codex's layout
+(`~/.codex`, `prompts/`, `AGENTS.md`, `hooks.json`), and `--agent both` does both
+— see [Codex](#codex-agent-codex).
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
 
@@ -313,6 +318,33 @@ aiagentmemory wrap                         # run Claude against the global ~/.cl
 
 The Claude CLI it drives is resolved from `AIAGENTMEMORY_CLAUDE_BIN`, then
 `claude` on your `PATH`.
+
+### Codex (`--agent codex`)
+
+Codex is configured the same way Claude is, under different names, so the kit is
+the same content in different places:
+
+```bash
+aiagentmemory install --agent codex                  # into ~/.codex
+aiagentmemory install --agent both --sandbox acme    # one sandbox, both agents
+aiagentmemory run --agent codex acme                 # launch codex with CODEX_HOME pinned
+```
+
+| | Claude Code | Codex |
+|---|---|---|
+| Config dir | `~/.claude` (`CLAUDE_CONFIG_DIR`) | `~/.codex` (`CODEX_HOME`) |
+| Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
+| Always-on memory | `CLAUDE.md` + managed `@import` | `AGENTS.md` with the protocol inlined — codex has no `@import` |
+| Stop hook | `settings.json` | `hooks.json` (same shape and `Stop` semantics) |
+| MCP auth | `Authorization: Bearer <token>` header | `bearer_token_env_var = "AGENTSMEMORY_TOKEN"` |
+
+Two things codex needs that Claude does not, both printed by the installer:
+**trust the hook** (codex skips non-managed hooks until reviewed in `/hooks`), and
+**have the token in the environment** — it is written to
+`<CODEX_HOME>/agentsmemory.env` (`0600`) and exported for you by
+`aiagentmemory run --agent codex …`; for plain `codex`, source it from your shell
+rc. A codex sandbox is a whole `CODEX_HOME`, so it also needs its own login:
+`CODEX_HOME=~/.sandboxes/acme codex login`.
 
 ---
 

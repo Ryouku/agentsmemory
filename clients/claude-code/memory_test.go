@@ -14,7 +14,7 @@ const testImport = "@agentsmemory-bootstrap.md"
 func TestEnsureMemoryImportFreshFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 
-	changed, err := ensureMemoryImport(path, testImport)
+	changed, err := ensureManagedBlock(path, testImport)
 	if err != nil {
 		t.Fatalf("ensureMemoryImport: %v", err)
 	}
@@ -34,10 +34,10 @@ func TestEnsureMemoryImportFreshFile(t *testing.T) {
 func TestEnsureMemoryImportIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 
-	if _, err := ensureMemoryImport(path, testImport); err != nil {
+	if _, err := ensureManagedBlock(path, testImport); err != nil {
 		t.Fatalf("first ensureMemoryImport: %v", err)
 	}
-	changed, err := ensureMemoryImport(path, testImport)
+	changed, err := ensureManagedBlock(path, testImport)
 	if err != nil {
 		t.Fatalf("second ensureMemoryImport: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestEnsureMemoryImportPreservesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := ensureMemoryImport(path, testImport)
+	changed, err := ensureManagedBlock(path, testImport)
 	if err != nil {
 		t.Fatalf("ensureMemoryImport: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEnsureMemoryImportReplacesStaleBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := ensureMemoryImport(path, testImport)
+	changed, err := ensureManagedBlock(path, testImport)
 	if err != nil {
 		t.Fatalf("ensureMemoryImport: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestEnsureMemoryImportUnbalancedRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ensureMemoryImport(path, testImport); err == nil {
+	if _, err := ensureManagedBlock(path, testImport); err == nil {
 		t.Fatal("ensureMemoryImport accepted an unbalanced block, want an error")
 	}
 	if got := readFile(t, path); got != broken {

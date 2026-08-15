@@ -1,10 +1,15 @@
-# agentsmemory — Claude Code kit (`aiagentmemory`)
+# agentsmemory — agent kit (`aiagentmemory`)
 
-A single binary that wires [Claude Code](https://claude.com/claude-code) into
-your **agentsmemory** workspace: it installs the memory-grounded slash commands
-and the Stop hook, registers the agentsmemory MCP, and can optionally pull in the
-recommended companion tools. It also wraps the Claude CLI so each project can run
-against its own isolated configuration.
+A single binary that wires [Claude Code](https://claude.com/claude-code) — or
+[Codex](https://developers.openai.com/codex) — into your **agentsmemory**
+workspace: it installs the memory-grounded slash commands and the Stop hook,
+registers the agentsmemory MCP, and can optionally pull in the recommended
+companion tools. It also wraps the agent CLI so each project can run against its
+own isolated configuration.
+
+Claude is the default; `--agent codex` installs the same kit into codex's own
+layout, and `--agent both` does both. Everything below describes Claude unless a
+codex column or the [Codex](#codex) section says otherwise.
 
 It replaces the old `install.sh` shell installer — everything now ships inside
 one downloadable binary, `aiagentmemory`.
@@ -40,11 +45,12 @@ Bootstrap environment knobs: `AIAGENTMEMORY_VERSION` (pin a tag),
 
 | Mode | Command | What it does |
 |------|---------|--------------|
-| **Global** | `aiagentmemory install` | Wires our MCP + commands + Stop hook into the global `~/.claude`. Wraps the Claude you already run. |
-| **Isolated** | `aiagentmemory install --sandbox <name>` | Installs a self-contained config under `~/.sandboxes/<name>`. Launch Claude against it with `aiagentmemory run <name>` — its commands, settings, MCP servers, and token stay isolated from every other project. |
+| **Global** | `aiagentmemory install` | Wires our MCP + commands + Stop hook into the global `~/.claude` (or `~/.codex` with `--agent codex`). Wraps the agent you already run. |
+| **Isolated** | `aiagentmemory install --sandbox <name>` | Installs a self-contained config under `~/.sandboxes/<name>`. Launch the agent against it with `aiagentmemory run <name>` — its commands, settings, MCP servers, and token stay isolated from every other project. |
 
 Add `--recommended` to either mode to also install the ecosystem tools (see
-below).
+below), and `--agent codex` / `--agent both` to install for codex as well (see
+[Codex](#codex)).
 
 ## What gets installed
 
@@ -95,30 +101,79 @@ hint so you can add it later.
 ## Commands
 
 ```text
-aiagentmemory install [flags]        install the kit (global, or --sandbox <name>)
-aiagentmemory update [flags]         replace the binary in place (configs untouched)
-aiagentmemory run <name> [args]      run Claude against sandbox ~/.sandboxes/<name>
-aiagentmemory run claude [args]      no such sandbox → run Claude against the global config
-aiagentmemory wrap [args]            run Claude against the global config
+aiagentmemory install [flags]                  install the kit (global, or --sandbox <name>)
+aiagentmemory install --agent codex [flags]    same, into ~/.codex (or --agent both)
+aiagentmemory update [flags]                   replace the binary in place (configs untouched)
+aiagentmemory run <name> [args]                run Claude against sandbox ~/.sandboxes/<name>
+aiagentmemory run --agent codex <name> [args]  run codex against that sandbox (pins CODEX_HOME)
+aiagentmemory run claude [args]                no such sandbox → run Claude against the global config
+aiagentmemory wrap [args]                      run Claude against the global config
+aiagentmemory wrap --agent codex [args]        run codex against ~/.codex
 ```
+
+`--agent` is only read in the leading position of `run`/`wrap` — everything after
+the sandbox name is forwarded to the agent untouched.
 
 ### `install` flags
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--global` | — | Install into `~/.claude` non-interactively (skips the mode prompt); mutually exclusive with `--sandbox`/`--claude-dir`. |
+| `--agent <name>` | `claude` | Agent to install for: `claude`, `codex`, or `both`. |
+| `--global` | — | Install into the agent's global config dir non-interactively (skips the mode prompt); mutually exclusive with `--sandbox`/`--claude-dir`. |
 | `--sandbox <name>` | — | Install into `~/.sandboxes/<name>` (isolated mode). |
-| `--recommended` | off | Also install codebase-memory, eidos, codex. |
+| `--recommended` | off | Also install codebase-memory, eidos, codex (eidos + codex are Claude-only). |
 | `--token <key>` | `$AGENTSMEMORY_TOKEN` | agentsmemory workspace token. |
 | `--mcp-url <url>` | `https://aiagentmemory.dev/mcp` | agentsmemory MCP endpoint. |
-| `--scope <scope>` | `user` | Claude MCP/plugin scope: `user`, `local`, `project`. |
+| `--scope <scope>` | `user` | Claude MCP/plugin scope: `user`, `local`, `project` (Claude only — codex has no scopes). |
 | `--claude-bin <bin>` | `$AIAGENTMEMORY_CLAUDE_BIN` → `claude` | Claude CLI to drive. |
-| `--claude-dir <dir>` | `~/.claude` | Override the target config dir (ignored with `--sandbox`). |
+| `--codex-bin <bin>` | `$AIAGENTMEMORY_CODEX_BIN` → `codex` | codex CLI to drive. |
+| `--claude-dir <dir>` | the agent's global dir | Override the target config dir (ignored with `--sandbox`). |
 | `--yes`, `-y` | off | Non-interactive: never prompt. |
 | `--dry-run` | off | Print the full plan without writing files or running commands. |
 
 `--dry-run` is the safe way to see exactly what will happen — every file write
-and every Claude CLI call is printed.
+and every agent CLI call is printed.
+
+## Codex
+
+`--agent codex` installs the same kit into codex's own layout. Codex is
+configured the same way Claude is, with different filenames, so the kit is the
+same content in different places:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Config dir | `~/.claude`, relocated by `CLAUDE_CONFIG_DIR` | `~/.codex`, relocated by `CODEX_HOME` |
+| Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
+| Always-on memory | `CLAUDE.md` + a managed `@agentsmemory-bootstrap.md` import | `AGENTS.md` with the protocol **inlined** in the managed block — codex has no `@import` |
+| Stop hook | `settings.json` | `hooks.json` (same JSON shape, same `Stop` event, same `stop_hook_active` loop guard) |
+| MCP auth | `--header "Authorization: Bearer <token>"` | `--bearer-token-env-var AGENTSMEMORY_TOKEN` — codex stores the variable *name* and reads the value from its environment |
+| Recommended | codebase-memory + eidos + codex plugins | codebase-memory only (the other two are Claude plugin marketplaces) |
+
+Two codex-specific steps the installer prints and cannot do for you:
+
+1. **Trust the hook.** Codex lists non-managed hooks but skips them until you
+   review them — open `/hooks` in codex and trust the agentsmemory Stop hook.
+2. **Have the token in the environment.** The install writes it to
+   `<CODEX_HOME>/agentsmemory.env` (mode `0600`) and
+   `aiagentmemory run --agent codex …` / `wrap --agent codex …` export it for
+   you. To launch plain `codex`, source it from your shell rc:
+
+   ```bash
+   set -a; . ~/.codex/agentsmemory.env; set +a
+   ```
+
+A codex **sandbox** is a whole `CODEX_HOME`, and codex keeps `auth.json` there —
+so a fresh sandbox starts logged out. Log it in once:
+
+```bash
+aiagentmemory install --agent codex --sandbox myproject
+CODEX_HOME=~/.sandboxes/myproject codex login
+aiagentmemory run --agent codex myproject
+```
+
+Both agents can share one sandbox (`--agent both --sandbox myproject`): they
+never collide on a filename, so `CLAUDE_CONFIG_DIR` and `CODEX_HOME` can point at
+the same directory.
 
 ## Updating
 

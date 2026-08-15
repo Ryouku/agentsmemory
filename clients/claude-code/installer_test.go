@@ -48,15 +48,24 @@ func renderAll(calls []recordedCall) []string {
 	return out
 }
 
-// newTestInstaller builds an Installer wired to a recording runner and a temp
-// config dir, with a fixed token so the MCP step always runs non-interactively.
+// newTestInstaller builds a Claude Installer wired to a recording runner and a
+// temp config dir, with a fixed token so the MCP step always runs
+// non-interactively.
 func newTestInstaller(t *testing.T, recommended bool) (*Installer, *recordingRunner, string) {
+	t.Helper()
+	return newTestInstallerFor(t, claudeKit, recommended)
+}
+
+// newTestInstallerFor is newTestInstaller for an explicit agent kit, so the codex
+// install path is exercised through exactly the same flow as the Claude one.
+func newTestInstallerFor(t *testing.T, kit agentKit, recommended bool) (*Installer, *recordingRunner, string) {
 	t.Helper()
 	dir := t.TempDir()
 	rr := &recordingRunner{}
 	inst := &Installer{
 		targetDir:   dir,
-		claudeBin:   "claude",
+		kit:         kit,
+		agentBin:    kit.bin,
 		mcpURL:      defaultMCPURL,
 		scope:       "user",
 		token:       "TESTTOK",
@@ -180,7 +189,7 @@ func TestResolveInstallTarget(t *testing.T) {
 		{sandbox: "proj"},
 		{claudeDir: "/x"},
 	} {
-		if _, _, _, err := resolveInstallTarget(true, tc.sandbox, tc.claudeDir, home); err == nil {
+		if _, _, _, err := resolveInstallTarget(claudeKit, true, tc.sandbox, tc.claudeDir, home); err == nil {
 			t.Errorf("resolveInstallTarget(global, %q, %q) = nil error, want conflict", tc.sandbox, tc.claudeDir)
 		}
 	}
@@ -202,7 +211,7 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, sandbox, explicit, err := resolveInstallTarget(tc.global, tc.sandbox, tc.claudeDir, home)
+			target, sandbox, explicit, err := resolveInstallTarget(claudeKit, tc.global, tc.sandbox, tc.claudeDir, home)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -214,7 +223,7 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 
 	// An invalid sandbox name is rejected here too (defense in depth with the CLI).
-	if _, _, _, err := resolveInstallTarget(false, "../escape", "", home); err == nil {
+	if _, _, _, err := resolveInstallTarget(claudeKit, false, "../escape", "", home); err == nil {
 		t.Error("resolveInstallTarget accepted an invalid sandbox name, want an error")
 	}
 }
@@ -343,6 +352,145 @@ func TestDryRunnerRedactsToken(t *testing.T) {
 	}
 	if !strings.Contains(got, "Authorization: Bearer ***") {
 		t.Errorf("expected a redacted header, got %q", got)
+	}
+}
+
+// TestInstallCodexCore covers the codex layout end to end: the same command
+// markdown lands in prompts/ instead of commands/, the Stop hook registers in
+// hooks.json instead of settings.json, AGENTS.md carries the protocol inlined
+// (there is no @import on codex), and the MCP is registered with
+// --bearer-token-env-var since `codex mcp add` has no static-header flag.
+func TestInstallCodexCore(t *testing.T) {
+	inst, rr, dir := newTestInstallerFor(t, codexKit, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", hookAsset} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			t.Errorf("expected %s written: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "commands")); err == nil {
+		t.Error("codex install wrote a commands/ dir; codex reads prompts/")
+	}
+
+	wantCmd := "bash " + filepath.Join(dir, hookAsset)
+	if !stopHookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
+		t.Errorf("Stop hook %q not registered in hooks.json", wantCmd)
+	}
+
+	// AGENTS.md must hold the protocol itself: an @import line would be inert.
+	agentsMd, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if strings.Contains(string(agentsMd), memoryImportLine) {
+		t.Errorf("AGENTS.md uses an @import, which codex does not resolve: %q", agentsMd)
+	}
+	if !strings.Contains(string(agentsMd), "agentsmemory — operating protocol") {
+		t.Errorf("AGENTS.md does not carry the inlined protocol: %q", agentsMd)
+	}
+
+	// The token is persisted for the wrapper to export, and must not be readable
+	// by anyone else — codex reads it from the environment, not from its config.
+	tokenPath := filepath.Join(dir, codexTokenFile)
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat %s: %v", codexTokenFile, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("%s mode = %#o, want 0600", codexTokenFile, perm)
+	}
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(raw)), codexTokenEnvVar+"=TESTTOK"; got != want {
+		t.Errorf("token file = %q, want %q", got, want)
+	}
+
+	want := []string{
+		"mcp remove agentsmemory",
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+	}
+	if got := renderAll(rr.calls); !equalStrings(got, want) {
+		t.Errorf("command sequence mismatch\n got: %v\nwant: %v", got, want)
+	}
+
+	// Registration must land in the config dir we are installing into.
+	for _, c := range rr.calls {
+		if len(c.env) == 0 || c.env[0] != "CODEX_HOME="+dir {
+			t.Errorf("call %q missing CODEX_HOME=%s env, got %v", c.rendered(), dir, c.env)
+		}
+	}
+}
+
+// TestInstallCodexRecommended pins the codex extension set: codebase-memory only,
+// registered in codex's stdio form, with no Claude plugin-marketplace calls.
+func TestInstallCodexRecommended(t *testing.T) {
+	inst, rr, _ := newTestInstallerFor(t, codexKit, true)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	want := []string{
+		"mcp remove agentsmemory",
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+		"SHELL: " + codebaseMemoryInstall,
+		"mcp remove codebasememory",
+		"mcp add codebasememory -- " + expandTilde(codebaseMemoryBin),
+	}
+	if got := renderAll(rr.calls); !equalStrings(got, want) {
+		t.Errorf("recommended sequence mismatch\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// TestResolveInstallTargetCodex checks the global default follows the agent:
+// ~/.codex, not ~/.claude. A sandbox stays one shared dir — the two agents never
+// collide on a filename — so `--agent both --sandbox x` yields a single config.
+func TestResolveInstallTargetCodex(t *testing.T) {
+	home := "/home/u"
+	target, _, _, err := resolveInstallTarget(codexKit, true, "", "", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".codex"); target != want {
+		t.Errorf("codex global target = %q, want %q", target, want)
+	}
+
+	target, sandbox, _, err := resolveInstallTarget(codexKit, false, "proj", "", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != sandboxDir("proj") || sandbox != "proj" {
+		t.Errorf("codex sandbox target = (%q, %q), want (%q, proj)", target, sandbox, sandboxDir("proj"))
+	}
+}
+
+func TestResolveAgentKits(t *testing.T) {
+	// No --agent must keep the pre-codex behaviour: Claude, nothing else.
+	for _, name := range []string{"", "claude", "CLAUDE"} {
+		kits, err := resolveAgentKits(name)
+		if err != nil {
+			t.Fatalf("resolveAgentKits(%q): %v", name, err)
+		}
+		if len(kits) != 1 || kits[0].name != agentClaude {
+			t.Errorf("resolveAgentKits(%q) = %+v, want just claude", name, kits)
+		}
+	}
+	kits, err := resolveAgentKits("both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kits) != 2 || kits[0].name != agentClaude || kits[1].name != agentCodex {
+		t.Errorf("resolveAgentKits(both) = %+v, want [claude codex]", kits)
+	}
+	if _, err := resolveAgentKits("gemini"); err == nil {
+		t.Error("resolveAgentKits(gemini) = nil error, want a rejection")
+	}
+	if _, err := resolveAgentKit("both"); err == nil {
+		t.Error("resolveAgentKit(both) = nil error, want a rejection (run launches one agent)")
 	}
 }
 
