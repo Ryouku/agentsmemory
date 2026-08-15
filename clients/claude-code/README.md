@@ -95,9 +95,10 @@ hint so you can add it later.
 ## Commands
 
 ```text
-aiagentmemory install [flags]     install the kit (global, or --sandbox <name>)
-aiagentmemory run <name> [args]   run Claude against sandbox ~/.sandboxes/<name>
-aiagentmemory wrap [args]         run Claude against the global config
+aiagentmemory install [flags]        install the kit (global, or --sandbox <name>)
+aiagentmemory run <name> [args]      run Claude against sandbox ~/.sandboxes/<name>
+aiagentmemory run claude [args]      no such sandbox → run Claude against the global config
+aiagentmemory wrap [args]            run Claude against the global config
 ```
 
 ### `install` flags
@@ -136,6 +137,34 @@ override.
 
 The Claude CLI it drives is resolved from `AIAGENTMEMORY_CLAUDE_BIN`, then
 `claude` on `PATH`.
+
+### `run` with an agent name
+
+`<name>` is a sandbox first. If no `~/.sandboxes/<name>` exists and the name is a
+known agent CLI (`claude`, `codex`, `gemini`), `run` launches that agent against
+the global config instead of erroring — so the obvious line just works:
+
+```bash
+aiagentmemory run claude              # no sandbox called "claude" → global config
+aiagentmemory run claude -p "hi"      # args still pass through
+```
+
+Any other unknown name keeps the old behaviour and points you at
+`install --sandbox <name>`. A sandbox always wins: create `~/.sandboxes/claude`
+and `run claude` means that sandbox.
+
+### Environment variables
+
+The agent replaces this process (`exec`) and inherits your **full environment**,
+so anything you export or prefix reaches Claude unchanged:
+
+```bash
+SET_NEW_ENV=1 aiagentmemory run acme          # SET_NEW_ENV=1 is visible to claude
+ANTHROPIC_MODEL=... aiagentmemory run claude  # so is this
+```
+
+The only variable `run` adds is `CLAUDE_CONFIG_DIR`, set to the sandbox dir (and
+left alone in global mode).
 
 ## The Stop hook
 
