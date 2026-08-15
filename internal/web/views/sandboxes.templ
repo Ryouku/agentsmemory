@@ -1,0 +1,309 @@
+package views
+
+// SandboxesPage is the public guide at /sandboxes: how to give each supported
+// agent CLI its own isolated agentsmemory install. Like LandingPage it is a
+// self-contained document (its own <head>, canonical and Open Graph tags) rather
+// than the authenticated Layout, and it reuses the landing nav, footer and the
+// embedded "The Archive" stylesheet so it reads as part of the same site.
+//
+// The agent switcher is pure datastar: every panel is server-rendered once and
+// toggled by the front-end-only _agent signal (the "_" prefix keeps it off the
+// wire). No round-trip is warranted — the content is static and the DOM is
+// stable, which is exactly the case where signals beat a morph. The comparison
+// table below the switcher repeats every agent's essentials unconditionally, so
+// the page stays complete even if the datastar runtime never loads.
+templ SandboxesPage(d LandingData) {
+	<!DOCTYPE html>
+	<html lang="en">
+		@sandboxesHead()
+		<body class="lp">
+			<a class="skip" href="#main">Skip to content</a>
+			@landingNavbar(d)
+			<main id="main">
+				@sandboxesHero()
+				@sandboxesWhy()
+				@sandboxesSwitcher()
+				@sandboxesMatrix()
+				@sandboxesEveryAgent()
+			</main>
+			@landingFooter()
+		</body>
+	</html>
+}
+
+// sandboxesHead is the document head for the guide. It carries its own canonical
+// and social tags so the page is shareable and indexable in its own right — this
+// is the page that answers "how do I sandbox <agent>", a query the landing page
+// does not target.
+templ sandboxesHead() {
+	<head>
+		<meta charset="utf-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1"/>
+		<title>Sandboxed installs — Claude Code, Codex and pi | AI Agent Memory</title>
+		<meta
+			name="description"
+			content="Give each project its own agent config: install the agentsmemory kit into an isolated sandbox for Claude Code, Codex or pi, with the MCP, slash commands and session memory scoped to that project alone."
+		/>
+		<meta
+			name="keywords"
+			content="Claude Code sandbox, codex sandbox, pi coding agent, CLAUDE_CONFIG_DIR, CODEX_HOME, PI_CODING_AGENT_DIR, isolated agent config, MCP install, agent memory"
+		/>
+		<meta name="robots" content="index, follow"/>
+		<meta name="theme-color" content="#15120d"/>
+		<link rel="canonical" href={ templ.SafeURL(siteURL + "/sandboxes") }/>
+		<meta property="og:type" content="article"/>
+		<meta property="og:site_name" content="AI Agent Memory"/>
+		<meta property="og:title" content="Sandboxed installs for Claude Code, Codex and pi"/>
+		<meta property="og:description" content="One sandbox per project: isolated commands, settings, MCP servers and token for whichever agent CLI you run."/>
+		<meta property="og:url" content={ siteURL + "/sandboxes" }/>
+		<meta name="twitter:card" content="summary"/>
+		<meta name="twitter:title" content="Sandboxed installs for Claude Code, Codex and pi"/>
+		<meta name="twitter:description" content="One sandbox per project: isolated commands, settings, MCP servers and token for whichever agent CLI you run."/>
+		<link rel="preconnect" href="https://fonts.googleapis.com"/>
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+		<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+		<link rel="stylesheet" href={ templ.SafeURL(staticURL("/static/app.css")) }/>
+		<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"></script>
+	</head>
+}
+
+// sandboxesHero states the idea and shows the one command that starts it. The
+// copy button flashes through the shared _copiedKey signal, which every copy
+// button on this page uses — one signal keyed by target beats one boolean per
+// button when the buttons are generated in a loop.
+templ sandboxesHero() {
+	<section class="lp-section sb-hero" data-signals="{_copiedKey: ''}">
+		<div class="lp-wrap lp-start-grid">
+			<div>
+				<p class="eyebrow">Sandboxed installs</p>
+				<h1 class="sb-title">One sandbox per project. Whichever agent you run.</h1>
+				<p class="lp-head-sub">
+					A sandbox is a complete agent config of its own — commands, settings, MCP
+					servers and workspace token — living under
+					<span class="mono">~/.sandboxes/&lt;name&gt;</span>. Your global agent stays
+					exactly as it was, and the project's memory never mixes with anyone else's.
+				</p>
+				<p class="lp-start-links">
+					<a href="/claude-guide">Hand the install to an agent → <span class="mono">/claude-guide</span></a>
+				</p>
+			</div>
+			<div class="lp-code card">
+				<div class="lp-code-head">
+					<span class="kv">curl · bash</span>
+					@sbCopyButton(landingInstallCmd, "hero", "Copy the install one-liner")
+				</div>
+				<pre class="cmd"><code>{ landingInstallCmd }</code></pre>
+			</div>
+		</div>
+	</section>
+}
+
+// sandboxesWhy is the two-card case for isolation, reusing the landing model-card
+// grid so the guide inherits the same rhythm as the front page.
+templ sandboxesWhy() {
+	<section class="lp-section lp-section-alt">
+		<div class="lp-wrap">
+			<header class="lp-head">
+				<p class="eyebrow">Why isolate</p>
+				<h2>Two modes, one installer</h2>
+				<p class="lp-head-sub">
+					Every command below works either way. Add <span class="mono">--sandbox</span>
+					to get an isolated config, or leave it off to wire the kit into the agent
+					you already run.
+				</p>
+			</header>
+			<div class="lp-model-grid">
+				for _, g := range sandboxWhy() {
+					<article class="lp-model card">
+						<h3>{ g.Title }</h3>
+						<p class="lp-def-k">{ g.Cmd }</p>
+						<ul class="lp-plan-list">
+							for _, it := range g.Items {
+								<li>{ it }</li>
+							}
+						</ul>
+					</article>
+				}
+			</div>
+		</div>
+	</section>
+}
+
+// sandboxesSwitcher is the per-agent detail. The buttons are a toggle group
+// (aria-pressed) rather than an ARIA tablist: every button stays in the tab order
+// and activates with Enter or Space, so the pattern is keyboard-complete without
+// hand-rolled roving-tabindex JavaScript — which is the sort of thing datastar
+// exists to avoid.
+templ sandboxesSwitcher() {
+	<section class="lp-section" id="agents" data-signals="{_agent: 'claude'}">
+		<div class="lp-wrap">
+			<header class="lp-head">
+				<p class="eyebrow">Per agent</p>
+				<h2>What lands where</h2>
+				<p class="lp-head-sub">
+					The three CLIs are structurally alike and diverge in exactly two places:
+					how they authenticate an HTTP MCP server, and whether they have hooks at
+					all. Pick yours.
+				</p>
+			</header>
+			<div class="sb-switch" role="group" aria-label="Choose an agent">
+				for _, a := range sandboxAgents() {
+					<button
+						class="sb-switch-btn"
+						type="button"
+						data-class={ "{'is-on': $_agent === '" + a.Key + "'}" }
+						data-attr:aria-pressed={ "$_agent === '" + a.Key + "' ? 'true' : 'false'" }
+						data-on:click={ "$_agent = '" + a.Key + "'" }
+					>
+						{ a.Name }
+					</button>
+				}
+			</div>
+			for i, a := range sandboxAgents() {
+				@sandboxesPanel(a, i == 0)
+			}
+		</div>
+	</section>
+}
+
+// sandboxesPanel renders one agent's install, launch, spec sheet and caveats.
+// Only the first panel is visible before datastar boots: rendering all three
+// visible would flash the whole page on load, and the comparison table below
+// carries the same facts for anyone whose runtime never arrives.
+templ sandboxesPanel(a sandboxAgent, first bool) {
+	<div
+		class="sb-panel"
+		data-show={ "$_agent === '" + a.Key + "'" }
+		if !first {
+			style="display:none"
+		}
+	>
+		<p class="sb-panel-lede">{ a.Tagline }</p>
+		<div class="sb-cmds">
+			<div class="lp-code card">
+				<div class="lp-code-head">
+					<span class="kv">install</span>
+					@sbCopyButton(a.Install, a.Key+"-install", "Copy the "+a.Name+" install command")
+				</div>
+				<pre class="cmd"><code>{ a.Install }</code></pre>
+			</div>
+			<div class="lp-code card">
+				<div class="lp-code-head">
+					<span class="kv">launch</span>
+					@sbCopyButton(a.Launch, a.Key+"-launch", "Copy the "+a.Name+" launch command")
+				</div>
+				<pre class="cmd"><code>{ a.Launch }</code></pre>
+			</div>
+		</div>
+		<dl class="lp-cmd-ref sb-spec">
+			for _, s := range a.Specs {
+				<div class="lp-cmd-row">
+					<dt><code>{ s.K }</code></dt>
+					<dd>{ s.V }</dd>
+				</div>
+			}
+		</dl>
+		<ul class="sb-notes">
+			for _, n := range a.Notes {
+				<li>{ n }</li>
+			}
+		</ul>
+	</div>
+}
+
+// sbCopyButton is the copy control shared by every command block on the page. It
+// writes to the clipboard and flashes by setting _copiedKey to this button's key,
+// so any number of buttons share one signal and only the clicked one confirms.
+templ sbCopyButton(cmd, key, label string) {
+	<button
+		class="btn btn-ghost btn-sm"
+		type="button"
+		data-on:click={ clipboardExprKey(cmd, key) }
+		aria-label={ label }
+	>
+		<span data-show={ "$_copiedKey !== '" + key + "'" }>Copy</span>
+		<span data-show={ "$_copiedKey === '" + key + "'" } style="display:none">Copied ✓</span>
+	</button>
+}
+
+// sandboxesMatrix is the at-a-glance comparison. It is always rendered (no
+// signal gating) so the page answers the question even with scripting off, and it
+// scrolls inside its own container rather than pushing the document sideways on a
+// phone.
+templ sandboxesMatrix() {
+	<section class="lp-section lp-section-alt" id="compare">
+		<div class="lp-wrap">
+			<header class="lp-head">
+				<p class="eyebrow">Side by side</p>
+				<h2>The whole matrix</h2>
+				<p class="lp-head-sub">
+					Same kit, three shapes. The last row is the one that matters: pi has no MCP
+					client of its own, so the installer ships a bridge extension that registers
+					our tools natively.
+				</p>
+			</header>
+			<div class="sb-table-wrap">
+				<table class="sb-table">
+					<caption class="sb-table-cap">Where the agentsmemory kit lands in each agent CLI</caption>
+					<thead>
+						<tr>
+							<th scope="col">Piece</th>
+							for _, a := range sandboxAgents() {
+								<th scope="col">{ a.Name }</th>
+							}
+						</tr>
+					</thead>
+					<tbody>
+						for row, label := range sandboxSpecLabels() {
+							<tr>
+								<th scope="row">{ label }</th>
+								for _, a := range sandboxAgents() {
+									<td>{ a.Specs[row].V }</td>
+								}
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</section>
+}
+
+// sandboxesEveryAgent closes with the multi-agent install and the launcher
+// reference, so a reader who runs more than one CLI leaves with one command.
+templ sandboxesEveryAgent() {
+	<section class="lp-section" id="every-agent" data-signals="{_copiedKey: ''}">
+		<div class="lp-wrap lp-start-grid">
+			<div>
+				<p class="eyebrow">More than one</p>
+				<h2>Install for every agent at once</h2>
+				<p class="lp-head-sub">
+					A sandbox is one directory that all three agents can share: they never
+					collide on a filename, so <span class="mono">--agent all</span> gives you a
+					single config three CLIs can open. <span class="mono">--agent both</span>
+					stays what it always was — Claude and Codex.
+				</p>
+				<p class="lp-start-links">
+					<a href={ templ.SafeURL(repoURL) } rel="noopener" target="_blank">Kit README on GitHub ↗</a>
+				</p>
+			</div>
+			<div class="lp-code card">
+				<div class="lp-code-head">
+					<span class="kv">shell</span>
+					@sbCopyButton(sandboxAllCmd, "all", "Copy the all-agents install command")
+				</div>
+				<pre class="cmd"><code>{ sandboxAllCmd }</code></pre>
+			</div>
+		</div>
+		<div class="lp-wrap">
+			<dl class="lp-cmd-ref">
+				for _, c := range sandboxCommands() {
+					<div class="lp-cmd-row">
+						<dt><code>{ c.Cmd }</code></dt>
+						<dd>{ c.Desc }</dd>
+					</div>
+				}
+			</dl>
+		</div>
+	</section>
+}

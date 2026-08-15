@@ -79,7 +79,7 @@ func newTestInstallerFor(t *testing.T, kit agentKit, recommended bool) (*Install
 
 func TestAssetsEmbedded(t *testing.T) {
 	// The shipped assets must be embedded; the retired agentsmemory.md must not be.
-	for _, name := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookAsset, bootstrapAsset} {
+	for _, name := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookAsset, bootstrapAsset, piExtensionAsset} {
 		data, err := assets.ReadFile(name)
 		if err != nil {
 			t.Fatalf("asset %s not embedded: %v", name, err)
@@ -394,25 +394,25 @@ func TestInstallCodexCore(t *testing.T) {
 
 	// The token is persisted for the wrapper to export, and must not be readable
 	// by anyone else — codex reads it from the environment, not from its config.
-	tokenPath := filepath.Join(dir, codexTokenFile)
+	tokenPath := filepath.Join(dir, tokenFile)
 	info, err := os.Stat(tokenPath)
 	if err != nil {
-		t.Fatalf("stat %s: %v", codexTokenFile, err)
+		t.Fatalf("stat %s: %v", tokenFile, err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("%s mode = %#o, want 0600", codexTokenFile, perm)
+		t.Errorf("%s mode = %#o, want 0600", tokenFile, perm)
 	}
 	raw, err := os.ReadFile(tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(raw)), codexTokenEnvVar+"=TESTTOK"; got != want {
+	if got, want := strings.TrimSpace(string(raw)), tokenEnvVar+"=TESTTOK"; got != want {
 		t.Errorf("token file = %q, want %q", got, want)
 	}
 
 	want := []string{
 		"mcp remove agentsmemory",
-		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + tokenEnvVar,
 	}
 	if got := renderAll(rr.calls); !equalStrings(got, want) {
 		t.Errorf("command sequence mismatch\n got: %v\nwant: %v", got, want)
@@ -436,7 +436,7 @@ func TestInstallCodexRecommended(t *testing.T) {
 
 	want := []string{
 		"mcp remove agentsmemory",
-		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + codexTokenEnvVar,
+		"mcp add agentsmemory --url " + defaultMCPURL + " --bearer-token-env-var " + tokenEnvVar,
 		"SHELL: " + codebaseMemoryInstall,
 		"mcp remove codebasememory",
 		"mcp add codebasememory -- " + expandTilde(codebaseMemoryBin),
@@ -468,6 +468,91 @@ func TestResolveInstallTargetCodex(t *testing.T) {
 	}
 }
 
+// TestInstallPiCore covers the pi layout end to end. pi is the agent with no MCP
+// client and no hooks, so the install must land the bridge extension, persist the
+// endpoint alongside the token for it to read, and drive no agent CLI at all —
+// there is no `pi mcp add` to call.
+func TestInstallPiCore(t *testing.T) {
+	inst, rr, dir := newTestInstallerFor(t, piKit, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", piExtensionAsset} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
+			t.Errorf("expected %s written: %v", rel, err)
+		}
+	}
+
+	// No hook script and no hook JSON: pi has neither, and a stray .sh would only
+	// suggest a gate that never fires.
+	if _, err := os.Stat(filepath.Join(dir, hookAsset)); err == nil {
+		t.Error("pi install wrote a Stop-hook script; pi has no hook system")
+	}
+	for _, name := range []string{"settings.json", "hooks.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("pi install wrote %s; pi registers no hooks", name)
+		}
+	}
+
+	// AGENTS.md must hold the protocol itself — pi resolves no @import either.
+	agentsMd, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if strings.Contains(string(agentsMd), memoryImportLine) {
+		t.Errorf("AGENTS.md uses an @import, which pi does not resolve: %q", agentsMd)
+	}
+	if !strings.Contains(string(agentsMd), "agentsmemory — operating protocol") {
+		t.Errorf("AGENTS.md does not carry the inlined protocol: %q", agentsMd)
+	}
+
+	// The extension reads both the token and the endpoint from the environment,
+	// so both are persisted, and only the owner may read them.
+	tokenPath := filepath.Join(dir, tokenFile)
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat %s: %v", tokenFile, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("%s mode = %#o, want 0600", tokenFile, perm)
+	}
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := tokenEnvVar + "=TESTTOK\n" + mcpURLEnvVar + "=" + defaultMCPURL + "\n"
+	if string(raw) != want {
+		t.Errorf("token file = %q, want %q", raw, want)
+	}
+
+	if got := renderAll(rr.calls); len(got) != 0 {
+		t.Errorf("pi install ran agent CLI commands %v, want none (pi has no mcp subcommand)", got)
+	}
+}
+
+// TestInstallPiRecommended pins that --recommended adds nothing for pi: the
+// codebase-memory MCP is stdio and the eidos/codex plugins are Claude
+// marketplaces, so neither has anything to attach to.
+func TestInstallPiRecommended(t *testing.T) {
+	inst, rr, _ := newTestInstallerFor(t, piKit, true)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := renderAll(rr.calls); len(got) != 0 {
+		t.Errorf("pi --recommended ran %v, want no commands", got)
+	}
+}
+
+// TestPiGlobalConfigDirNested checks the one structural difference in pi's kit:
+// its default config dir is two levels deep, so globalDir carries a separator.
+func TestPiGlobalConfigDirNested(t *testing.T) {
+	home := "/home/u"
+	if got, want := piKit.globalConfigDir(home), filepath.Join(home, ".pi", "agent"); got != want {
+		t.Errorf("piKit.globalConfigDir = %q, want %q", got, want)
+	}
+}
+
 func TestResolveAgentKits(t *testing.T) {
 	// No --agent must keep the pre-codex behaviour: Claude, nothing else.
 	for _, name := range []string{"", "claude", "CLAUDE"} {
@@ -483,9 +568,28 @@ func TestResolveAgentKits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// "both" predates pi and must keep meaning exactly Claude + codex, so an
+	// existing script never grows a third install target behind the user's back.
 	if len(kits) != 2 || kits[0].name != agentClaude || kits[1].name != agentCodex {
 		t.Errorf("resolveAgentKits(both) = %+v, want [claude codex]", kits)
 	}
+
+	kits, err = resolveAgentKits("pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kits) != 1 || kits[0].name != agentPi {
+		t.Errorf("resolveAgentKits(pi) = %+v, want just pi", kits)
+	}
+
+	kits, err = resolveAgentKits("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kits) != 3 || kits[0].name != agentClaude || kits[1].name != agentCodex || kits[2].name != agentPi {
+		t.Errorf("resolveAgentKits(all) = %+v, want [claude codex pi]", kits)
+	}
+
 	if _, err := resolveAgentKits("gemini"); err == nil {
 		t.Error("resolveAgentKits(gemini) = nil error, want a rejection")
 	}

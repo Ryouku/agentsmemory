@@ -123,6 +123,9 @@ func (s *Server) Routes(r chi.Router) {
 	// fetch and follow (see guide.go). It needs no session, so it sits outside the
 	// authenticated group alongside the landing page.
 	r.Get("/claude-guide", s.handleClaudeGuide)
+	// Public per-agent sandbox guide (Claude Code, Codex, pi). Marketing content
+	// like the landing page, so it sits here rather than behind a session.
+	r.Get("/sandboxes", s.handleSandboxes)
 	r.Get("/register", s.getRegister)
 	r.Post("/register", s.postRegister)
 	r.Get("/login", s.getLogin)
@@ -237,6 +240,18 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	_, signedIn := s.sessionUserID(r)
 	s.render(w, r, views.LandingPage(views.LandingData{
 		HasOAuth: len(s.providers) > 0, // mention social login when wired
+		SignedIn: signedIn,
+	}))
+}
+
+// handleSandboxes serves the public /sandboxes guide: how to install the kit
+// into an isolated per-project config for each supported agent CLI. Like the
+// landing page it reads the session only to decide whether the nav offers
+// "Dashboard" or "Sign in".
+func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
+	_, signedIn := s.sessionUserID(r)
+	s.render(w, r, views.SandboxesPage(views.LandingData{
+		HasOAuth: len(s.providers) > 0,
 		SignedIn: signedIn,
 	}))
 }

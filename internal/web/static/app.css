@@ -849,3 +849,55 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .pk-meta { color: var(--faint); font-size: .78rem; font-variant-numeric: tabular-nums; }
 .pk-empty { color: var(--muted); font-size: .92rem; margin: .2rem 0 1.4rem; }
 .pk-add { border-top: 1px solid var(--line); padding-top: 1.3rem; }
+
+/* ---------------------------------------------------------------------------
+   /sandboxes — the per-agent install guide.
+
+   Everything structural is borrowed from the landing system (.lp-wrap,
+   .lp-section, .lp-code, .lp-cmd-ref); only the agent switcher, the panel
+   spacing, the caveat list and the comparison table are new. The table is the
+   one piece that can outgrow a phone, so it scrolls inside its own container —
+   the document itself never scrolls sideways.
+--------------------------------------------------------------------------- */
+.sb-hero { padding-top: clamp(2.5rem, 6vw, 4.5rem); }
+.sb-title { font-size: clamp(2rem, 4.6vw, 3.1rem); line-height: 1.06; margin: 0 0 .2rem; }
+
+/* Agent switcher: a toggle-button group, so every option stays in the tab order
+   and Enter/Space activates it with no scripted focus management. */
+.sb-switch { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 2rem; }
+.sb-switch-btn {
+  font: 500 .92rem/1 "IBM Plex Sans", sans-serif;
+  min-height: 44px; padding: .7rem 1.15rem;
+  color: var(--muted); background: rgba(0,0,0,.2);
+  border: 1px solid var(--line); border-radius: 999px;
+  cursor: pointer; transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+.sb-switch-btn:hover { color: var(--bone); border-color: var(--line-2); }
+.sb-switch-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+.sb-switch-btn.is-on {
+  color: var(--ember-ink); background: var(--ember);
+  border-color: var(--ember); font-weight: 600;
+}
+
+.sb-panel-lede { color: var(--bone); font-size: 1.02rem; line-height: 1.6; margin: 0 0 1.6rem; max-width: 62ch; }
+.sb-cmds { display: grid; gap: 1rem; }
+@media (min-width: 860px) { .sb-cmds { grid-template-columns: 1fr 1fr; } }
+.sb-spec { margin-top: 1.8rem; }
+
+/* Caveats, not features — a dash rather than the .lp-plan-list checkmark, which
+   would read as "this is included". */
+.sb-notes { list-style: none; margin: 1.6rem 0 0; padding: 0; display: grid; gap: .7rem; }
+.sb-notes li {
+  color: var(--muted); font-size: .92rem; line-height: 1.55;
+  padding-left: 1.4rem; position: relative; max-width: 78ch;
+}
+.sb-notes li::before { content: "—"; position: absolute; left: 0; color: var(--brass); }
+
+.sb-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(0,0,0,.14); }
+.sb-table { width: 100%; border-collapse: collapse; min-width: 46rem; }
+.sb-table-cap { text-align: left; padding: .9rem 1rem; color: var(--faint); font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
+.sb-table th, .sb-table td { text-align: left; padding: .85rem 1rem; border-top: 1px solid var(--line); vertical-align: top; }
+.sb-table thead th { color: var(--bone); font-weight: 600; font-size: .92rem; background: rgba(0,0,0,.22); }
+.sb-table tbody th { color: var(--brass); font-weight: 500; font-size: .88rem; white-space: nowrap; }
+.sb-table td { color: var(--muted); font-size: .88rem; line-height: 1.5; }
+.sb-table tbody tr:hover td, .sb-table tbody tr:hover th { background: rgba(255,255,255,.02); }

@@ -22,6 +22,7 @@ func TestPlanRun(t *testing.T) {
 		{"sandbox named claude still wins", "claude", true, "", sandboxDir("claude"), false},
 		{"agent fallback", "claude", false, "claude", "", false},
 		{"other allowlisted agent", "codex", false, "codex", "", false},
+		{"pi allowlisted", "pi", false, "pi", "", false},
 		{"unknown name keeps install hint", "acme", false, "", "", true},
 		{"invalid name rejected", "../escape", false, "", "", true},
 	}
@@ -134,20 +135,20 @@ func TestTakeAgentFlag(t *testing.T) {
 // variable rather than append a losing duplicate.
 func TestTokenEnvAndSetEnv(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, codexTokenFile),
-		[]byte("# comment\n\n"+codexTokenEnvVar+"=TOK\nbroken-line\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, tokenFile),
+		[]byte("# comment\n\n"+tokenEnvVar+"=TOK\nbroken-line\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := tokenEnv(dir)
-	if len(got) != 1 || got[codexTokenEnvVar] != "TOK" {
-		t.Errorf("tokenEnv = %v, want just %s=TOK", got, codexTokenEnvVar)
+	if len(got) != 1 || got[tokenEnvVar] != "TOK" {
+		t.Errorf("tokenEnv = %v, want just %s=TOK", got, tokenEnvVar)
 	}
 	if missing := tokenEnv(filepath.Join(dir, "nope")); missing != nil {
 		t.Errorf("tokenEnv(missing dir) = %v, want nil", missing)
 	}
 
-	env := setEnv([]string{"PATH=/bin", codexTokenEnvVar + "=STALE"}, codexTokenEnvVar, "FRESH")
-	if !equalStrings(env, []string{"PATH=/bin", codexTokenEnvVar + "=FRESH"}) {
+	env := setEnv([]string{"PATH=/bin", tokenEnvVar + "=STALE"}, tokenEnvVar, "FRESH")
+	if !equalStrings(env, []string{"PATH=/bin", tokenEnvVar + "=FRESH"}) {
 		t.Errorf("setEnv did not replace the existing entry: %v", env)
 	}
 	if env := setEnv([]string{"PATH=/bin"}, "NEW", "1"); !equalStrings(env, []string{"PATH=/bin", "NEW=1"}) {

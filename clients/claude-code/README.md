@@ -1,15 +1,16 @@
 # agentsmemory — agent kit (`aiagentmemory`)
 
-A single binary that wires [Claude Code](https://claude.com/claude-code) — or
-[Codex](https://developers.openai.com/codex) — into your **agentsmemory**
-workspace: it installs the memory-grounded slash commands and the Stop hook,
-registers the agentsmemory MCP, and can optionally pull in the recommended
-companion tools. It also wraps the agent CLI so each project can run against its
-own isolated configuration.
+A single binary that wires [Claude Code](https://claude.com/claude-code),
+[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
+**agentsmemory** workspace: it installs the memory-grounded slash commands and the
+Stop hook, registers the agentsmemory MCP, and can optionally pull in the
+recommended companion tools. It also wraps the agent CLI so each project can run
+against its own isolated configuration.
 
-Claude is the default; `--agent codex` installs the same kit into codex's own
-layout, and `--agent both` does both. Everything below describes Claude unless a
-codex column or the [Codex](#codex) section says otherwise.
+Claude is the default; `--agent codex` and `--agent pi` install the same kit into
+those CLIs' own layouts, `--agent both` does Claude + codex (what it always meant)
+and `--agent all` does all three. Everything below describes Claude unless a
+per-agent column or the [Codex](#codex) / [pi](#pi) section says otherwise.
 
 It replaces the old `install.sh` shell installer — everything now ships inside
 one downloadable binary, `aiagentmemory`.
@@ -103,9 +104,11 @@ hint so you can add it later.
 ```text
 aiagentmemory install [flags]                  install the kit (global, or --sandbox <name>)
 aiagentmemory install --agent codex [flags]    same, into ~/.codex (or --agent both)
+aiagentmemory install --agent pi [flags]       same, into ~/.pi/agent (or --agent all)
 aiagentmemory update [flags]                   replace the binary in place (configs untouched)
 aiagentmemory run <name> [args]                run Claude against sandbox ~/.sandboxes/<name>
 aiagentmemory run --agent codex <name> [args]  run codex against that sandbox (pins CODEX_HOME)
+aiagentmemory run --agent pi <name> [args]     run pi against that sandbox (pins PI_CODING_AGENT_DIR)
 aiagentmemory run claude [args]                no such sandbox → run Claude against the global config
 aiagentmemory wrap [args]                      run Claude against the global config
 aiagentmemory wrap --agent codex [args]        run codex against ~/.codex
@@ -118,7 +121,7 @@ the sandbox name is forwarded to the agent untouched.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--agent <name>` | `claude` | Agent to install for: `claude`, `codex`, or `both`. |
+| `--agent <name>` | `claude` | Agent to install for: `claude`, `codex`, `pi`, `both` (claude+codex) or `all`. |
 | `--global` | — | Install into the agent's global config dir non-interactively (skips the mode prompt); mutually exclusive with `--sandbox`/`--claude-dir`. |
 | `--sandbox <name>` | — | Install into `~/.sandboxes/<name>` (isolated mode). |
 | `--recommended` | off | Also install codebase-memory, eidos, codex (eidos + codex are Claude-only). |
@@ -127,6 +130,7 @@ the sandbox name is forwarded to the agent untouched.
 | `--scope <scope>` | `user` | Claude MCP/plugin scope: `user`, `local`, `project` (Claude only — codex has no scopes). |
 | `--claude-bin <bin>` | `$AIAGENTMEMORY_CLAUDE_BIN` → `claude` | Claude CLI to drive. |
 | `--codex-bin <bin>` | `$AIAGENTMEMORY_CODEX_BIN` → `codex` | codex CLI to drive. |
+| `--pi-bin <bin>` | `$AIAGENTMEMORY_PI_BIN` → `pi` | pi CLI to drive. |
 | `--claude-dir <dir>` | the agent's global dir | Override the target config dir (ignored with `--sandbox`). |
 | `--yes`, `-y` | off | Non-interactive: never prompt. |
 | `--dry-run` | off | Print the full plan without writing files or running commands. |
@@ -174,6 +178,55 @@ aiagentmemory run --agent codex myproject
 Both agents can share one sandbox (`--agent both --sandbox myproject`): they
 never collide on a filename, so `CLAUDE_CONFIG_DIR` and `CODEX_HOME` can point at
 the same directory.
+
+## pi
+
+`--agent pi` installs the same kit into [pi](https://pi.dev). Structurally pi
+looks like codex — `prompts/` for slash commands, `AGENTS.md` for always-on
+memory — with one difference that changes how the MCP is wired: **pi ships no MCP
+client and no hook system**, both deliberately ("intentionally does not include
+built-in MCP", pi's own docs). So the kit brings its own.
+
+| | Codex | pi |
+|---|---|---|
+| Config dir | `~/.codex`, relocated by `CODEX_HOME` | `~/.pi/agent`, relocated by `PI_CODING_AGENT_DIR` |
+| Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` (no namespace) |
+| Always-on memory | `AGENTS.md`, protocol inlined | `AGENTS.md`, protocol inlined (pi has no `@import` either) |
+| Stop hook | `hooks.json` | **none** — pi renamed `hooks/` to extensions |
+| Our MCP | `codex mcp add --bearer-token-env-var` | **bridged** by `extensions/agentsmemory.ts` |
+
+The bridge extension is written to `<config dir>/extensions/agentsmemory.ts`,
+where pi auto-discovers it. On startup it performs the MCP handshake against your
+workspace endpoint, lists the tools, and re-registers each one as a native pi
+tool — so `am_search`, `am_diary_write` and the rest are callable exactly as they
+are in Claude and codex. The same extension fires the end-of-turn memory
+checkpoint the Stop hook provides on the other two agents (`AGENTSMEMORY_STOP_HOOK=off`
+or `=once` still applies).
+
+Two pi-specific notes:
+
+1. **The token travels in the environment.** The install writes it plus the
+   endpoint to `<config dir>/agentsmemory.env` (mode `0600`), and
+   `aiagentmemory run --agent pi …` exports both. For plain `pi`, source it:
+
+   ```bash
+   set -a; . ~/.pi/agent/agentsmemory.env; set +a
+   ```
+
+2. **`--recommended` adds nothing.** codebase-memory is a stdio MCP server and
+   eidos/codex are Claude plugin marketplaces; pi takes neither. The installer
+   says so rather than pretending.
+
+A pi **sandbox** is the whole agent dir, `auth.json` included, so it starts with
+no provider credentials:
+
+```bash
+aiagentmemory install --agent pi --sandbox myproject
+aiagentmemory run --agent pi myproject      # sign in inside it, or pass --api-key
+```
+
+All three agents can share one sandbox (`--agent all --sandbox myproject`) — no
+two of them collide on a filename.
 
 ## Updating
 

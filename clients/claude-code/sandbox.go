@@ -49,6 +49,7 @@ var agentCLIs = map[string]bool{
 	"claude": true,
 	"codex":  true,
 	"gemini": true,
+	"pi":     true,
 }
 
 // launchPlan is the resolved outcome of `run <name>`: which agent binary to exec
@@ -130,18 +131,20 @@ func execAgent(kit agentKit, plan launchPlan, agentArgs []string) error {
 	return syscall.Exec(path, argv, env)
 }
 
-// tokenEnv reads the workspace token the codex install persisted in the config dir
-// and returns it as KEY→VALUE pairs to layer onto the launched agent. codex authes
-// its HTTP MCP server from an environment variable (bearer_token_env_var), so
-// without this the MCP would be registered but unauthenticated whenever the user
-// launches through us instead of exporting the variable in their shell.
+// tokenEnv reads the workspace token the install persisted in the config dir and
+// returns it as KEY→VALUE pairs to layer onto the launched agent. Two agents read
+// their MCP credentials from the environment rather than from their config: codex
+// authes its HTTP MCP server from bearer_token_env_var, and pi's bridge extension
+// reads the token and endpoint the same way. Without this the memory tools would
+// be installed but unauthenticated whenever the user launches through us instead
+// of exporting the variables in their shell.
 //
 // A missing or unreadable file yields nothing: the agent still launches and simply
 // reports the MCP as unauthenticated, which beats refusing to start the session.
 // The file is ours (written 0600 by the install), so it is parsed as plain
 // KEY=VALUE lines with no shell semantics.
 func tokenEnv(configDir string) map[string]string {
-	raw, err := os.ReadFile(filepath.Join(configDir, codexTokenFile))
+	raw, err := os.ReadFile(filepath.Join(configDir, tokenFile))
 	if err != nil {
 		return nil
 	}
@@ -192,10 +195,14 @@ func resolveAgentBin(kit agentKit, name string) (string, error) {
 // kitBinEnv is the environment override naming which build of the agent CLI to
 // run.
 func kitBinEnv(kit agentKit) string {
-	if kit.name == agentCodex {
+	switch kit.name {
+	case agentCodex:
 		return "AIAGENTMEMORY_CODEX_BIN"
+	case agentPi:
+		return "AIAGENTMEMORY_PI_BIN"
+	default:
+		return "AIAGENTMEMORY_CLAUDE_BIN"
 	}
-	return "AIAGENTMEMORY_CLAUDE_BIN"
 }
 
 // resolveClaudeBin decides which Claude CLI to drive. Precedence: an explicit

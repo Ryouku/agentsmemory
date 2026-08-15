@@ -471,6 +471,11 @@ templ landingInstall() {
 						isolated under <span class="mono">~/.sandboxes/&lt;name&gt;</span> — opened
 						any time with <span class="mono">run &lt;name&gt;</span>, no re-install.
 					</p>
+					<p>
+						Not on Claude Code? The same kit installs into <b>Codex</b> and <b>pi</b>
+						with <span class="mono">--agent</span>.
+						<a class="lp-guide-link" href="/sandboxes">See the sandbox guide → <span class="mono">/sandboxes</span></a>
+					</p>
 				</div>
 				<div class="lp-code card">
 					<div class="lp-code-head">
@@ -760,13 +765,16 @@ templ landingFooter() {
 				<a class="brand" href="/">ai<b>agent</b>memory<span class="dot">.</span></a>
 				<p>Long-term memory for AI agents — verbatim drawers, hybrid recall, served over MCP.</p>
 			</div>
+			// Root-absolute fragments: the footer is shared with /sandboxes, where a
+			// bare "#what" would resolve against that page instead of the landing one.
 			<nav class="lp-footer-links" aria-label="Footer">
-				<a href="#what">What it is</a>
-				<a href="#why">Why memory</a>
-				<a href="#model">Data model</a>
-				<a href="#features">Features</a>
-				<a href="#pricing">Pricing</a>
-				<a href="#faq">FAQ</a>
+				<a href="/#what">What it is</a>
+				<a href="/#why">Why memory</a>
+				<a href="/#model">Data model</a>
+				<a href="/#features">Features</a>
+				<a href="/#pricing">Pricing</a>
+				<a href="/#faq">FAQ</a>
+				<a href="/sandboxes">Sandboxed installs</a>
 				<a href="/claude-guide">Claude install guide</a>
 				<a href={ templ.SafeURL(repoURL) } rel="noopener" target="_blank">GitHub ↗</a>
 				<a href="/login">Sign in</a>
