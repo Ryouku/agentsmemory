@@ -123,3 +123,4 @@
 - 2026-08-15 `ec9f038` test(cli): cover the codex install path end to end
 - 2026-08-15 `704ae75` Merge feat/codex-install-namespace: install --agent codex|both
 - 2026-08-15 `337db2a` chore(changelog): record the codex install merge
+- 2026-08-15 `9d70102` chore(changelog): record the changelog commit itself
