@@ -1,10 +1,10 @@
 # agentsmemory — operating protocol (auto-loaded)
 
-This file is imported into your memory automatically every session (via the
-`@agentsmemory-bootstrap.md` line in `CLAUDE.md`), so this protocol applies
-**without you typing anything**. The `/am` and `/M` slash commands run the same
-grounding sequence scoped to a specific task (`/am <task>`); this file is the
-always-on baseline.
+This protocol is loaded into your memory every session — imported into `CLAUDE.md`
+on Claude Code, inlined into `AGENTS.md` on Codex — so it applies **without you
+typing anything**. The `am` and `M` slash commands (`/am <task>` on Claude,
+`/prompts:am <task>` on Codex) run the same grounding sequence scoped to a
+specific task; this file is the always-on baseline.
 
 Bias toward correctness, small diffs, and verified changes.
 
@@ -135,9 +135,10 @@ Before any broad `grep` / `search_code` / file sweep over unfamiliar code:
 for a tool whose exact shape you're unsure of — an `am_*` tool, a codebase-memory
 call, a skill, a CLI flag — `am_search` for its usage first (e.g.
 *"am_create_tunnel params"*). If memory explains how to call it, use that instead
-of guessing. Many tools load **deferred** (name only): recall that one
-`ToolSearch: "select:<tool_name>"` call loads the schema before the tool is
-callable. Write back any usage you worked out the hard way (Step 4).
+of guessing. On harnesses that load tools **deferred** (name only, no schema —
+Claude Code), recall that one `ToolSearch: "select:<tool_name>"` call loads the
+schema before the tool is callable. Write back any usage you worked out the hard
+way (Step 4).
 
 ## Step 2 — Plan
 
@@ -149,8 +150,9 @@ states, responsiveness, accessibility) as first-class items.
 
 ## Step 2b — Todo list (hard gate, ALWAYS, do not skip)
 
-Materialize the plan into a live todo list with the **`TodoWrite`** tool **before**
-you start changing code — one concrete, verifiable action per item. Emit
+Materialize the plan into a live todo list with your harness's todo/plan tool
+(`TodoWrite` on Claude Code, `update_plan` on Codex) **before** you start changing
+code — one concrete, verifiable action per item. Emit
 `todo list written ✓` after the first write. Drive the work off it: exactly one
 item `in_progress` at a time, marked `completed` the moment its check passes (test,
 build, lint, runtime output). Add new work you discover; never do it off-book.

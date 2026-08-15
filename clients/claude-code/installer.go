@@ -693,6 +693,11 @@ func (i *Installer) summary() {
 		return
 	}
 	fmt.Fprintln(i.out, "  - codex skips untrusted hooks: open /hooks in codex and trust the agentsmemory Stop hook")
+	if i.sandboxName != "" {
+		// A sandbox is a whole CODEX_HOME, and codex keeps auth.json there — so an
+		// isolated config starts logged out and every request 401s until you say so.
+		fmt.Fprintf(i.out, "  - a sandbox has its own login: CODEX_HOME=%s codex login\n", i.targetDir)
+	}
 	fmt.Fprintf(i.out, "  - launching plain `codex`? export the token first, e.g. add to your shell rc:\n")
 	fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.codexTokenPath())
 }
