@@ -470,7 +470,7 @@ select.input option { color: var(--bone); background: var(--ink-2); }
   backdrop-filter: blur(8px);
 }
 .lp-nav-inner { display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 1rem; position: relative; }
-.lp-links a { color: var(--bone); font-weight: 500; }
+.lp-links a { color: var(--bone); font-weight: 500; white-space: nowrap; }
 .lp-links a:hover { color: var(--ember); text-decoration: none; }
 .lp-links a:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(224,122,62,.35); border-radius: 6px; }
 .lp-ext { color: var(--muted) !important; }
@@ -501,7 +501,7 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 /* desktop: inline row, burger hidden */
 @media (min-width: 860px) {
   .lp-burger { display: none; }
-  .lp-links { display: flex; align-items: center; gap: 1.5rem; }
+  .lp-links { display: flex; align-items: center; gap: 1.25rem; }
 }
 
 /* ---- hero ---- */
@@ -901,3 +901,12 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .sb-table tbody th { color: var(--brass); font-weight: 500; font-size: .88rem; white-space: nowrap; }
 .sb-table td { color: var(--muted); font-size: .88rem; line-height: 1.5; }
 .sb-table tbody tr:hover td, .sb-table tbody tr:hover th { background: rgba(255,255,255,.02); }
+
+/* A runnable command inside a card. Deliberately NOT .lp-def-k: that style
+   uppercases its text, which is fine for a label but wrong for something the
+   reader is meant to type — `AIAGENTMEMORY INSTALL --AGENT PI` is not a command.
+   Long flags wrap instead of forcing the card wide. */
+.sb-card-cmd {
+  font-family: "IBM Plex Mono", monospace; font-size: .8rem; line-height: 1.5;
+  color: var(--brass); margin: 0 0 .9rem; overflow-wrap: anywhere;
+}

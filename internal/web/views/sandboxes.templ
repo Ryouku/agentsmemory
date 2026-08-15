@@ -23,6 +23,7 @@ templ SandboxesPage(d LandingData) {
 				@sandboxesHero()
 				@sandboxesWhy()
 				@sandboxesSwitcher()
+				@sandboxesInherit()
 				@sandboxesMatrix()
 				@sandboxesEveryAgent()
 			</main>
@@ -224,6 +225,50 @@ templ sbCopyButton(cmd, key, label string) {
 		<span data-show={ "$_copiedKey !== '" + key + "'" }>Copy</span>
 		<span data-show={ "$_copiedKey === '" + key + "'" } style="display:none">Copied ✓</span>
 	</button>
+}
+
+// sandboxesInherit answers the question a sandbox raises the moment it exists:
+// everything you had is gone. It pairs the two flags that fix that, and states
+// plainly that shared credentials cut both ways — a guide that hides the security
+// consequence of copying an auth token is not a guide.
+templ sandboxesInherit() {
+	<section class="lp-section" id="inherit">
+		<div class="lp-wrap">
+			<header class="lp-head">
+				<p class="eyebrow">Don't start from nothing</p>
+				<h2>Bring your logins with you</h2>
+				<p class="lp-head-sub">
+					A fresh sandbox is signed out, with no MCP servers, plugins or skills.
+					Copy that setup in once, or link the credentials so one login serves
+					every sandbox you have.
+				</p>
+			</header>
+			<div class="lp-model-grid">
+				for _, g := range sandboxInherit() {
+					<article class="lp-model card">
+						<h3>{ g.Title }</h3>
+						<p class="sb-card-cmd">{ g.Cmd }</p>
+						<ul class="lp-plan-list">
+							for _, it := range g.Items {
+								<li>{ it }</li>
+							}
+						</ul>
+					</article>
+				}
+			</div>
+			<ul class="sb-notes">
+				<li>
+					Copied credentials are real credentials: the sandbox can act as you
+					until you sign it out. Copy your own config, not a colleague's.
+				</li>
+				<li>
+					Linked credentials survive an agent that writes them in place. If one
+					ever replaces the link with a file, <span class="mono">aiagentmemory run</span>
+					says so at launch and prints the command that re-shares it.
+				</li>
+			</ul>
+		</div>
+	</section>
 }
 
 // sandboxesMatrix is the at-a-glance comparison. It is always rendered (no

@@ -984,6 +984,33 @@ func clipboardExprKey(s, key string) string {
 		"); $_copiedKey = " + jsString(key) + "; setTimeout(() => $_copiedKey = '', 1600)"
 }
 
+// sandboxInherit is the "don't start from nothing" band: the two flags that
+// carry an existing setup into a new sandbox. They answer opposite questions —
+// one snapshots, the other shares — so the page states the difference rather
+// than listing them side by side as alternatives.
+func sandboxInherit() []installGroup {
+	return []installGroup{
+		{
+			Title: "Inherit your setup",
+			Cmd:   "aiagentmemory install --agent pi --sandbox acme --copy",
+			Items: []string{
+				"Logins, MCP servers, plugins, skills and settings, copied in",
+				"History, logs and caches stay behind — the bulk never travels",
+				"Nothing already in the sandbox is overwritten",
+			},
+		},
+		{
+			Title: "Share one login",
+			Cmd:   "aiagentmemory install --agent pi --sandbox acme --shared-auth",
+			Items: []string{
+				"Credential files link back to the global config",
+				"Re-authenticate once; every sandbox sees it",
+				"Claude on macOS already shares its keychain",
+			},
+		},
+	}
+}
+
 // sandboxWhy is the short case for isolated configs, used as the guide's lede
 // cards. Kept as data so the page template stays structural.
 func sandboxWhy() []installGroup {
