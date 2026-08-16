@@ -1,6 +1,6 @@
 # agentsmemory
 
-> A multi-tenant **memory palace** for AI agents — served as a remote **MCP** server, backed by **Ollama** + **Qdrant** from day one.
+> A multi-tenant **memory palace** for AI agents — served as a remote **MCP** server, backed by **Ollama** and a swappable vector index (**Qdrant** for the SaaS, an **embedded** one for self-hosted).
 
 `agentsmemory` is the Go SaaS rewrite of the original Python [`mempalace`](#provenance):
 a semantic, long-term memory store that humans and AI agents read from and write
@@ -73,7 +73,9 @@ design notes live in the project's memory palace under the `agentsmemory` wing.
   place (`tenant.Repo.ResolveToken`); every tool reads the tenant off the
   context and refuses to run without one.
 - **Two stores, one source of truth.** SQLite holds tenancy, auth, plans and
-  skills (the relational SoT). Qdrant holds vectors and is rebuildable from it.
+  skills (the relational SoT) *and* every vector. The search index — Qdrant, or
+  the embedded chromem index a self-hosted install defaults to — is derived from
+  it and rebuildable without re-embedding.
 
 ---
 
@@ -174,7 +176,7 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | MCP server | `github.com/mark3labs/mcp-go` (Streamable HTTP, stateless) |
 | Relational store | SQLite **no-cgo** via `gorm.io/gorm` + `github.com/glebarez/sqlite` |
 | Migrations | `github.com/pressly/goose/v3` (embedded `.sql`) |
-| Vector store | **Qdrant** (REST, no SDK) — collection per tenant |
+| Vector store | **Qdrant** (REST, no SDK) — collection per tenant · or embedded **`chromem-go`** · or SQLite itself |
 | Embeddings | **Ollama** `bge-m3` (1024-dim) via `/api/embed` |
 | CLI / flags | `github.com/urfave/cli/v3` |
 | Auth (planned humans) | `github.com/markbates/goth` |
@@ -184,8 +186,10 @@ exposes same-named tools — without the client seeing two tools of the same nam
 
 ## Quick start
 
-**Prerequisites:** Go 1.25+. (Qdrant and Ollama are only needed once the memory
-pipeline lands; the skeleton boots without them.)
+**Prerequisites:** Go 1.25+ and an **Ollama** with `bge-m3` pulled — every drawer
+is embedded on the way in, so the memory loop needs it (see [Preparing Ollama
+(embeddings)](#preparing-ollama-embeddings) below). A vector *service* is not a
+prerequisite: searches are indexed in-process unless you ask for Qdrant.
 
 ```bash
 # build
@@ -230,6 +234,58 @@ curl -s http://localhost:8080/mcp \
 A request without a valid token comes back as a fail-closed
 `unauthenticated` tool error.
 
+### Preparing Ollama (embeddings)
+
+agentsmemory never embeds text itself — it calls **your** Ollama, so nothing you
+remember leaves your machine. One install, one model pull:
+
+```bash
+# 1. Install and run Ollama — https://ollama.com/download
+#    macOS/Windows: the app starts the server.
+#    Linux:  curl -fsSL https://ollama.com/install.sh | sh
+ollama --version
+
+# 2. Pull the embedding model (bge-m3, 1024-dim, ~1.2 GB)
+ollama pull bge-m3
+
+# 3. Prove it answers on the endpoint the server will use
+curl -s http://localhost:11434/api/embed \
+  -d '{"model":"bge-m3","input":"hello"}' | head -c 120
+```
+
+Step 3 is the one worth running: a JSON array of floats means the server will
+work, and it fails loudly here rather than on your first `am_add_drawer`. The
+model must be *pulled*, not merely installed — Ollama does not fetch it on
+demand for `/api/embed`; a missing one comes back as `model "bge-m3" not found`.
+When that happens nothing is lost: writes return the embed error, and rows that
+came through `/import` sit in the embed queue and drain by themselves once the
+model is there.
+
+**Why `bge-m3`, and why not to change it casually.** It matches the frozen Python
+palace (1024-dim), so migrated memories and new ones share one vector space.
+Swapping the model changes that space: old and new vectors stop being comparable
+and every drawer needs re-embedding. Pick it before you fill the palace, not
+after — `--ollama-model` exists for a fresh one.
+
+**Running the server in Docker? `localhost` is not your machine.** Ollama binds
+`127.0.0.1` by default, and a container cannot reach the host's loopback. Either
+bind it wider and use the name compose maps for you (`OLLAMA_URL=http://host.docker.internal:11434`):
+
+```bash
+# macOS
+launchctl setenv OLLAMA_HOST 0.0.0.0     # then restart the Ollama app
+
+# Linux (systemd)
+sudo systemctl edit ollama               # add: Environment="OLLAMA_HOST=0.0.0.0"
+sudo systemctl restart ollama
+```
+
+…or, on Linux, skip the problem entirely with the host-network override below,
+where `localhost:11434` inside the container *is* your machine's loopback.
+
+A GPU box elsewhere works just as well — point `OLLAMA_URL` at it
+(`http://192.168.1.50:11434`) and pull `bge-m3` there instead.
+
 ### Self-hosted single-workspace mode (`--local`)
 
 Everything above is the multi-tenant SaaS shape: many workspaces, each behind a
@@ -251,6 +307,7 @@ What changes:
 | Quota | per plan | uncapped (`plan_unlimited`) |
 | Dashboard, OAuth, billing webhooks | mounted | **not registered** (404) |
 | Listen address | `:8080` (all interfaces) | `127.0.0.1:8080` |
+| Search index | `sqlite` (the source of truth scans itself) | **`chromem`** — embedded, no service to run |
 
 All 37 MCP tools behave identically — they only ever see a resolved workspace,
 and local mode injects one instead of resolving it from a credential.
@@ -271,7 +328,14 @@ Two guardrails worth knowing:
   `local` — including the `demo` workspace the multi-tenant path seeds on first
   boot. Use a fresh `--db` file, or drop `--local`.
 
-### Docker Compose (server + Qdrant)
+Local mode also picks its own search index: **chromem**, a vector database that
+runs inside the server process. It keeps the vectors in memory and persists them
+next to the database — `agentsmemory.db` gets `agentsmemory.chromem/` beside it,
+one directory per workspace inside — so a self-hosted install is one binary, one
+file and one folder, with no service to install, start or monitor. `sqlite` and
+`qdrant` remain one `--vector-backend` away ([choosing the index](#choosing-the-index)).
+
+### Docker Compose (one container)
 
 ```bash
 cp .env.docker.example .env.docker   # point OLLAMA_URL at your Ollama
@@ -279,13 +343,15 @@ docker compose up -d
 claude mcp add --transport http agentsmemory http://localhost:8080/mcp
 ```
 
-Brings up `--local` plus Qdrant, with SQLite on a named volume. Ollama is
+Brings up `--local` with the embedded chromem index, so the whole stack is **one
+container and one volume** — `/data/agentsmemory.db` (truth) and
+`/data/agentsmemory.chromem` (index) live side by side in it. Ollama is
 deliberately **not** a service: most people already run one, and a second copy
 would re-download gigabytes of models — so `.env.docker.example` covers both
-`host.docker.internal` (Ollama on your machine) and a URL for a remote box. Two
-things bite there, both on the Ollama side: it binds `127.0.0.1` by default and
-a container cannot reach that (start it with `OLLAMA_HOST=0.0.0.0`), and the
-model must be pulled first (`ollama pull bge-m3`).
+`host.docker.internal` (Ollama on your machine) and a URL for a remote box.
+Both of the things that bite are on the Ollama side, and both are handled in
+[Preparing Ollama](#preparing-ollama-embeddings): it binds `127.0.0.1` by
+default, which a container cannot reach, and the model must be pulled first.
 
 The port is published as `127.0.0.1:8080:8080`, and the loopback prefix is
 load-bearing for the same reason as above — plain `8080:8080` would offer an
@@ -293,10 +359,6 @@ unauthenticated memory server to your whole network. Inside the container the
 process binds `:8080` (a published port cannot reach a loopback-bound process),
 so it logs the non-loopback warning on boot; there, the published interface is
 the boundary, and the warning is expected.
-
-Don't want a second service? `VECTOR_BACKEND=sqlite` makes the source of truth
-answer searches itself, and `docker compose up -d agentsmemory` runs the server
-alone.
 
 **On Linux**, an override removes the Ollama friction entirely:
 
@@ -314,14 +376,14 @@ Repeating both files gets tedious, so either export it once per shell —
 plain `docker compose up -d` uses both — or put that same line in a `.env` beside
 the compose files to make it the permanent default for this directory.
 
-Without compose at all, the equivalent single container (SQLite backend, so
+Without compose at all, the equivalent single container (the embedded index, so
 nothing else needs to run):
 
 ```bash
 docker build -t agentsmemory:local .
 docker run -d --name agentsmemory --network host --restart unless-stopped \
   -v agentsmemory-data:/data \
-  -e VECTOR_BACKEND=sqlite -e OLLAMA_URL=http://localhost:11434 \
+  -e VECTOR_BACKEND=chromem -e OLLAMA_URL=http://localhost:11434 \
   agentsmemory:local serve --local --addr 127.0.0.1:8080 --db /data/agentsmemory.db
 ```
 
@@ -333,15 +395,34 @@ runs containers in a VM, where host networking is an opt-in feature (4.34+)
 rather than the default. Note that host networking **ignores `ports:`**, so the
 loopback publish stops protecting anything and the server's own `--addr
 127.0.0.1:8080` becomes the boundary — which is exactly what the override pins.
-Qdrant stays on the bridge network, unexposed, and is reached through its
-published loopback port.
+The embedded index needs no network at all, so nothing else changes; a Qdrant
+service, if you uncomment one, stays on the bridge network and is reached through
+its published loopback port.
+
+### Choosing the index
+
+`VECTOR_BACKEND` (or `--vector-backend`) picks what answers searches. SQLite is
+written either way, so this is never a decision about your data — switching costs
+an index rebuild, never a re-embedding:
+
+| Value | What runs | Choose it when |
+|---|---|---|
+| `chromem` *(default with `--local`)* | nothing extra — an in-process index, held in memory, persisted to `<db>.chromem/` | self-hosted on one machine |
+| `sqlite` *(default otherwise)* | nothing at all — the source of truth scans its own vectors per query | you want the smallest possible footprint |
+| `qdrant` | a separate Qdrant service | the palace outgrows memory, or several machines share one index |
+
+The chromem index is derived and disposable: delete the directory and the server
+refills it from SQLite on the next boot, logging `rebuilt namespace … from the
+SQLite source of truth`. Switching *to* Qdrant is the one case that needs a
+command — `agentsmemory sync` — because refilling a remote index at boot would
+mean blocking startup on a service that may be down.
 
 ### Backing up the SQLite volume
 
-**Back up SQLite; ignore Qdrant.** SQLite is the source of truth and Qdrant is a
-rebuildable index over it — `agentsmemory sync --recreate` replays every vector
-from SQLite without re-embedding, so a lost Qdrant volume costs one command, not
-your memory.
+**Back up SQLite; ignore the index.** SQLite is the source of truth and every
+index is rebuildable from it — a chromem directory refills itself on the next
+boot, and `agentsmemory sync --recreate` replays every vector into Qdrant without
+re-embedding. Losing an index costs a restart or one command, not your memory.
 
 The volume name is `<project>_agentsmemory-data`, where the project is `name:` in
 `docker-compose.yml` — so `agentsmemory_agentsmemory-data` by default. Confirm
@@ -637,6 +718,7 @@ All flags have sensible local defaults:
 | `--addr` | `:8080` (`127.0.0.1:8080` with `--local`) | HTTP / MCP listen address |
 | `--local` | `false` | Self-hosted single-workspace mode: one `local` workspace, unauthenticated `/mcp`, no dashboard |
 | `--db` | `agentsmemory.db` | SQLite database path |
+| `--vector-backend` | `sqlite` (`chromem` with `--local`) | Search index: `sqlite` \| `chromem` \| `qdrant` — SQLite is always the source of truth |
 | `--qdrant-url` | `http://localhost:6333` | Qdrant base URL |
 | `--qdrant-api-key` | *(empty)* | Qdrant API key (optional) |
 | `--ollama-url` | `http://localhost:11434` | Ollama base URL |
@@ -723,6 +805,8 @@ internal/
   tenant/              teams (workspaces) · users · memberships · api_keys · plans
   skill/               centralised skill registry (load_skill)
   store/qdrant/        Qdrant REST client, collection-per-tenant naming
+  store/chromemvec/    embedded chromem-go index (the --local default)
+  store/sqlitevec/     SQLite vector source of truth
   embed/ollama/        Ollama bge-m3 embedder
   auth/                bearer token → tenant context injection
   palace/              core memory domain types (wing/room/drawer/hallway/tunnel)
