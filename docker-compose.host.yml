@@ -26,6 +26,10 @@
 services:
   agentsmemory:
     network_mode: host
+    # Inherited from the base file when both are passed with -f, but stated here
+    # too: this file is the one people read when they run host mode, and the
+    # policy is what recovers the cold-boot race against Qdrant.
+    restart: unless-stopped
     # Loopback, not :8080 — see the warning above. This also matches what --local
     # picks on its own outside Docker, so the boot warning correctly stays quiet.
     command: ["serve", "--local", "--addr", "127.0.0.1:8080", "--db", "/data/agentsmemory.db"]
