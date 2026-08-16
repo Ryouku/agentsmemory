@@ -361,6 +361,8 @@ Two guardrails worth knowing:
   is why the default binds loopback. Overriding `--addr` to a routable interface
   still works (behind a reverse proxy or a private overlay network) but logs a
   loud warning — anyone who can reach the port owns every memory in the file.
+  [`--socket`](#unix-socket-and-stdio-mcp---socket--mcp-stdio) tightens this
+  further than loopback can.
 - **It refuses to start** if the database already holds a workspace that is not
   `local` — including the `demo` workspace the multi-tenant path seeds on first
   boot. Use a fresh `--db` file, or drop `--local`.
@@ -371,6 +373,46 @@ next to the database — `agentsmemory.db` gets `agentsmemory.chromem/` beside i
 one directory per workspace inside — so a self-hosted install is one binary, one
 file and one folder, with no service to install, start or monitor. `sqlite` and
 `qdrant` remain one `--vector-backend` away ([choosing the index](#choosing-the-index)).
+
+### Unix socket and stdio MCP (`--socket` / `mcp-stdio`)
+
+HTTP on a port stays the default and nothing about it changed. But a port is a
+weak boundary for an endpoint with no authentication: *every* user and process on
+the machine can open `127.0.0.1:8080`. `--socket` replaces it with a Unix socket
+created at mode `0600`, so the operating system restricts the server to the
+account that started it:
+
+```bash
+./agentsmemory --local --socket /tmp/agentsmemory.sock --db agentsmemory.db
+# agentsmemory listening on unix:/tmp/agentsmemory.sock (local mode: workspace "local", …)
+```
+
+A socket has no URL, so agents reach it through `mcp-stdio` — a bridge shipped in
+the same binary that speaks MCP on stdin/stdout and forwards to the server:
+
+```bash
+claude mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
+codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
+```
+
+The server prints both lines on startup with its own absolute path filled in, so
+they can be copied straight out of the log.
+
+Worth knowing:
+
+- **It is a raw JSON-RPC passthrough.** The bridge carries no tool catalogue, so
+  a tool added to the server works over stdio the moment the server restarts —
+  there is nothing to regenerate and no proxy to rebuild.
+- **One server, many agents.** Each agent spawns its own bridge process, but they
+  all share the one server — and therefore one SQLite writer and one embedding
+  queue, rather than each opening the database itself.
+- **It works over HTTP too.** `mcp-stdio --url http://host:8080/mcp` (with
+  `--token` for a multi-tenant server) bridges any endpoint, which is the escape
+  hatch for a client that only supports stdio transport.
+- **`AGENTSMEMORY_SOCKET` configures both halves** — the server's listen path and
+  the bridge's dial path — so the pair cannot drift apart.
+- **Socket paths are short.** The kernel caps them near 104 bytes (macOS) or 108
+  (Linux); a deeply nested path fails to bind with a bare `invalid argument`.
 
 ### Docker Compose (one container)
 
