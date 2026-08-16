@@ -70,12 +70,35 @@ func (b installBuilder) ref(name string) string { return "$" + b.sig(name) }
 // initialises it to the same empty string.
 func (b installBuilder) Signals() string {
 	return "{" + b.sig("_copiedInstall") + ": false, _copiedKey: '', " +
+		b.sig("_plat") + ": '" + platUnix + "', " +
+		b.sig("_copiedWin") + ": false, " +
 		b.sig("_mode") + ": 'global', " +
 		b.sig("_agent") + ": 'claude', " +
 		b.sig("_sbname") + ": '', " +
 		b.sig("_optcopy") + ": false, " +
 		b.sig("_optshared") + ": false, " +
 		b.sig("_optrec") + ": false}"
+}
+
+// The two values of the platform axis, the outer question the builder now asks.
+// It sits above the mode tabs because it decides whether those tabs apply at all:
+// an install with no CLI has nowhere to land but the user's own config, so there
+// is no global-vs-sandbox choice left to make.
+const (
+	platUnix = "unix" // macOS, Linux, WSL — the bash installer runs
+	platWin  = "win"  // Windows or any editor-only client — no installer at all
+)
+
+// PlatIs tests which platform tab is active. It gates the entire CLI half of the
+// builder, so a reader on Windows is never shown a curl line that cannot run on
+// their machine.
+func (b installBuilder) PlatIs(p string) string {
+	return b.ref("_plat") + " === '" + p + "'"
+}
+
+// SetPlat is the click expression a platform tab runs.
+func (b installBuilder) SetPlat(p string) string {
+	return b.ref("_plat") + " = '" + p + "'"
 }
 
 // ModeIs is the expression that tests which tab is active, used both to gate

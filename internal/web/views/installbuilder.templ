@@ -10,6 +10,71 @@ package views
 // fixed --global one-liner), and a picker that offers different options depending
 // on where you found it is worse than no picker.
 
+// installPlatformTabs is the outer switch, and it comes first because it decides
+// whether everything below it applies. The page used to open with a curl line and
+// nothing anywhere to tell a Windows reader it could not run on their machine;
+// this is the control that routes them before they copy something broken.
+//
+// Same toggle-button group as installTabs (aria-pressed, no roving tabindex) so
+// the two stacked rows read and behave as one pattern — which is also the shape
+// of every install matrix a developer has already used.
+templ installPlatformTabs(b installBuilder) {
+	<div class="sb-switch lp-build-tabs lp-build-plat" role="group" aria-label="Which platform you install on">
+		for _, p := range installPlatforms() {
+			<button
+				class="sb-switch-btn"
+				type="button"
+				data-class={ "{'is-on': " + b.PlatIs(p.Key) + "}" }
+				data-attr:aria-pressed={ b.PlatIs(p.Key) + " ? 'true' : 'false'" }
+				data-on:click={ b.SetPlat(p.Key) }
+			>{ p.Name }</button>
+		}
+	</div>
+	for i, p := range installPlatforms() {
+		<p
+			class="lp-build-hint"
+			data-show={ b.PlatIs(p.Key) }
+			if i > 0 {
+				style="display:none"
+			}
+		>{ p.Hint }</p>
+	}
+}
+
+// installWindowsPanel is what the Windows tab shows instead of the command
+// builder: there is nothing to build, because the install is a conversation with
+// the assistant the reader already has open.
+//
+// The prompt asks for the token rather than carrying it, on BOTH mounts — unlike
+// the curl command, which the dashboard embeds the token into. The difference is
+// where the line ends up: a shell command runs locally, while this one is pasted
+// into a chat with a third-party model, so the workspace secret should not be
+// sitting in it by default.
+templ installWindowsPanel(b installBuilder) {
+	<div class="lp-code card">
+		<div class="lp-code-head">
+			<span class="kv">prompt for your assistant</span>
+			<button
+				class="btn btn-ghost btn-sm"
+				type="button"
+				data-on:click={ clipboardExprSignal(windowsPrompt, b.sig("_copiedWin")) }
+				aria-label="Copy the prompt that installs agentsmemory without a CLI"
+			>
+				<span data-show={ "!" + b.ref("_copiedWin") }>Copy</span>
+				<span data-show={ b.ref("_copiedWin") } style="display:none">Copied ✓</span>
+			</button>
+		</div>
+		<pre class="cmd"><code>{ windowsPrompt }</code></pre>
+	</div>
+	<p class="lp-build-note lp-build-panel-note">
+		It reads <a href="/windows-guide">the no-CLI guide</a>, asks you for your
+		workspace token, and writes the global MCP config for VS Code, Cursor or
+		Claude Desktop. Everything lands in your own user config — there are no
+		sandboxes without the CLI. Want the full kit on Windows? Install it inside
+		WSL, where the bash installer runs unchanged.
+	</p>
+}
+
 // installTabs is the where-does-it-land switch. It is a toggle-button group
 // (aria-pressed) rather than an ARIA tablist, matching sandboxesSwitcher: every
 // button stays in the tab order and activates with Enter or Space, so the pattern

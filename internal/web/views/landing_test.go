@@ -340,3 +340,71 @@ func TestLandingInstallStatesTheTokenStep(t *testing.T) {
 		t.Error("--token row does not state what happens without a token")
 	}
 }
+
+// TestFreeQuotaIsStatedOnce guards the figure that already went stale once. Four
+// surfaces advertise the Free plan's allowance, and when the plan changed all
+// four kept quoting the old number because each spelled it out in its own words.
+// They now read freeRequestsPerMonth, so this test renders the two public pages
+// that quote it and fails if the literal old figure reappears anywhere — which is
+// what a copy-paste of the previous wording would look like.
+func TestFreeQuotaIsStatedOnce(t *testing.T) {
+	pages := map[string]func() (string, error){
+		"landing": func() (string, error) {
+			var buf bytes.Buffer
+			err := LandingPage(LandingData{}).Render(context.Background(), &buf)
+			return buf.String(), err
+		},
+		"register": func() (string, error) {
+			var buf bytes.Buffer
+			err := RegisterPage(AuthData{}).Render(context.Background(), &buf)
+			return buf.String(), err
+		},
+	}
+	for name, render := range pages {
+		html, err := render()
+		if err != nil {
+			t.Fatalf("%s render: %v", name, err)
+		}
+		if !strings.Contains(html, freeRequestsPerMonth) {
+			t.Errorf("%s page does not state the free quota %q", name, freeRequestsPerMonth)
+		}
+		// The stale figure, in the exact form every surface used to carry it.
+		if strings.Contains(html, "10,000") {
+			t.Errorf("%s page still advertises the old 10,000 request quota", name)
+		}
+	}
+
+	// The FAQ answer feeds schema.org too, so an answer engine can quote it.
+	if !strings.Contains(landingJSONLD(), freeRequestsPerMonth) {
+		t.Error("structured data does not carry the free quota")
+	}
+}
+
+// TestLandingBuilderOffersTheNoCLIPath is the landing-page half of the platform
+// axis. Both surfaces mount one shared builder, and the pair of tests exists
+// because that sharing has already been broken twice — each time by improving one
+// surface and leaving the sibling on the older shape.
+func TestLandingBuilderOffersTheNoCLIPath(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	for _, p := range installPlatforms() {
+		if !strings.Contains(html, p.Name) {
+			t.Errorf("builder has no %q platform tab", p.Name)
+		}
+		if !strings.Contains(html, p.Hint) {
+			t.Errorf("platform %q renders no hint, which is the point of the tab", p.Name)
+		}
+	}
+	// The CLI controls must be gated on the platform, not merely present: an
+	// ungated curl line under a tab labelled "no CLI" is the bug this prevents.
+	if !strings.Contains(html, `class="lp-build-cli"`) {
+		t.Error("the CLI half of the builder is not gated by platform")
+	}
+	if !strings.Contains(landingSignals(), "_plat") {
+		t.Error("_plat is not declared in landingSignals()")
+	}
+}

@@ -657,12 +657,26 @@ func landingFeatureList() []feature {
 // landingPlans are the pricing tiers, matching the plans catalog (Free + Pro).
 // Pro is one tier sold two ways — €50 / month or €500 / year (two months free) —
 // so the annual option rides as a point under the headline monthly price.
+// freeRequestsPerMonth is the Free plan's metered-request allowance, formatted
+// for display. Four surfaces quote it — the hero note, the pricing tier, the FAQ
+// answer and the register page — and each used to say it in its own words, which
+// is exactly how the figure went stale in all four at once when the plan changed.
+// They now read this one value.
+//
+// It is COPY, not the limit. What the server enforces is
+// plans.monthly_request_cap for code 'personal' (seeded in db/migrations, read by
+// tenant.Repo.MonthlyCap, enforced by usage.Service), which is per-deployment and
+// which an operator can move for a single workspace. Keep the two in step by
+// hand: a constant here cannot read the database at build time, so changing this
+// alone changes what the page claims and not what the server allows.
+const freeRequestsPerMonth = "1,000"
+
 func landingPlans() []plan {
 	return []plan{
 		{
 			Name: "Free", Price: "€0", Period: "forever",
 			Tagline: "For solo agents and side projects.",
-			Points:  []string{"10,000 requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
+			Points:  []string{freeRequestsPerMonth + " requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
 		},
 		{
 			Name: "Pro", Price: "€50", Period: "/ month",
@@ -747,7 +761,7 @@ func landingFAQ() []faqItem {
 		},
 		{
 			"What does agent memory cost to start?",
-			"The Free plan is free forever with 10,000 requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
+			"The Free plan is free forever with " + freeRequestsPerMonth + " requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
 		},
 		{
 			"Why does agent memory cost money?",
@@ -915,13 +929,42 @@ const landingClaudePrompt = "Read " + claudeGuideURL + " and install the agentsm
 // (handleWindowsGuide). Hardcoded for the same reason as claudeGuideURL.
 const windowsGuideURL = "https://aiagentmemory.dev/windows-guide"
 
-// landingWindowsPrompt is the copy-paste prompt for a visitor with no CLI —
-// Windows, VS Code, Cursor, Claude Desktop. The installer is a bash script and a
-// Linux/macOS binary, but agentsmemory is a remote MCP server, so the assistant
-// already in their editor can do the whole setup by writing one config file. Like
-// landingClaudePrompt it is one line, and it says up front that the assistant must
-// ask for the token rather than invent one.
-const landingWindowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
+// windowsPrompt is the copy-paste prompt for a visitor with no CLI — Windows, VS
+// Code, Cursor, Claude Desktop. The installer is a bash script and a Linux/macOS
+// binary, but agentsmemory is a remote MCP server, so the assistant already in
+// their editor can do the whole setup by writing one config file. Like
+// landingClaudePrompt it is one line.
+//
+// It is deliberately NOT surface-specific, unlike the install command the builder
+// assembles: the dashboard embeds the token there because the secret is already
+// revealed beside it, but this prompt is pasted into a chat with a third-party
+// model, so it asks the human for the token instead of carrying it. Both mounts
+// therefore hand over the same line, and there is one constant rather than a
+// landing and a dashboard variant to keep in step.
+const windowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
+
+// installPlatform is one tab of the outer platform switch: the signal value the
+// tab sets, its label, and the line that appears beneath the tabs once chosen.
+type installPlatform struct{ Key, Name, Hint string }
+
+// installPlatforms are the two worlds the product installs into, and the hint is
+// again the load-bearing field. A visitor on Windows previously met a curl one-
+// liner with nothing on the page to tell them it could not run — the tab exists so
+// that reader is routed before they copy something broken.
+func installPlatforms() []installPlatform {
+	return []installPlatform{
+		{
+			Key:  platUnix,
+			Name: "macOS / Linux",
+			Hint: "The installer downloads the aiagentmemory binary and wires the kit into your agent. Works on macOS, Linux and WSL.",
+		},
+		{
+			Key:  platWin,
+			Name: "Windows · no CLI",
+			Hint: "There is no Windows binary — but the memory is a remote MCP server, so the assistant in your editor sets it up for you. Also the route for VS Code, Cursor and Claude Desktop on any OS.",
+		},
+	}
+}
 
 // installGroup is one column of the "what it installs" breakdown: a heading, the
 // command that triggers it, and the pieces it adds.

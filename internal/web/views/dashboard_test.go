@@ -166,3 +166,45 @@ func TestTokenAlphabetIsShellSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallBlockOffersTheNoCLIPath covers the platform axis on the dashboard —
+// the surface where people actually install, signed in with a token in hand. A
+// Windows or VS Code user reaching a revealed key previously found only a curl
+// line that cannot run on their machine, with nothing on the block saying so.
+//
+// The signal check is the part that would break silently: several projects' key
+// blocks can be revealed at once and datastar signals are global, so an
+// unsuffixed _plat would mean switching one project's card to Windows flipped
+// every other card too.
+func TestInstallBlockOffersTheNoCLIPath(t *testing.T) {
+	var buf bytes.Buffer
+	vm := KeyVM{TeamID: "6bc552d2-63fa-4a2e-b068-f64bc7dfb748", Revealed: true, Secret: "AAA"}
+	if err := KeyBlock(vm).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	for _, p := range installPlatforms() {
+		if !strings.Contains(html, p.Name) {
+			t.Errorf("install block has no %q platform tab", p.Name)
+		}
+	}
+	if !strings.Contains(html, `href="/windows-guide"`) {
+		t.Error("the no-CLI panel does not link the guide")
+	}
+	if !strings.Contains(html, windowsPrompt) {
+		t.Error("the no-CLI panel does not carry the prompt")
+	}
+	// The dashboard embeds the token in the curl command, but must NOT put it in a
+	// prompt destined for a third-party chat.
+	if strings.Contains(windowsPrompt, "AAA") {
+		t.Error("the no-CLI prompt carries the workspace token")
+	}
+
+	b := projectBuilder(vm.TeamID, vm.Secret)
+	for _, sig := range []string{"_plat", "_copiedWin"} {
+		if !strings.Contains(html, b.sig(sig)) {
+			t.Errorf("signal %q is not namespaced to this workspace", sig)
+		}
+	}
+}

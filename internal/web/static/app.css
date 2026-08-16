@@ -682,9 +682,28 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .lp-check-desc { color: var(--muted); font-size: .87rem; line-height: 1.5; }
 
 /* The assembled command is the section's deliverable, so it keeps the ember edge
-   that .lp-code otherwise strips off .cmd. */
-.lp-build > .lp-code { margin-top: 1.5rem; border-color: var(--line-2); }
-.lp-build > .lp-code .cmd { border-left: 3px solid var(--ember); }
+   that .lp-code otherwise strips off .cmd.
+
+   Matched through .lp-build-cli too, the wrapper the platform tabs toggle. Direct
+   descent is load-bearing and has to stay: the sandbox launch line further down
+   is also a .lp-code, and it must NOT pick these up — it sits one level deeper,
+   inside .install-build-run, so a two-step selector passes it over. The Windows
+   panel's prompt is a direct child and does inherit them, which is the intent:
+   whichever tab you are on, the line you copy looks the same. */
+.lp-build > .lp-code,
+.lp-build > .lp-build-cli > .lp-code { margin-top: 1.5rem; border-color: var(--line-2); }
+.lp-build > .lp-code .cmd,
+.lp-build > .lp-build-cli > .lp-code .cmd { border-left: 3px solid var(--ember); }
+
+/* The platform row is the outer question, so it reads as a heading for the row
+   below rather than a second peer control: tighter to its own hint, and separated
+   from the mode tabs by the hint text between them. */
+.lp-build-plat { margin-bottom: .7rem; }
+
+/* The no-CLI panel's note is a paragraph, not a field caption like every other
+   .lp-build-note, so it needs the measure the rest of the section reads at —
+   unconstrained it ran to ~110 characters against the hint's 68 directly above. */
+.lp-build-panel-note { max-width: 72ch; margin-top: .9rem; }
 
 /* The token caveat sits under the command because it is the one step the command
    cannot carry; brass rule rather than a warning colour — it is a prerequisite,
@@ -705,7 +724,8 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .install-build .lp-build-tabs { margin: .6rem 0 .9rem; }
 .install-build .lp-build-opts { grid-template-columns: minmax(0, 1fr); }
 .install-build .lp-build-hint { font-size: .86rem; margin-bottom: 1.1rem; }
-.install-build > .lp-code { margin-top: 1.2rem; }
+.install-build > .lp-code,
+.install-build > .lp-build-cli > .lp-code { margin-top: 1.2rem; }
 .install-build-hint { margin-top: .8rem; }
 .install-build-run { margin-top: 1rem; }
 

@@ -256,25 +256,35 @@ templ InstallBlock(teamID, token string) {
 	{{ b := projectBuilder(teamID, token) }}
 	<div class="lp-build install-build" data-signals={ b.Signals() }>
 		<div class="kv">Install the kit</div>
-		@installTabs(b)
-		@installOptions(b)
-		@installFlags(b)
-		@installCommand(b)
-		<p class="lp-build-note install-build-hint">
-			Restart Claude Code (or <span class="mono">/reload</span>) afterwards. The token
-			above is already in the command, so this install will not prompt.
-		</p>
-		// Only the launch line, not the landing page's full init/load walkthrough:
-		// someone reading this already has the product and needs the one command
-		// that opens what they just installed.
-		<div class="install-build-run" data-show={ b.ModeIs("project") } style="display:none">
-			<div class="lp-code card">
-				<div class="lp-code-head">
-					<span class="kv">then open it</span>
-					@sbCopyButtonExpr(clipboardExprKeyJS(b.RunExpr(), "run"+b.Suffix), "run"+b.Suffix, "Copy the command that opens this sandbox")
+		@installPlatformTabs(b)
+		// Gated as one unit — see the identical wrapper on the landing page for why
+		// the class matters to app.css.
+		<div class="lp-build-cli" data-show={ b.PlatIs(platUnix) }>
+			@installTabs(b)
+			@installOptions(b)
+			@installFlags(b)
+			@installCommand(b)
+			<p class="lp-build-note install-build-hint">
+				Restart Claude Code (or <span class="mono">/reload</span>) afterwards. The token
+				above is already in the command, so this install will not prompt.
+			</p>
+			// Only the launch line, not the landing page's full init/load walkthrough:
+			// someone reading this already has the product and needs the one command
+			// that opens what they just installed. It lives INSIDE the CLI wrapper:
+			// its own gate is the mode, so on its own it would survive a switch to the
+			// Windows tab and offer a CLI command to someone who has no CLI.
+			<div class="install-build-run" data-show={ b.ModeIs("project") } style="display:none">
+				<div class="lp-code card">
+					<div class="lp-code-head">
+						<span class="kv">then open it</span>
+						@sbCopyButtonExpr(clipboardExprKeyJS(b.RunExpr(), "run"+b.Suffix), "run"+b.Suffix, "Copy the command that opens this sandbox")
+					</div>
+					<pre class="cmd"><code data-text={ b.RunExpr() }>aiagentmemory run { landingNameFallback }</code></pre>
 				</div>
-				<pre class="cmd"><code data-text={ b.RunExpr() }>aiagentmemory run { landingNameFallback }</code></pre>
 			</div>
+		</div>
+		<div class="lp-build-cli" data-show={ b.PlatIs(platWin) } style="display:none">
+			@installWindowsPanel(b)
 		</div>
 	</div>
 }
