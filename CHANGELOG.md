@@ -164,3 +164,4 @@
 - 2026-08-16 `fd979f3` feat(docker): compose stack for self-hosters (--local + Qdrant, Ollama on host or remote via .env.docker.example) + the three delegation layers documented
 - 2026-08-16 `3c25403` feat(cli): `aiagentmemory install --local` — kit points at your own server, no token anywhere, implies global; plus docker-compose.host.yml (Linux) so Ollama on localhost just works
 - 2026-08-16 `89c623a` docs(readme): back up the SQLite docker volume (stop-and-copy + hot .backup, restore with the uid 10001 chown); Qdrant rebuilds from SQLite
+- 2026-08-16 `fe30e54` docs(docker): restart policy stated in the host override + how to run host mode (COMPOSE_FILE, and a no-compose docker run)
