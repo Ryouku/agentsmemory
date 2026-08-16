@@ -744,6 +744,10 @@ func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chrom
 // stdout is data — the read-only mcp CLI emits JSON there — stays clean and
 // pipeable even with APP_DEBUG=true; serve is unaffected (its stdout is not a
 // data channel).
+//
+// The DSN carries the pragmas described on dbPragmas, because more than one
+// process legitimately opens this file: serve holds it open for its lifetime
+// while inspect, mcp, plan, share and an export all read it.
 func openDB(path string, debug bool) (*gorm.DB, error) {
 	level := logger.Silent
 	if debug {
@@ -753,8 +757,30 @@ func openDB(path string, debug bool) (*gorm.DB, error) {
 		log.New(os.Stderr, "\r\n", log.LstdFlags),
 		logger.Config{LogLevel: level},
 	)
-	return gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormLog})
+	return gorm.Open(sqlite.Open(path+dbPragmas), &gorm.Config{Logger: gormLog})
 }
+
+// dbPragmas are the connection pragmas appended to the SQLite DSN.
+//
+// journal_mode(WAL): readers no longer block the writer, so `inspect` or a data
+// export can run against a live server instead of colliding with it. WAL is a
+// persistent property of the database file, so the first connection converts it
+// and every later one simply observes it.
+//
+// busy_timeout(5000): SQLite's default is 0 — a contended write fails
+// *instantly* with "database is locked" rather than waiting. Five seconds turns
+// the normal case (a reader and the writer overlapping for microseconds) into a
+// brief wait instead of an error.
+//
+// Deliberately NOT applied to the data-export archive (internal/dataexport):
+// that file is handed to the user as a single download, and WAL would leave
+// committed rows in a -wal sidecar that does not travel with it.
+//
+// This is a concurrency *performance* setting and nothing more. It is not a
+// substitute for the single-instance lock in lock.go — if anything it raises the
+// stakes, because with WAL two servers on one database write happily and
+// silently instead of announcing themselves with lock errors.
+const dbPragmas = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 
 // migrate applies the embedded goose migrations to the open database.
 func migrate(sqlDB *sql.DB) error {
