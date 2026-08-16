@@ -315,6 +315,65 @@ loopback publish stops protecting anything and the server's own `--addr
 Qdrant stays on the bridge network, unexposed, and is reached through its
 published loopback port.
 
+### Backing up the SQLite volume
+
+**Back up SQLite; ignore Qdrant.** SQLite is the source of truth and Qdrant is a
+rebuildable index over it — `agentsmemory sync --recreate` replays every vector
+from SQLite without re-embedding, so a lost Qdrant volume costs one command, not
+your memory.
+
+The volume name is `<project>_agentsmemory-data`, where the project is `name:` in
+`docker-compose.yml` — so `agentsmemory_agentsmemory-data` by default. Confirm
+with `docker volume ls`.
+
+**Stop and copy** — simplest and unconditionally consistent. A single-user server
+will not miss two seconds:
+
+```bash
+docker compose stop agentsmemory
+docker run --rm -v agentsmemory_agentsmemory-data:/data -v "$PWD:/backup" \
+  alpine:3.20 tar czf "/backup/agentsmemory-$(date +%F).tar.gz" -C /data .
+docker compose start agentsmemory
+```
+
+**Hot backup** — no downtime, using SQLite's online backup API. The runtime image
+is bare Alpine with no `sqlite3`, so borrow one:
+
+```bash
+docker run --rm -v agentsmemory_agentsmemory-data:/data -v "$PWD:/backup" alpine:3.20 \
+  sh -c 'apk add --no-cache sqlite >/dev/null &&
+         sqlite3 /data/agentsmemory.db ".backup /backup/agentsmemory-$(date +%F).db"'
+```
+
+Do **not** just `cp` the database file while the server is running. `.backup`
+(and `VACUUM INTO '/backup/out.db'`, which additionally compacts) coordinate with
+writers; a plain copy can catch a write mid-transaction and hand you a file that
+only fails later, when you need it.
+
+**Verify** the backup before you trust it — an unreadable backup discovered at
+restore time is not a backup:
+
+```bash
+sqlite3 agentsmemory-2026-08-16.db "PRAGMA integrity_check; SELECT count(*) FROM drawers;"
+```
+
+**Restore** into a fresh volume:
+
+```bash
+docker compose down
+docker volume rm agentsmemory_agentsmemory-data
+docker volume create agentsmemory_agentsmemory-data
+docker run --rm -v agentsmemory_agentsmemory-data:/data -v "$PWD:/backup" alpine:3.20 \
+  sh -c 'tar xzf /backup/agentsmemory-2026-08-16.tar.gz -C /data && chown -R 10001:10001 /data'
+docker compose up -d
+docker compose exec agentsmemory agentsmemory sync --recreate   # only if using Qdrant
+```
+
+⚠ The `chown` is not optional. The image runs as uid **10001**, while the restore
+container writes as root — skip it and the server starts, then fails on the first
+write to a database it cannot open. Restoring a single `.db` file instead of the
+tarball needs the same treatment.
+
 ### The server is inert without the protocol
 
 Connecting the MCP gives your agent 37 tools and **no reason to call any of
