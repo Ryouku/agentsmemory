@@ -156,3 +156,101 @@ func TestLandingPageDocumentsInheritFlags(t *testing.T) {
 		t.Error("landing page does not state the never-overwrite invariant")
 	}
 }
+
+// TestLandingInstallBuilder guards the install picker: the tabs, the agent and
+// name inputs, the flag checkboxes and the assembled command must all reach the
+// page, and — the part worth a test — the command a visitor *sees* and the command
+// the Copy button *writes* must be the same expression. Those two drifting apart
+// is the one failure a copy button cannot survive, and it is invisible on screen.
+func TestLandingInstallBuilder(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	page := buf.String()
+
+	// Both tabs, each wired to the _mode signal the command expression reads.
+	for _, m := range landingInstallModes() {
+		if !strings.Contains(page, esc("$_mode = '"+m.Key+"'")) {
+			t.Errorf("install builder has no tab setting _mode to %q", m.Key)
+		}
+		if !strings.Contains(page, esc(m.Hint)) {
+			t.Errorf("tab %q renders no hint explaining what it does", m.Key)
+		}
+	}
+
+	// The agent picker offers every kit plus the multi-agent sandbox.
+	for _, a := range sandboxAgents() {
+		if !strings.Contains(page, `<option value="`+a.Key+`">`) {
+			t.Errorf("agent picker is missing the %s option", a.Name)
+		}
+	}
+	if !strings.Contains(page, `<option value="all">`) {
+		t.Error("agent picker is missing the all-agents option")
+	}
+
+	// The sandbox name is typed, not edited into a command by hand.
+	if !strings.Contains(page, `data-bind:_sbname`) {
+		t.Error("install builder has no sandbox-name input bound to _sbname")
+	}
+	if !strings.Contains(page, `placeholder="`+landingNameFallback+`"`) {
+		t.Errorf("name input does not show the %q fallback as its placeholder", landingNameFallback)
+	}
+
+	// Every flag is discoverable as a checkbox, with what it does beside it —
+	// the reason the builder exists rather than a static one-liner plus docs.
+	for _, o := range landingInstallOpts() {
+		if !strings.Contains(page, `data-bind="`+o.Signal+`"`) {
+			t.Errorf("flag %s has no checkbox bound to %s", o.Flag, o.Signal)
+		}
+		if !strings.Contains(page, esc(o.Desc)) {
+			t.Errorf("flag %s is offered without explaining what it does", o.Flag)
+		}
+	}
+	// --copy and --shared-auth are rejected by the installer without --sandbox,
+	// so their rows must be gated on the project tab rather than always shown.
+	// templ emits a literal attribute verbatim and escapes only interpolated
+	// values, so the statically-written gates keep their apostrophes. Four rows
+	// are gated: the name field, the two sandbox-only flags, and the launch strip.
+	gate := `data-show="$_mode === 'project'"`
+	if got, want := strings.Count(page, gate), 4; got != want {
+		t.Errorf("controls gated on the project tab: got %d, want %d", got, want)
+	}
+
+	// The displayed command and the copied command are one expression.
+	expr := landingInstallExpr()
+	if !strings.Contains(page, `data-text="`+esc(expr)+`"`) {
+		t.Error("the command block does not render the assembled install expression")
+	}
+	if !strings.Contains(page, esc(clipboardExprJS(expr, "_copiedInstall"))) {
+		t.Error("the Copy button does not write the same expression the block displays")
+	}
+	// Before datastar boots the block must still read as a real command.
+	if !strings.Contains(page, landingInstallDefault) {
+		t.Error("the command block has no server-rendered default")
+	}
+	// --global is what makes the Global tab honest: without it the installer
+	// stops and asks which mode you wanted.
+	if !strings.Contains(page, "--global") {
+		t.Error("the default command omits --global, so the Global tab would still prompt")
+	}
+
+	// Installing a sandbox is half the answer; the strip says how to work in it.
+	for _, s := range landingLaunchSteps() {
+		if !strings.Contains(page, `data-text="`+esc(s.Expr)+`"`) {
+			t.Errorf("launch strip does not render the %q command", s.Key)
+		}
+		if !strings.Contains(page, s.Text) {
+			t.Errorf("launch step %q has no server-rendered fallback", s.Key)
+		}
+		if !strings.Contains(page, esc(s.Desc)) {
+			t.Errorf("launch step %q is shown without saying when to use it", s.Key)
+		}
+	}
+	// run/init must never carry a value resolveAgentKit rejects.
+	for _, bad := range []string{"aiagentmemory run --agent all", "aiagentmemory init --sandbox &lt;name&gt; --agent all"} {
+		if strings.Contains(page, bad) {
+			t.Errorf("page renders %q, which the launcher rejects", bad)
+		}
+	}
+}

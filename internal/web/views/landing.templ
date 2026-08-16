@@ -440,72 +440,30 @@ templ landingFeatures() {
 	</section>
 }
 
-// landingInstall is the Claude Code kit install section: the copy-paste
-// curl|bash one-liner (its own front-end-only _copiedInstall signal, distinct
-// from the quick-start's _copied since datastar signals are global), the two
-// install modes side by side, and a breakdown of exactly what lands on the
-// machine — core versus the opt-in --recommended extensions.
+// landingInstall is the Claude Code kit install section. Its centrepiece is a
+// builder rather than a fixed one-liner: the tabs, the agent picker, the project
+// name and the flag checkboxes rewrite the command in place, so a visitor leaves
+// with the exact line for their situation instead of a generic one they have to
+// edit against a flag reference they must read first.
+//
+// It is all front-end-only datastar (landingBuilderSignals — the "_" prefix keeps
+// the signals off the wire). The interaction is a text substitution over a stable
+// DOM, which is precisely the case where signals beat a server morph.
 templ landingInstall() {
-	<section class="lp-section" id="install" data-signals="{_copiedInstall: false, _copiedPrompt: false}">
+	<section class="lp-section" id="install" data-signals={ landingBuilderSignals }>
 		<div class="lp-wrap">
 			<header class="lp-head">
 				<p class="eyebrow">Install</p>
-				<h2>Add memory to Claude in one line</h2>
+				<h2>Build your install line</h2>
 				<p class="lp-head-sub">
 					One command downloads the <span class="mono">aiagentmemory</span> binary and
 					wires our MCP, the <span class="mono">/M</span> and <span class="mono">/am</span>
-					commands, and the Stop hook into Claude Code — globally, or into an isolated
-					per-project sandbox.
+					commands, and the Stop hook into your agent — then prompts for your workspace
+					token. Choose where it lands and what it brings; the command rewrites itself.
 				</p>
 			</header>
-			<div class="lp-start-grid">
-				<div class="lp-install-copy">
-					<p>
-						The one-liner fetches the <span class="mono">aiagentmemory</span> binary
-						from GitHub Releases, installs the kit, and registers your workspace MCP
-						(it prompts for the token).
-					</p>
-					<p>
-						Choose where it lands: <b>global</b> wraps the Claude you already run;
-						<b>sandboxed</b> keeps a project's commands, settings, MCP and token
-						isolated under <span class="mono">~/.sandboxes/&lt;name&gt;</span> — opened
-						any time with <span class="mono">run &lt;name&gt;</span>, no re-install.
-					</p>
-					<p>
-						A sandbox needn't start from nothing: <span class="mono">--copy</span>
-						carries your global logins, MCP servers, plugins and skills into it, and
-						<span class="mono">--shared-auth</span> links its credentials back, so one
-						login serves every sandbox.
-					</p>
-					<p>
-						Stop retyping the launch: <span class="mono">init</span> records this
-						project's agent and flags in a committed
-						<span class="mono">.aiagentmemory</span>, while your sandbox name stays
-						on your machine — so <span class="mono">load</span> opens the same
-						setup for a teammate whose sandbox is called something else entirely.
-					</p>
-					<p>
-						Not on Claude Code? The same kit installs into <b>Codex</b> and <b>pi</b>
-						with <span class="mono">--agent</span>.
-						<a class="lp-guide-link" href="/sandboxes">See the sandbox guide → <span class="mono">/sandboxes</span></a>
-					</p>
-				</div>
-				<div class="lp-code card">
-					<div class="lp-code-head">
-						<span class="kv">curl · bash</span>
-						<button
-							class="btn btn-ghost btn-sm"
-							type="button"
-							data-on:click={ clipboardExprSignal(landingInstallCmd, "_copiedInstall") }
-							aria-label="Copy install command"
-						>
-							<span data-show="!$_copiedInstall">Copy</span>
-							<span data-show="$_copiedInstall" style="display:none">Copied ✓</span>
-						</button>
-					</div>
-					<pre class="cmd"><code>{ landingInstallCmd }</code></pre>
-				</div>
-			</div>
+			@landingInstallBuilder()
+			@landingLaunchStrip()
 			// Hands-free path: hand Claude a prompt and let it read the guide and install
 			// itself. Mirrors the curl block's lp-start-grid two-column layout so it needs
 			// no new CSS; its own _copiedPrompt signal keeps the two Copy buttons independent
@@ -561,6 +519,172 @@ templ landingInstall() {
 			</div>
 		</div>
 	</section>
+}
+
+// landingInstallBuilder is the install picker. The controls come first and the
+// command last — a visitor decides, then reads the one line to copy — which is
+// the order the page can defend: every choice above is already reflected below,
+// so there is nothing left to edit by hand.
+//
+// The tabs are a toggle-button group (aria-pressed) rather than an ARIA tablist,
+// matching sandboxesSwitcher: every button stays in the tab order and activates
+// with Enter or Space, so the pattern is keyboard-complete with no roving-tabindex
+// JavaScript. The command block is server-rendered with the default tab's command
+// so it reads correctly before datastar boots and data-text takes over.
+templ landingInstallBuilder() {
+	<div class="lp-build card">
+		<div class="sb-switch lp-build-tabs" role="group" aria-label="Where to install the kit">
+			for _, m := range landingInstallModes() {
+				<button
+					class="sb-switch-btn"
+					type="button"
+					data-class={ "{'is-on': $_mode === '" + m.Key + "'}" }
+					data-attr:aria-pressed={ "$_mode === '" + m.Key + "' ? 'true' : 'false'" }
+					data-on:click={ "$_mode = '" + m.Key + "'" }
+				>{ m.Name }</button>
+			}
+		</div>
+		for i, m := range landingInstallModes() {
+			<p
+				class="lp-build-hint"
+				data-show={ "$_mode === '" + m.Key + "'" }
+				if i > 0 {
+					style="display:none"
+				}
+			>{ m.Hint }</p>
+		}
+		<div class="lp-build-opts">
+			<div class="field">
+				<label for="installAgent">Agent</label>
+				<select class="input" id="installAgent" data-bind:_agent>
+					for _, a := range sandboxAgents() {
+						<option value={ a.Key }>{ a.Name }</option>
+					}
+					<option value="all">All three — one sandbox, any of them</option>
+				</select>
+				<p class="lp-build-note">
+					Claude Code is the default. <a href="/sandboxes">The sandbox guide</a> covers
+					what changes for Codex and pi.
+				</p>
+			</div>
+			<div class="field" data-show="$_mode === 'project'" style="display:none">
+				<label for="installName">Sandbox name</label>
+				<input
+					class="input"
+					id="installName"
+					type="text"
+					placeholder={ landingNameFallback }
+					autocomplete="off"
+					autocapitalize="none"
+					spellcheck="false"
+					data-bind:_sbname
+				/>
+				<p class="lp-build-note">
+					Names the folder under <span class="mono">~/.sandboxes/</span>. Usually your
+					project's name — it stays on your machine.
+				</p>
+			</div>
+		</div>
+		<fieldset class="lp-build-flags">
+			// Neutral on purpose: the two sandbox-only rows are hidden on the global
+			// tab, so a legend promising to carry your setup over would sit above a
+			// lone --recommended box and describe nothing on screen.
+			<legend>Options</legend>
+			for _, o := range landingInstallOpts() {
+				@landingInstallFlag(o)
+			}
+		</fieldset>
+		<div class="lp-code card">
+			<div class="lp-code-head">
+				<span class="kv">curl · bash</span>
+				<button
+					class="btn btn-ghost btn-sm"
+					type="button"
+					data-on:click={ clipboardExprJS(landingInstallExpr(), "_copiedInstall") }
+					aria-label="Copy install command"
+				>
+					<span data-show="!$_copiedInstall">Copy</span>
+					<span data-show="$_copiedInstall" style="display:none">Copied ✓</span>
+				</button>
+			</div>
+			<pre class="cmd"><code data-text={ landingInstallExpr() }>{ landingInstallDefault }</code></pre>
+		</div>
+	</div>
+}
+
+// landingInstallFlag renders one flag checkbox. The label wraps the input, so the
+// whole row — flag name and explanation both — is the click target, and the
+// association needs no matching id. Flags the installer rejects without a sandbox
+// (--copy, --shared-auth: see main.go's flag usage) appear only on the project
+// tab; showing them greyed out on the global tab would advertise a command that
+// cannot run.
+templ landingInstallFlag(o installOpt) {
+	<label
+		class="lp-check"
+		if o.NeedsName {
+			data-show="$_mode === 'project'"
+			style="display:none"
+		}
+	>
+		<input class="lp-check-box" type="checkbox" data-bind={ o.Signal }/>
+		<span class="lp-check-text">
+			<code class="lp-check-flag">{ o.Flag }</code>
+			<span class="lp-check-desc">{ o.Desc }</span>
+		</span>
+	</label>
+}
+
+// landingLaunchStrip answers the question a sandboxed install leaves hanging —
+// "it is installed, now how do I actually work in it?" — which the section
+// previously never answered: the flags were documented here, but the commands
+// that open a sandbox and pin a repository to it lived only on /sandboxes.
+//
+// It is bound to the project tab because none of it applies to a global install,
+// and every command is built from the same signals as the install line above, so
+// the sandbox name a visitor typed is already filled in.
+templ landingLaunchStrip() {
+	<div class="lp-next" data-show="$_mode === 'project'" style="display:none">
+		<h3 class="lp-next-h">Then work in it</h3>
+		<p class="lp-next-sub">
+			Three commands, in the order you meet them: open the sandbox, pin the project
+			to it, and the one line everyone on the team runs from then on.
+		</p>
+		<div class="lp-next-grid">
+			for _, s := range landingLaunchSteps() {
+				<div class="lp-next-step">
+					<div class="lp-code card">
+						<div class="lp-code-head">
+							<span class="kv">{ s.Label }</span>
+							@sbCopyButtonExpr(clipboardExprKeyJS(s.Expr, s.Key), s.Key, "Copy the command that will "+s.Label)
+						</div>
+						<pre class="cmd"><code data-text={ s.Expr }>{ s.Text }</code></pre>
+					</div>
+					<p class="lp-next-desc">{ s.Desc }</p>
+				</div>
+			}
+		</div>
+		<ul class="sb-notes">
+			<li>
+				The split is the point: <span class="mono">.aiagentmemory</span> holds the
+				agent and its flags and gets committed, while your sandbox name is recorded
+				in <span class="mono">~/.sandboxes/agents</span> on this machine alone. A
+				teammate whose sandbox is called something else runs the same
+				<span class="mono">load</span> and gets the same setup.
+			</li>
+			<li>
+				With no sandbox recorded on any layer,
+				<span class="mono">load</span> stops and tells you to run
+				<span class="mono">init</span>. It never falls back to your global config:
+				launching unpinned would defeat the point while looking like success.
+			</li>
+			<li>
+				A sandbox installed with <span class="mono">--agent all</span> is one
+				directory any of the three CLIs can open — add
+				<span class="mono">--agent codex</span> or <span class="mono">--agent pi</span>
+				to <span class="mono">run</span> to open it as one of the others.
+			</li>
+		</ul>
+	</div>
 }
 
 // landingQuickStart shows the copy-paste boot snippet. The Copy button is a

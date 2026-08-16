@@ -217,10 +217,18 @@ templ sandboxesPanel(a sandboxAgent, first bool) {
 // writes to the clipboard and flashes by setting _copiedKey to this button's key,
 // so any number of buttons share one signal and only the clicked one confirms.
 templ sbCopyButton(cmd, key, label string) {
+	@sbCopyButtonExpr(clipboardExprKey(cmd, key), key, label)
+}
+
+// sbCopyButtonExpr is sbCopyButton for a button whose payload is assembled in the
+// browser: the caller passes the whole click expression (built with
+// clipboardExprKeyJS) rather than a literal command. The landing page's install
+// builder uses it, since its commands only exist once the signals resolve.
+templ sbCopyButtonExpr(clickExpr, key, label string) {
 	<button
 		class="btn btn-ghost btn-sm"
 		type="button"
-		data-on:click={ clipboardExprKey(cmd, key) }
+		data-on:click={ clickExpr }
 		aria-label={ label }
 	>
 		<span data-show={ "$_copiedKey !== '" + key + "'" }>Copy</span>
