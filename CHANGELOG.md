@@ -160,3 +160,5 @@
 - 2026-08-16 `8a1d3e3` fix(web): Free plan advertises 1,000 requests — one constant behind hero, pricing, FAQ and register
 - 2026-08-16 `04b542e` feat(web): platform tabs on the install builder — macOS/Linux or Windows/no-CLI, on both surfaces
 - 2026-08-16 `c37db0c` feat(server): `--local` — self-hosted single-workspace mode (one `local` workspace, unauthenticated /mcp, no token, no dashboard; loopback default, refuses a multi-tenant db)
+- 2026-08-16 `fdb7249` fix(server): `--local` seeds the am_skillset wakeup playbook too — 37 tools with an empty preamble is a memory the agent never opens
+- 2026-08-16 `fd979f3` feat(docker): compose stack for self-hosters (--local + Qdrant, Ollama on host or remote via .env.docker.example) + the three delegation layers documented
