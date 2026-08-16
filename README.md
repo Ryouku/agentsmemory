@@ -297,6 +297,26 @@ collapses it to the simplest thing that still runs every tool:
 # agentsmemory listening on 127.0.0.1:8080 (local mode: workspace "local", MCP /mcp, no token required, no dashboard)
 ```
 
+Then point your agent at *that* server. It is the same kit as the hosted
+service; `--local` aims it at `http://localhost:8080/mcp` and never asks for a
+token, because there is none to ask for:
+
+```bash
+aiagentmemory install --local                                # global, Claude (~/.claude) — the default agent
+aiagentmemory install --local --agent all                    # claude | codex | pi | both | all
+aiagentmemory install --local --sandbox acme                 # isolated config at ~/.sandboxes/acme
+aiagentmemory install --local --sandbox acme --agent codex   # …and choose the agent inside it
+```
+
+With `--local` and no target named, the install goes global and skips the
+interactive global-vs-sandbox prompt — a self-hoster setting up their own machine
+has an obvious answer to that question. Naming `--sandbox <name>` still wins (the
+name is required), and `--mcp-url` overrides the endpoint for a server on another
+port or host. Registering the MCP is only half the job, though: what makes an
+agent actually *use* the tools is the protocol the kit installs alongside it —
+see [the server is inert without the
+protocol](#the-server-is-inert-without-the-protocol).
+
 What changes:
 
 | | default | `--local` |
