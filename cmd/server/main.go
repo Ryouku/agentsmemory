@@ -37,6 +37,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
@@ -125,6 +126,15 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 	if cfg.Local && !c.IsSet("addr") {
 		cfg.Addr = config.LocalAddr
 	}
+	// Local mode is "one machine, one process", so its default search index must
+	// not be a service someone has to run: chromem indexes in-process and stores
+	// its files beside the database. The multi-tenant default stays sqlite (see
+	// config.Default) — this only moves the floor for self-hosted installs, and
+	// an explicit --vector-backend or VECTOR_BACKEND still wins, which is how the
+	// Docker stack pins the choice out loud.
+	if cfg.Local && !c.IsSet("vector-backend") {
+		cfg.VectorBackend = config.VectorBackendChromem
+	}
 	return cfg
 }
 
@@ -134,7 +144,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 func dataFlags(def config.Config) []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "db", Sources: cli.EnvVars("AGENTSMEMORY_DB"), Value: def.DBPath, Usage: "SQLite database path"},
-		&cli.StringFlag{Name: "vector-backend", Sources: cli.EnvVars("VECTOR_BACKEND"), Value: def.VectorBackend, Usage: "search index: sqlite|qdrant (SQLite is always the source of truth)"},
+		&cli.StringFlag{Name: "vector-backend", Sources: cli.EnvVars("VECTOR_BACKEND"), Value: def.VectorBackend, Usage: "search index: sqlite|chromem|qdrant (SQLite is always the source of truth; --local defaults to chromem)"},
 		&cli.StringFlag{Name: "qdrant-url", Sources: cli.EnvVars("QDRANT_URL"), Value: def.QdrantURL, Usage: "Qdrant base URL"},
 		&cli.StringFlag{Name: "qdrant-api-key", Sources: cli.EnvVars("QDRANT_API_KEY"), Value: def.QdrantAPIKey, Usage: "Qdrant API key (optional)"},
 		&cli.StringFlag{Name: "ollama-url", Sources: cli.EnvVars("OLLAMA_URL"), Value: def.OllamaURL, Usage: "Ollama base URL"},
@@ -601,20 +611,68 @@ func buildServices(cfg config.Config) (*services, error) {
 
 // buildVectorStore assembles the vector layer from cfg. SQLite is always the
 // durable source of truth (sqlitevec); cfg.VectorBackend then decides whether it
-// also serves search or whether Qdrant is layered on as the search index via
-// store.Hybrid. This switch is the single swap point for the search backend.
+// also serves search or whether an index is layered on via store.Hybrid — either
+// an embedded chromem directory or a Qdrant service. This switch is the single
+// swap point for the search backend.
 func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error) {
 	sot := sqlitevec.New(gdb)
 	switch cfg.VectorBackend {
 	case config.VectorBackendSQLite:
 		return sot, nil
+	case config.VectorBackendChromem:
+		dir := config.ChromemPath(cfg.DBPath)
+		index, err := chromemvec.New(dir)
+		if err != nil {
+			return nil, err
+		}
+		hybrid := store.NewHybrid(sot, index)
+		if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
+			return nil, err
+		}
+		log.Printf("chromem index: %s", dir)
+		return hybrid, nil
 	case config.VectorBackendQdrant:
 		index := qdrant.New(cfg.QdrantURL, cfg.QdrantAPIKey, cfg.HTTPTimeout)
 		return store.NewHybrid(sot, index), nil
 	default:
-		return nil, fmt.Errorf("unknown vector backend %q (want %q or %q)",
-			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendQdrant)
+		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
+			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
 	}
+}
+
+// reconcileChromem fills an empty chromem index from the SQLite source of truth,
+// namespace by namespace, before the server starts answering searches.
+//
+// It exists because the index is a directory that can legitimately be absent
+// while the database is full: the first boot after an install switches to this
+// backend, a restore that brought back only the .db file, or a manually deleted
+// index directory. Without the replay, search would return nothing at all and
+// look like data loss even though every vector is safe in SQLite. The replay is
+// cheap — it reuses the stored vectors, so nothing is re-embedded and Ollama is
+// not called.
+//
+// Only wholly empty namespaces are replayed. An index that merely fell behind is
+// a different problem (rebuild it deliberately by deleting the directory), and
+// re-writing every vector on every boot would make startup scale with the palace.
+func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chromemvec.Index, hybrid *store.Hybrid) error {
+	namespaces, err := sot.Namespaces(ctx)
+	if err != nil {
+		return fmt.Errorf("list source-of-truth namespaces: %w", err)
+	}
+	for _, ns := range namespaces {
+		indexed, err := index.Count(ns)
+		if err != nil {
+			return fmt.Errorf("count chromem namespace %q: %w", ns, err)
+		}
+		if indexed > 0 {
+			continue
+		}
+		if err := hybrid.Rebuild(ctx, ns); err != nil {
+			return fmt.Errorf("rebuild chromem namespace %q: %w", ns, err)
+		}
+		log.Printf("chromem index: rebuilt namespace %q from the SQLite source of truth", ns)
+	}
+	return nil
 }
 
 // openDB opens a pure-Go (no cgo) SQLite database through gorm's glebarez

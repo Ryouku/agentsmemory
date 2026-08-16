@@ -44,7 +44,8 @@ func syncCommand(def config.Config) *cli.Command {
 func syncIndex(ctx context.Context, cfg config.Config, recreate bool) error {
 	if cfg.VectorBackend != config.VectorBackendQdrant {
 		return fmt.Errorf("sync needs --vector-backend qdrant: with the sqlite backend the " +
-			"source of truth IS the search index, so there is nothing to sync")
+			"source of truth IS the search index, and the chromem backend refills an empty " +
+			"index from SQLite when the server boots (delete its .chromem directory to force one)")
 	}
 
 	gdb, err := openDB(cfg.DBPath, cfg.Debug)

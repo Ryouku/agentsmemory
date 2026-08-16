@@ -12,6 +12,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/markbates/goth v1.82.0
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/starfederation/datastar-go v1.2.2
