@@ -156,3 +156,4 @@
 - 2026-08-16 `c1b3de5` feat(web): tabbed install builder — pick mode, agent, name and flags; the command rewrites itself
 - 2026-08-16 `6ea1c51` docs(landing): state the token step — where to get one, and that a blank prompt leaves memory disconnected
 - 2026-08-16 `57e438c` feat(dashboard): the reveal block builds the command too — same picker as the landing page, token baked in, signals namespaced per workspace
+- 2026-08-16 `8acd095` feat(web): /windows-guide — an LLM-executable install for Windows, VS Code, Cursor and Claude Desktop (no CLI, no bash, global only)

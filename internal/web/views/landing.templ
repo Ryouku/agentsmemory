@@ -496,6 +496,42 @@ templ landingInstall(d LandingData) {
 					<pre class="cmd"><code>{ landingClaudePrompt }</code></pre>
 				</div>
 			</div>
+			// No-CLI path: Windows, VS Code, Cursor and Claude Desktop have no installer
+			// to run — the binary is Linux/macOS only — but agentsmemory is a remote MCP
+			// server, so the assistant already in their editor can wire it up itself.
+			// Same lp-start-grid shape as the two blocks above (no new CSS); its own
+			// _copiedNoCLI signal keeps this Copy button independent of theirs, since
+			// datastar signals are global to the page.
+			<div class="lp-start-grid">
+				<div class="lp-install-copy">
+					<p class="eyebrow">No CLI? Windows, VS Code, Cursor, Claude Desktop</p>
+					<p>
+						The installer is a bash script, so it needs macOS, Linux or WSL — but
+						the memory itself is a remote MCP server. Paste this into the assistant
+						you already use and it reads the
+						<a href="/windows-guide">no-CLI guide</a>, asks for your token, and
+						writes the global config for whichever editor it is running in.
+					</p>
+					<p>
+						<a class="lp-guide-link" href="/windows-guide">Read the guide → <span class="mono">/windows-guide</span></a>
+					</p>
+				</div>
+				<div class="lp-code card">
+					<div class="lp-code-head">
+						<span class="kv">prompt for any assistant</span>
+						<button
+							class="btn btn-ghost btn-sm"
+							type="button"
+							data-on:click={ clipboardExprSignal(landingWindowsPrompt, "_copiedNoCLI") }
+							aria-label="Copy the prompt for a no-CLI install"
+						>
+							<span data-show="!$_copiedNoCLI">Copy</span>
+							<span data-show="$_copiedNoCLI" style="display:none">Copied ✓</span>
+						</button>
+					</div>
+					<pre class="cmd"><code>{ landingWindowsPrompt }</code></pre>
+				</div>
+			</div>
 			<dl class="lp-cmd-ref">
 				for _, c := range landingCommands() {
 					<div class="lp-cmd-row">

@@ -815,7 +815,7 @@ const landingInstallCmd = "curl -fsSL https://raw.githubusercontent.com/atviroko
 // (the "_" prefix keeps it off the wire): the whole interaction is a text
 // substitution, so a server round-trip would buy nothing.
 func landingSignals() string {
-	return strings.TrimSuffix(landingBuilder().Signals(), "}") + ", _copiedPrompt: false}"
+	return strings.TrimSuffix(landingBuilder().Signals(), "}") + ", _copiedPrompt: false, _copiedNoCLI: false}"
 }
 
 // landingNameFallback is the sandbox name used while the input is empty. The
@@ -910,6 +910,18 @@ const claudeGuideURL = "https://aiagentmemory.dev/claude-guide"
 // workspace token, and runs the install itself. Kept as one line so it pastes
 // cleanly into a chat box.
 const landingClaudePrompt = "Read " + claudeGuideURL + " and install the agentsmemory Claude Code kit for me. When you need my workspace API token, ask me — I'll create one in the dashboard."
+
+// windowsGuideURL is the canonical public URL of the no-CLI install guide
+// (handleWindowsGuide). Hardcoded for the same reason as claudeGuideURL.
+const windowsGuideURL = "https://aiagentmemory.dev/windows-guide"
+
+// landingWindowsPrompt is the copy-paste prompt for a visitor with no CLI —
+// Windows, VS Code, Cursor, Claude Desktop. The installer is a bash script and a
+// Linux/macOS binary, but agentsmemory is a remote MCP server, so the assistant
+// already in their editor can do the whole setup by writing one config file. Like
+// landingClaudePrompt it is one line, and it says up front that the assistant must
+// ask for the token rather than invent one.
+const landingWindowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
 
 // installGroup is one column of the "what it installs" breakdown: a heading, the
 // command that triggers it, and the pieces it adds.
