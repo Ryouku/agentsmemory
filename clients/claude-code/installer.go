@@ -154,6 +154,8 @@ type Installer struct {
 	explicitTarget bool          // true when --sandbox/--config-dir pinned the target ⇒ skip the mode prompt
 	agentBin       string        // resolved agent CLI name to drive for mcp/plugin ops
 	mcpURL         string        // agentsmemory remote MCP endpoint
+	socket         string        // non-empty ⇒ reach a --local server over this Unix socket, via the mcp-stdio bridge
+	serverBin      string        // agentsmemory server binary the stdio bridge is spawned from (socket mode only)
 	scope          string        // Claude MCP/plugin scope (user|local|project)
 	local          bool          // target a self-hosted `agentsmemory --local` server: no token anywhere
 	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
@@ -213,6 +215,46 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 	}
 }
 
+// serverBinCandidates are the names the agentsmemory server binary is commonly
+// installed under, tried in order when --server-bin is not given: the release
+// asset's own name first, then the shorter name the README's download snippet
+// saves it as.
+var serverBinCandidates = []string{"aiagentmemory-server", "agentsmemory"}
+
+// resolveServerBin finds the server binary the stdio bridge will be spawned from
+// and returns an ABSOLUTE path.
+//
+// Absolute matters: the agent launches this command itself, from whatever working
+// directory it happens to be in and with a PATH that may not match the installing
+// shell's. A bare name that resolves here can easily fail there, and the failure
+// surfaces to the user as an MCP server that simply never connects.
+//
+// Under --dry-run a missing binary is tolerated so the plan still prints, matching
+// how the agent CLI itself is resolved.
+func resolveServerBin(flagValue string, dryRun bool) (string, error) {
+	candidates := serverBinCandidates
+	if flagValue != "" {
+		candidates = []string{flagValue}
+	}
+
+	for _, name := range candidates {
+		// LookPath handles both a bare name (searched on PATH) and an explicit
+		// path, and confirms the file is actually executable either way.
+		if path, err := exec.LookPath(name); err == nil {
+			if abs, err := filepath.Abs(path); err == nil {
+				return abs, nil
+			}
+			return path, nil
+		}
+	}
+
+	if dryRun {
+		return candidates[0], nil
+	}
+	return "", fmt.Errorf("cannot find the agentsmemory server binary (tried %s) — pass --server-bin /path/to/agentsmemory",
+		strings.Join(candidates, ", "))
+}
+
 // newInstaller builds an Installer for one agent kit from parsed CLI flags. It
 // resolves the target config dir (isolated sandbox vs the kit's global dir) and
 // the agent CLI to drive, selecting a dry-run runner when --dry-run is set.
@@ -238,6 +280,20 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 
 	dryRun := c.Bool("dry-run")
 
+	// --socket registers the stdio bridge instead of an HTTP endpoint, which only
+	// makes sense against a self-hosted server: the bridge carries no credential,
+	// so pointing it at the multi-tenant service would register an MCP that can
+	// only ever answer 401. Requiring --local says that up front instead.
+	socket, serverBin := c.String("socket"), ""
+	if socket != "" {
+		if !local {
+			return nil, fmt.Errorf("--socket requires --local: a socket-served MCP carries no token, so it only reaches a self-hosted server")
+		}
+		if serverBin, err = resolveServerBin(c.String("server-bin"), dryRun); err != nil {
+			return nil, err
+		}
+	}
+
 	// We always register our MCP, which needs the agent's own CLI, so resolve it
 	// now. Under --dry-run tolerate a missing CLI so the plan can still be printed.
 	agentBin, err := resolveAgentCLI(kit, c)
@@ -260,6 +316,8 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		explicitTarget: explicitTarget,
 		agentBin:       agentBin,
 		mcpURL:         mcpURL,
+		socket:         socket,
+		serverBin:      serverBin,
 		scope:          c.String("scope"),
 		local:          local,
 		token:          c.String("token"),
@@ -555,6 +613,13 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 		fmt.Fprintf(i.out, "  add it later: %s\n", i.mcpAddHint())
 		return nil
 	}
+	// A socket has no URL, so the agent cannot speak HTTP to it: it spawns the
+	// server's own mcp-stdio bridge instead. This is checked before the per-agent
+	// split because the stdio registration is identical for Claude and codex.
+	if i.socket != "" {
+		return i.registerSocketMCP()
+	}
+
 	switch i.kit.name {
 	case agentCodex:
 		return i.registerCodexMCP(token)
@@ -563,6 +628,29 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 	default:
 		return i.registerClaudeMCP(token)
 	}
+}
+
+// registerSocketMCP wires the agent to a server listening on a Unix socket, via
+// the mcp-stdio bridge built into the server binary.
+//
+// No token is passed. --socket requires --local (enforced in newInstaller), and
+// a local server authenticates by socket permissions rather than a credential —
+// which is just as well, since an MCP command line is stored in plain config and
+// visible in `ps`, so a token on argv would leak.
+func (i *Installer) registerSocketMCP() error {
+	if i.kit.name == agentPi {
+		// pi has no MCP client of its own; its bridge extension speaks HTTP to a
+		// URL. Spawning a stdio child is a different mechanism entirely, so this
+		// is reported rather than silently registered as something else.
+		return fmt.Errorf("--socket is not supported for pi (its bridge extension connects over HTTP): run the server on --addr and install pi with --mcp-url")
+	}
+
+	argv := []string{"mcp-stdio", "--socket", i.socket}
+	if err := i.addStdioMCP(mcpName, i.serverBin, argv...); err != nil {
+		return err
+	}
+	i.ok("registered MCP %q → %s (stdio bridge to %s)", mcpName, i.socket, i.serverBin)
+	return nil
 }
 
 // registerClaudeMCP registers the remote MCP with the Claude CLI, which takes the
@@ -803,13 +891,17 @@ func (i *Installer) installRecommended() {
 // idempotent. The two CLIs spell it differently: Claude scopes the entry and marks
 // the command with --transport stdio, codex infers stdio from a trailing command
 // and has no scope.
-func (i *Installer) addStdioMCP(name, bin string) error {
+//
+// argv carries any arguments the command needs after the binary — everything past
+// the `--` separator, so a flag like --socket reaches the server rather than the
+// agent CLI parsing it as its own.
+func (i *Installer) addStdioMCP(name, bin string, argv ...string) error {
 	if i.kit.name == agentCodex {
 		i.agent(true, "mcp", "remove", name)
-		return i.agent(false, "mcp", "add", name, "--", bin)
+		return i.agent(false, append([]string{"mcp", "add", name, "--", bin}, argv...)...)
 	}
 	i.agent(true, "mcp", "remove", "--scope", i.scope, name)
-	return i.agent(false, "mcp", "add", "--transport", "stdio", "--scope", i.scope, name, "--", bin)
+	return i.agent(false, append([]string{"mcp", "add", "--transport", "stdio", "--scope", i.scope, name, "--", bin}, argv...)...)
 }
 
 // agent runs the resolved agent CLI with its config-dir env var (CLAUDE_CONFIG_DIR
@@ -983,8 +1075,15 @@ func (i *Installer) summary() {
 
 	if i.local {
 		// The self-hosted server is the one thing that has to be running for any of
-		// this to work, and nothing else in the output would say so.
-		fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local   (this install points at %s)\n", i.mcpURL)
+		// this to work, and nothing else in the output would say so. The reminder
+		// must echo the transport that was actually registered: telling a socket
+		// install to run the server on a port would wire up a bridge that dials a
+		// socket nothing is listening on.
+		if i.socket != "" {
+			fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local --socket %s   (this install bridges to that socket over stdio)\n", i.socket)
+		} else {
+			fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local   (this install points at %s)\n", i.mcpURL)
+		}
 	}
 
 	if i.kit.name == agentPi {

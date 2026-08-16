@@ -134,6 +134,17 @@ func installCommand() *cli.Command {
 				Usage: "agentsmemory remote MCP endpoint",
 			},
 			&cli.StringFlag{
+				Name:    "socket",
+				Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"),
+				Usage: "register the MCP over stdio against a --local server listening on this Unix socket " +
+					"(the socket the server was started with); requires --local and replaces --mcp-url",
+			},
+			&cli.StringFlag{
+				Name:    "server-bin",
+				Sources: cli.EnvVars("AIAGENTMEMORY_SERVER_BIN"),
+				Usage:   "agentsmemory server binary the --socket stdio bridge spawns (default: found on PATH)",
+			},
+			&cli.StringFlag{
 				Name:  "scope",
 				Value: "user",
 				Usage: "Claude MCP/plugin scope: user | local | project",

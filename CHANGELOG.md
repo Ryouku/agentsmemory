@@ -170,3 +170,6 @@
 - 2026-08-16 `a25a4ba` chore(docker): compose is one container on chromem — qdrant kept commented with its switch-back steps
 - 2026-08-16 `e3de3db` docs: "choosing the index" table + how to prepare Ollama for bge-m3 (pull, verify, OLLAMA_HOST for containers)
 - 2026-08-16 `c855c15` docs(readme): `aiagentmemory install --local` right under the `--local` run example (global / --agent / --sandbox shapes)
+- 2026-08-17 `ec6e404` feat(server): `--socket` serves on a 0600 Unix socket, and `mcp-stdio` bridges it to stdio so Claude/Codex can spawn it (HTTP stays the default)
+- 2026-08-17 `ef0350c` test(server): socket listener (perms, stale socket, refuses a regular file) + stdio proxy (202 / JSON / SSE, transport errors, 512KB messages)
+- 2026-08-17 `0f9f154` feat(installer): `install --local --socket <path>` registers the stdio bridge for Claude and codex instead of an HTTP URL

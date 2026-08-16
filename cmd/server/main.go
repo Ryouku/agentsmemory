@@ -86,6 +86,7 @@ func main() {
 				Action: serveAction,
 			},
 			mcpCommand(def),
+			stdioCommand(def),
 			syncCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
@@ -100,11 +101,12 @@ func main() {
 }
 
 // configFromCmd reads the storage/embed flags off a (sub)command into a Config.
-// The mcp subcommand omits the addr flag, so c.String("addr") yields "" there —
-// harmless, because only the serve path reads Addr.
+// The mcp subcommand omits the addr and socket flags, so c.String yields "" for
+// both there — harmless, because only the serve path reads them.
 func configFromCmd(c *cli.Command, def config.Config) config.Config {
 	cfg := config.Config{
 		Addr:             c.String("addr"),
+		SocketPath:       c.String("socket"),
 		DBPath:           c.String("db"),
 		VectorBackend:    c.String("vector-backend"),
 		QdrantURL:        c.String("qdrant-url"),
@@ -154,10 +156,14 @@ func dataFlags(def config.Config) []cli.Flag {
 }
 
 // serveFlags are the flags the serving entry points expose: the listen address
-// plus the shared storage/embed flags.
+// or socket, plus the shared storage/embed flags.
 func serveFlags(def config.Config) []cli.Flag {
 	return append([]cli.Flag{
 		&cli.StringFlag{Name: "addr", Sources: cli.EnvVars("AGENTSMEMORY_ADDR"), Value: def.Addr, Usage: "HTTP listen address"},
+		// AGENTSMEMORY_SOCKET is shared with the mcp-stdio proxy on purpose: one
+		// exported variable points the server at a socket and tells the proxy
+		// where to dial, so the pair cannot drift apart.
+		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
 		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
@@ -325,8 +331,14 @@ func run(ctx context.Context, cfg config.Config) error {
 	// Dashboard + auth + static assets.
 	webSrv.Routes(r)
 
-	log.Printf("agentsmemory listening on %s (dashboard /, MCP /mcp, OAuth issuer %s)", cfg.Addr, issuer)
-	return http.ListenAndServe(cfg.Addr, r)
+	ln, err := listenerFor(cfg)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	log.Printf("agentsmemory listening on %s (dashboard /, MCP /mcp, OAuth issuer %s)", listenDescription(cfg), issuer)
+	return http.Serve(ln, r)
 }
 
 // seedGlobalSkillset writes the default wakeup playbook when the database holds
@@ -398,18 +410,63 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	r.Handle("/mcp", local(mcpHandler))
 	r.Handle("/import", local(importer.Handler(svc.drawers, svc.usage)))
 
-	if !config.IsLoopback(cfg.Addr) {
-		log.Printf("WARNING: --local serves an UNAUTHENTICATED /mcp, and %s is not a loopback address — anyone who can reach this port has full read and write access to every memory in %s. Bind %s, or run multi-tenant.",
+	// The exposure warning is about TCP only. A socket is bound at 0600, so the
+	// operating system already restricts the unauthenticated endpoint to this
+	// user — a tighter boundary than any loopback port, which every process on
+	// the machine may open. Warning there would train operators to ignore it.
+	if cfg.SocketPath == "" && !config.IsLoopback(cfg.Addr) {
+		log.Printf("WARNING: --local serves an UNAUTHENTICATED /mcp, and %s is not a loopback address — anyone who can reach this port has full read and write access to every memory in %s. Bind %s, use --socket, or run multi-tenant.",
 			cfg.Addr, cfg.DBPath, config.LocalAddr)
 	}
-	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, no token required, no dashboard)", cfg.Addr, tenant.LocalSlug)
+
+	ln, err := listenerFor(cfg)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, no token required, no dashboard)", listenDescription(cfg), tenant.LocalSlug)
 	// Registering the server is only half the job: an MCP endpoint is a catalogue
 	// of verbs, and an agent calls none of them unless something instructs it to.
 	// So point at both halves — the connection AND the protocol that drives it —
 	// because a local operator has no dashboard to read this from.
-	log.Printf("connect an agent:  claude mcp add --transport http agentsmemory http://%s/mcp", strings.TrimPrefix(cfg.Addr, ":"))
+	//
+	// A socket has no URL to hand an agent, so the hint switches to the stdio
+	// proxy. That is the whole point of shipping the proxy in this binary: the
+	// same executable that is already running is also the command the agent
+	// spawns, so there is nothing further to install.
+	if cfg.SocketPath == "" {
+		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory http://%s/mcp", strings.TrimPrefix(cfg.Addr, ":"))
+	} else {
+		log.Printf("connect an agent:  claude mcp add agentsmemory -- %s mcp-stdio --socket %s", executableName(), cfg.SocketPath)
+		log.Printf("           codex:  codex mcp add agentsmemory -- %s mcp-stdio --socket %s", executableName(), cfg.SocketPath)
+	}
 	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  aiagentmemory install")
-	return http.ListenAndServe(cfg.Addr, r)
+	return http.Serve(ln, r)
+}
+
+// listenDescription renders the bound address for the startup logs: the socket
+// path when one is in use, the TCP address otherwise. It exists so both serving
+// modes report where they actually are rather than echoing an Addr that a socket
+// listener never bound.
+func listenDescription(cfg config.Config) string {
+	if cfg.SocketPath != "" {
+		return "unix:" + cfg.SocketPath
+	}
+	return cfg.Addr
+}
+
+// executableName returns this binary's path for the copy-paste "connect an
+// agent" hints. The agent spawns the proxy itself, so the hint has to name a
+// command that will still resolve in that context: an absolute path always
+// does, where the bare name only works if the binary is on PATH. It falls back
+// to the plain name if the path cannot be determined.
+func executableName() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "aiagentmemory-server"
+	}
+	return exe
 }
 
 // oauthSecret returns the key that seals OAuth tokens. OAUTH_SECRET_KEY keeps
