@@ -28,3 +28,24 @@ func TestIsLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestChromemPath pins where the embedded index lands relative to the database
+// it indexes: same directory (so one volume and one backup cover both), and a
+// name that cannot collide with the .db file itself.
+func TestChromemPath(t *testing.T) {
+	tests := []struct {
+		dbPath string
+		want   string
+	}{
+		{"agentsmemory.db", "agentsmemory.chromem"},
+		{"/data/agentsmemory.db", "/data/agentsmemory.chromem"},
+		{"/data/palace.sqlite", "/data/palace.chromem"},
+		{"agentsmemory", "agentsmemory.chromem"}, // no extension to strip
+		{"/var/lib/am/main.db", "/var/lib/am/main.chromem"},
+	}
+	for _, tc := range tests {
+		if got := ChromemPath(tc.dbPath); got != tc.want {
+			t.Errorf("ChromemPath(%q) = %q, want %q", tc.dbPath, got, tc.want)
+		}
+	}
+}

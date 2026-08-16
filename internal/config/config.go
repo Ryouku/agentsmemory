@@ -6,6 +6,7 @@ package config
 
 import (
 	"net"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -20,7 +21,25 @@ const (
 	// VectorBackendQdrant keeps SQLite as the source of truth and adds Qdrant
 	// as the search index (the production path).
 	VectorBackendQdrant = "qdrant"
+	// VectorBackendChromem keeps SQLite as the source of truth and adds an
+	// embedded chromem-go index, held in memory and persisted to a directory
+	// beside the database file. It is a real vector index with no second
+	// service to run, which is why --local and the Docker stack default to it
+	// (2026-08-16: self-hosted must be one process, one volume).
+	VectorBackendChromem = "chromem"
 )
+
+// ChromemPath returns the directory the embedded chromem index lives in for a
+// given SQLite path: agentsmemory.db -> agentsmemory.chromem, /data/x.db ->
+// /data/x.chromem.
+//
+// Deriving it from the database path rather than exposing a separate flag keeps
+// the index in the same directory — and so inside the same Docker volume and the
+// same backup — as the source of truth it is derived from. Two databases in one
+// directory therefore get two index directories, never a shared one.
+func ChromemPath(dbPath string) string {
+	return strings.TrimSuffix(dbPath, filepath.Ext(dbPath)) + ".chromem"
+}
 
 // LocalAddr is the listen address --local defaults to. Local mode serves an
 // unauthenticated /mcp, so the default must not be reachable from the network:
@@ -63,8 +82,9 @@ type Config struct {
 	DBPath string
 
 	// VectorBackend selects the search index: VectorBackendSQLite (the source of
-	// truth serves search too) or VectorBackendQdrant (SQLite source of truth +
-	// Qdrant index). SQLite is written either way.
+	// truth serves search too), VectorBackendChromem (SQLite source of truth +
+	// an embedded in-process index) or VectorBackendQdrant (SQLite source of
+	// truth + a Qdrant service). SQLite is written either way.
 	VectorBackend string
 
 	// QdrantURL is the base URL of the Qdrant vector store (no trailing slash).
