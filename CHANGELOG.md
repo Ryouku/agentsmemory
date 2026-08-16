@@ -162,3 +162,4 @@
 - 2026-08-16 `c37db0c` feat(server): `--local` — self-hosted single-workspace mode (one `local` workspace, unauthenticated /mcp, no token, no dashboard; loopback default, refuses a multi-tenant db)
 - 2026-08-16 `fdb7249` fix(server): `--local` seeds the am_skillset wakeup playbook too — 37 tools with an empty preamble is a memory the agent never opens
 - 2026-08-16 `fd979f3` feat(docker): compose stack for self-hosters (--local + Qdrant, Ollama on host or remote via .env.docker.example) + the three delegation layers documented
+- 2026-08-16 `3c25403` feat(cli): `aiagentmemory install --local` — kit points at your own server, no token anywhere, implies global; plus docker-compose.host.yml (Linux) so Ollama on localhost just works

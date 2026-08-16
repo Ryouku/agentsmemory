@@ -15,9 +15,11 @@
  * auto-discovers it, and persists the endpoint + token in agentsmemory.env beside
  * it; `aiagentmemory run --agent pi <sandbox>` exports both before exec'ing pi.
  *
- * Configuration (all optional — a missing token disables the bridge quietly):
+ * Configuration (all optional — a missing token disables the bridge quietly,
+ * unless AGENTSMEMORY_LOCAL says the server wants none):
  *   AGENTSMEMORY_MCP_URL    remote MCP endpoint (default https://aiagentmemory.dev/mcp)
  *   AGENTSMEMORY_TOKEN      workspace bearer token
+ *   AGENTSMEMORY_LOCAL      1 = self-hosted `agentsmemory --local`: connect unauthenticated
  *   AGENTSMEMORY_STOP_HOOK  on (default) | once | off — end-of-turn checkpoint
  */
 
@@ -129,9 +131,13 @@ class McpClient {
       // Streamable HTTP servers may answer either way; accept both so a server
       // that streams its reply as SSE is handled by readMessage below.
       accept: "application/json, text/event-stream",
-      authorization: `Bearer ${this.token}`,
       "mcp-protocol-version": PROTOCOL_VERSION,
     };
+    // A self-hosted `agentsmemory --local` server takes no credential, so no
+    // header is sent at all rather than an empty bearer that reads like auth.
+    if (this.token) {
+      headers.authorization = `Bearer ${this.token}`;
+    }
     if (this.sessionId) {
       headers["mcp-session-id"] = this.sessionId;
     }
@@ -212,14 +218,19 @@ export default async function (pi: ExtensionAPI) {
 
   const token = process.env.AGENTSMEMORY_TOKEN?.trim();
   const url = process.env.AGENTSMEMORY_MCP_URL?.trim() || DEFAULT_MCP_URL;
-  if (!token) {
+  // A self-hosted server (installed with --local) authenticates nobody, so a
+  // missing token there means "none is wanted" — not "the user skipped it".
+  // Without this distinction we would either stay silent against a local server
+  // that would have worked, or 401 repeatedly against the hosted one.
+  const local = process.env.AGENTSMEMORY_LOCAL?.trim() === "1";
+  if (!token && !local) {
     // No token is a normal state (the user skipped it at install), not a failure:
     // say so once per session and leave pi otherwise untouched.
     announce(pi, "agentsmemory: no AGENTSMEMORY_TOKEN — memory tools are off", "info");
     return;
   }
 
-  const client = new McpClient(url, token);
+  const client = new McpClient(url, token ?? "");
   let tools: McpTool[];
   try {
     tools = await client.initialize();
