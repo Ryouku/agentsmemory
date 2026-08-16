@@ -522,14 +522,14 @@ templ landingInstall(d LandingData) {
 						<button
 							class="btn btn-ghost btn-sm"
 							type="button"
-							data-on:click={ clipboardExprSignal(landingWindowsPrompt, "_copiedNoCLI") }
+							data-on:click={ clipboardExprSignal(windowsPrompt, "_copiedNoCLI") }
 							aria-label="Copy the prompt for a no-CLI install"
 						>
 							<span data-show="!$_copiedNoCLI">Copy</span>
 							<span data-show="$_copiedNoCLI" style="display:none">Copied ✓</span>
 						</button>
 					</div>
-					<pre class="cmd"><code>{ landingWindowsPrompt }</code></pre>
+					<pre class="cmd"><code>{ windowsPrompt }</code></pre>
 				</div>
 			</div>
 			<dl class="lp-cmd-ref">
@@ -570,11 +570,21 @@ templ landingInstall(d LandingData) {
 templ landingInstallBuilder(d LandingData) {
 	{{ b := landingBuilder() }}
 	<div class="lp-build card">
-		@installTabs(b)
-		@installOptions(b)
-		@installFlags(b)
-		@installCommand(b)
-		@landingTokenNote(d)
+		@installPlatformTabs(b)
+		// The CLI half is gated as one unit rather than component by component, so
+		// there is a single place that knows the platform decides all of it. The
+		// wrapper carries lp-build-cli because .lp-build > .lp-code targets the
+		// command block by direct descent — see the paired selector in app.css.
+		<div class="lp-build-cli" data-show={ b.PlatIs(platUnix) }>
+			@installTabs(b)
+			@installOptions(b)
+			@installFlags(b)
+			@installCommand(b)
+			@landingTokenNote(d)
+		</div>
+		<div class="lp-build-cli" data-show={ b.PlatIs(platWin) } style="display:none">
+			@installWindowsPanel(b)
+		</div>
 	</div>
 }
 

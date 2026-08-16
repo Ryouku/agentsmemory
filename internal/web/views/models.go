@@ -929,13 +929,42 @@ const landingClaudePrompt = "Read " + claudeGuideURL + " and install the agentsm
 // (handleWindowsGuide). Hardcoded for the same reason as claudeGuideURL.
 const windowsGuideURL = "https://aiagentmemory.dev/windows-guide"
 
-// landingWindowsPrompt is the copy-paste prompt for a visitor with no CLI —
-// Windows, VS Code, Cursor, Claude Desktop. The installer is a bash script and a
-// Linux/macOS binary, but agentsmemory is a remote MCP server, so the assistant
-// already in their editor can do the whole setup by writing one config file. Like
-// landingClaudePrompt it is one line, and it says up front that the assistant must
-// ask for the token rather than invent one.
-const landingWindowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
+// windowsPrompt is the copy-paste prompt for a visitor with no CLI — Windows, VS
+// Code, Cursor, Claude Desktop. The installer is a bash script and a Linux/macOS
+// binary, but agentsmemory is a remote MCP server, so the assistant already in
+// their editor can do the whole setup by writing one config file. Like
+// landingClaudePrompt it is one line.
+//
+// It is deliberately NOT surface-specific, unlike the install command the builder
+// assembles: the dashboard embeds the token there because the secret is already
+// revealed beside it, but this prompt is pasted into a chat with a third-party
+// model, so it asks the human for the token instead of carrying it. Both mounts
+// therefore hand over the same line, and there is one constant rather than a
+// landing and a dashboard variant to keep in step.
+const windowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
+
+// installPlatform is one tab of the outer platform switch: the signal value the
+// tab sets, its label, and the line that appears beneath the tabs once chosen.
+type installPlatform struct{ Key, Name, Hint string }
+
+// installPlatforms are the two worlds the product installs into, and the hint is
+// again the load-bearing field. A visitor on Windows previously met a curl one-
+// liner with nothing on the page to tell them it could not run — the tab exists so
+// that reader is routed before they copy something broken.
+func installPlatforms() []installPlatform {
+	return []installPlatform{
+		{
+			Key:  platUnix,
+			Name: "macOS / Linux",
+			Hint: "The installer downloads the aiagentmemory binary and wires the kit into your agent. Works on macOS, Linux and WSL.",
+		},
+		{
+			Key:  platWin,
+			Name: "Windows · no CLI",
+			Hint: "There is no Windows binary — but the memory is a remote MCP server, so the assistant in your editor sets it up for you. Also the route for VS Code, Cursor and Claude Desktop on any OS.",
+		},
+	}
+}
 
 // installGroup is one column of the "what it installs" breakdown: a heading, the
 // command that triggers it, and the pieces it adds.

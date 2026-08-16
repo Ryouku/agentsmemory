@@ -379,3 +379,32 @@ func TestFreeQuotaIsStatedOnce(t *testing.T) {
 		t.Error("structured data does not carry the free quota")
 	}
 }
+
+// TestLandingBuilderOffersTheNoCLIPath is the landing-page half of the platform
+// axis. Both surfaces mount one shared builder, and the pair of tests exists
+// because that sharing has already been broken twice — each time by improving one
+// surface and leaving the sibling on the older shape.
+func TestLandingBuilderOffersTheNoCLIPath(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	for _, p := range installPlatforms() {
+		if !strings.Contains(html, p.Name) {
+			t.Errorf("builder has no %q platform tab", p.Name)
+		}
+		if !strings.Contains(html, p.Hint) {
+			t.Errorf("platform %q renders no hint, which is the point of the tab", p.Name)
+		}
+	}
+	// The CLI controls must be gated on the platform, not merely present: an
+	// ungated curl line under a tab labelled "no CLI" is the bug this prevents.
+	if !strings.Contains(html, `class="lp-build-cli"`) {
+		t.Error("the CLI half of the builder is not gated by platform")
+	}
+	if !strings.Contains(landingSignals(), "_plat") {
+		t.Error("_plat is not declared in landingSignals()")
+	}
+}
