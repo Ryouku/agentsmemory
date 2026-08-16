@@ -301,7 +301,28 @@ alone.
 **On Linux**, an override removes the Ollama friction entirely:
 
 ```bash
+# start (both -f flags, every time — the override alone is not a complete stack)
 docker compose -f docker-compose.yml -f docker-compose.host.yml up -d
+
+# follow the logs / stop
+docker compose -f docker-compose.yml -f docker-compose.host.yml logs -f agentsmemory
+docker compose -f docker-compose.yml -f docker-compose.host.yml down
+```
+
+Repeating both files gets tedious, so either export it once per shell —
+`export COMPOSE_FILE=docker-compose.yml:docker-compose.host.yml`, after which
+plain `docker compose up -d` uses both — or put that same line in a `.env` beside
+the compose files to make it the permanent default for this directory.
+
+Without compose at all, the equivalent single container (SQLite backend, so
+nothing else needs to run):
+
+```bash
+docker build -t agentsmemory:local .
+docker run -d --name agentsmemory --network host --restart unless-stopped \
+  -v agentsmemory-data:/data \
+  -e VECTOR_BACKEND=sqlite -e OLLAMA_URL=http://localhost:11434 \
+  agentsmemory:local serve --local --addr 127.0.0.1:8080 --db /data/agentsmemory.db
 ```
 
 `network_mode: host` puts the container in the host's network namespace, so
