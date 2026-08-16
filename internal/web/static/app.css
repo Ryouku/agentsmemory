@@ -696,6 +696,19 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .lp-build-token b { color: var(--bone); font-weight: 600; }
 .lp-build-token a { color: var(--brass); }
 
+/* The same builder mounted inside a project card on the dashboard. It sits in a
+   column roughly half the landing page's width, so the two-up options grid would
+   squeeze the sandbox name into a few characters — one column throughout instead.
+   No .card here: the block already lives inside one, and nesting the gradient
+   twice muddies both. */
+.install-build { padding: .9rem 0 0; margin-top: .7rem; border-top: 1px solid var(--line); }
+.install-build .lp-build-tabs { margin: .6rem 0 .9rem; }
+.install-build .lp-build-opts { grid-template-columns: minmax(0, 1fr); }
+.install-build .lp-build-hint { font-size: .86rem; margin-bottom: 1.1rem; }
+.install-build > .lp-code { margin-top: 1.2rem; }
+.install-build-hint { margin-top: .8rem; }
+.install-build-run { margin-top: 1rem; }
+
 /* ---- after a sandboxed install ---- */
 .lp-next { margin-top: 2.2rem; padding-top: 2rem; border-top: 1px solid var(--line); }
 .lp-next-h { font-size: 1.25rem; margin: 0 0 .4rem; }

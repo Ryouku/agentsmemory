@@ -139,24 +139,6 @@ func MigrateCommand(serverBase string) string {
 // same wherever the dashboard runs.
 const installScriptURL = "https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/clients/claude-code/install.sh"
 
-// InstallCommand is the one-paste shell command that installs the whole
-// aiagentmemory Claude Code kit globally with this workspace's token. The
-// bootstrap downloads the binary and runs `install --global`, wiring the slash
-// commands, Stop hook, auto-loaded CLAUDE.md, and the MCP in one step — which is
-// why the dashboard offers only this, not a bare `claude mcp add` that would set
-// up the MCP alone.
-//
-// The token rides in the AGENTSMEMORY_TOKEN env var (the binary's --token flag
-// reads it there) rather than as a visible positional arg; --global pins the
-// target so the install never prompts. The token is double-quoted so it survives
-// the odd non-alphanumeric character. It is already visible in the surrounding
-// revealed block, so embedding it here exposes nothing new. Line continuations
-// match the other copy commands' multi-line style.
-func InstallCommand(token string) string {
-	return "curl -fsSL " + installScriptURL + " \\\n" +
-		"  | AGENTSMEMORY_TOKEN=\"" + token + "\" bash -s -- --global"
-}
-
 // MemberVM is one team member as shown in the Members section: their identity and
 // current role. IsSelf marks the signed-in viewer's own row so the UI can label it
 // "you" — a cue that a demote/remove there acts on themselves (the server still
@@ -827,60 +809,20 @@ func clipboardExprJS(expr, signal string) string {
 // lets the builder below append flags to this exact string.
 const landingInstallCmd = "curl -fsSL https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/clients/claude-code/install.sh | bash"
 
-// The install builder assembles its command in the browser from these signals,
-// so a visitor picks global-or-sandboxed, names the project and ticks the flags
-// instead of reading the flag reference and editing a string by hand. Everything
-// is front-end-only (the "_" prefix keeps it off the wire) because the whole
-// interaction is a text substitution — a server round-trip would buy nothing.
-const landingBuilderSignals = "{_copiedInstall: false, _copiedPrompt: false, _copiedKey: '', " +
-	"_mode: 'global', _agent: 'claude', _sbname: '', _optcopy: false, _optshared: false, _optrec: false}"
+// landingSignals is the install section's signal block: the builder's own signals
+// plus the two this section adds — the Claude-prompt copy flash, and the shared
+// key the launch strip's copy buttons flash through. Everything is front-end-only
+// (the "_" prefix keeps it off the wire): the whole interaction is a text
+// substitution, so a server round-trip would buy nothing.
+func landingSignals() string {
+	return strings.TrimSuffix(landingBuilder().Signals(), "}") + ", _copiedPrompt: false}"
+}
 
 // landingNameFallback is the sandbox name used while the input is empty. The
 // command on screen must stay runnable at every keystroke — a visitor who copies
 // mid-edit should get a working install, not `--sandbox` with nothing after it —
 // so the field's placeholder shows this same word.
 const landingNameFallback = "myproject"
-
-// landingNameExpr yields the sandbox name to splice into a command. It hyphenates
-// whitespace and then strips everything outside [A-Za-z0-9._-] rather than
-// trusting the field: the page must never render a command that does something
-// other than install, and a name typed with a space or a semicolon would
-// otherwise become extra shell words in whatever terminal the visitor pastes
-// into. Typing "my project" is the case this is really for; "foo; rm -rf ~" is
-// the case it must not get wrong.
-const landingNameExpr = `($_sbname.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9._-]/g, '') || '` + landingNameFallback + `')`
-
-// landingAgentFlag is the `--agent` argument for the installer, which accepts the
-// multi-agent values. Claude is the installer's default, so selecting it adds
-// nothing — the shortest correct command is the one worth showing.
-const landingAgentFlag = `($_agent === 'claude' ? '' : ' --agent ' + $_agent)`
-
-// landingLaunchAgentFlag is landingAgentFlag for `run` and `init`, which resolve a
-// single kit and reject "all" (resolveAgentKit in clients/claude-code/agentkit.go).
-// An `--agent all` sandbox is one directory three CLIs can open, so the launch
-// commands simply omit the flag and open it as Claude; the strip's note says how
-// to open it as one of the others.
-const landingLaunchAgentFlag = `($_agent === 'claude' || $_agent === 'all' ? '' : ' --agent ' + $_agent)`
-
-// landingInstallExpr is the datastar expression behind the builder's command
-// block — the single source of truth for what the page displays *and* what its
-// Copy button writes, so the two can never drift apart.
-//
-// Both branches always forward arguments, so `-s --` is unconditional. The global
-// branch spells out --global rather than relying on the bare one-liner: with
-// neither --global nor --sandbox the installer stops and asks which mode you
-// want, and a tab that says "Global" must not then ask the question the tab
-// already answered.
-func landingInstallExpr() string {
-	sandboxFlags := " ' -s --' + " + landingAgentFlag +
-		" + ' --sandbox ' + " + landingNameExpr +
-		" + ($_optcopy ? ' --copy' : '')" +
-		" + ($_optshared ? ' --shared-auth' : '')" +
-		" + ($_optrec ? ' --recommended' : '')"
-	globalFlags := " ' -s -- --global' + " + landingAgentFlag +
-		" + ($_optrec ? ' --recommended' : '')"
-	return jsString(landingInstallCmd) + " + ($_mode === 'project' ?" + sandboxFlags + " :" + globalFlags + ")"
-}
 
 // installMode is one tab of the install builder: the signal value the tab sets,
 // its label, and the line that appears under the tabs once it is chosen.
@@ -945,12 +887,6 @@ func landingInstallOpts() []installOpt {
 	}
 }
 
-// landingInstallDefault is what the builder's command block renders on the
-// server, before datastar boots and data-text takes over: the default tab's
-// command, so the block is never briefly empty and never shows a command the
-// selected tab would not produce.
-const landingInstallDefault = landingInstallCmd + " -s -- --global"
-
 // launchStep is one command in the "now use it" strip that follows a sandboxed
 // install: the label on its chip, the datastar expression that renders it, the
 // server-rendered fallback for that expression, the key its Copy button flashes
@@ -962,40 +898,6 @@ type launchStep struct {
 	Expr  string
 	Text  string
 	Desc  string
-}
-
-// landingLaunchSteps is the answer to "I installed a sandbox — now what?", which
-// is the question the install section previously left hanging: the flags were
-// documented, but the commands that open the sandbox lived only on /sandboxes.
-//
-// The three steps are ordered by when a visitor needs them: open it once, pin the
-// repository to it, then the single command everyone on the team runs afterwards.
-// They are built from the same signals as the install command, so the sandbox
-// name a visitor typed above is already in them.
-func landingLaunchSteps() []launchStep {
-	return []launchStep{
-		{
-			Key:   "run",
-			Label: "open it",
-			Expr:  jsString("aiagentmemory run") + " + " + landingLaunchAgentFlag + " + ' ' + " + landingNameExpr,
-			Text:  "aiagentmemory run " + landingNameFallback,
-			Desc:  "Starts the agent with this sandbox's config, commands, MCP and token. Your global install is untouched.",
-		},
-		{
-			Key:   "init",
-			Label: "pin this repo",
-			Expr:  jsString("aiagentmemory init --sandbox ") + " + " + landingNameExpr + " + " + landingLaunchAgentFlag,
-			Text:  "aiagentmemory init --sandbox " + landingNameFallback,
-			Desc:  "Run it inside the project. It writes .aiagentmemory — commit that file. Append -- --model opus to record agent flags too.",
-		},
-		{
-			Key:   "load",
-			Label: "every day after",
-			Expr:  jsString("aiagentmemory load"),
-			Text:  "aiagentmemory load",
-			Desc:  "Opens the pinned project from any subdirectory. Teammates run this same line against their own sandbox.",
-		},
-	}
 }
 
 // claudeGuideURL is the canonical public URL of the agent-facing install guide

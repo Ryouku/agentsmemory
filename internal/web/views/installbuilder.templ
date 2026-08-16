@@ -1,0 +1,138 @@
+package views
+
+// The builder's controls, shared by the landing section and the dashboard's
+// revealed-key block. Every component takes the installBuilder that owns it, so
+// the same markup can be mounted twice on one page without the two instances
+// fighting over signals — see installbuilder.go for why that matters.
+//
+// Each control is written once here rather than per page: the landing page and
+// the dashboard were already drifting (one had a flag reference, the other a
+// fixed --global one-liner), and a picker that offers different options depending
+// on where you found it is worse than no picker.
+
+// installTabs is the where-does-it-land switch. It is a toggle-button group
+// (aria-pressed) rather than an ARIA tablist, matching sandboxesSwitcher: every
+// button stays in the tab order and activates with Enter or Space, so the pattern
+// is keyboard-complete without roving-tabindex JavaScript. The hint under it is
+// the load-bearing part — the point of the tabs is that a reader picks correctly
+// without first consulting a flag reference.
+templ installTabs(b installBuilder) {
+	<div class="sb-switch lp-build-tabs" role="group" aria-label="Where to install the kit">
+		for _, m := range landingInstallModes() {
+			<button
+				class="sb-switch-btn"
+				type="button"
+				data-class={ "{'is-on': " + b.ModeIs(m.Key) + "}" }
+				data-attr:aria-pressed={ b.ModeIs(m.Key) + " ? 'true' : 'false'" }
+				data-on:click={ b.SetMode(m.Key) }
+			>{ m.Name }</button>
+		}
+	</div>
+	for i, m := range landingInstallModes() {
+		<p
+			class="lp-build-hint"
+			data-show={ b.ModeIs(m.Key) }
+			if i > 0 {
+				style="display:none"
+			}
+		>{ m.Hint }</p>
+	}
+}
+
+// installOptions is the agent picker and the sandbox name. The name field is
+// bound rather than left as a placeholder to edit by hand, which is the whole
+// point: the command below rewrites itself as it is typed.
+templ installOptions(b installBuilder) {
+	<div class="lp-build-opts">
+		<div class="field">
+			<label for={ "installAgent" + b.Suffix }>Agent</label>
+			<select class="input" id={ "installAgent" + b.Suffix } data-bind={ b.sig("_agent") }>
+				for _, a := range sandboxAgents() {
+					<option value={ a.Key }>{ a.Name }</option>
+				}
+				<option value="all">All three — one sandbox, any of them</option>
+			</select>
+			<p class="lp-build-note">
+				Claude Code is the default. <a href="/sandboxes">The sandbox guide</a> covers
+				what changes for Codex and pi.
+			</p>
+		</div>
+		<div class="field" data-show={ b.ModeIs("project") } style="display:none">
+			<label for={ "installName" + b.Suffix }>Sandbox name</label>
+			<input
+				class="input"
+				id={ "installName" + b.Suffix }
+				type="text"
+				placeholder={ landingNameFallback }
+				autocomplete="off"
+				autocapitalize="none"
+				spellcheck="false"
+				data-bind={ b.sig("_sbname") }
+			/>
+			<p class="lp-build-note">
+				Names the folder under <span class="mono">~/.sandboxes/</span>. Usually your
+				project's name — it stays on your machine.
+			</p>
+		</div>
+	</div>
+}
+
+// installFlags is the flag group. It exists because a flag nobody knows about may
+// as well not ship: --copy and --shared-auth answer the objection a sandbox
+// raises, and a reader who never opens the reference would never learn they exist.
+// Ticking a box is also the fastest way to read what a flag does, since the
+// command rewrites itself as you go.
+templ installFlags(b installBuilder) {
+	<fieldset class="lp-build-flags">
+		// Neutral on purpose: the two sandbox-only rows are hidden on the global
+		// tab, so a legend promising to carry your setup over would sit above a
+		// lone --recommended box and describe nothing on screen.
+		<legend>Options</legend>
+		for _, o := range landingInstallOpts() {
+			@installFlagRow(b, o)
+		}
+	</fieldset>
+}
+
+// installFlagRow renders one flag checkbox. The label wraps the input, so the
+// whole row — flag name and explanation both — is the click target, and the
+// association needs no matching id. Flags the installer rejects without a sandbox
+// (--copy, --shared-auth) appear only on the project tab; showing them greyed out
+// on the global tab would advertise a command that cannot run.
+templ installFlagRow(b installBuilder, o installOpt) {
+	<label
+		class="lp-check"
+		if o.NeedsName {
+			data-show={ b.ModeIs("project") }
+			style="display:none"
+		}
+	>
+		<input class="lp-check-box" type="checkbox" data-bind={ b.sig(o.Signal) }/>
+		<span class="lp-check-text">
+			<code class="lp-check-flag">{ o.Flag }</code>
+			<span class="lp-check-desc">{ o.Desc }</span>
+		</span>
+	</label>
+}
+
+// installCommand is the assembled line. The displayed text and the Copy button's
+// payload are the same expression, so a Copy that writes something other than
+// what is on screen is structurally impossible rather than merely tested. The
+// server-rendered default inside the element shows until datastar replaces it.
+templ installCommand(b installBuilder) {
+	<div class="lp-code card">
+		<div class="lp-code-head">
+			<span class="kv">curl · bash</span>
+			<button
+				class="btn btn-ghost btn-sm"
+				type="button"
+				data-on:click={ clipboardExprJS(b.InstallExpr(), b.sig("_copiedInstall")) }
+				aria-label="Copy install command"
+			>
+				<span data-show={ "!" + b.ref("_copiedInstall") }>Copy</span>
+				<span data-show={ b.ref("_copiedInstall") } style="display:none">Copied ✓</span>
+			</button>
+		</div>
+		<pre class="cmd"><code data-text={ b.InstallExpr() }>{ b.Default() }</code></pre>
+	</div>
+}

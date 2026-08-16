@@ -501,7 +501,7 @@ func KeyBlock(k KeyVM) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = InstallBlock(k.Secret).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = InstallBlock(k.TeamID, k.Secret).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -686,7 +686,7 @@ func Flash(f FlashVM) templ.Component {
 				}
 			}
 			if f.Token != "" {
-				templ_7745c5c3_Err = InstallBlock(f.Token).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = InstallBlock("new", f.Token).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -703,7 +703,7 @@ func Flash(f FlashVM) templ.Component {
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(f.Message)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 226, Col: 32}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 228, Col: 32}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -721,7 +721,7 @@ func Flash(f FlashVM) templ.Component {
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(f.Message)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 230, Col: 32}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 232, Col: 32}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -740,17 +740,24 @@ func Flash(f FlashVM) templ.Component {
 	})
 }
 
-// InstallBlock renders the one-paste command that installs the whole kit and wires
-// this workspace's token into the global ~/.claude. It is the single connect
-// affordance: a new user pastes it once and gets the slash commands, Stop hook,
-// auto-loaded CLAUDE.md, and the MCP — a bare `claude mcp add` would register only
-// the MCP and miss the rest, which is why it is not offered. It reuses MigrateCard's
-// .cmd / .cmd-actions / .cmd-hint idiom so no new CSS is needed. The token is
-// embedded via the AGENTSMEMORY_TOKEN env var in InstallCommand — the same secret
-// already visible in this block — so nothing new is exposed. _installCopied is
-// FE-only (the _ prefix keeps it off the wire) and re-inits whenever this fragment
-// morphs in.
-func InstallBlock(token string) templ.Component {
+// InstallBlock renders the install picker for one workspace, with this project's
+// token already in the command. It is the single connect affordance: the whole kit
+// (slash commands, Stop hook, auto-loaded CLAUDE.md and the MCP) rather than a bare
+// `claude mcp add`, which would register the MCP and miss the rest.
+//
+// TWO THINGS THIS BLOCK MUST GET RIGHT:
+//
+// The token is embedded via AGENTSMEMORY_TOKEN, so unlike the public page's copy
+// this command never stops to prompt. The secret is the one already revealed
+// beside this block, so embedding it exposes nothing new — and it is why the
+// builder belongs here at all: a signed-in user can get a complete, sandboxed,
+// non-interactive install in one paste.
+//
+// The signals are namespaced per workspace. Several projects' key blocks can be
+// revealed at once and datastar signals are global (the same trap KeyBlock
+// documents for its indicator), so a shared "_sbname" would mean naming a sandbox
+// under one project silently rewrote another project's command.
+func InstallBlock(teamID, token string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -771,33 +778,88 @@ func InstallBlock(token string) templ.Component {
 			templ_7745c5c3_Var35 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "<div data-signals=\"{_installCopied: false}\"><div class=\"kv\" style=\"margin-top:.7rem\">Install the kit (Claude Code)</div><pre class=\"cmd\" aria-label=\"agentsmemory install command\"><code>")
+		b := projectBuilder(teamID, token)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "<div class=\"lp-build install-build\" data-signals=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var36 string
-		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(InstallCommand(token))
+		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.ResolveAttributeValue(b.Signals())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 249, Col: 90}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 257, Col: 63}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var36)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "</code></pre><div class=\"cmd-actions\"><button class=\"btn btn-ghost btn-sm\" type=\"button\" data-on:click=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "\"><div class=\"kv\">Install the kit</div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = installTabs(b).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = installOptions(b).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = installFlags(b).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = installCommand(b).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<p class=\"lp-build-note install-build-hint\">Restart Claude Code (or <span class=\"mono\">/reload</span>) afterwards. The token above is already in the command, so this install will not prompt.</p><div class=\"install-build-run\" data-show=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var37 string
-		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.ResolveAttributeValue(copyExpr(InstallCommand(token)) + "; $_installCopied = true; setTimeout(() => $_installCopied = false, 1600)")
+		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.ResolveAttributeValue(b.ModeIs("project"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 254, Col: 129}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 270, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var37)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "\"><span data-show=\"!$_installCopied\">Copy command</span> <span data-show=\"$_installCopied\" style=\"display:none\">Copied ✓</span></button> <span class=\"cmd-hint\">Downloads the <span class=\"mono\">aiagentmemory</span> binary and installs the slash commands, Stop hook, auto-loaded <span class=\"mono\">CLAUDE.md</span>, and this workspace's MCP into <span class=\"mono\">~/.claude</span>. Restart Claude Code (or <span class=\"mono\">/reload</span>) afterwards.</span></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "\" style=\"display:none\"><div class=\"lp-code card\"><div class=\"lp-code-head\"><span class=\"kv\">then open it</span>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = sbCopyButtonExpr(clipboardExprKeyJS(b.RunExpr(), "run"+b.Suffix), "run"+b.Suffix, "Copy the command that opens this sandbox").Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "</div><pre class=\"cmd\"><code data-text=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var38 string
+		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.ResolveAttributeValue(b.RunExpr())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 276, Col: 50}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var38)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "\">aiagentmemory run ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var39 string
+		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(landingNameFallback)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/dashboard.templ`, Line: 276, Col: 92}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "</code></pre></div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

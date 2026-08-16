@@ -174,7 +174,7 @@ templ KeyBlock(k KeyVM) {
 			// (not a bare `claude mcp add`): the installer also wires the slash
 			// commands, Stop hook, and auto-loaded CLAUDE.md that MCP registration
 			// alone would miss.
-			@InstallBlock(k.Secret)
+			@InstallBlock(k.TeamID, k.Secret)
 		} else if k.ConfirmRotate {
 			<div class="token muted">••••••••••••••••••••••••</div>
 			<div class="key-warn" role="alert">
@@ -217,8 +217,10 @@ templ Flash(f FlashVM) {
 				}
 				// On creation the token is shown once here, so hand over the ready-to-run
 				// install command in the same banner — navigating away loses the secret.
+				// The creation banner is a singleton, so it gets a fixed signal
+				// namespace of its own rather than a workspace id it does not carry.
 				if f.Token != "" {
-					@InstallBlock(f.Token)
+					@InstallBlock("new", f.Token)
 				}
 			</div>
 		} else if f.Kind == "error" {
@@ -233,35 +235,46 @@ templ Flash(f FlashVM) {
 	</div>
 }
 
-// InstallBlock renders the one-paste command that installs the whole kit and wires
-// this workspace's token into the global ~/.claude. It is the single connect
-// affordance: a new user pastes it once and gets the slash commands, Stop hook,
-// auto-loaded CLAUDE.md, and the MCP — a bare `claude mcp add` would register only
-// the MCP and miss the rest, which is why it is not offered. It reuses MigrateCard's
-// .cmd / .cmd-actions / .cmd-hint idiom so no new CSS is needed. The token is
-// embedded via the AGENTSMEMORY_TOKEN env var in InstallCommand — the same secret
-// already visible in this block — so nothing new is exposed. _installCopied is
-// FE-only (the _ prefix keeps it off the wire) and re-inits whenever this fragment
-// morphs in.
-templ InstallBlock(token string) {
-	<div data-signals="{_installCopied: false}">
-		<div class="kv" style="margin-top:.7rem">Install the kit (Claude Code)</div>
-		<pre class="cmd" aria-label="agentsmemory install command"><code>{ InstallCommand(token) }</code></pre>
-		<div class="cmd-actions">
-			<button
-				class="btn btn-ghost btn-sm"
-				type="button"
-				data-on:click={ copyExpr(InstallCommand(token)) + "; $_installCopied = true; setTimeout(() => $_installCopied = false, 1600)" }
-			>
-				<span data-show="!$_installCopied">Copy command</span>
-				<span data-show="$_installCopied" style="display:none">Copied ✓</span>
-			</button>
-			<span class="cmd-hint">
-				Downloads the <span class="mono">aiagentmemory</span> binary and installs the
-				slash commands, Stop hook, auto-loaded <span class="mono">CLAUDE.md</span>, and
-				this workspace's MCP into <span class="mono">~/.claude</span>. Restart Claude
-				Code (or <span class="mono">/reload</span>) afterwards.
-			</span>
+// InstallBlock renders the install picker for one workspace, with this project's
+// token already in the command. It is the single connect affordance: the whole kit
+// (slash commands, Stop hook, auto-loaded CLAUDE.md and the MCP) rather than a bare
+// `claude mcp add`, which would register the MCP and miss the rest.
+//
+// TWO THINGS THIS BLOCK MUST GET RIGHT:
+//
+// The token is embedded via AGENTSMEMORY_TOKEN, so unlike the public page's copy
+// this command never stops to prompt. The secret is the one already revealed
+// beside this block, so embedding it exposes nothing new — and it is why the
+// builder belongs here at all: a signed-in user can get a complete, sandboxed,
+// non-interactive install in one paste.
+//
+// The signals are namespaced per workspace. Several projects' key blocks can be
+// revealed at once and datastar signals are global (the same trap KeyBlock
+// documents for its indicator), so a shared "_sbname" would mean naming a sandbox
+// under one project silently rewrote another project's command.
+templ InstallBlock(teamID, token string) {
+	{{ b := projectBuilder(teamID, token) }}
+	<div class="lp-build install-build" data-signals={ b.Signals() }>
+		<div class="kv">Install the kit</div>
+		@installTabs(b)
+		@installOptions(b)
+		@installFlags(b)
+		@installCommand(b)
+		<p class="lp-build-note install-build-hint">
+			Restart Claude Code (or <span class="mono">/reload</span>) afterwards. The token
+			above is already in the command, so this install will not prompt.
+		</p>
+		// Only the launch line, not the landing page's full init/load walkthrough:
+		// someone reading this already has the product and needs the one command
+		// that opens what they just installed.
+		<div class="install-build-run" data-show={ b.ModeIs("project") } style="display:none">
+			<div class="lp-code card">
+				<div class="lp-code-head">
+					<span class="kv">then open it</span>
+					@sbCopyButtonExpr(clipboardExprKeyJS(b.RunExpr(), "run"+b.Suffix), "run"+b.Suffix, "Copy the command that opens this sandbox")
+				</div>
+				<pre class="cmd"><code data-text={ b.RunExpr() }>aiagentmemory run { landingNameFallback }</code></pre>
+			</div>
 		</div>
 	</div>
 }

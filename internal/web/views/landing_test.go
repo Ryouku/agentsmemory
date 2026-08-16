@@ -171,7 +171,7 @@ func TestLandingInstallBuilder(t *testing.T) {
 
 	// Both tabs, each wired to the _mode signal the command expression reads.
 	for _, m := range landingInstallModes() {
-		if !strings.Contains(page, esc("$_mode = '"+m.Key+"'")) {
+		if !strings.Contains(page, esc(landingBuilder().SetMode(m.Key))) {
 			t.Errorf("install builder has no tab setting _mode to %q", m.Key)
 		}
 		if !strings.Contains(page, esc(m.Hint)) {
@@ -190,7 +190,7 @@ func TestLandingInstallBuilder(t *testing.T) {
 	}
 
 	// The sandbox name is typed, not edited into a command by hand.
-	if !strings.Contains(page, `data-bind:_sbname`) {
+	if !strings.Contains(page, `data-bind="_sbname"`) {
 		t.Error("install builder has no sandbox-name input bound to _sbname")
 	}
 	if !strings.Contains(page, `placeholder="`+landingNameFallback+`"`) {
@@ -209,16 +209,18 @@ func TestLandingInstallBuilder(t *testing.T) {
 	}
 	// --copy and --shared-auth are rejected by the installer without --sandbox,
 	// so their rows must be gated on the project tab rather than always shown.
-	// templ emits a literal attribute verbatim and escapes only interpolated
-	// values, so the statically-written gates keep their apostrophes. Four rows
-	// are gated: the name field, the two sandbox-only flags, and the launch strip.
-	gate := `data-show="$_mode === 'project'"`
-	if got, want := strings.Count(page, gate), 4; got != want {
+	// Now that every control comes from the shared components, the gate is an
+	// interpolated value and templ escapes it. Five things are gated on the
+	// project tab: its own hint line, the name field, the two sandbox-only flags,
+	// and the launch strip.
+	gate := `data-show="` + esc(landingBuilder().ModeIs("project")) + `"`
+	if got, want := strings.Count(page, gate), 5; got != want {
 		t.Errorf("controls gated on the project tab: got %d, want %d", got, want)
 	}
 
 	// The displayed command and the copied command are one expression.
-	expr := landingInstallExpr()
+	b := landingBuilder()
+	expr := b.InstallExpr()
 	if !strings.Contains(page, `data-text="`+esc(expr)+`"`) {
 		t.Error("the command block does not render the assembled install expression")
 	}
@@ -226,7 +228,7 @@ func TestLandingInstallBuilder(t *testing.T) {
 		t.Error("the Copy button does not write the same expression the block displays")
 	}
 	// Before datastar boots the block must still read as a real command.
-	if !strings.Contains(page, landingInstallDefault) {
+	if !strings.Contains(page, b.Default()) {
 		t.Error("the command block has no server-rendered default")
 	}
 	// --global is what makes the Global tab honest: without it the installer
@@ -236,7 +238,7 @@ func TestLandingInstallBuilder(t *testing.T) {
 	}
 
 	// Installing a sandbox is half the answer; the strip says how to work in it.
-	for _, s := range landingLaunchSteps() {
+	for _, s := range b.LaunchSteps() {
 		if !strings.Contains(page, `data-text="`+esc(s.Expr)+`"`) {
 			t.Errorf("launch strip does not render the %q command", s.Key)
 		}
