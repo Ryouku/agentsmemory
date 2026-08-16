@@ -168,6 +168,21 @@ type Installer struct {
 	in             io.Reader     // interactive prompt source (mode + token)
 	reader         *bufio.Reader // shared line reader over in; lazily built so both prompts read one stream
 	runner         commandRunner // how external commands execute (exec / dry / fake)
+
+	// src is where assets are read from. Leave it nil for the embedded kit —
+	// `update-skill` sets it to a source that fetches from GitHub instead.
+	src assetSource
+}
+
+// source returns where this install reads its assets from, defaulting to the
+// embedded kit. Keeping the zero value useful means an Installer built as a
+// struct literal — which every test and `update-skill` does — needs no extra
+// wiring to behave exactly as it did before a remote source existed.
+func (i *Installer) source() assetSource {
+	if i.src != nil {
+		return i.src
+	}
+	return assets
 }
 
 // resolveInstallTarget picks the install target from the mode flags and reports
@@ -459,15 +474,8 @@ func sameDir(a, b string) bool {
 // matter and `$ARGUMENTS` expansion Claude uses for commands/, so only the
 // directory name (and the `/prompts:` invocation prefix) differs.
 func (i *Installer) writeAssets() error {
-	for _, name := range []string{"M.md", "am.md", "load-skill.md"} {
-		data, err := assets.ReadFile("commands/" + name)
-		if err != nil {
-			return err // embed guarantees presence; an error here is a build bug
-		}
-		if err := i.writeFile(filepath.Join(i.targetDir, i.kit.commandsDir, name), data, 0o644); err != nil {
-			return err
-		}
-		i.ok("command %s", i.commandLabel(name))
+	if err := i.writeCommands(); err != nil {
+		return err
 	}
 
 	// An agent with no hook system gets no hook script: pi retired hooks/ in
@@ -478,7 +486,7 @@ func (i *Installer) writeAssets() error {
 		return nil
 	}
 
-	hook, err := assets.ReadFile(hookAsset)
+	hook, err := i.source().ReadFile(hookAsset)
 	if err != nil {
 		return err
 	}
@@ -489,6 +497,28 @@ func (i *Installer) writeAssets() error {
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
 	i.clearLegacyHook()
+	return nil
+}
+
+// writeCommands writes the slash-command markdown into the kit's commands dir.
+// It is split out of writeAssets so `update-skill` can refresh the commands
+// without touching the Stop hook, which it deliberately leaves alone.
+//
+// The same markdown serves every agent: codex and pi read top-level files in
+// their prompts dir with the same `description:` / `argument-hint:` front matter
+// and `$ARGUMENTS` expansion Claude uses for commands/, so only the directory
+// name (and the invocation prefix) differs.
+func (i *Installer) writeCommands() error {
+	for _, name := range commandAssets {
+		data, err := i.source().ReadFile("commands/" + name)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(filepath.Join(i.targetDir, i.kit.commandsDir, name), data, 0o644); err != nil {
+			return err
+		}
+		i.ok("command %s", i.commandLabel(name))
+	}
 	return nil
 }
 
@@ -726,7 +756,7 @@ func (i *Installer) registerCodexMCP(token string) error {
 // `aiagentmemory run --agent pi`. Nothing is passed on argv, which would leak the
 // token to `ps`.
 func (i *Installer) registerPiMCP(token string) error {
-	ext, err := assets.ReadFile(piExtensionAsset)
+	ext, err := i.source().ReadFile(piExtensionAsset)
 	if err != nil {
 		return err // embed guarantees presence; an error here is a build bug
 	}
@@ -802,9 +832,9 @@ func (i *Installer) mcpAddHint() string {
 // is inlined there instead; the sibling copy is still written, as the file the
 // block is regenerated from on the next install.
 func (i *Installer) registerMemoryBootstrap() error {
-	data, err := assets.ReadFile(bootstrapAsset)
+	data, err := i.source().ReadFile(bootstrapAsset)
 	if err != nil {
-		return err // embed guarantees presence; an error here is a build bug
+		return err
 	}
 	bootstrapPath := filepath.Join(i.targetDir, bootstrapFile)
 	if err := i.writeFile(bootstrapPath, data, 0o644); err != nil {

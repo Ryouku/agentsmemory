@@ -37,3 +37,23 @@ import "embed"
 //
 //go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS
+
+// commandAssets are the slash-command files the kit installs, in the order they
+// are written and reported. Both the installer and `update-skill` iterate this
+// one list so a command added here reaches every install path at once.
+var commandAssets = []string{"M.md", "am.md", "load-skill.md"}
+
+// assetSource supplies installable assets by their embed-relative name, e.g.
+// "commands/M.md" or "bootstrap.md". embed.FS satisfies it already, so the
+// embedded kit above is the default implementation.
+//
+// It exists so `update-skill` can hand the installer a source that fetches the
+// same names from GitHub instead of reading them out of the binary. Both
+// commands then share one write path — which matters because installing an
+// asset is not a plain file copy: the memory protocol is imported on Claude and
+// inlined on codex/pi (see Installer.registerMemoryBootstrap), and duplicating
+// that split is exactly how the two commands would drift apart.
+type assetSource interface {
+	// ReadFile returns the contents of the named asset.
+	ReadFile(name string) ([]byte, error)
+}
