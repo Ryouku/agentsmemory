@@ -271,6 +271,58 @@ Two guardrails worth knowing:
   `local` — including the `demo` workspace the multi-tenant path seeds on first
   boot. Use a fresh `--db` file, or drop `--local`.
 
+### Docker Compose (server + Qdrant)
+
+```bash
+cp .env.docker.example .env.docker   # point OLLAMA_URL at your Ollama
+docker compose up -d
+claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+```
+
+Brings up `--local` plus Qdrant, with SQLite on a named volume. Ollama is
+deliberately **not** a service: most people already run one, and a second copy
+would re-download gigabytes of models — so `.env.docker.example` covers both
+`host.docker.internal` (Ollama on your machine) and a URL for a remote box. Two
+things bite there, both on the Ollama side: it binds `127.0.0.1` by default and
+a container cannot reach that (start it with `OLLAMA_HOST=0.0.0.0`), and the
+model must be pulled first (`ollama pull bge-m3`).
+
+The port is published as `127.0.0.1:8080:8080`, and the loopback prefix is
+load-bearing for the same reason as above — plain `8080:8080` would offer an
+unauthenticated memory server to your whole network. Inside the container the
+process binds `:8080` (a published port cannot reach a loopback-bound process),
+so it logs the non-loopback warning on boot; there, the published interface is
+the boundary, and the warning is expected.
+
+Don't want a second service? `VECTOR_BACKEND=sqlite` makes the source of truth
+answer searches itself, and `docker compose up -d agentsmemory` runs the server
+alone.
+
+### The server is inert without the protocol
+
+Connecting the MCP gives your agent 37 tools and **no reason to call any of
+them**. Nothing about a tool catalogue tells an agent to recall before it acts or
+to write down what it learned; without that instruction the memory simply never
+gets opened. Delegation comes in three layers, and self-hosting only gets you the
+first one for free:
+
+| Layer | What it does | How you get it |
+|---|---|---|
+| `am_skillset` | Server-side wakeup playbook — which tool, in what order — returned over MCP itself | **Automatic.** Seeded on first boot, including `--local` |
+| `CLAUDE.md` / `AGENTS.md` | The always-on protocol: recall at session start, persist before stopping | `aiagentmemory install` writes `agentsmemory-bootstrap.md` and merges an import into your memory file |
+| `/M`, `/am`, `/load-skill` + the Stop hook | Task-scoped grounding and the end-of-turn checkpoint that stops memory being lost | Same installer |
+
+So after `docker compose up`, run the kit as well — it works fine against a local
+server, and installs the protocol regardless of whether you supply a token:
+
+```bash
+aiagentmemory install            # protocol + commands + Stop hook
+```
+
+Leave the token prompt blank for a local server (there is no token) and register
+the MCP with the `claude mcp add` line above. Skip this step and you have a
+memory server your agent never opens.
+
 ---
 
 ## Connect Claude Code, Codex or pi (the `aiagentmemory` kit)

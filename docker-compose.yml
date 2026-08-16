@@ -1,0 +1,68 @@
+# agentsmemory — self-hosted, one person, one machine.
+#
+# Brings up the server in --local mode (one workspace, no token, no dashboard)
+# plus Qdrant for search. Ollama is deliberately NOT a service here: most people
+# already run it on the host or point at a shared box, and a second copy would
+# re-download several GB of models. See .env.docker.example for both cases.
+#
+#   cp .env.docker.example .env.docker
+#   docker compose up -d
+#   claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+#
+# Registering the MCP is only half of it — see the README: without the memory
+# protocol installed into your agent, the tools are available but never called.
+
+name: agentsmemory
+
+services:
+  agentsmemory:
+    build: .
+    image: agentsmemory:local
+    restart: unless-stopped
+    env_file: .env.docker
+    # --addr :8080 binds every interface INSIDE the container, which is required
+    # for a published port to reach it — the loopback default local mode uses on
+    # a host would make the container unreachable. The boundary here is the ports
+    # entry below, which publishes to the host's loopback only. The server logs a
+    # non-loopback warning on boot because it cannot see that; in this file it is
+    # expected, not a misconfiguration.
+    command: ["serve", "--local", "--addr", ":8080", "--db", "/data/agentsmemory.db"]
+    ports:
+      # 127.0.0.1: is load-bearing. /mcp is UNAUTHENTICATED in local mode, so
+      # publishing as "8080:8080" would hand every device on your network full
+      # read and write access to your memory. Override the host port (not the
+      # interface) with AGENTSMEMORY_HOST_PORT — Compose reads that one from your
+      # shell or a .env file beside this one, NOT from .env.docker, which is
+      # passed to the container rather than interpolated here.
+      - "127.0.0.1:${AGENTSMEMORY_HOST_PORT:-8080}:8080"
+    volumes:
+      # The SQLite source of truth. Everything you remember lives here; Qdrant
+      # below is a rebuildable index over it.
+      - agentsmemory-data:/data
+    extra_hosts:
+      # Linux has no host.docker.internal; this maps it to the host gateway so
+      # one OLLAMA_URL works on Linux, macOS and Windows alike. Harmless where
+      # Docker Desktop already provides the name.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      # Start order only, not readiness. On a cold first boot the server can win
+      # the race and exit with "ensure local vector namespace: ... connection
+      # refused" — which is what restart: unless-stopped above is for. It comes
+      # up on the retry; no healthcheck needed for a single-user stack.
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.0
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      # Loopback-only as well: this port is unauthenticated unless you set a
+      # Qdrant API key. Comment it out entirely if you do not want the web UI at
+      # http://localhost:6333/dashboard — the server reaches Qdrant over the
+      # compose network either way.
+      - "127.0.0.1:6333:6333"
+
+volumes:
+  agentsmemory-data:
+  qdrant-data:
