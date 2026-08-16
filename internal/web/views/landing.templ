@@ -29,7 +29,7 @@ templ LandingPage(d LandingData) {
 				@landingModel()
 				@landingHow()
 				@landingFeatures()
-				@landingInstall()
+				@landingInstall(d)
 				@landingQuickStart()
 				@landingPricing()
 				@landingMigrate()
@@ -449,7 +449,7 @@ templ landingFeatures() {
 // It is all front-end-only datastar (landingBuilderSignals — the "_" prefix keeps
 // the signals off the wire). The interaction is a text substitution over a stable
 // DOM, which is precisely the case where signals beat a server morph.
-templ landingInstall() {
+templ landingInstall(d LandingData) {
 	<section class="lp-section" id="install" data-signals={ landingBuilderSignals }>
 		<div class="lp-wrap">
 			<header class="lp-head">
@@ -462,7 +462,7 @@ templ landingInstall() {
 					token. Choose where it lands and what it brings; the command rewrites itself.
 				</p>
 			</header>
-			@landingInstallBuilder()
+			@landingInstallBuilder(d)
 			@landingLaunchStrip()
 			// Hands-free path: hand Claude a prompt and let it read the guide and install
 			// itself. Mirrors the curl block's lp-start-grid two-column layout so it needs
@@ -531,7 +531,7 @@ templ landingInstall() {
 // with Enter or Space, so the pattern is keyboard-complete with no roving-tabindex
 // JavaScript. The command block is server-rendered with the default tab's command
 // so it reads correctly before datastar boots and data-text takes over.
-templ landingInstallBuilder() {
+templ landingInstallBuilder(d LandingData) {
 	<div class="lp-build card">
 		<div class="sb-switch lp-build-tabs" role="group" aria-label="Where to install the kit">
 			for _, m := range landingInstallModes() {
@@ -609,7 +609,32 @@ templ landingInstallBuilder() {
 			</div>
 			<pre class="cmd"><code data-text={ landingInstallExpr() }>{ landingInstallDefault }</code></pre>
 		</div>
+		@landingTokenNote(d)
 	</div>
+}
+
+// landingTokenNote states the one step the command cannot carry. The installer
+// asks for a workspace token (resolveToken in clients/claude-code/installer.go)
+// and, given nothing, prints "no token provided — skipping agentsmemory MCP" and
+// finishes anyway — so a visitor who meets that prompt empty-handed ends up with
+// a successful install and no memory, told only in a line of scrollback.
+//
+// The page therefore says it before the prompt does, and points at the only place
+// a token comes from. The dashboard's own install command bakes the token in with
+// AGENTSMEMORY_TOKEN because it is rendered next to the revealed key; nothing on a
+// public page can do that, which is why this is copy rather than another field.
+templ landingTokenNote(d LandingData) {
+	<p class="lp-build-token">
+		<b>It will ask for your workspace token.</b>
+		if d.SignedIn {
+			Copy yours from the <a href="/dashboard">dashboard</a> before you paste this —
+		} else {
+			<a href="/register">Create a free workspace</a> and copy the token first —
+		}
+		leaving the prompt blank still installs the kit, but the memory itself stays
+		disconnected until you add the token. Already have it in your shell? Set
+		<span class="mono">AGENTSMEMORY_TOKEN</span> and the installer never asks.
+	</p>
 }
 
 // landingInstallFlag renders one flag checkbox. The label wraps the input, so the

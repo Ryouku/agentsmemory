@@ -1300,6 +1300,9 @@ func landingCommands() []cmdRef {
 		{"aiagentmemory install", "Global — wire the kit into your existing ~/.claude."},
 		{"aiagentmemory install --sandbox <name>", "Isolated — a self-contained config under ~/.sandboxes/<name>."},
 		{"aiagentmemory install --agent codex|pi|all", "Same kit, other agent CLIs — see the sandbox guide."},
+		// The reference was silent on the token, so the only mention of it was the
+		// installer's own prompt — and a blank answer there skips the MCP quietly.
+		{"aiagentmemory install --token <key>", "Skip the prompt — same as exporting AGENTSMEMORY_TOKEN. Without either, the kit installs but the memory MCP is not registered."},
 		{"aiagentmemory install --sandbox <name> --copy", "Seed it from your global config — logins, MCP servers, plugins, skills, settings."},
 		{"aiagentmemory install --sandbox <name> --shared-auth", "Link credentials back to the global config — one login serves every sandbox."},
 		{"aiagentmemory init --sandbox <name>", "Record how this project launches — commit the file, keep your sandbox name local."},

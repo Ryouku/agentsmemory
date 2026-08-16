@@ -254,3 +254,59 @@ func TestLandingInstallBuilder(t *testing.T) {
 		}
 	}
 }
+
+// TestLandingInstallStatesTheTokenStep guards the one step the install command
+// cannot carry. resolveToken prompts, and a blank answer makes the installer print
+// "no token provided — skipping agentsmemory MCP" and finish anyway — so a visitor
+// who meets that prompt empty-handed gets a successful install with no memory
+// attached. The page has to say so, and has to point somewhere a token comes from,
+// which differs for a signed-in visitor and an anonymous one.
+func TestLandingInstallStatesTheTokenStep(t *testing.T) {
+	render := func(d LandingData) string {
+		var buf bytes.Buffer
+		if err := LandingPage(d).Render(context.Background(), &buf); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return buf.String()
+	}
+
+	for _, tc := range []struct {
+		name      string
+		data      LandingData
+		wantLink  string
+		otherLink string
+	}{
+		{"anonymous", LandingData{}, `<a href="/register">Create a free workspace</a>`, "Copy yours from the"},
+		{"signed in", LandingData{SignedIn: true}, `<a href="/dashboard">dashboard</a>`, "Create a free workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			page := render(tc.data)
+			if !strings.Contains(page, "It will ask for your workspace token.") {
+				t.Error("install section never mentions that the installer asks for a token")
+			}
+			if !strings.Contains(page, tc.wantLink) {
+				t.Errorf("token note does not point %s visitors anywhere to get one (want %s)", tc.name, tc.wantLink)
+			}
+			if strings.Contains(page, tc.otherLink) {
+				t.Errorf("token note shows the wrong audience's copy (%q) to a %s visitor", tc.otherLink, tc.name)
+			}
+			// The consequence is the part a visitor cannot infer from the prompt.
+			if !strings.Contains(page, "the memory itself stays") {
+				t.Error("token note does not say a blank answer leaves memory disconnected")
+			}
+			// …and the non-interactive escape hatch is named.
+			if !strings.Contains(page, "AGENTSMEMORY_TOKEN") {
+				t.Error("page never names the env var that skips the prompt")
+			}
+		})
+	}
+
+	// The command reference must carry --token too, with the same consequence.
+	page := render(LandingData{})
+	if !strings.Contains(page, "aiagentmemory install --token &lt;key&gt;") {
+		t.Error("command reference is missing the --token row")
+	}
+	if !strings.Contains(page, "the memory MCP is not registered") {
+		t.Error("--token row does not state what happens without a token")
+	}
+}
