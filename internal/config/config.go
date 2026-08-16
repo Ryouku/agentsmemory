@@ -74,8 +74,22 @@ func IsLoopback(addr string) bool {
 // Qdrant at :6333) so a local dev box works with zero flags, while production
 // overrides everything via flags or env.
 type Config struct {
-	// Addr is the host:port the HTTP/MCP server listens on.
+	// Addr is the host:port the HTTP/MCP server listens on. It is ignored when
+	// SocketPath is set.
 	Addr string
+
+	// SocketPath, when non-empty, makes the server listen on that Unix domain
+	// socket instead of the TCP Addr. The same HTTP/MCP handlers are served
+	// either way — only the transport changes — so this stays additive: leaving
+	// it empty keeps the day-one TCP behaviour.
+	//
+	// It exists mainly for self-hosted (Local) installs. A socket created with
+	// 0600 permissions is reachable only by its owner, which is a strictly
+	// tighter boundary than LocalAddr: every user and process on a machine can
+	// open a loopback port, but only one can open the socket. That makes it the
+	// safer home for local mode's unauthenticated /mcp — see listenerFor in
+	// cmd/server for the creation rules.
+	SocketPath string
 
 	// DBPath is the SQLite database file (the relational and vector source of
 	// truth).
