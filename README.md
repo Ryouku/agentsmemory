@@ -230,6 +230,47 @@ curl -s http://localhost:8080/mcp \
 A request without a valid token comes back as a fail-closed
 `unauthenticated` tool error.
 
+### Self-hosted single-workspace mode (`--local`)
+
+Everything above is the multi-tenant SaaS shape: many workspaces, each behind a
+token. If you are running this on your own machine for yourself, `--local`
+collapses it to the simplest thing that still runs every tool:
+
+```bash
+./agentsmemory --local --db agentsmemory.db
+# agentsmemory listening on 127.0.0.1:8080 (local mode: workspace "local", MCP /mcp, no token required, no dashboard)
+```
+
+What changes:
+
+| | default | `--local` |
+|---|---|---|
+| Workspaces | many, created from the dashboard | exactly one, slug `local`, provisioned on first boot |
+| `/mcp` auth | Bearer token or OAuth | **none** — every request is the local workspace |
+| API keys | minted per member | none exist; none are stored |
+| Quota | per plan | uncapped (`plan_unlimited`) |
+| Dashboard, OAuth, billing webhooks | mounted | **not registered** (404) |
+| Listen address | `:8080` (all interfaces) | `127.0.0.1:8080` |
+
+All 37 MCP tools behave identically — they only ever see a resolved workspace,
+and local mode injects one instead of resolving it from a credential.
+
+Point any MCP client straight at it, with no header:
+
+```bash
+claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+```
+
+Two guardrails worth knowing:
+
+- **The endpoint is unauthenticated**, so reachability *is* authorization. That
+  is why the default binds loopback. Overriding `--addr` to a routable interface
+  still works (behind a reverse proxy or a private overlay network) but logs a
+  loud warning — anyone who can reach the port owns every memory in the file.
+- **It refuses to start** if the database already holds a workspace that is not
+  `local` — including the `demo` workspace the multi-tenant path seeds on first
+  boot. Use a fresh `--db` file, or drop `--local`.
+
 ---
 
 ## Connect Claude Code, Codex or pi (the `aiagentmemory` kit)
@@ -433,7 +474,8 @@ All flags have sensible local defaults:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--addr` | `:8080` | HTTP / MCP listen address |
+| `--addr` | `:8080` (`127.0.0.1:8080` with `--local`) | HTTP / MCP listen address |
+| `--local` | `false` | Self-hosted single-workspace mode: one `local` workspace, unauthenticated `/mcp`, no dashboard |
 | `--db` | `agentsmemory.db` | SQLite database path |
 | `--qdrant-url` | `http://localhost:6333` | Qdrant base URL |
 | `--qdrant-api-key` | *(empty)* | Qdrant API key (optional) |

@@ -5,6 +5,7 @@
 package config
 
 import (
+	"net"
 	"strings"
 	"time"
 )
@@ -20,6 +21,33 @@ const (
 	// as the search index (the production path).
 	VectorBackendQdrant = "qdrant"
 )
+
+// LocalAddr is the listen address --local defaults to. Local mode serves an
+// unauthenticated /mcp, so the default must not be reachable from the network:
+// binding the loopback interface keeps "self-hosted" meaning "this machine"
+// rather than "everyone on this wifi". An operator can still override it (to run
+// behind a reverse proxy or a private overlay), which is why this is a default
+// and not a hard constraint — see IsLoopback for the warning path.
+const LocalAddr = "127.0.0.1:8080"
+
+// IsLoopback reports whether a listen address binds only the loopback interface.
+// It exists so local mode can warn when its unauthenticated endpoint is about to
+// be exposed beyond this machine. A blank host — the ":8080" form — binds every
+// interface and is therefore NOT loopback, which is the case most likely to
+// surprise someone who overrode the address without thinking about auth.
+func IsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Not a host:port at all (e.g. a bare port). Treat it as unknown rather
+		// than safe: an unparseable address must not silence the warning.
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // Config holds the resolved runtime settings for the MCP server process.
 //
@@ -59,6 +87,18 @@ type Config struct {
 	// gorm SQL logging. Off by default so production stays quiet; set APP_DEBUG=true
 	// (or --debug) to see traffic and queries during development.
 	Debug bool
+
+	// Local turns the process into a single-workspace, self-hosted server: one
+	// workspace (slug LocalSlug) exists, /mcp is unauthenticated, and the human
+	// dashboard, the OAuth handshake and the billing webhooks are not mounted at
+	// all. It is the "run it on my own machine" mode — there is no tenant to tell
+	// apart, so there is no token to carry, and there is nothing for a dashboard
+	// to manage.
+	//
+	// Because the endpoint is unauthenticated, anyone who can reach the port owns
+	// every memory in the database; LocalAddr is therefore the default listen
+	// address in this mode.
+	Local bool
 
 	// SuperAdminEmails is the platform-superadmin allowlist: users whose email is
 	// in this set may edit the GLOBAL skillset (the am_skillset wakeup playbook)

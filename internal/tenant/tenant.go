@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -624,13 +625,7 @@ func (r *Repo) CreateWorkspaceForUser(ctx context.Context, userID, name, slug, k
 	}
 	// The workspace creator is its admin (can manage keys and shared skills).
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&team).Error; err != nil {
-			return err
-		}
-		if err := tx.Create(&Membership{
-			ID: uuid.NewString(), TeamID: team.ID, UserID: userID,
-			Role: string(RoleAdmin), CreatedAt: now,
-		}).Error; err != nil {
+		if err := insertWorkspace(tx, team, userID, now); err != nil {
 			return err
 		}
 		return tx.Create(&key).Error
@@ -639,6 +634,109 @@ func (r *Repo) CreateWorkspaceForUser(ctx context.Context, userID, name, slug, k
 		return Tenant{}, Credential{}, err
 	}
 	return Tenant{TeamID: team.ID, UserID: userID, Role: RoleAdmin}, cred, nil
+}
+
+// insertWorkspace writes a team and its creator's admin membership inside tx.
+// Every path that provisions a workspace goes through it, so the invariant "a
+// new workspace always lands with exactly one admin" is stated once instead of
+// re-derived per caller — CreateWorkspaceForUser adds an API key on top,
+// EnsureLocalWorkspace deliberately does not.
+func insertWorkspace(tx *gorm.DB, team Team, userID, now string) error {
+	if err := tx.Create(&team).Error; err != nil {
+		return err
+	}
+	return tx.Create(&Membership{
+		ID: uuid.NewString(), TeamID: team.ID, UserID: userID,
+		Role: string(RoleAdmin), CreatedAt: now,
+	}).Error
+}
+
+// The single workspace that self-hosted (--local) mode serves. Its slug is the
+// identity check on boot, its plan is the uncapped tier so a machine you own is
+// never metered, and its owner is a synthetic account: local mode mounts no
+// dashboard, so nobody ever logs in as it — it exists only to satisfy the
+// memberships row every workspace requires.
+const (
+	// LocalSlug is the slug of the one workspace local mode serves.
+	LocalSlug = "local"
+	// LocalOwnerEmail is the synthetic owner account's address. It is not a
+	// reachable mailbox and is never authenticated against.
+	LocalOwnerEmail = "local@localhost"
+	// UnlimitedPlanID is the seeded uncapped tier (monthly_request_cap = -1,
+	// migration 00019). Local mode attaches it so usage.Allow never throttles a
+	// server the operator runs themselves.
+	UnlimitedPlanID = "plan_unlimited"
+)
+
+// ErrForeignWorkspace is returned by EnsureLocalWorkspace when the database
+// already holds a workspace that is not the local one. Local mode's contract is
+// that exactly one workspace exists, and an unauthenticated /mcp would otherwise
+// hand a caller a workspace that was provisioned as a tenant of a multi-tenant
+// deployment — so this fails closed rather than picking one.
+var ErrForeignWorkspace = errors.New("tenant: database holds a non-local workspace")
+
+// ErrLocalWorkspaceOrphaned is returned when the local workspace exists but has
+// no admin membership. That is only reachable by hand-editing the database, and
+// it is unrecoverable here (there is no user to adopt), so it surfaces rather
+// than being silently repaired.
+var ErrLocalWorkspaceOrphaned = errors.New("tenant: local workspace has no admin member")
+
+// EnsureLocalWorkspace resolves the single workspace that self-hosted mode
+// serves, creating it on a fresh database. It is idempotent: booting twice
+// against the same file yields the same tenant.
+//
+// It deliberately mints NO API key. In local mode /mcp is unauthenticated, so a
+// credential would be a secret nobody presents and nobody rotates — storing one
+// would be pure attack surface.
+//
+// It refuses (ErrForeignWorkspace) when any other workspace is present, so
+// pointing --local at a multi-tenant database — or at one still carrying the
+// demo seed — stops at boot instead of exposing that data through an open
+// endpoint.
+func (r *Repo) EnsureLocalWorkspace(ctx context.Context) (Tenant, error) {
+	db := r.db.WithContext(ctx)
+
+	var teams []Team
+	if err := db.Find(&teams).Error; err != nil {
+		return Tenant{}, err
+	}
+	var local *Team
+	for i, t := range teams {
+		if t.Slug != LocalSlug {
+			return Tenant{}, fmt.Errorf("%w: %q (%s)", ErrForeignWorkspace, t.Slug, t.Name)
+		}
+		local = &teams[i]
+	}
+
+	// Already provisioned: adopt it by finding the admin created alongside it.
+	if local != nil {
+		var m Membership
+		err := db.Where("team_id = ? AND role = ?", local.ID, string(RoleAdmin)).First(&m).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Tenant{}, ErrLocalWorkspaceOrphaned
+		}
+		if err != nil {
+			return Tenant{}, err
+		}
+		return Tenant{TeamID: local.ID, UserID: m.UserID, Role: RoleAdmin}, nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	user := User{ID: uuid.NewString(), Email: LocalOwnerEmail, DisplayName: "Local", CreatedAt: now}
+	planID := UnlimitedPlanID
+	team := Team{
+		ID: uuid.NewString(), Name: "Local", Slug: LocalSlug,
+		Kind: "personal", PlanID: &planID, CreatedAt: now,
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return insertWorkspace(tx, team, user.ID, now)
+	}); err != nil {
+		return Tenant{}, err
+	}
+	return Tenant{TeamID: team.ID, UserID: user.ID, Role: RoleAdmin}, nil
 }
 
 // CreateAPIKey mints an additional credential for a user within a workspace they

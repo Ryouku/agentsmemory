@@ -76,6 +76,24 @@ func WithTenant(ctx context.Context, t tenant.Tenant) context.Context {
 	return context.WithValue(ctx, tenantKey, t)
 }
 
+// LocalTenant returns middleware that puts a fixed tenant on every request's
+// context, admitting the caller with no credential at all. It is the
+// self-hosted (--local) counterpart to the OAuth gate: same seam, same context
+// key, so Bridge forwards it and every tool reads it through TenantFrom without
+// knowing which one ran.
+//
+// It authenticates nothing by design — there is exactly one workspace, so there
+// is nothing to tell apart. That makes the listen address the only thing
+// standing between the caller and the whole database, which is why local mode
+// defaults to binding loopback (config.LocalAddr).
+func LocalTenant(t tenant.Tenant) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(WithTenant(r.Context(), t)))
+		})
+	}
+}
+
 // Bridge is an mcp-go HTTPContextFunc that carries a tenant already resolved by
 // an upstream middleware (the OAuth gate) on the HTTP request into the context
 // the MCP tools receive. When the gate fronts /mcp, resolution happens once
