@@ -165,7 +165,7 @@ templ RegisterPage(d AuthData) {
 			<div class="auth-card card">
 				<p class="eyebrow">Get started</p>
 				<h1>Create account</h1>
-				<p class="sub">Spin up a free project — 10,000 requests every month.</p>
+				<p class="sub">Spin up a free project — { freeRequestsPerMonth } requests every month.</p>
 				if d.Error != "" {
 					<div class="flash error" role="alert"><span class="ttl">{ d.Error }</span></div>
 				}

@@ -657,12 +657,26 @@ func landingFeatureList() []feature {
 // landingPlans are the pricing tiers, matching the plans catalog (Free + Pro).
 // Pro is one tier sold two ways — €50 / month or €500 / year (two months free) —
 // so the annual option rides as a point under the headline monthly price.
+// freeRequestsPerMonth is the Free plan's metered-request allowance, formatted
+// for display. Four surfaces quote it — the hero note, the pricing tier, the FAQ
+// answer and the register page — and each used to say it in its own words, which
+// is exactly how the figure went stale in all four at once when the plan changed.
+// They now read this one value.
+//
+// It is COPY, not the limit. What the server enforces is
+// plans.monthly_request_cap for code 'personal' (seeded in db/migrations, read by
+// tenant.Repo.MonthlyCap, enforced by usage.Service), which is per-deployment and
+// which an operator can move for a single workspace. Keep the two in step by
+// hand: a constant here cannot read the database at build time, so changing this
+// alone changes what the page claims and not what the server allows.
+const freeRequestsPerMonth = "1,000"
+
 func landingPlans() []plan {
 	return []plan{
 		{
 			Name: "Free", Price: "€0", Period: "forever",
 			Tagline: "For solo agents and side projects.",
-			Points:  []string{"10,000 requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
+			Points:  []string{freeRequestsPerMonth + " requests / month", "Unlimited drawers & diary", "Hybrid search + knowledge graph", "Centralised skills"},
 		},
 		{
 			Name: "Pro", Price: "€50", Period: "/ month",
@@ -747,7 +761,7 @@ func landingFAQ() []faqItem {
 		},
 		{
 			"What does agent memory cost to start?",
-			"The Free plan is free forever with 10,000 requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
+			"The Free plan is free forever with " + freeRequestsPerMonth + " requests per month. Teams running agents in production upgrade to Pro at €50 per month, or €500 per year (two months free).",
 		},
 		{
 			"Why does agent memory cost money?",
