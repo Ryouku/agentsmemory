@@ -163,3 +163,4 @@
 - 2026-08-16 `fdb7249` fix(server): `--local` seeds the am_skillset wakeup playbook too — 37 tools with an empty preamble is a memory the agent never opens
 - 2026-08-16 `fd979f3` feat(docker): compose stack for self-hosters (--local + Qdrant, Ollama on host or remote via .env.docker.example) + the three delegation layers documented
 - 2026-08-16 `3c25403` feat(cli): `aiagentmemory install --local` — kit points at your own server, no token anywhere, implies global; plus docker-compose.host.yml (Linux) so Ollama on localhost just works
+- 2026-08-16 `89c623a` docs(readme): back up the SQLite docker volume (stop-and-copy + hot .backup, restore with the uid 10001 chown); Qdrant rebuilds from SQLite
