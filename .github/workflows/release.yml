@@ -13,7 +13,7 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write # write: upload the aiagentmemory CLI binaries as release assets
+  contents: write # write: upload the CLI and server binaries as release assets
   packages: write
 
 jobs:
@@ -75,10 +75,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Cross-compile the aiagentmemory installer binaries and attach them to the
-  # GitHub Release, so the curl|bash install.sh can download the latest one for
-  # the user's OS/arch. The installer package has no cgo/sqlite deps, so a static
-  # CGO_ENABLED=0 build is portable.
+  # Cross-compile the two raw, un-archived binaries and attach them to the
+  # GitHub Release under a predictable `<name>-<goos>-<goarch>` asset name, so a
+  # plain curl (or the curl|bash install.sh) can fetch the right one for the
+  # user's OS/arch without unpacking an archive first:
+  #
+  #   aiagentmemory-<goos>-<goarch>         the installer/CLI (./clients/claude-code)
+  #   aiagentmemory-server-<goos>-<goarch>  the server itself  (./cmd/server)
+  #
+  # The server also ships as a versioned tar.gz/zip from the sibling build.yml
+  # (which additionally covers windows/amd64 and emits SHA256SUMS.txt); this job
+  # deliberately duplicates it as a raw binary because README's `--local`
+  # quickstart tells the reader to run `./agentsmemory` directly, and a raw asset
+  # is what makes that a one-line download.
+  #
+  # Neither package needs cgo — SQLite is pure Go via modernc — so a static
+  # CGO_ENABLED=0 build cross-compiles every target on the one linux runner.
   binaries:
     # Depend on `image` (not just `check`) so the release binaries publish only
     # after that job's `go test ./...` passes — untested binaries must not ship.
@@ -99,7 +111,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build aiagentmemory
+      - name: Build aiagentmemory CLI
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -109,9 +121,31 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
             -o "$out" ./clients/claude-code
-          echo "asset=$out" >>"$GITHUB_ENV"
+          echo "cli_asset=$out" >>"$GITHUB_ENV"
 
+      # No -X version stamp here, unlike the CLI above: ./cmd/server has no
+      # main.version symbol to write into, and the linker would silently discard
+      # the flag — leaving a stamp that looks authoritative but does nothing.
+      # This mirrors build.yml, which builds the same package with plain -s -w.
+      - name: Build agentsmemory server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          out="aiagentmemory-server-${GOOS}-${GOARCH}"
+          go build -trimpath \
+            -ldflags "-s -w" \
+            -o "$out" ./cmd/server
+          echo "server_asset=$out" >>"$GITHUB_ENV"
+
+      # fail_on_unmatched_files turns a vanished asset into a red release rather
+      # than a quietly incomplete one — the failure mode that matters now that
+      # install.sh and the README both point at fixed asset names.
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.asset }}
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.cli_asset }}
+            ${{ env.server_asset }}

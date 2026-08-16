@@ -290,7 +290,24 @@ A GPU box elsewhere works just as well — point `OLLAMA_URL` at it
 
 Everything above is the multi-tenant SaaS shape: many workspaces, each behind a
 token. If you are running this on your own machine for yourself, `--local`
-collapses it to the simplest thing that still runs every tool:
+collapses it to the simplest thing that still runs every tool.
+
+Grab the server binary for your platform — every release publishes
+`aiagentmemory-server-<os>-<arch>` for `linux` and `darwin` on `amd64` and
+`arm64`, alongside the `aiagentmemory` CLI:
+
+```bash
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m); [ "$arch" = x86_64 ] && arch=amd64; [ "$arch" = aarch64 ] && arch=arm64
+curl -fsSL -o agentsmemory \
+  "https://github.com/atvirokodosprendimai/agentsmemory/releases/latest/download/aiagentmemory-server-${os}-${arch}"
+chmod +x agentsmemory
+```
+
+Windows, or want checksums? The same releases carry
+`agentsmemory_<os>_<arch>.tar.gz` / `.zip` archives (Windows included) with a
+`SHA256SUMS.txt`. Prefer to build it yourself? `go build -o agentsmemory
+./cmd/server`. Either way, run it:
 
 ```bash
 ./agentsmemory --local --db agentsmemory.db
