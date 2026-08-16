@@ -165,3 +165,7 @@
 - 2026-08-16 `3c25403` feat(cli): `aiagentmemory install --local` — kit points at your own server, no token anywhere, implies global; plus docker-compose.host.yml (Linux) so Ollama on localhost just works
 - 2026-08-16 `89c623a` docs(readme): back up the SQLite docker volume (stop-and-copy + hot .backup, restore with the uid 10001 chown); Qdrant rebuilds from SQLite
 - 2026-08-16 `fe30e54` docs(docker): restart policy stated in the host override + how to run host mode (COMPOSE_FILE, and a no-compose docker run)
+- 2026-08-16 `b6d5079` feat(store): embedded chromem-go search index — in-process vector DB, payload as JSON metadata, k clamped to the collection size
+- 2026-08-16 `1c1ccdf` feat(local): `--local` defaults to the chromem index (explicit flag/env still wins) and refills an empty index from SQLite at boot
+- 2026-08-16 `a25a4ba` chore(docker): compose is one container on chromem — qdrant kept commented with its switch-back steps
+- 2026-08-16 `e3de3db` docs: "choosing the index" table + how to prepare Ollama for bge-m3 (pull, verify, OLLAMA_HOST for containers)
