@@ -319,6 +319,29 @@ func run(ctx context.Context, cfg config.Config) error {
 	return http.ListenAndServe(cfg.Addr, r)
 }
 
+// seedGlobalSkillset writes the default wakeup playbook when the database holds
+// none yet. BOTH serving modes need it: the am_* tools are a catalogue of verbs
+// with no instruction to use them, and the playbook is the "call this first, in
+// this order, before you act" guidance that makes an agent reach for them at all.
+// A server answering 37 tools with an empty preamble is a memory the agent never
+// opens.
+//
+// Written via the repo rather than the gated Service because this is system
+// seeding, not a superadmin edit; updated_by stays empty to mark it as the seeded
+// default rather than an authored version. Seeding only when unset means an
+// operator's edits are never overwritten on restart.
+func seedGlobalSkillset(ctx context.Context, skillsets *skillset.Repo) error {
+	if _, err := skillsets.Get(ctx); err == nil {
+		return nil // already authored or seeded — leave it alone
+	} else if !errors.Is(err, skillset.ErrNotSet) {
+		return fmt.Errorf("read global skillset: %w", err)
+	}
+	if _, err := skillsets.Set(ctx, skillset.DefaultPlaybook, ""); err != nil {
+		return fmt.Errorf("seed global skillset: %w", err)
+	}
+	return nil
+}
+
 // serveLocal runs the self-hosted, single-workspace server and blocks. It
 // resolves (and on a fresh database provisions) the one "local" workspace, then
 // mounts only the agent surfaces — /mcp and /import — behind a credential-free
@@ -351,6 +374,14 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 		return fmt.Errorf("ensure local vector namespace: %w", err)
 	}
 
+	// The wakeup playbook is seeded here as well as on the multi-tenant path.
+	// Local mode skips seedIfEmpty (it must never create a demo workspace), but
+	// skipping the playbook with it would leave am_skillset returning 37 tools and
+	// no guidance — a server the agent can call but never thinks to.
+	if err := seedGlobalSkillset(ctx, skillset.NewRepo(svc.gdb)); err != nil {
+		return err
+	}
+
 	// One middleware stands in for the entire auth stack: every request already
 	// belongs to the only workspace there is.
 	local := auth.LocalTenant(t)
@@ -362,6 +393,12 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 			cfg.Addr, cfg.DBPath, config.LocalAddr)
 	}
 	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, no token required, no dashboard)", cfg.Addr, tenant.LocalSlug)
+	// Registering the server is only half the job: an MCP endpoint is a catalogue
+	// of verbs, and an agent calls none of them unless something instructs it to.
+	// So point at both halves — the connection AND the protocol that drives it —
+	// because a local operator has no dashboard to read this from.
+	log.Printf("connect an agent:  claude mcp add --transport http agentsmemory http://%s/mcp", strings.TrimPrefix(cfg.Addr, ":"))
+	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  aiagentmemory install")
 	return http.ListenAndServe(cfg.Addr, r)
 }
 
@@ -643,12 +680,8 @@ func seedIfEmpty(ctx context.Context, gdb *gorm.DB, tenants *tenant.Repo, skills
 		return err
 	}
 
-	// Seed the global wakeup playbook with the default text so am_skillset returns
-	// real guidance immediately. Written via the repo (not the gated Service): this
-	// is system seeding, not a superadmin edit, and updated_by is left empty to
-	// mark it as the seeded default rather than an authored version.
-	if _, err := skillsets.Set(ctx, skillset.DefaultPlaybook, ""); err != nil {
-		return fmt.Errorf("seed global skillset: %w", err)
+	if err := seedGlobalSkillset(ctx, skillsets); err != nil {
+		return err
 	}
 
 	log.Printf("seeded demo team %s", t.TeamID)
