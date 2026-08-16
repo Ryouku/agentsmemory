@@ -153,3 +153,4 @@
 - 2026-08-15 `7dc5183` docs(landing): document --copy and --shared-auth in the install section
 - 2026-08-15 `fa0476c` feat(cli): per-project `init`/`load` — a repo remembers its agent, flags and (machine-local) sandbox
 - 2026-08-15 `25d7241` docs(web): document init/load on the landing page and the sandbox guide
+- 2026-08-16 `c1b3de5` feat(web): tabbed install builder — pick mode, agent, name and flags; the command rewrites itself
