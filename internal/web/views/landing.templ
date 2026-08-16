@@ -450,7 +450,7 @@ templ landingFeatures() {
 // the signals off the wire). The interaction is a text substitution over a stable
 // DOM, which is precisely the case where signals beat a server morph.
 templ landingInstall(d LandingData) {
-	<section class="lp-section" id="install" data-signals={ landingBuilderSignals }>
+	<section class="lp-section" id="install" data-signals={ landingSignals() }>
 		<div class="lp-wrap">
 			<header class="lp-head">
 				<p class="eyebrow">Install</p>
@@ -532,83 +532,12 @@ templ landingInstall(d LandingData) {
 // JavaScript. The command block is server-rendered with the default tab's command
 // so it reads correctly before datastar boots and data-text takes over.
 templ landingInstallBuilder(d LandingData) {
+	{{ b := landingBuilder() }}
 	<div class="lp-build card">
-		<div class="sb-switch lp-build-tabs" role="group" aria-label="Where to install the kit">
-			for _, m := range landingInstallModes() {
-				<button
-					class="sb-switch-btn"
-					type="button"
-					data-class={ "{'is-on': $_mode === '" + m.Key + "'}" }
-					data-attr:aria-pressed={ "$_mode === '" + m.Key + "' ? 'true' : 'false'" }
-					data-on:click={ "$_mode = '" + m.Key + "'" }
-				>{ m.Name }</button>
-			}
-		</div>
-		for i, m := range landingInstallModes() {
-			<p
-				class="lp-build-hint"
-				data-show={ "$_mode === '" + m.Key + "'" }
-				if i > 0 {
-					style="display:none"
-				}
-			>{ m.Hint }</p>
-		}
-		<div class="lp-build-opts">
-			<div class="field">
-				<label for="installAgent">Agent</label>
-				<select class="input" id="installAgent" data-bind:_agent>
-					for _, a := range sandboxAgents() {
-						<option value={ a.Key }>{ a.Name }</option>
-					}
-					<option value="all">All three — one sandbox, any of them</option>
-				</select>
-				<p class="lp-build-note">
-					Claude Code is the default. <a href="/sandboxes">The sandbox guide</a> covers
-					what changes for Codex and pi.
-				</p>
-			</div>
-			<div class="field" data-show="$_mode === 'project'" style="display:none">
-				<label for="installName">Sandbox name</label>
-				<input
-					class="input"
-					id="installName"
-					type="text"
-					placeholder={ landingNameFallback }
-					autocomplete="off"
-					autocapitalize="none"
-					spellcheck="false"
-					data-bind:_sbname
-				/>
-				<p class="lp-build-note">
-					Names the folder under <span class="mono">~/.sandboxes/</span>. Usually your
-					project's name — it stays on your machine.
-				</p>
-			</div>
-		</div>
-		<fieldset class="lp-build-flags">
-			// Neutral on purpose: the two sandbox-only rows are hidden on the global
-			// tab, so a legend promising to carry your setup over would sit above a
-			// lone --recommended box and describe nothing on screen.
-			<legend>Options</legend>
-			for _, o := range landingInstallOpts() {
-				@landingInstallFlag(o)
-			}
-		</fieldset>
-		<div class="lp-code card">
-			<div class="lp-code-head">
-				<span class="kv">curl · bash</span>
-				<button
-					class="btn btn-ghost btn-sm"
-					type="button"
-					data-on:click={ clipboardExprJS(landingInstallExpr(), "_copiedInstall") }
-					aria-label="Copy install command"
-				>
-					<span data-show="!$_copiedInstall">Copy</span>
-					<span data-show="$_copiedInstall" style="display:none">Copied ✓</span>
-				</button>
-			</div>
-			<pre class="cmd"><code data-text={ landingInstallExpr() }>{ landingInstallDefault }</code></pre>
-		</div>
+		@installTabs(b)
+		@installOptions(b)
+		@installFlags(b)
+		@installCommand(b)
 		@landingTokenNote(d)
 	</div>
 }
@@ -637,28 +566,6 @@ templ landingTokenNote(d LandingData) {
 	</p>
 }
 
-// landingInstallFlag renders one flag checkbox. The label wraps the input, so the
-// whole row — flag name and explanation both — is the click target, and the
-// association needs no matching id. Flags the installer rejects without a sandbox
-// (--copy, --shared-auth: see main.go's flag usage) appear only on the project
-// tab; showing them greyed out on the global tab would advertise a command that
-// cannot run.
-templ landingInstallFlag(o installOpt) {
-	<label
-		class="lp-check"
-		if o.NeedsName {
-			data-show="$_mode === 'project'"
-			style="display:none"
-		}
-	>
-		<input class="lp-check-box" type="checkbox" data-bind={ o.Signal }/>
-		<span class="lp-check-text">
-			<code class="lp-check-flag">{ o.Flag }</code>
-			<span class="lp-check-desc">{ o.Desc }</span>
-		</span>
-	</label>
-}
-
 // landingLaunchStrip answers the question a sandboxed install leaves hanging —
 // "it is installed, now how do I actually work in it?" — which the section
 // previously never answered: the flags were documented here, but the commands
@@ -668,14 +575,15 @@ templ landingInstallFlag(o installOpt) {
 // and every command is built from the same signals as the install line above, so
 // the sandbox name a visitor typed is already filled in.
 templ landingLaunchStrip() {
-	<div class="lp-next" data-show="$_mode === 'project'" style="display:none">
+	{{ b := landingBuilder() }}
+	<div class="lp-next" data-show={ b.ModeIs("project") } style="display:none">
 		<h3 class="lp-next-h">Then work in it</h3>
 		<p class="lp-next-sub">
 			Three commands, in the order you meet them: open the sandbox, pin the project
 			to it, and the one line everyone on the team runs from then on.
 		</p>
 		<div class="lp-next-grid">
-			for _, s := range landingLaunchSteps() {
+			for _, s := range b.LaunchSteps() {
 				<div class="lp-next-step">
 					<div class="lp-code card">
 						<div class="lp-code-head">
