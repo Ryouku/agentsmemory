@@ -19,6 +19,7 @@ require (
 	github.com/stripe/stripe-go/v82 v82.5.1
 	github.com/urfave/cli/v3 v3.10.0
 	golang.org/x/crypto v0.52.0
+	golang.org/x/sys v0.45.0
 	gorm.io/gorm v1.31.2
 )
 
@@ -56,7 +57,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

@@ -179,6 +179,20 @@ func run(ctx context.Context, cfg config.Config) error {
 			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel)
 	}
 
+	// Claim the database before opening it. Only one server may serve a given
+	// database; a second would orphan the first — silently, since the loser keeps
+	// running and logs nothing. See lock.go for why the database and not the
+	// listener is the thing being guarded.
+	//
+	// This belongs to serving, not to buildServices: inspect, mcp, plan and share
+	// open the same database as readers and must keep working while a server
+	// runs, which is exactly what the WAL journal mode enables.
+	lock, err := lockDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	// Open + migrate + wire the bounded-context services. The same wiring backs
 	// the read-only mcp CLI, so it lives in buildServices (the one place the two
 	// driving adapters share). Serving additionally seeds and starts transports.
