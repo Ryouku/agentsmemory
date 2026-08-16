@@ -44,6 +44,10 @@ func listenerFor(cfg config.Config) (net.Listener, error) {
 // deliberately narrow: only a file that is actually a socket is unlinked. Being
 // pointed at a regular file — a typo landing on a database or a config — must
 // fail loudly rather than silently delete the operator's data.
+//
+// Note that the kernel caps a socket path at roughly 104 bytes (macOS) or 108
+// (Linux); a longer one fails to bind with a bare "invalid argument", so the
+// error is wrapped with the path to make the cause findable.
 func listenUnix(path string) (net.Listener, error) {
 	if err := clearStaleSocket(path); err != nil {
 		return nil, err
