@@ -179,6 +179,20 @@ func run(ctx context.Context, cfg config.Config) error {
 			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel)
 	}
 
+	// Claim the database before opening it. Only one server may serve a given
+	// database; a second would orphan the first — silently, since the loser keeps
+	// running and logs nothing. See lock.go for why the database and not the
+	// listener is the thing being guarded.
+	//
+	// This belongs to serving, not to buildServices: inspect, mcp, plan and share
+	// open the same database as readers and must keep working while a server
+	// runs, which is exactly what the WAL journal mode enables.
+	lock, err := lockDB(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	// Open + migrate + wire the bounded-context services. The same wiring backs
 	// the read-only mcp CLI, so it lives in buildServices (the one place the two
 	// driving adapters share). Serving additionally seeds and starts transports.
@@ -744,6 +758,10 @@ func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chrom
 // stdout is data — the read-only mcp CLI emits JSON there — stays clean and
 // pipeable even with APP_DEBUG=true; serve is unaffected (its stdout is not a
 // data channel).
+//
+// The DSN carries the pragmas described on dbPragmas, because more than one
+// process legitimately opens this file: serve holds it open for its lifetime
+// while inspect, mcp, plan, share and an export all read it.
 func openDB(path string, debug bool) (*gorm.DB, error) {
 	level := logger.Silent
 	if debug {
@@ -753,8 +771,30 @@ func openDB(path string, debug bool) (*gorm.DB, error) {
 		log.New(os.Stderr, "\r\n", log.LstdFlags),
 		logger.Config{LogLevel: level},
 	)
-	return gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormLog})
+	return gorm.Open(sqlite.Open(path+dbPragmas), &gorm.Config{Logger: gormLog})
 }
+
+// dbPragmas are the connection pragmas appended to the SQLite DSN.
+//
+// journal_mode(WAL): readers no longer block the writer, so `inspect` or a data
+// export can run against a live server instead of colliding with it. WAL is a
+// persistent property of the database file, so the first connection converts it
+// and every later one simply observes it.
+//
+// busy_timeout(5000): SQLite's default is 0 — a contended write fails
+// *instantly* with "database is locked" rather than waiting. Five seconds turns
+// the normal case (a reader and the writer overlapping for microseconds) into a
+// brief wait instead of an error.
+//
+// Deliberately NOT applied to the data-export archive (internal/dataexport):
+// that file is handed to the user as a single download, and WAL would leave
+// committed rows in a -wal sidecar that does not travel with it.
+//
+// This is a concurrency *performance* setting and nothing more. It is not a
+// substitute for the single-instance lock in lock.go — if anything it raises the
+// stakes, because with WAL two servers on one database write happily and
+// silently instead of announcing themselves with lock errors.
+const dbPragmas = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 
 // migrate applies the embedded goose migrations to the open database.
 func migrate(sqlDB *sql.DB) error {
