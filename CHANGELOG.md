@@ -169,3 +169,4 @@
 - 2026-08-16 `1c1ccdf` feat(local): `--local` defaults to the chromem index (explicit flag/env still wins) and refills an empty index from SQLite at boot
 - 2026-08-16 `a25a4ba` chore(docker): compose is one container on chromem — qdrant kept commented with its switch-back steps
 - 2026-08-16 `e3de3db` docs: "choosing the index" table + how to prepare Ollama for bge-m3 (pull, verify, OLLAMA_HOST for containers)
+- 2026-08-16 `c855c15` docs(readme): `aiagentmemory install --local` right under the `--local` run example (global / --agent / --sandbox shapes)
