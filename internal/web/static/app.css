@@ -686,6 +686,16 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .lp-build > .lp-code { margin-top: 1.5rem; border-color: var(--line-2); }
 .lp-build > .lp-code .cmd { border-left: 3px solid var(--ember); }
 
+/* The token caveat sits under the command because it is the one step the command
+   cannot carry; brass rule rather than a warning colour — it is a prerequisite,
+   not an error. */
+.lp-build-token {
+  margin: .9rem 0 0; padding-left: .9rem; border-left: 2px solid var(--brass);
+  color: var(--muted); font-size: .88rem; line-height: 1.6; max-width: 72ch;
+}
+.lp-build-token b { color: var(--bone); font-weight: 600; }
+.lp-build-token a { color: var(--brass); }
+
 /* ---- after a sandboxed install ---- */
 .lp-next { margin-top: 2.2rem; padding-top: 2rem; border-top: 1px solid var(--line); }
 .lp-next-h { font-size: 1.25rem; margin: 0 0 .4rem; }
