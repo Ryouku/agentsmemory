@@ -640,6 +640,60 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .lp-cmd-row dd { margin: 0; color: var(--muted); font-size: .9rem; line-height: 1.5; }
 .lp-install-deps { margin-top: 2.2rem; }
 
+/* ---- install builder ----------------------------------------------------
+   The picker that assembles the install line. Controls read top-down and the
+   command sits last, so the page never shows a choice that has not already been
+   applied below it. Structure is borrowed wholesale from the existing system
+   (.card, .field/.input, .sb-switch, .lp-code); only the options grid, the flag
+   rows and the follow-up strip are new.
+-------------------------------------------------------------------------- */
+.lp-build { padding: clamp(1.1rem, 3vw, 1.7rem); }
+/* The switcher's own 2rem gap is page-level spacing; inside a card it reads as a
+   gap rather than a group. */
+.lp-build-tabs { margin: 0 0 1rem; }
+.lp-build-hint { color: var(--muted); font-size: .93rem; line-height: 1.6; margin: 0 0 1.4rem; max-width: 68ch; }
+
+.lp-build-opts { display: grid; gap: 1rem; }
+@media (min-width: 620px) { .lp-build-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.lp-build-opts .field { margin: 0; }
+.lp-build-note { color: var(--faint); font-size: .8rem; line-height: 1.5; margin: .45rem 0 0; }
+.lp-build-note a { color: var(--brass); }
+
+/* Flags as a real fieldset: the legend names the group for a screen reader, and
+   each label wraps its own input so the whole row is the hit target. */
+.lp-build-flags { border: 0; padding: 0; margin: 1.4rem 0 0; min-inline-size: 0; }
+.lp-build-flags legend {
+  padding: 0; font-size: .82rem; font-weight: 600; color: var(--muted); letter-spacing: .01em; margin-bottom: .5rem;
+}
+.lp-check {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .1rem .7rem; align-items: start;
+  min-height: 44px; padding: .7rem .85rem; margin-bottom: .5rem;
+  border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.14);
+  cursor: pointer; transition: border-color .15s ease, background .15s ease;
+}
+.lp-check:last-child { margin-bottom: 0; }
+.lp-check:hover { border-color: var(--line-2); background: rgba(0,0,0,.2); }
+/* The native checkbox keeps its own focus ring, so lift the row with it — a
+   keyboard user needs to see which row the ring belongs to. */
+.lp-check:focus-within { border-color: var(--ember); box-shadow: 0 0 0 3px rgba(224,122,62,.2); }
+.lp-check-box { inline-size: 1.15rem; block-size: 1.15rem; margin: .15rem 0 0; accent-color: var(--ember); cursor: pointer; }
+.lp-check-text { display: grid; gap: .2rem; }
+.lp-check-flag { font-family: "IBM Plex Mono", monospace; font-size: .86rem; color: var(--brass); }
+.lp-check-desc { color: var(--muted); font-size: .87rem; line-height: 1.5; }
+
+/* The assembled command is the section's deliverable, so it keeps the ember edge
+   that .lp-code otherwise strips off .cmd. */
+.lp-build > .lp-code { margin-top: 1.5rem; border-color: var(--line-2); }
+.lp-build > .lp-code .cmd { border-left: 3px solid var(--ember); }
+
+/* ---- after a sandboxed install ---- */
+.lp-next { margin-top: 2.2rem; padding-top: 2rem; border-top: 1px solid var(--line); }
+.lp-next-h { font-size: 1.25rem; margin: 0 0 .4rem; }
+.lp-next-sub { color: var(--muted); font-size: .95rem; line-height: 1.6; margin: 0 0 1.5rem; max-width: 68ch; }
+.lp-next-grid { display: grid; gap: 1.2rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+.lp-next-step { display: grid; gap: .7rem; align-content: start; }
+.lp-next-desc { color: var(--muted); font-size: .88rem; line-height: 1.55; margin: 0; }
+
 /* ---- pricing ---- */
 .lp-plan-grid { display: grid; gap: 1.4rem; max-width: 46rem; margin: 0 auto; }
 @media (min-width: 760px) { .lp-plan-grid { grid-template-columns: repeat(2, 1fr); } }

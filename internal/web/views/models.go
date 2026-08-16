@@ -807,13 +807,196 @@ func clipboardExpr(s string) string { return clipboardExprSignal(s, "_copied") }
 // "_copied" would flash together. The payload is JSON-encoded so quotes/newlines
 // embed safely as a JS string literal.
 func clipboardExprSignal(s, signal string) string {
-	return "navigator.clipboard.writeText(" + jsString(s) +
+	return clipboardExprJS(jsString(s), signal)
+}
+
+// clipboardExprJS is clipboardExprSignal for a command that does not exist until
+// the browser evaluates it: expr is raw JavaScript rather than a Go string, so a
+// button can copy exactly what a data-text attribute is displaying. The install
+// builder needs this — its command is assembled from signals, and copying a
+// hardcoded string while the screen shows a different one is the one bug a copy
+// button must never have.
+func clipboardExprJS(expr, signal string) string {
+	return "navigator.clipboard.writeText(" + expr +
 		"); $" + signal + " = true; setTimeout(() => $" + signal + " = false, 1600)"
 }
 
 // landingInstallCmd is the copy-paste one-liner in the install section: it
 // downloads the aiagentmemory binary from GitHub Releases and runs `install`.
+// install.sh forwards everything after `-s --` to that `install`, which is what
+// lets the builder below append flags to this exact string.
 const landingInstallCmd = "curl -fsSL https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/clients/claude-code/install.sh | bash"
+
+// The install builder assembles its command in the browser from these signals,
+// so a visitor picks global-or-sandboxed, names the project and ticks the flags
+// instead of reading the flag reference and editing a string by hand. Everything
+// is front-end-only (the "_" prefix keeps it off the wire) because the whole
+// interaction is a text substitution — a server round-trip would buy nothing.
+const landingBuilderSignals = "{_copiedInstall: false, _copiedPrompt: false, _copiedKey: '', " +
+	"_mode: 'global', _agent: 'claude', _sbname: '', _optcopy: false, _optshared: false, _optrec: false}"
+
+// landingNameFallback is the sandbox name used while the input is empty. The
+// command on screen must stay runnable at every keystroke — a visitor who copies
+// mid-edit should get a working install, not `--sandbox` with nothing after it —
+// so the field's placeholder shows this same word.
+const landingNameFallback = "myproject"
+
+// landingNameExpr yields the sandbox name to splice into a command. It hyphenates
+// whitespace and then strips everything outside [A-Za-z0-9._-] rather than
+// trusting the field: the page must never render a command that does something
+// other than install, and a name typed with a space or a semicolon would
+// otherwise become extra shell words in whatever terminal the visitor pastes
+// into. Typing "my project" is the case this is really for; "foo; rm -rf ~" is
+// the case it must not get wrong.
+const landingNameExpr = `($_sbname.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9._-]/g, '') || '` + landingNameFallback + `')`
+
+// landingAgentFlag is the `--agent` argument for the installer, which accepts the
+// multi-agent values. Claude is the installer's default, so selecting it adds
+// nothing — the shortest correct command is the one worth showing.
+const landingAgentFlag = `($_agent === 'claude' ? '' : ' --agent ' + $_agent)`
+
+// landingLaunchAgentFlag is landingAgentFlag for `run` and `init`, which resolve a
+// single kit and reject "all" (resolveAgentKit in clients/claude-code/agentkit.go).
+// An `--agent all` sandbox is one directory three CLIs can open, so the launch
+// commands simply omit the flag and open it as Claude; the strip's note says how
+// to open it as one of the others.
+const landingLaunchAgentFlag = `($_agent === 'claude' || $_agent === 'all' ? '' : ' --agent ' + $_agent)`
+
+// landingInstallExpr is the datastar expression behind the builder's command
+// block — the single source of truth for what the page displays *and* what its
+// Copy button writes, so the two can never drift apart.
+//
+// Both branches always forward arguments, so `-s --` is unconditional. The global
+// branch spells out --global rather than relying on the bare one-liner: with
+// neither --global nor --sandbox the installer stops and asks which mode you
+// want, and a tab that says "Global" must not then ask the question the tab
+// already answered.
+func landingInstallExpr() string {
+	sandboxFlags := " ' -s --' + " + landingAgentFlag +
+		" + ' --sandbox ' + " + landingNameExpr +
+		" + ($_optcopy ? ' --copy' : '')" +
+		" + ($_optshared ? ' --shared-auth' : '')" +
+		" + ($_optrec ? ' --recommended' : '')"
+	globalFlags := " ' -s -- --global' + " + landingAgentFlag +
+		" + ($_optrec ? ' --recommended' : '')"
+	return jsString(landingInstallCmd) + " + ($_mode === 'project' ?" + sandboxFlags + " :" + globalFlags + ")"
+}
+
+// installMode is one tab of the install builder: the signal value the tab sets,
+// its label, and the line that appears under the tabs once it is chosen.
+type installMode struct{ Key, Name, Hint string }
+
+// landingInstallModes are the two places the kit can land. The hint is the
+// load-bearing field: the whole point of the tabs is that a visitor picks
+// correctly without first reading the flag reference further down the page.
+func landingInstallModes() []installMode {
+	return []installMode{
+		{
+			Key:  "global",
+			Name: "Global",
+			Hint: "Wires the kit into the agent you already run. One config, every project — start here if you are not sure.",
+		},
+		{
+			Key:  "project",
+			Name: "Per project",
+			Hint: "A complete config of its own under ~/.sandboxes/ — commands, settings, MCP servers and token. Your global agent stays exactly as it was.",
+		},
+	}
+}
+
+// installOpt is one flag checkbox in the builder: the signal bound to the box,
+// the flag it adds to the command, and what it does in one line.
+type installOpt struct {
+	Signal    string
+	Flag      string
+	Desc      string
+	NeedsName bool // the flag requires --sandbox, so the box shows only on the project tab
+}
+
+// landingInstallOpts are the install flags worth a checkbox. They exist because a
+// flag nobody knows about may as well not ship: --copy and --shared-auth answer
+// the objection a sandbox immediately raises ("so I start from nothing and log in
+// again everywhere"), and a visitor who never opens the reference would never
+// learn they exist. Ticking a box is also the fastest way to read what a flag
+// does — the command below rewrites itself as you go.
+//
+// The order is the order the installer applies them: it seeds with --copy first,
+// then links credentials, so the two compose on one command rather than competing
+// (sharedauth.go: the link "runs after the optional --copy seed, deliberately").
+func landingInstallOpts() []installOpt {
+	return []installOpt{
+		{
+			Signal:    "_optcopy",
+			Flag:      "--copy",
+			Desc:      "Seed the sandbox from your global config: logins, MCP servers, plugins, skills and settings. History, logs and caches stay behind, and nothing already there is overwritten.",
+			NeedsName: true,
+		},
+		{
+			Signal:    "_optshared",
+			Flag:      "--shared-auth",
+			Desc:      "Link the sandbox's credentials to your global ones, so one login serves every sandbox you have. Claude on macOS already shares its keychain.",
+			NeedsName: true,
+		},
+		{
+			Signal: "_optrec",
+			Flag:   "--recommended",
+			Desc:   "Also install the extensions: the codebase-memory MCP and the eidos + codex plugins.",
+		},
+	}
+}
+
+// landingInstallDefault is what the builder's command block renders on the
+// server, before datastar boots and data-text takes over: the default tab's
+// command, so the block is never briefly empty and never shows a command the
+// selected tab would not produce.
+const landingInstallDefault = landingInstallCmd + " -s -- --global"
+
+// launchStep is one command in the "now use it" strip that follows a sandboxed
+// install: the label on its chip, the datastar expression that renders it, the
+// server-rendered fallback for that expression, the key its Copy button flashes
+// through the shared _copiedKey signal, and the one line explaining when it is
+// the command you want.
+type launchStep struct {
+	Key   string
+	Label string
+	Expr  string
+	Text  string
+	Desc  string
+}
+
+// landingLaunchSteps is the answer to "I installed a sandbox — now what?", which
+// is the question the install section previously left hanging: the flags were
+// documented, but the commands that open the sandbox lived only on /sandboxes.
+//
+// The three steps are ordered by when a visitor needs them: open it once, pin the
+// repository to it, then the single command everyone on the team runs afterwards.
+// They are built from the same signals as the install command, so the sandbox
+// name a visitor typed above is already in them.
+func landingLaunchSteps() []launchStep {
+	return []launchStep{
+		{
+			Key:   "run",
+			Label: "open it",
+			Expr:  jsString("aiagentmemory run") + " + " + landingLaunchAgentFlag + " + ' ' + " + landingNameExpr,
+			Text:  "aiagentmemory run " + landingNameFallback,
+			Desc:  "Starts the agent with this sandbox's config, commands, MCP and token. Your global install is untouched.",
+		},
+		{
+			Key:   "init",
+			Label: "pin this repo",
+			Expr:  jsString("aiagentmemory init --sandbox ") + " + " + landingNameExpr + " + " + landingLaunchAgentFlag,
+			Text:  "aiagentmemory init --sandbox " + landingNameFallback,
+			Desc:  "Run it inside the project. It writes .aiagentmemory — commit that file. Append -- --model opus to record agent flags too.",
+		},
+		{
+			Key:   "load",
+			Label: "every day after",
+			Expr:  jsString("aiagentmemory load"),
+			Text:  "aiagentmemory load",
+			Desc:  "Opens the pinned project from any subdirectory. Teammates run this same line against their own sandbox.",
+		},
+	}
+}
 
 // claudeGuideURL is the canonical public URL of the agent-facing install guide
 // (served raw-Markdown by handleClaudeGuide). It is hardcoded like landingInstallCmd
@@ -1041,7 +1224,15 @@ func sandboxProject() []installGroup {
 // _copiedKey signal to this button's key, so only the clicked button confirms and
 // the page needs one signal rather than one per command.
 func clipboardExprKey(s, key string) string {
-	return "navigator.clipboard.writeText(" + jsString(s) +
+	return clipboardExprKeyJS(jsString(s), key)
+}
+
+// clipboardExprKeyJS is clipboardExprKey for a command assembled in the browser:
+// expr is raw JavaScript, so a looped copy button can copy a signal-derived
+// command. It is to clipboardExprKey what clipboardExprJS is to
+// clipboardExprSignal.
+func clipboardExprKeyJS(expr, key string) string {
+	return "navigator.clipboard.writeText(" + expr +
 		"); $_copiedKey = " + jsString(key) + "; setTimeout(() => $_copiedKey = '', 1600)"
 }
 
