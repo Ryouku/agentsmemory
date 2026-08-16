@@ -123,6 +123,9 @@ func (s *Server) Routes(r chi.Router) {
 	// fetch and follow (see guide.go). It needs no session, so it sits outside the
 	// authenticated group alongside the landing page.
 	r.Get("/claude-guide", s.handleClaudeGuide)
+	// Its sibling for the clients the CLI installer cannot reach — Windows, VS Code,
+	// Cursor, Claude Desktop — which connect to the remote MCP directly instead.
+	r.Get("/windows-guide", s.handleWindowsGuide)
 	// Public per-agent sandbox guide (Claude Code, Codex, pi). Marketing content
 	// like the landing page, so it sits here rather than behind a session.
 	r.Get("/sandboxes", s.handleSandboxes)

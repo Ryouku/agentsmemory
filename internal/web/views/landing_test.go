@@ -34,6 +34,34 @@ func TestLandingPageLinksClaudeGuide(t *testing.T) {
 	}
 }
 
+// TestLandingPageLinksWindowsGuide is the sibling guard for the no-CLI route.
+// Every visitor on Windows, or in VS Code / Cursor / Claude Desktop anywhere, has
+// no installer to run, so losing this block silently strands them on a page whose
+// every other path is a bash one-liner. The signal assertion is the real risk:
+// datastar signals are global to the page, so reusing _copiedPrompt here would
+// make one Copy button flash both blocks.
+func TestLandingPageLinksWindowsGuide(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `href="/windows-guide"`) {
+		t.Error("landing page has no link to /windows-guide")
+	}
+	if !strings.Contains(html, windowsGuideURL) {
+		t.Errorf("prompt does not reference the guide URL %q", windowsGuideURL)
+	}
+	if !strings.Contains(html, "_copiedNoCLI") {
+		t.Error("no-CLI copy button is missing its independent _copiedNoCLI signal")
+	}
+	// The signal has to be declared on the page too, or data-show never resolves.
+	if !strings.Contains(landingSignals(), "_copiedNoCLI") {
+		t.Error("_copiedNoCLI is not declared in landingSignals()")
+	}
+}
+
 // TestLandingPageArguesCost guards the pricing-transparency band: the page must
 // argue *why* it costs (real GPU compute + electricity for embeddings), and the
 // same argument must also reach the schema.org FAQ so AI answer engines can cite
