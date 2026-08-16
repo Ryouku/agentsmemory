@@ -108,6 +108,7 @@ aiagentmemory install [flags]                  install the kit (global, or --san
 aiagentmemory install --agent codex [flags]    same, into ~/.codex (or --agent both)
 aiagentmemory install --agent pi [flags]       same, into ~/.pi/agent (or --agent all)
 aiagentmemory update [flags]                   replace the binary in place (configs untouched)
+aiagentmemory update-skill [flags]             refresh the protocol + slash commands from GitHub
 aiagentmemory init --sandbox <name> [-- args]  record how THIS project launches
 aiagentmemory load [-- extra args]             launch this project's agent + sandbox + flags
 aiagentmemory run <name> [args]                run Claude against sandbox ~/.sandboxes/<name>
@@ -392,6 +393,38 @@ with `--version` to prove it is intact and the right architecture, and only then
 renamed over the old file — an atomic swap, so a failed or interrupted download
 leaves the working binary in place. Replacing a running binary is safe on macOS
 and Linux; an already-open session keeps running the old image.
+
+### Refreshing the protocol and commands (`update-skill`)
+
+`update` deliberately leaves your config dir alone, which means the memory
+protocol and slash commands stay at whatever version was installed the day the
+kit went in. `update-skill` is the other half — it fetches
+`agentsmemory-bootstrap.md` and the `/M`, `/am` and `/load-skill` commands from
+GitHub and writes them into a config dir:
+
+```bash
+aiagentmemory update-skill                      # the global install
+aiagentmemory update-skill --sandbox aks        # an isolated sandbox
+aiagentmemory update-skill --sandbox aks --agent all   # claude + codex + pi in it
+aiagentmemory update-skill --check              # what would change, writes nothing
+aiagentmemory update-skill --ref main           # track a branch instead of a release
+```
+
+It is as narrow as `update` is, from the other side: the binary, your MCP
+registration, workspace token and Stop hook are all left untouched. The Stop
+hook and the pi bridge extension are excluded on purpose even though they are
+kit assets too — both are executable code, and quietly downloading a shell
+script over an existing one is a bigger act than refreshing documentation. Run
+`install` when you want those.
+
+The whole kit is downloaded before anything is written, so a failed fetch leaves
+your config dir exactly as it was rather than half-updated. `--ref` defaults to
+the latest release tag, so `update-skill` and `update` track the same version by
+default; the files come from the repository tree, since a release publishes
+binaries only. On codex and pi the protocol is inlined into `AGENTS.md` and on
+Claude it is imported from `CLAUDE.md`, exactly as `install` does it — your own
+content outside the managed block is preserved, and the file is backed up before
+it changes.
 
 ### Inheriting your global setup (`--copy`)
 
