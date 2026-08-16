@@ -61,9 +61,17 @@ This is a gate, not a suggestion:
   loaded. Batching is how the gate gets skipped — keep it alone and first.
 - After it loads, emit a literal audit line naming the skill (e.g.
   `<skill> loaded ✓`) so the load is visible.
+- **Look in the palace before concluding no skill exists.** Skills live in *two*
+  places: your harness's local skill list, and the team's **centralised** skills
+  on the memory server. A local skill list that lacks `effective-go` does **not**
+  mean the team has no `effective-go` — it usually means it is centralised.
+  Call `am_list_skills` to see the team's catalogue and `am_load_skill(name)` to
+  load the body, then emit the audit line naming it. The centralised copy is the
+  live, team-shared version; prefer it over a stale local file of the same name.
 - **Re-check before Step 3.** Before writing any code, confirm the idiom line
-  appears earlier in this turn. If no such skill exists for your stack, say so in
-  one line and follow the language's published conventions regardless.
+  appears earlier in this turn. Only after **both** the local list and
+  `am_list_skills` come up empty may you say no skill exists for your stack —
+  say so in one line and follow the language's published conventions regardless.
 
 ## Step 0b — UX/UI idioms (hard gate when any UI is touched)
 
@@ -105,18 +113,29 @@ calls in parallel where you can; each answers a different question.
      when you need structure or call paths.
 
   Both calls are mandatory. Emit `code graph indexed + searched ✓`.
-- **1c. Team memory (who + why) — `am_*` MCP.** Two calls, in order:
-  - **Wake up first** — call `am_status` to load the palace overview + AAAK spec.
+- **1c. Team memory (who + why) — `am_*` MCP.** Four calls, in order:
+  - **Read the playbook first** — call `am_skillset`. This is the server's own
+    wake-up document: the standing instructions for *this* memory server (which
+    tools to call, in what order, which centralised skills to load) plus the live
+    catalogue of every available tool. It is the server telling you how to use
+    it, so it comes before you use it. Emit `skillset loaded ✓`.
+  - **Then wake up** — call `am_status` to load the palace overview + AAAK spec.
     It grounds you in identity and palace shape before task-specific recall. Emit
     `palace woken ✓`.
   - **Then search** — call `am_search(<task>)` to recall past decisions,
     learnings, and rationale. This is the **only** source of cross-session *why*;
     don't reconstruct from code what memory already explains. Emit
     `palace searched ✓`.
+  - **Then load the team's skills** — call `am_list_skills`, and
+    `am_load_skill(<name>)` for any that bear on the task. These are the team's
+    **centralised** conventions, authored once and shared by every agent, so they
+    outrank whatever you would otherwise infer. This is also the Step 0 backstop:
+    if the idiom skill was not in your local list, it is very likely here. Emit
+    `team skills loaded ✓` (or say plainly that the catalogue is empty).
 
-Reconcile the three. If the spec (1a), the code (1b), and past decisions (1c)
-disagree, **surface the conflict** — that's a human decision, not one to make
-silently.
+Reconcile the three sources. If the spec (1a), the code (1b), and past decisions
+(1c) disagree, **surface the conflict** — that's a human decision, not one to
+make silently.
 
 ## Memory-first exploration (don't re-derive what's remembered)
 
@@ -139,6 +158,19 @@ of guessing. On harnesses that load tools **deferred** (name only, no schema —
 Claude Code), recall that one `ToolSearch: "select:<tool_name>"` call loads the
 schema before the tool is callable. Write back any usage you worked out the hard
 way (Step 4).
+
+Two calls answer "how do I work here?" and are cheap enough to re-run mid-session
+whenever the answer would change what you do next:
+
+- **`am_skillset`** — the server's standing instructions and its live tool
+  catalogue. Reach for it when you are unsure *which* `am_*` tool does the job, or
+  whether one exists at all; the catalogue is generated, so it never drifts from
+  the server you are actually talking to.
+- **`am_list_skills` / `am_load_skill`** — the team's centralised conventions.
+  Reach for these the moment the task turns to a language, framework, or house
+  style you have not loaded guidance for. **A skill absent from your harness's
+  local list is not an absent skill** — check the catalogue before you decide the
+  team has no convention and fall back to your own judgement.
 
 ## Step 2 — Plan
 

@@ -396,7 +396,18 @@ codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/age
 ```
 
 The server prints both lines on startup with its own absolute path filled in, so
-they can be copied straight out of the log.
+they can be copied straight out of the log. The installer can wire it for you
+instead — it registers the same bridge and installs the memory protocol alongside
+it:
+
+```bash
+aiagentmemory install --local --socket /tmp/agentsmemory.sock
+```
+
+`--socket` requires `--local` (the bridge carries no token, so it only reaches a
+self-hosted server) and finds the server binary on `PATH`, or takes
+`--server-bin /path/to/agentsmemory`. It works for Claude and codex; pi has no MCP
+client of its own, so install that one with `--mcp-url` against `--addr`.
 
 Worth knowing:
 

@@ -32,13 +32,18 @@ Fire these in parallel where you can; each answers a different question.
      locate the symbols, files, and routes the task touches. Reach for
      `get_architecture` or `trace_path` when you need structure or call paths.
 
-- **1c. Team memory — `am_*` MCP.** Two calls, in order:
+- **1c. Team memory — `am_*` MCP.** Three calls, in order:
   1. `am_skillset` — the wake-up playbook: how to drive the `am_*` tools, in what
      order, and which skills to load. The platform curates this centrally, so the
      guidance stays current as the toolset grows — you never re-install to get it.
   2. `am_search(<task>)` — recall past decisions, learnings, and rationale for
      this work. This is the **only** source of cross-session *why*; don't
      reconstruct from code what memory already explains.
+  3. `am_list_skills` → `am_load_skill(<name>)` — load the team's **centralised**
+     skills (`effective-go`, and whatever else bears on the task). These are
+     authored once and shared by every agent, so they outrank conventions you
+     would otherwise infer. Check here before concluding a skill doesn't exist:
+     a skill missing from your local list is usually centralised here instead.
 
 Reconcile the three. If the spec (1a), the code (1b), and past decisions (1c)
 disagree, **surface the conflict** — that's a human decision, not one to make
