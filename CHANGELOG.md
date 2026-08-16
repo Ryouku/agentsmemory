@@ -154,3 +154,4 @@
 - 2026-08-15 `fa0476c` feat(cli): per-project `init`/`load` — a repo remembers its agent, flags and (machine-local) sandbox
 - 2026-08-15 `25d7241` docs(web): document init/load on the landing page and the sandbox guide
 - 2026-08-16 `c1b3de5` feat(web): tabbed install builder — pick mode, agent, name and flags; the command rewrites itself
+- 2026-08-16 `6ea1c51` docs(landing): state the token step — where to get one, and that a blank prompt leaves memory disconnected
