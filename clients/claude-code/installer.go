@@ -60,6 +60,13 @@ const (
 	// the extension has no config of its own to read.
 	mcpURLEnvVar = "AGENTSMEMORY_MCP_URL"
 
+	// localEnvVar tells the pi bridge extension that the endpoint is a self-hosted
+	// `agentsmemory --local` server, so a missing token means "this server wants
+	// none" rather than "the user skipped it". The extension needs the difference:
+	// without a token it must stay silent against the hosted service (where it
+	// would only 401), but connect anyway against a local one.
+	localEnvVar = "AGENTSMEMORY_LOCAL"
+
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell
 	// rc. Kept beside the config it belongs to, so deleting a sandbox deletes its
@@ -148,6 +155,7 @@ type Installer struct {
 	agentBin       string        // resolved agent CLI name to drive for mcp/plugin ops
 	mcpURL         string        // agentsmemory remote MCP endpoint
 	scope          string        // Claude MCP/plugin scope (user|local|project)
+	local          bool          // target a self-hosted `agentsmemory --local` server: no token anywhere
 	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
 	copyGlobal     bool          // seed the target from the agent's global config dir
 	sharedAuth     bool          // link credentials back to the global config dir
@@ -179,7 +187,14 @@ type Installer struct {
 // share a filename (settings.json vs hooks.json, commands/ vs prompts/, CLAUDE.md
 // vs AGENTS.md), so `install --agent both --sandbox x` yields one dir that
 // CLAUDE_CONFIG_DIR and CODEX_HOME can each point at.
-func resolveInstallTarget(kit agentKit, global bool, sandbox, configDir, home string) (targetDir, sandboxName string, explicit bool, err error) {
+// --local implies the global target too, but as a DEFAULT rather than an
+// assertion: someone self-hosting is setting up their own machine, so stopping to
+// ask global-vs-sandbox is a prompt with an obvious answer. It therefore behaves
+// like --global when no target is named, and yields to --sandbox/--config-dir
+// when one is — which is why it is not part of the mutual-exclusion check below,
+// and why "--local --sandbox x" is a legitimate combination (a local server, an
+// isolated config) rather than an error.
+func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, home string) (targetDir, sandboxName string, explicit bool, err error) {
 	if global && (sandbox != "" || configDir != "") {
 		return "", "", false, fmt.Errorf("--global cannot be combined with --sandbox or --config-dir")
 	}
@@ -191,7 +206,7 @@ func resolveInstallTarget(kit agentKit, global bool, sandbox, configDir, home st
 		return sandboxDir(sandbox), sandbox, true, nil
 	case configDir != "":
 		return configDir, "", true, nil
-	case global:
+	case global, local:
 		return kit.globalConfigDir(home), "", true, nil
 	default:
 		return kit.globalConfigDir(home), "", false, nil
@@ -206,10 +221,19 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 	// Resolve the install target (and whether it was pinned on the command line)
 	// from the mode flags. Kept as a pure helper so the precedence and the
 	// mutually-exclusive-flags rule are testable without CLI plumbing.
+	local := c.Bool("local")
 	targetDir, sandboxName, explicitTarget, err := resolveInstallTarget(
-		kit, c.Bool("global"), c.String("sandbox"), c.String("claude-dir"), homeDir())
+		kit, c.Bool("global"), local, c.String("sandbox"), c.String("claude-dir"), homeDir())
 	if err != nil {
 		return nil, err
+	}
+
+	// --local swaps the endpoint default, not the endpoint: an explicit --mcp-url
+	// still wins, so a self-hosted server on another port or host is reachable
+	// with both flags.
+	mcpURL := c.String("mcp-url")
+	if local && !c.IsSet("mcp-url") {
+		mcpURL = localMCPURL
 	}
 
 	dryRun := c.Bool("dry-run")
@@ -235,8 +259,9 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		sandboxName:    sandboxName,
 		explicitTarget: explicitTarget,
 		agentBin:       agentBin,
-		mcpURL:         c.String("mcp-url"),
+		mcpURL:         mcpURL,
 		scope:          c.String("scope"),
+		local:          local,
 		token:          c.String("token"),
 		copyGlobal:     c.Bool("copy"),
 		sharedAuth:     c.Bool("shared-auth"),
@@ -523,7 +548,9 @@ func foreignHookPredicate(keep string) func(string) bool {
 // itself is the one step that genuinely diverges per agent.
 func (i *Installer) registerAgentsMemoryMCP() error {
 	token := i.resolveToken()
-	if token == "" {
+	// A self-hosted --local server has no credential to present, so an empty token
+	// is the expected state there rather than the "user skipped it" state below.
+	if token == "" && !i.local {
 		fmt.Fprintln(i.out, "  no token provided — skipping agentsmemory MCP.")
 		fmt.Fprintf(i.out, "  add it later: %s\n", i.mcpAddHint())
 		return nil
@@ -541,11 +568,17 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 // registerClaudeMCP registers the remote MCP with the Claude CLI, which takes the
 // bearer token inline as a header value.
 func (i *Installer) registerClaudeMCP(token string) error {
-	header := "Authorization: Bearer " + token
+	args := []string{"mcp", "add", "--transport", "http", "--scope", i.scope, mcpName, i.mcpURL}
+	// A token-less server takes no Authorization header at all. Sending an empty
+	// bearer would work against our own --local server (which ignores inbound
+	// credentials) but is a lie in the config file: it reads as auth that exists.
+	if token != "" {
+		args = append(args, "--header", "Authorization: Bearer "+token)
+	}
 	// `mcp add` is not idempotent by name, so remove any prior entry first
 	// (ignoring "not found") and then add cleanly, all in one shot.
 	i.agent(true, "mcp", "remove", "--scope", i.scope, mcpName)
-	if err := i.agent(false, "mcp", "add", "--transport", "http", "--scope", i.scope, mcpName, i.mcpURL, "--header", header); err != nil {
+	if err := i.agent(false, args...); err != nil {
 		return err
 	}
 	i.ok("registered MCP %q → %s", mcpName, i.mcpURL)
@@ -565,16 +598,28 @@ func (i *Installer) registerClaudeMCP(token string) error {
 // also carries their plugins, hook trust hashes and shell policy, and passing it
 // on argv would leak it to `ps`.
 func (i *Installer) registerCodexMCP(token string) error {
-	if err := i.writeFile(i.tokenPath(), []byte(tokenEnvVar+"="+token+"\n"), 0o600); err != nil {
-		return err
+	args := []string{"mcp", "add", mcpName, "--url", i.mcpURL}
+	// With no token there is nothing to persist and no variable for codex to read,
+	// so the token file is not written at all — an empty AGENTSMEMORY_TOKEN file
+	// would only mislead the next reader (and summary() would tell them to source
+	// it for nothing).
+	if token != "" {
+		if err := i.writeFile(i.tokenPath(), []byte(tokenEnvVar+"="+token+"\n"), 0o600); err != nil {
+			return err
+		}
+		i.ok("stored workspace token in %s (0600)", tokenFile)
+		args = append(args, "--bearer-token-env-var", tokenEnvVar)
 	}
-	i.ok("stored workspace token in %s (0600)", tokenFile)
 
 	// Same remove-then-add shape as Claude: `codex mcp add` fails on a name that
 	// already exists, and `remove` fails when nothing is there — so ignore that one.
 	i.agent(true, "mcp", "remove", mcpName)
-	if err := i.agent(false, "mcp", "add", mcpName, "--url", i.mcpURL, "--bearer-token-env-var", tokenEnvVar); err != nil {
+	if err := i.agent(false, args...); err != nil {
 		return err
+	}
+	if token == "" {
+		i.ok("registered MCP %q → %s (no token: self-hosted server)", mcpName, i.mcpURL)
+		return nil
 	}
 	i.ok("registered MCP %q → %s (token via $%s)", mcpName, i.mcpURL, tokenEnvVar)
 	return nil
@@ -602,9 +647,20 @@ func (i *Installer) registerPiMCP(token string) error {
 	}
 	i.ok("installed pi bridge extension %s", piExtensionAsset)
 
+	// A local server needs no token, so the file carries the endpoint plus the flag
+	// that tells the extension the absence is intentional. Everything the
+	// extension reads still lives in one file that `aiagentmemory run` exports.
 	env := fmt.Sprintf("%s=%s\n%s=%s\n", tokenEnvVar, token, mcpURLEnvVar, i.mcpURL)
+	if token == "" {
+		env = fmt.Sprintf("%s=%s\n%s=1\n", mcpURLEnvVar, i.mcpURL, localEnvVar)
+	}
 	if err := i.writeFile(i.tokenPath(), []byte(env), 0o600); err != nil {
 		return err
+	}
+	if token == "" {
+		i.ok("stored endpoint in %s (0600; no token: self-hosted server)", tokenFile)
+		i.ok("bridged MCP %q → %s", mcpName, i.mcpURL)
+		return nil
 	}
 	i.ok("stored workspace token + endpoint in %s (0600)", tokenFile)
 	i.ok("bridged MCP %q → %s (token via $%s)", mcpName, i.mcpURL, tokenEnvVar)
@@ -826,6 +882,13 @@ func (i *Installer) line() (string, error) {
 // prints the full `mcp add`. In --yes / non-interactive mode (or on an empty
 // stdin) it returns "" and the caller skips MCP registration with a hint.
 func (i *Installer) resolveToken() string {
+	// A self-hosted server issues no tokens, so prompting for one would ask a
+	// question with no possible answer. Any inherited AGENTSMEMORY_TOKEN (the
+	// --token flag reads that env var) is dropped too, rather than written into a
+	// config where it would imply the local server checks it.
+	if i.local {
+		return ""
+	}
 	if i.token != "" {
 		return i.token
 	}
@@ -918,6 +981,12 @@ func (i *Installer) summary() {
 	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
 		i.commandLabel("M.md"), i.commandLabel("am.md"))
 
+	if i.local {
+		// The self-hosted server is the one thing that has to be running for any of
+		// this to work, and nothing else in the output would say so.
+		fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local   (this install points at %s)\n", i.mcpURL)
+	}
+
 	if i.kit.name == agentPi {
 		fmt.Fprintln(i.out, "  - pi has no MCP client: the memory tools arrive through the bridge extension in extensions/")
 		if i.sandboxName != "" {
@@ -926,7 +995,11 @@ func (i *Installer) summary() {
 			// credentials of its own.
 			fmt.Fprintf(i.out, "  - a sandbox has its own auth.json: sign in inside it, or pass a provider key (PI_CODING_AGENT_DIR=%s pi)\n", i.targetDir)
 		}
-		fmt.Fprintln(i.out, "  - launching plain `pi`? export the token first, e.g. add to your shell rc:")
+		what := "the token"
+		if i.local {
+			what = "the endpoint" // no token was written; the file carries the URL
+		}
+		fmt.Fprintf(i.out, "  - launching plain `pi`? export %s first, e.g. add to your shell rc:\n", what)
 		fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.tokenPath())
 		return
 	}
@@ -939,6 +1012,11 @@ func (i *Installer) summary() {
 		// A sandbox is a whole CODEX_HOME, and codex keeps auth.json there — so an
 		// isolated config starts logged out and every request 401s until you say so.
 		fmt.Fprintf(i.out, "  - a sandbox has its own login: CODEX_HOME=%s codex login\n", i.targetDir)
+	}
+	// Only meaningful when a token was actually persisted; a --local install wrote
+	// no file, and codex reads the endpoint straight out of its own config.toml.
+	if i.local {
+		return
 	}
 	fmt.Fprintf(i.out, "  - launching plain `codex`? export the token first, e.g. add to your shell rc:\n")
 	fmt.Fprintf(i.out, "      set -a; . %s; set +a\n", i.tokenPath())

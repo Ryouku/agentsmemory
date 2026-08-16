@@ -1,0 +1,36 @@
+# Host-network override — LINUX ONLY.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml up -d
+#
+# WHAT IT BUYS YOU: the container shares the host's network namespace, so
+# `localhost` inside it IS your machine's loopback. Ollama listening on its
+# default 127.0.0.1:11434 becomes reachable with no OLLAMA_HOST=0.0.0.0, no
+# host.docker.internal, and no extra_hosts — the single most common first-run
+# failure disappears.
+#
+# WHY IT IS NOT THE DEFAULT: Docker Desktop on macOS and Windows runs containers
+# inside a Linux VM, so there is no host namespace to share. Host networking is
+# an opt-in feature there (Docker Desktop 4.34+, enabled under Settings), not the
+# behaviour this file assumes. On those platforms use the base file as-is.
+#
+# ⚠ THE SAFETY MODEL MOVES. Under host networking `ports:` is ignored entirely —
+# Compose says so with a warning, and the 127.0.0.1:8080:8080 publish in the base
+# file stops protecting anything. The server's own bind address becomes the only
+# boundary, which is why the command below pins 127.0.0.1:8080 rather than :8080.
+# Do not relax that without understanding that /mcp is unauthenticated.
+#
+# Qdrant deliberately stays on the bridge network with its loopback publish, so
+# it is NOT exposed to your LAN. The host-networked server still reaches it at
+# localhost:6333, because that published port is bound on the host's loopback.
+
+services:
+  agentsmemory:
+    network_mode: host
+    # Loopback, not :8080 — see the warning above. This also matches what --local
+    # picks on its own outside Docker, so the boot warning correctly stays quiet.
+    command: ["serve", "--local", "--addr", "127.0.0.1:8080", "--db", "/data/agentsmemory.db"]
+    environment:
+      # Both neighbours are now on the host's loopback: Ollama natively, Qdrant
+      # through its published port. These win over the values in .env.docker.
+      OLLAMA_URL: http://localhost:11434
+      QDRANT_URL: http://localhost:6333

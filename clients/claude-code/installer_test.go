@@ -189,7 +189,7 @@ func TestResolveInstallTarget(t *testing.T) {
 		{sandbox: "proj"},
 		{claudeDir: "/x"},
 	} {
-		if _, _, _, err := resolveInstallTarget(claudeKit, true, tc.sandbox, tc.claudeDir, home); err == nil {
+		if _, _, _, err := resolveInstallTarget(claudeKit, true, false, tc.sandbox, tc.claudeDir, home); err == nil {
 			t.Errorf("resolveInstallTarget(global, %q, %q) = nil error, want conflict", tc.sandbox, tc.claudeDir)
 		}
 	}
@@ -198,20 +198,28 @@ func TestResolveInstallTarget(t *testing.T) {
 	cases := []struct {
 		name         string
 		global       bool
+		local        bool
 		sandbox      string
 		claudeDir    string
 		wantTarget   string
 		wantSandbox  string
 		wantExplicit bool
 	}{
-		{"global flag", true, "", "", global, "", true},
-		{"sandbox", false, "proj", "", sandboxDir("proj"), "proj", true},
-		{"claude-dir", false, "", "/custom", "/custom", "", true},
-		{"bare default", false, "", "", global, "", false},
+		{"global flag", true, false, "", "", global, "", true},
+		{"sandbox", false, false, "proj", "", sandboxDir("proj"), "proj", true},
+		{"claude-dir", false, false, "", "/custom", "/custom", "", true},
+		{"bare default", false, false, "", "", global, "", false},
+		// --local implies global, and implies it EXPLICITLY: a self-hoster must not
+		// be stopped by the interactive global-vs-sandbox prompt.
+		{"local implies global", false, true, "", "", global, "", true},
+		// ...but only as a default. A named target still wins, so "--local
+		// --sandbox proj" is a local server in an isolated config, not an error.
+		{"local yields to sandbox", false, true, "proj", "", sandboxDir("proj"), "proj", true},
+		{"local yields to claude-dir", false, true, "", "/custom", "/custom", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, sandbox, explicit, err := resolveInstallTarget(claudeKit, tc.global, tc.sandbox, tc.claudeDir, home)
+			target, sandbox, explicit, err := resolveInstallTarget(claudeKit, tc.global, tc.local, tc.sandbox, tc.claudeDir, home)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -223,7 +231,7 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 
 	// An invalid sandbox name is rejected here too (defense in depth with the CLI).
-	if _, _, _, err := resolveInstallTarget(claudeKit, false, "../escape", "", home); err == nil {
+	if _, _, _, err := resolveInstallTarget(claudeKit, false, false, "../escape", "", home); err == nil {
 		t.Error("resolveInstallTarget accepted an invalid sandbox name, want an error")
 	}
 }
@@ -451,7 +459,7 @@ func TestInstallCodexRecommended(t *testing.T) {
 // collide on a filename — so `--agent both --sandbox x` yields a single config.
 func TestResolveInstallTargetCodex(t *testing.T) {
 	home := "/home/u"
-	target, _, _, err := resolveInstallTarget(codexKit, true, "", "", home)
+	target, _, _, err := resolveInstallTarget(codexKit, true, false, "", "", home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +467,7 @@ func TestResolveInstallTargetCodex(t *testing.T) {
 		t.Errorf("codex global target = %q, want %q", target, want)
 	}
 
-	target, sandbox, _, err := resolveInstallTarget(codexKit, false, "proj", "", home)
+	target, sandbox, _, err := resolveInstallTarget(codexKit, false, false, "proj", "", home)
 	if err != nil {
 		t.Fatal(err)
 	}

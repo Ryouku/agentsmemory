@@ -298,6 +298,23 @@ Don't want a second service? `VECTOR_BACKEND=sqlite` makes the source of truth
 answer searches itself, and `docker compose up -d agentsmemory` runs the server
 alone.
 
+**On Linux**, an override removes the Ollama friction entirely:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.host.yml up -d
+```
+
+`network_mode: host` puts the container in the host's network namespace, so
+`localhost:11434` inside it *is* your machine's loopback — Ollama works on its
+default `127.0.0.1` bind, with no `OLLAMA_HOST=0.0.0.0` and no
+`host.docker.internal`. It is Linux-only: Docker Desktop on macOS and Windows
+runs containers in a VM, where host networking is an opt-in feature (4.34+)
+rather than the default. Note that host networking **ignores `ports:`**, so the
+loopback publish stops protecting anything and the server's own `--addr
+127.0.0.1:8080` becomes the boundary — which is exactly what the override pins.
+Qdrant stays on the bridge network, unexposed, and is reached through its
+published loopback port.
+
 ### The server is inert without the protocol
 
 Connecting the MCP gives your agent 37 tools and **no reason to call any of
@@ -312,16 +329,27 @@ first one for free:
 | `CLAUDE.md` / `AGENTS.md` | The always-on protocol: recall at session start, persist before stopping | `aiagentmemory install` writes `agentsmemory-bootstrap.md` and merges an import into your memory file |
 | `/M`, `/am`, `/load-skill` + the Stop hook | Task-scoped grounding and the end-of-turn checkpoint that stops memory being lost | Same installer |
 
-So after `docker compose up`, run the kit as well — it works fine against a local
-server, and installs the protocol regardless of whether you supply a token:
+So after `docker compose up`, run the kit as well — `--local` wires it to your
+own server:
 
 ```bash
-aiagentmemory install            # protocol + commands + Stop hook
+aiagentmemory install --local
 ```
 
-Leave the token prompt blank for a local server (there is no token) and register
-the MCP with the `claude mcp add` line above. Skip this step and you have a
-memory server your agent never opens.
+That points the MCP at `http://localhost:8080/mcp`, never asks for a token (and
+drops any `AGENTSMEMORY_TOKEN` it finds in your environment, rather than writing
+a credential into a config where it would imply the server checks one), and
+installs globally without the interactive global-vs-sandbox prompt — a
+self-hoster is setting up their own machine, so that question has an obvious
+answer. An explicit `--sandbox <name>` still wins if you want a local server in
+an isolated config, and `--mcp-url` overrides the endpoint for a server on
+another port or host.
+
+The registration it writes carries no `Authorization` header at all, on all three
+agents: Claude stores a bare `{"type":"http","url":...}`, codex registers the URL
+with no bearer-token variable and no token file, and pi's bridge extension gets
+`AGENTSMEMORY_LOCAL=1` so it treats the missing token as intentional and connects
+anyway instead of reporting "memory tools are off".
 
 ---
 

@@ -21,6 +21,13 @@ const (
 	// bearer token (see the README "Connect the MCP" section).
 	defaultMCPURL = "https://aiagentmemory.dev/mcp"
 
+	// localMCPURL is the endpoint --local wires up instead: a self-hosted server
+	// running `agentsmemory --local`, which serves one workspace over an
+	// unauthenticated /mcp on the loopback interface. The port matches that
+	// server's own default (and the published port in its docker-compose.yml), so
+	// the common case needs no --mcp-url at all.
+	localMCPURL = "http://localhost:8080/mcp"
+
 	// mcpName and codebaseMemoryName are the server names registered with the
 	// Claude CLI. A server name doubles as the tool prefix (mcp__<name>__<tool>),
 	// which the /am and /M commands reference, so these must stay stable.
@@ -85,6 +92,11 @@ func installCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:  "global",
 				Usage: "install into the agent's global config dir non-interactively (skips the mode prompt); mutually exclusive with --sandbox/--claude-dir",
+			},
+			&cli.BoolFlag{
+				Name: "local",
+				Usage: "wire up a self-hosted `agentsmemory --local` server (" + localMCPURL + ") instead of the hosted service: " +
+					"no token is used or prompted for, and the install goes global unless --sandbox/--config-dir says otherwise",
 			},
 			&cli.StringFlag{
 				Name:  "sandbox",
