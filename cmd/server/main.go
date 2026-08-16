@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -101,7 +102,7 @@ func main() {
 // The mcp subcommand omits the addr flag, so c.String("addr") yields "" there —
 // harmless, because only the serve path reads Addr.
 func configFromCmd(c *cli.Command, def config.Config) config.Config {
-	return config.Config{
+	cfg := config.Config{
 		Addr:             c.String("addr"),
 		DBPath:           c.String("db"),
 		VectorBackend:    c.String("vector-backend"),
@@ -111,11 +112,20 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		OllamaEmbedModel: c.String("ollama-model"),
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
+		Local:            c.Bool("local"),
 		// Platform-superadmin allowlist (serve only). On the mcp CLI the flag is
 		// undefined so c.String returns "" → an empty allowlist, which is correct:
 		// the read-only CLI never edits the global skillset.
 		SuperAdminEmails: config.ParseSuperAdminEmails(c.String("superadmin-emails")),
 	}
+	// Local mode serves an UNAUTHENTICATED /mcp, so it defaults to loopback rather
+	// than the multi-tenant ":8080" (every interface). An explicit --addr or
+	// AGENTSMEMORY_ADDR still wins — serveLocal warns when that choice reaches the
+	// network — but the default must never be the exposed one.
+	if cfg.Local && !c.IsSet("addr") {
+		cfg.Addr = config.LocalAddr
+	}
+	return cfg
 }
 
 // dataFlags are the storage + embedding flags shared by every entry point that
@@ -138,6 +148,7 @@ func dataFlags(def config.Config) []cli.Flag {
 func serveFlags(def config.Config) []cli.Flag {
 	return append([]cli.Flag{
 		&cli.StringFlag{Name: "addr", Sources: cli.EnvVars("AGENTSMEMORY_ADDR"), Value: def.Addr, Usage: "HTTP listen address"},
+		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
 }
@@ -161,13 +172,6 @@ func run(ctx context.Context, cfg config.Config) error {
 	}
 	log.Printf("vector backend: %s (SQLite source of truth)", cfg.VectorBackend)
 	tenants, skills, usageSvc, drawers := svc.tenants, svc.skills, svc.usage, svc.drawers
-
-	// Seeding is serve-only: the read-only CLI must never create a demo team. The
-	// global skillset is seeded here too (via its repo, bypassing the superadmin
-	// gate) so am_skillset is useful on a fresh database before any edit.
-	if err := seedIfEmpty(ctx, svc.gdb, tenants, skill.NewRepo(svc.gdb), skillset.NewRepo(svc.gdb), svc.vectors); err != nil {
-		return fmt.Errorf("seed: %w", err)
-	}
 
 	// Background embedder: drains rows that /import absorbed (text written, vector
 	// deferred) so a large migration never blocks on the embedder or a proxy read
@@ -209,6 +213,35 @@ func run(ctx context.Context, cfg config.Config) error {
 		server.WithStateLess(true),
 	)
 
+	// The base router both modes share: logging (debug only), panic recovery, and
+	// the liveness probe. Everything mounted after this point differs per mode.
+	r := chi.NewRouter()
+	// Logger before Recoverer so even a panicked request (recovered as a 500) is
+	// still logged. Gated on Debug: the server is intentionally silent in
+	// production, and APP_DEBUG=true is what surfaces per-request access logs.
+	if cfg.Debug {
+		r.Use(middleware.Logger)
+	}
+	r.Use(middleware.Recoverer)
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Self-hosted mode forks here: it serves the agent surfaces only, so none of
+	// the multi-tenant machinery below (seeding, OAuth, billing, passkeys, the
+	// dashboard) is constructed — let alone mounted.
+	if cfg.Local {
+		return serveLocal(ctx, cfg, svc, r, streamSrv)
+	}
+
+	// Seeding is serve-only: the read-only CLI must never create a demo team. The
+	// global skillset is seeded here too (via its repo, bypassing the superadmin
+	// gate) so am_skillset is useful on a fresh database before any edit.
+	if err := seedIfEmpty(ctx, svc.gdb, tenants, skill.NewRepo(svc.gdb), skillset.NewRepo(svc.gdb), svc.vectors); err != nil {
+		return fmt.Errorf("seed: %w", err)
+	}
+
 	// Billing (hosted checkout + webhook; Stripe or Polar per BILLING_PROVIDER).
 	// Always constructed so the dashboard and webhook wiring stay simple; it is inert
 	// until the active provider's env is set (billingSrv.Enabled() gates the upgrade
@@ -236,19 +269,6 @@ func run(ctx context.Context, cfg config.Config) error {
 	// The human-facing dashboard (register/login/create project) shares the same
 	// chi router and database; agents use /mcp, people use the web routes.
 	webSrv := web.New(tenants, usageSvc, skills, svc.skillsets, svc.shares, svc.merges, billingSrv, exporter, passkeys, cfg.SuperAdminEmails, sessionKey())
-
-	r := chi.NewRouter()
-	// Logger before Recoverer so even a panicked request (recovered as a 500) is
-	// still logged. Gated on Debug: the server is intentionally silent in
-	// production, and APP_DEBUG=true is what surfaces per-request access logs.
-	if cfg.Debug {
-		r.Use(middleware.Logger)
-	}
-	r.Use(middleware.Recoverer)
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
 
 	// OAuth discovery + endpoints for the claude.ai remote-connector handshake.
 	r.Get("/.well-known/oauth-protected-resource", authSrv.ProtectedResourceMetadata)
@@ -296,6 +316,52 @@ func run(ctx context.Context, cfg config.Config) error {
 	webSrv.Routes(r)
 
 	log.Printf("agentsmemory listening on %s (dashboard /, MCP /mcp, OAuth issuer %s)", cfg.Addr, issuer)
+	return http.ListenAndServe(cfg.Addr, r)
+}
+
+// serveLocal runs the self-hosted, single-workspace server and blocks. It
+// resolves (and on a fresh database provisions) the one "local" workspace, then
+// mounts only the agent surfaces — /mcp and /import — behind a credential-free
+// tenant middleware.
+//
+// Nothing else is registered. The dashboard, the OAuth handshake and the billing
+// webhooks all exist to tell tenants apart, let a human manage their keys, or
+// charge them; with one workspace, no token and no billing relationship, each
+// would be a surface with nothing behind it.
+//
+// The trade this mode makes is explicit: authentication is replaced by network
+// reachability. That is sound on a machine you own and wrong the moment the port
+// is routable, which is what the non-loopback warning is for.
+func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Router, mcpHandler http.Handler) error {
+	t, err := svc.tenants.EnsureLocalWorkspace(ctx)
+	if err != nil {
+		// A database holding someone else's workspaces must never be served
+		// through an open endpoint, so this is fatal with an actionable message
+		// rather than a fallback to "pick the first team".
+		if errors.Is(err, tenant.ErrForeignWorkspace) {
+			return fmt.Errorf("%w — --local serves exactly one workspace; point --db at a fresh file, or drop --local to run multi-tenant", err)
+		}
+		return fmt.Errorf("local workspace: %w", err)
+	}
+
+	// Ready the workspace's vector namespace so its first write/search has
+	// somewhere to land — a no-op for the SQLite backend, a collection create for
+	// Qdrant. Mirrors what seeding does on the multi-tenant path.
+	if err := svc.vectors.EnsureNamespace(ctx, t.TeamID, defaultVectorDim); err != nil {
+		return fmt.Errorf("ensure local vector namespace: %w", err)
+	}
+
+	// One middleware stands in for the entire auth stack: every request already
+	// belongs to the only workspace there is.
+	local := auth.LocalTenant(t)
+	r.Handle("/mcp", local(mcpHandler))
+	r.Handle("/import", local(importer.Handler(svc.drawers, svc.usage)))
+
+	if !config.IsLoopback(cfg.Addr) {
+		log.Printf("WARNING: --local serves an UNAUTHENTICATED /mcp, and %s is not a loopback address — anyone who can reach this port has full read and write access to every memory in %s. Bind %s, or run multi-tenant.",
+			cfg.Addr, cfg.DBPath, config.LocalAddr)
+	}
+	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, no token required, no dashboard)", cfg.Addr, tenant.LocalSlug)
 	return http.ListenAndServe(cfg.Addr, r)
 }
 

@@ -159,3 +159,4 @@
 - 2026-08-16 `8acd095` feat(web): /windows-guide — an LLM-executable install for Windows, VS Code, Cursor and Claude Desktop (no CLI, no bash, global only)
 - 2026-08-16 `8a1d3e3` fix(web): Free plan advertises 1,000 requests — one constant behind hero, pricing, FAQ and register
 - 2026-08-16 `04b542e` feat(web): platform tabs on the install builder — macOS/Linux or Windows/no-CLI, on both surfaces
+- 2026-08-16 `c37db0c` feat(server): `--local` — self-hosted single-workspace mode (one `local` workspace, unauthenticated /mcp, no token, no dashboard; loopback default, refuses a multi-tenant db)
