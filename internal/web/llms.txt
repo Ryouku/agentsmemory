@@ -1,0 +1,32 @@
+# AI Agent Memory
+
+> Long-term, team-wide memory for AI agents, served over the Model Context
+> Protocol. Open source and multi-tenant: agents file verbatim memories into a
+> per-team memory palace and recall them across sessions with hybrid semantic
+> search (vector similarity, BM25 and a closet boost). Free to start, self-hostable.
+
+Every document below is plain Markdown, written to be read by a model rather than
+rendered. The `/ai/` bundle follows the Open Knowledge Format (OKF) v0.2, so each
+file carries YAML frontmatter with a `type`.
+
+## Docs
+
+- [What AI Agent Memory is]({{BASE_URL}}/ai/landing.md): the product, the memory-palace data model (wing, room, drawer, closet, hallway, tunnel, knowledge graph), the four-step MCP flow, capabilities, pricing and the full FAQ. Start here.
+- [Sandboxed installs]({{BASE_URL}}/ai/sandboxes.md): one isolated agent config per project under `~/.sandboxes/<name>`, the verified per-agent matrix for Claude Code, Codex and pi, and what `init` / `load` commit to a repository.
+- [Agent self-install, CLI]({{BASE_URL}}/ai/claude-guide.md): how a coding agent installs the kit and registers the MCP server on its own, on macOS or Linux.
+- [Setup without the CLI]({{BASE_URL}}/ai/windows-guide.md): Windows, VS Code, Cursor and Claude Desktop connect to the remote MCP server by hand-written config, because the bash installer cannot run there.
+- [Bundle index]({{BASE_URL}}/ai/index.md): the OKF bundle's own table of contents.
+
+## Install guides (authoritative, served as Markdown)
+
+- [/claude-guide]({{BASE_URL}}/claude-guide): the full agent-facing install guide. Paste its URL into a coding agent and it performs the install, asking you for the workspace token it must not invent.
+- [/windows-guide]({{BASE_URL}}/windows-guide): the full no-CLI setup guide, with per-client MCP config paths for VS Code, Cursor and Claude Desktop.
+
+## Optional
+
+- [llms-full.txt]({{BASE_URL}}/llms-full.txt): every document above concatenated into a single fetch.
+- [Sitemap index]({{BASE_URL}}/sitemap.xml): points at the page sitemap and the AI sitemap.
+- [AI sitemap]({{BASE_URL}}/ai-sitemap.xml): every document in the `/ai/` bundle.
+- [Source code](https://github.com/atvirokodosprendimai/agentsmemory): the Go server, open source and self-hostable.
+- [Landing page]({{BASE_URL}}/): the HTML original the bundle mirrors.
+- [Sandbox guide]({{BASE_URL}}/sandboxes): the HTML original of the sandbox documentation.
