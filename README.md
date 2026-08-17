@@ -491,6 +491,42 @@ The embedded index needs no network at all, so nothing else changes; a Qdrant
 service, if you uncomment one, stays on the bridge network and is reached through
 its published loopback port.
 
+### Hosted mode & billing (`docker-compose.prod.yml`)
+
+The stack above is the self-hosted `--local` mode. The hosted service — the
+multi-tenant shape behind aiagentmemory.dev, with dashboard, auth and billing —
+is the same image running its default `serve` command, one persistent volume,
+and the full `.env.example` configuration behind a TLS reverse proxy:
+
+```bash
+cp .env.example .env.prod          # session key, OAuth, billing — all required
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The port is published on the host loopback only; put Caddy/nginx/Traefik in
+front and forward 443 → 127.0.0.1:8080. Billing is single-provider per
+deployment and inert until configured. With OpenCollective (donations — the
+checkout is a hosted contribution page, and there is no signed webhook, so plan
+activation after payment is the `set-plan` CLI):
+
+```bash
+BILLING_PROVIDER=opencollective
+OPENCOLLECTIVE_CHECKOUT_PRO_MONTHLY=https://opencollective.com/it-uoga/projects/ai-agents-memory/contribute/pro-monthly-104934/checkout
+OPENCOLLECTIVE_CHECKOUT_PRO_ANNUAL=https://opencollective.com/it-uoga/projects/ai-agents-memory/contribute/pro-yearly-104935/checkout
+OPENCOLLECTIVE_PROJECT_URL=https://opencollective.com/it-uoga/projects/ai-agents-memory
+```
+
+**CI deploy (opt-in).** Tagging `vX.Y.Z` already builds binaries and the GHCR
+image; a third workflow (`.github/workflows/deploy.yml`) additionally rolls
+that exact image to a host over SSH. Enable it by setting the repository
+variable `DEPLOY_ENABLED=true` and the secrets `DEPLOY_HOST`,
+`DEPLOY_USER`, `DEPLOY_SSH_KEY` (optional `DEPLOY_PORT`, default 22;
+`DEPLOY_DIR`, default `/opt/agentsmemory`). The host needs Docker and a
+one-time `docker-compose.prod.yml` + `.env.prod` — the workflow fetches the
+compose file from this repo if missing, and `.env.prod` (session key, OAuth,
+`BILLING_PROVIDER` + `OPENCOLLECTIVE_*`) stays operator-managed. Until
+enabled, the workflow is skipped, never failed.
+
 ### Choosing the index
 
 `VECTOR_BACKEND` (or `--vector-backend`) picks what answers searches. SQLite is

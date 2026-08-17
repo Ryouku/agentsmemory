@@ -1,0 +1,35 @@
+# agentsmemory — hosted (multi-tenant) deployment, the shape behind
+# aiagentmemory.dev: the full server with dashboard, auth and billing, as one
+# container from the released GHCR image. This is NOT the self-hosted --local
+# stack (that is docker-compose.yml); here the image runs its default `serve`
+# command — multi-workspace, dashboard, no --local.
+#
+#   cp .env.example .env.prod      # session key, OAuth, billing — all required
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Put this behind a TLS reverse proxy (Caddy, nginx, Traefik): the port is
+# published on the host loopback only, and the proxy terminates https:// and
+# forwards to 127.0.0.1:8080. Billing is single-provider per deployment: set
+# BILLING_PROVIDER and that provider's variables in .env.prod (the .env.example
+# Billing block documents the OpenCollective contribution-checkout URLs).
+#
+# AGENTSMEMORY_IMAGE_TAG pins the image tag (default: latest). The CI deploy
+# workflow (.github/workflows/deploy.yml) sets it to the released tag — e.g.
+# 0.0.75 for git tag v0.0.75 — so a rollout always runs the exact release.
+
+name: agentsmemory-hosted
+
+services:
+  agentsmemory:
+    image: ghcr.io/atvirokodosprendimai/agentsmemory:${AGENTSMEMORY_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env.prod
+    ports:
+      # Loopback-only on purpose: TLS and routing belong to the reverse proxy in
+      # front of this stack, so nothing here is exposed to the LAN.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - agentsmemory-hosted-data:/data
+
+volumes:
+  agentsmemory-hosted-data:

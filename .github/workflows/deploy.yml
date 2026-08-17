@@ -1,0 +1,83 @@
+name: deploy
+
+# Deploys the released container image to the host running the hosted service
+# (docker-compose.prod.yml — the multi-tenant shape behind aiagentmemory.dev).
+# Gated on the same strict vX.Y.Z tag as build.yml/release.yml (identical check
+# job; each workflow is independent). Skipped — never failed — until the
+# operator opts in by setting the repository VARIABLE DEPLOY_ENABLED=true and
+# the secrets DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (optionally
+# DEPLOY_PORT, default 22, and DEPLOY_DIR, default /opt/agentsmemory). An
+# unconfigured deploy must never break a release.
+#
+# The host needs Docker and a one-time docker-compose.prod.yml + .env.prod
+# (see README "Hosted mode & billing"): the workflow fetches the compose file
+# from this repo if missing and rolls the exact released image tag (GHCR tags
+# strip the leading v: git v0.0.75 → image 0.0.75). .env.prod carries the
+# environment — session key, OAuth, BILLING_PROVIDER + OPENCOLLECTIVE_* — and
+# is operator-managed; this workflow only swaps the image.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  # Strict version-tag gate, mirroring release.yml. Emits release=true only for
+  # a full vX.Y.Z tag, so the deploy job skips loose tags (v1, v1.2, v1.2.3-rc1).
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.semver.outputs.release }}
+    steps:
+      - id: semver
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Deploying $tag"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=skipped::$tag is not a strict vX.X.X tag; skipping deploy."
+          fi
+
+  deploy:
+    needs: check
+    # Opt-in: the workflow is skipped until the operator sets DEPLOY_ENABLED.
+    if: needs.check.outputs.release == 'true' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Fetch the compose file from the repo so the host's rollout definition
+      # tracks the release. The repo is public; the host only needs Docker.
+      - name: Roll the released image
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/agentsmemory' }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          envs: GITHUB_REF_NAME, DEPLOY_DIR
+          script: |
+            set -euo pipefail
+            mkdir -p "${DEPLOY_DIR}"
+            cd "${DEPLOY_DIR}"
+
+            if [ ! -f docker-compose.prod.yml ]; then
+              curl -fsSL "https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/docker-compose.prod.yml" -o docker-compose.prod.yml
+            fi
+            if [ ! -f .env.prod ]; then
+              echo "missing .env.prod — copy .env.example and set session key, OAuth and billing (see README 'Hosted mode & billing')" >&2
+              exit 1
+            fi
+
+            # GHCR tags strip the leading v from the git tag (v0.0.75 → 0.0.75).
+            export AGENTSMEMORY_IMAGE_TAG="${GITHUB_REF_NAME#v}"
+            docker compose -f docker-compose.prod.yml pull agentsmemory
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans agentsmemory
+            docker image prune -f >/dev/null 2>&1 || true
+            echo "deployed agentsmemory:${AGENTSMEMORY_IMAGE_TAG}"

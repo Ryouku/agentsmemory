@@ -11,6 +11,10 @@
 # Secrets / local env
 .env
 .env.docker
+# hosted-mode env (docker-compose.prod.yml) — session key, OAuth, billing
+.env.prod
+# local graphify tool output
+graphify-out/
 
 # Tooling caches
 /.serena/
