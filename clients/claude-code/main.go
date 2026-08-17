@@ -97,7 +97,8 @@ func installCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name: "local",
 				Usage: "wire up a self-hosted `agentsmemory --local` server (" + localMCPURL + ") instead of the hosted service: " +
-					"no token is used or prompted for, and the install goes global unless --sandbox/--config-dir says otherwise",
+					"no token is prompted for (pass --token only if the server was started with one), " +
+					"and the install goes global unless --sandbox/--config-dir says otherwise",
 			},
 			&cli.StringFlag{
 				Name:  "sandbox",
@@ -125,9 +126,12 @@ func installCommand() *cli.Command {
 				Usage: "also install the recommended extensions: codebase-memory MCP, eidos + codex plugins",
 			},
 			&cli.StringFlag{
-				Name:    "token",
-				Sources: cli.EnvVars("AGENTSMEMORY_TOKEN"),
-				Usage:   "agentsmemory workspace API token for the remote MCP (prompted if omitted)",
+				Name: "token",
+				// AGENTSMEMORY_LOCAL_TOKEN comes first so it wins in a shell that also
+				// holds a hosted workspace key: it is the same variable the server
+				// reads for its --token, so exporting it once configures both halves.
+				Sources: cli.EnvVars(localTokenEnvVar, tokenEnvVar),
+				Usage:   "bearer token to present: the hosted workspace API token (prompted if omitted), or with --local the token the self-hosted server was started with",
 			},
 			&cli.StringFlag{
 				Name:  "mcp-url",

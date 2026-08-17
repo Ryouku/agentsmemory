@@ -167,14 +167,20 @@ func serveFlags(def config.Config) []cli.Flag {
 		// where to dial, so the pair cannot drift apart.
 		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
 		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
-		// Deliberately NOT AGENTSMEMORY_TOKEN: that variable is the client side of
-		// the pair (mcp-stdio presents it, the installer registers it), and a
-		// developer with a hosted workspace key exported would otherwise find their
-		// local server silently demanding it.
-		&cli.StringFlag{Name: "token", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL_TOKEN"), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
+		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(localTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
 }
+
+// localTokenEnvVar is the environment variable --local's shared bearer token is
+// read from, and the name the startup hints tell agents to present.
+//
+// Deliberately NOT AGENTSMEMORY_TOKEN: that one is the client half of the pair
+// (mcp-stdio presents it, the installer registers it), and a developer with a
+// hosted workspace key exported would otherwise find their local server silently
+// demanding it. The installer reads this same variable, so exporting it once
+// configures both halves.
+const localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 
 // run opens the database, migrates, wires dependencies, and serves until error.
 func run(ctx context.Context, cfg config.Config) error {
@@ -486,12 +492,16 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	// spawns, so there is nothing further to install.
 	install := "aiagentmemory install --local"
 	if cfg.SocketPath == "" {
-		// A token has to appear in the hint, not just in the docs: the agent config
-		// is written once and a 401 later reads as "the server is broken".
+		// The token has to appear in the hint, not just in the docs: the agent config
+		// is written once and a 401 later reads as "the server is broken". It appears
+		// as the ENV VAR rather than the value — this log ends up in `docker logs` and
+		// the systemd journal, which are exactly what people paste when asking for
+		// help. Naming the variable keeps the line copy-pasteable (a shell that
+		// exported it substitutes the real value) without writing the secret down.
 		header := ""
 		if cfg.LocalToken != "" {
-			header = fmt.Sprintf(" --header %q", "Authorization: Bearer "+cfg.LocalToken)
-			install += " --token " + cfg.LocalToken
+			header = ` --header "Authorization: Bearer $` + localTokenEnvVar + `"`
+			install += ` --token "$` + localTokenEnvVar + `"`
 		}
 		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory %s%s", agentEndpoint(cfg.Addr), header)
 	} else {
