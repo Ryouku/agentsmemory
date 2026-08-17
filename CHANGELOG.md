@@ -180,3 +180,4 @@
 - 2026-08-17 `c326817` fix(web): unify the Free quota figure (hero stat no longer says "10k" while the pricing tier, hero note and FAQ say 1,000) and de-Stripe the billing copy after the OpenCollective swap (QA on /#pricing)
 - 2026-08-17 `08ab682` feat(deploy): hosted-mode compose (docker-compose.prod.yml) from the GHCR image, OpenCollective billing vars documented in the Docker path, and an opt-in CI deploy workflow (SSH rollout of the exact released tag on vX.Y.Z)
 - 2026-08-17 deploy: harden the rollout — poll the registry until the tag image is pullable (the tag push also fires release.yml, which builds it), probe /healthz after up, and roll back to the previously-running tag on a failed probe
+- 2026-08-17 `a5c7e30` feat(deploy): deploying a release is the default — every strict vX.Y.Z tag rolls the host; the job skips green while DEPLOY_HOST/USER/SSH_KEY secrets are unset (never breaks a release), DEPLOY_ENABLED=false is the kill switch
