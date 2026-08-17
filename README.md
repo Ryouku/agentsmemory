@@ -524,8 +524,11 @@ variable `DEPLOY_ENABLED=true` and the secrets `DEPLOY_HOST`,
 `DEPLOY_DIR`, default `/opt/agentsmemory`). The host needs Docker and a
 one-time `docker-compose.prod.yml` + `.env.prod` — the workflow fetches the
 compose file from this repo if missing, and `.env.prod` (session key, OAuth,
-`BILLING_PROVIDER` + `OPENCOLLECTIVE_*`) stays operator-managed. Until
-enabled, the workflow is skipped, never failed.
+`BILLING_PROVIDER` + `OPENCOLLECTIVE_*`) stays operator-managed. The rollout
+waits for the tag's image to finish building (it publishes in the parallel
+release workflow), then swaps the container, probes `/healthz`, and rolls back
+to the previously-running tag if the new one never answers. Until enabled, the
+workflow is skipped, never failed.
 
 ### Choosing the index
 

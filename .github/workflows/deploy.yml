@@ -15,6 +15,10 @@ name: deploy
 # strip the leading v: git v0.0.75 → image 0.0.75). .env.prod carries the
 # environment — session key, OAuth, BILLING_PROVIDER + OPENCOLLECTIVE_* — and
 # is operator-managed; this workflow only swaps the image.
+#
+# release.yml builds the image on the same tag push, so this job polls the
+# registry until the new tag is pullable, then probes /healthz and rolls back
+# to the previously-running tag if the new one never answers.
 
 on:
   push:
@@ -49,8 +53,6 @@ jobs:
     if: needs.check.outputs.release == 'true' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
-      # Fetch the compose file from the repo so the host's rollout definition
-      # tracks the release. The repo is public; the host only needs Docker.
       - name: Roll the released image
         uses: appleboy/ssh-action@v1.2.5
         env:
@@ -67,6 +69,8 @@ jobs:
             mkdir -p "${DEPLOY_DIR}"
             cd "${DEPLOY_DIR}"
 
+            COMPOSE="docker compose -f docker-compose.prod.yml"
+
             if [ ! -f docker-compose.prod.yml ]; then
               curl -fsSL "https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/docker-compose.prod.yml" -o docker-compose.prod.yml
             fi
@@ -77,7 +81,50 @@ jobs:
 
             # GHCR tags strip the leading v from the git tag (v0.0.75 → 0.0.75).
             export AGENTSMEMORY_IMAGE_TAG="${GITHUB_REF_NAME#v}"
-            docker compose -f docker-compose.prod.yml pull agentsmemory
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans agentsmemory
-            docker image prune -f >/dev/null 2>&1 || true
-            echo "deployed agentsmemory:${AGENTSMEMORY_IMAGE_TAG}"
+
+            # Rollback safety net: remember the image ref the live container is
+            # currently running (e.g. ghcr.io/...:0.0.74) before we swap it. Empty
+            # on a fresh host (nothing running yet), so the rollback branch no-ops.
+            cid="$($COMPOSE ps -q agentsmemory || true)"
+            prev_img=""
+            [ -n "$cid" ] && prev_img="$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+
+            # release.yml builds and publishes the image on the SAME tag push, so
+            # the new tag may not be pullable yet when we arrive. Poll the pull —
+            # idempotent, instant once present — with a bounded wait (~10 min) so
+            # a fresh tag never races the image build; a manual re-run benefits too.
+            ready=""
+            for attempt in $(seq 1 40); do
+              if $COMPOSE pull agentsmemory; then
+                ready=1
+                echo "image ${AGENTSMEMORY_IMAGE_TAG} available (attempt ${attempt})"
+                break
+              fi
+              echo "image ${AGENTSMEMORY_IMAGE_TAG} not yet published (attempt ${attempt}/40); waiting 15s"
+              sleep 15
+            done
+            [ -n "$ready" ] || { echo "image never became available; aborting" >&2; exit 1; }
+
+            $COMPOSE up -d --remove-orphans agentsmemory
+
+            # Liveness gate: /healthz answers 200 once the server has bound its port.
+            ok=""
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 5
+            done
+
+            if [ -n "$ok" ]; then
+              docker image prune -f >/dev/null 2>&1 || true
+              echo "deployed agentsmemory:${AGENTSMEMORY_IMAGE_TAG}"
+            else
+              echo "health check failed after up; rolling back" >&2
+              if [ -n "$prev_img" ] && [ "${prev_img##*:}" != "${AGENTSMEMORY_IMAGE_TAG}" ]; then
+                AGENTSMEMORY_IMAGE_TAG="${prev_img##*:}" $COMPOSE up -d --remove-orphans agentsmemory
+                echo "rolled back to ${prev_img}"
+              fi
+              exit 1
+            fi
