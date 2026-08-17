@@ -129,6 +129,17 @@ func (s *Server) Routes(r chi.Router) {
 	// Public per-agent sandbox guide (Claude Code, Codex, pi). Marketing content
 	// like the landing page, so it sits here rather than behind a session.
 	r.Get("/sandboxes", s.handleSandboxes)
+	// Discovery surface for crawlers and answer engines (see sitemap.go). All
+	// public and unauthenticated: /sitemap.xml is an index, so robots.txt has one
+	// Sitemap line and the page and AI sitemaps hang off it, while /llms.txt and
+	// the /ai/ bundle are the machine-readable mirror of these same pages.
+	r.Get("/robots.txt", s.handleRobots)
+	r.Get("/sitemap.xml", s.handleSitemapIndex)
+	r.Get("/pages-sitemap.xml", s.handlePagesSitemap)
+	r.Get("/ai-sitemap.xml", s.handleAISitemap)
+	r.Get("/llms.txt", s.handleLLMsTxt)
+	r.Get("/llms-full.txt", s.handleLLMsFullTxt)
+	r.Get("/ai/*", s.handleAIDoc)
 	r.Get("/register", s.getRegister)
 	r.Post("/register", s.postRegister)
 	r.Get("/login", s.getLogin)
