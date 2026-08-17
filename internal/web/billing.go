@@ -13,17 +13,20 @@ import (
 // upgradeSignals is the datastar payload for the upgrade action. The chosen
 // billing option IS the target plan code ("pro_monthly" | "pro_annual"), so the
 // segmented control writes the code straight into the signal and the server maps
-// it to a Stripe price — no separate interval-to-plan translation.
+// it to the active provider's checkout for that plan — no separate
+// interval-to-plan translation.
 type upgradeSignals struct {
 	ProInterval string `json:"proInterval"`
 }
 
-// postUpgrade starts a Stripe hosted-checkout session for the workspace and
-// redirects the browser to it. It is admin-gated (only an admin may change what
-// the workspace is billed) and refuses anything but a real Pro plan code, so a
-// tampered signal can never start a checkout for something we don't sell. Signals
-// are read before the SSE stream opens, because starting the stream flushes the
-// response and the request body is no longer readable after that.
+// postUpgrade starts the active provider's hosted checkout for the workspace and
+// redirects the browser to it. With the OpenCollective provider that is the
+// tier's static contribution-checkout URL; with Stripe it is a hosted session.
+// It is admin-gated (only an admin may change what the workspace is billed) and
+// refuses anything but a real Pro plan code, so a tampered signal can never start
+// a checkout for something we don't sell. Signals are read before the SSE stream
+// opens, because starting the stream flushes the response and the request body is
+// no longer readable after that.
 func (s *Server) postUpgrade(w http.ResponseWriter, r *http.Request) {
 	u, teamID, role, ok := s.membership(w, r)
 	if !ok {
@@ -60,19 +63,23 @@ func (s *Server) postUpgrade(w http.ResponseWriter, r *http.Request) {
 		CancelURL:     base + "/projects/" + teamID + "/billing/cancel",
 	})
 	if err != nil {
-		// StartCheckout already validated the plan; reaching here is a Stripe-side
-		// or transient failure, kept off the page as a generic retry message.
+		// StartCheckout already validated the plan; reaching here is a
+		// provider-side or transient failure, kept off the page as a generic
+		// retry message.
 		flash("Could not start checkout. Please try again.")
 		return
 	}
-	// Hand the browser off to Stripe's hosted checkout page.
+	// Hand the browser off to the provider's hosted checkout.
 	_ = sse.Redirect(url)
 }
 
-// getBillingSuccess is Stripe's success_url return: the user is back from a
-// completed checkout. The plan flip is webhook-driven (never trusted from this
-// redirect, which an attacker could forge), so this only confirms receipt and
-// re-renders the project page — the Pro badge appears once the webhook lands.
+// getBillingSuccess is the checkout success return: the user is back from a
+// completed checkout. The plan flip is provider-driven (a Stripe webhook, or an
+// operator's set-plan for OpenCollective) and never trusted from this redirect,
+// which an attacker could forge — so this only confirms receipt and re-renders
+// the project page. Note the OpenCollective checkout is hosted on the project's
+// Open Collective page and returns there, not to this route, so in practice this
+// handler is reached only in the Stripe flow.
 func (s *Server) getBillingSuccess(w http.ResponseWriter, r *http.Request) {
 	u, teamID, role, ok := s.membership(w, r)
 	if !ok {
@@ -80,12 +87,12 @@ func (s *Server) getBillingSuccess(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderProjectPage(w, r, u, teamID, role, views.FlashVM{
 		Kind:    "success",
-		Message: "Payment received — your workspace is upgrading to Pro. It updates within a few moments.",
+		Message: "Payment received — your workspace is upgrading to Pro. Activation follows shortly.",
 	})
 }
 
-// getBillingCancel is Stripe's cancel_url return: the user backed out of checkout.
-// Nothing changed; show a neutral note and re-render the project page.
+// getBillingCancel is the checkout cancel return: the user backed out of
+// checkout. Nothing changed; show a neutral note and re-render the project page.
 func (s *Server) getBillingCancel(w http.ResponseWriter, r *http.Request) {
 	u, teamID, role, ok := s.membership(w, r)
 	if !ok {

@@ -576,7 +576,7 @@ func landingStats() []statItem {
 		{"36 / 37", "MCP tools shipped"},
 		{"3-way", "hybrid recall: vector · BM25 · closet"},
 		{"per-team", "isolated vector store"},
-		{"€0", "to start — 10k requests / month"},
+		{"€0", "to start — " + freeRequestsPerMonth + " requests / month"},
 	}
 }
 
@@ -670,6 +670,12 @@ func landingFeatureList() []feature {
 // which an operator can move for a single workspace. Keep the two in step by
 // hand: a constant here cannot read the database at build time, so changing this
 // alone changes what the page claims and not what the server allows.
+//
+// The enforced cap is deliberately higher (10,000/month, db/migrations/
+// 00003_usage.sql) so nobody gets cut off mid-month; what the pages advertise is
+// this figure. The hero stat once said "10k" — the pre-unification figure — while
+// everything else said 1,000, which is exactly the split the guard test exists
+// for; it now reads the same 1,000 as the rest.
 const freeRequestsPerMonth = "1,000"
 
 func landingPlans() []plan {
