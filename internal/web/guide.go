@@ -52,7 +52,14 @@ func (s *Server) handleWindowsGuide(w http.ResponseWriter, r *http.Request) {
 // identically, so the substitution and the content type live here rather than
 // being repeated per handler.
 func serveGuide(w http.ResponseWriter, r *http.Request, guide string) {
-	body := strings.ReplaceAll(guide, guideBaseURLPlaceholder, requestBaseURL(r))
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	_, _ = w.Write([]byte(body))
+	_, _ = w.Write([]byte(resolveBaseURL(guide, r)))
+}
+
+// resolveBaseURL fills the {{BASE_URL}} placeholder in an embedded document with
+// the origin this request arrived through. It is split out of serveGuide because
+// the discovery surface (sitemap.go) embeds the same placeholder in documents it
+// serves as text/plain rather than Markdown, and only the content type differs.
+func resolveBaseURL(body string, r *http.Request) string {
+	return strings.ReplaceAll(body, guideBaseURLPlaceholder, requestBaseURL(r))
 }
