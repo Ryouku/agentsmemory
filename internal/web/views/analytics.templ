@@ -1,0 +1,20 @@
+package views
+
+// analytics renders the site's third-party analytics tag into a document head.
+// It is the single place any tracker is mounted, shared by all three self-
+// contained documents (Layout, LandingPage, SandboxesPage) so the snippet is
+// written once rather than copied into three heads that would then drift.
+//
+// It renders NOTHING when no client id is configured. That is the common case
+// for a self-hosted or local-mode install, a test run and a dev box, and none of
+// them should ship a beacon to a vendor: tracking is opt-in, enabled only by
+// setting OPENPANEL_CLIENT_ID.
+//
+// The snippet is emitted via templ.Raw because templ does not evaluate
+// expressions inside a literal <script> tag — see openPanelScript, which builds
+// the whole element (and escapes the id) for exactly that reason.
+templ analytics() {
+	if OpenPanelClientID != "" {
+		@templ.Raw(openPanelScript(OpenPanelClientID))
+	}
+}

@@ -8,6 +8,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/billing"
@@ -89,6 +90,13 @@ func New(tenants *tenant.Repo, usageSvc *usage.Service, skills *skill.Service, s
 	// Stamp the asset cache-buster from the embedded stylesheet's content hash so
 	// templates render <link …/app.css?v=hash>; this changes only when the CSS does.
 	views.AssetVersion = assetVersion()
+	// Stamp the analytics client id the same way. Read here rather than threaded
+	// through New's signature because it is deploy-time process config with no
+	// bearing on any handler, exactly like the OAuth provider keys in oauth.go.
+	// Unset — the self-hosted, local-mode and test case — renders no tracker.
+	// Only the id is read: the account's client secret authenticates OpenPanel's
+	// server-side API and would be published to every visitor if it reached a head.
+	views.OpenPanelClientID = os.Getenv("OPENPANEL_CLIENT_ID")
 	return s
 }
 

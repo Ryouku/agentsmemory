@@ -20,6 +20,7 @@ templ Layout(title string, userEmail string) {
 			// pkAuthenticate for the data-effect triggers, calls navigator.credentials,
 			// and reports back via custom events. Deferred so it is ready before use.
 			<script src={ templ.SafeURL(staticURL("/static/passkey.js")) } defer></script>
+			@analytics()
 		</head>
 		<body>
 			<header class="topbar">
