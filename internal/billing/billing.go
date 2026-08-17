@@ -9,12 +9,16 @@
 // keeps the whole PCI surface on the provider — so billing's only untrusted input
 // is the webhook, which is verified by signature before anything is acted on.
 //
-// The payment provider is pluggable: Stripe or Polar, selected at construction by
-// Config.Provider (decision 2026-07-02: run both, pick one per deployment with
-// BILLING_PROVIDER). Provider-specific wire handling lives behind the checkoutAPI
-// and webhookParser seams (see provider.go); everything in this file — resolving
-// plans, flipping the effective plan, recording the subscription — is
-// provider-agnostic.
+// The payment provider is pluggable: Stripe or OpenCollective, selected at
+// construction by Config.Provider (decision 2026-07-02: run Stripe and Polar
+// behind a seam, pick one per deployment with BILLING_PROVIDER; Polar was
+// replaced by OpenCollective 2026-08-17). Provider-specific wire handling lives
+// behind the checkoutAPI and webhookParser seams (see provider.go); everything in
+// this file — resolving plans, flipping the effective plan, recording the
+// subscription — is provider-agnostic. OpenCollective is a donations platform
+// rather than a merchant of record: its "checkout" is a static contribution URL
+// and it sends no signed webhook, so activation is an operator action (the
+// set-plan CLI) instead of a webhook-driven flip.
 package billing
 
 import (
@@ -31,21 +35,23 @@ import (
 // Config carries the process-level billing wiring, resolved from the environment.
 // Provider selects which payment backend is live; only that backend's fields need
 // to be set. PriceByPlanCode maps our sellable plan codes (e.g. "pro_monthly") to
-// the *active provider's* price/product ids that back them; the ids are
-// environment-specific (test vs live, Stripe price vs Polar product) so they live
-// in config, not in the seeded plan catalog.
+// the *active provider's* backing ids — Stripe price ids, or the hosted
+// OpenCollective contribution-checkout URL for each plan. The ids are
+// environment-specific (test vs live) so they live in config, not in the seeded
+// plan catalog.
 type Config struct {
-	Provider        string            // "stripe" (default) | "polar"
-	PriceByPlanCode map[string]string // active provider's price/product id by plan code
+	Provider        string            // "stripe" (default) | "opencollective"
+	PriceByPlanCode map[string]string // active provider's price id / checkout URL by plan code
 
 	// Stripe wiring (used when Provider == "stripe").
 	StripeSecretKey     string
 	StripeWebhookSecret string
 
-	// Polar wiring (used when Provider == "polar").
-	PolarAccessToken   string
-	PolarWebhookSecret string
-	PolarServer        string // "sandbox" | "production"
+	// OpenCollective wiring (used when Provider == "opencollective"). No API
+	// credentials exist — the checkout is a static contribution URL — but the
+	// project page is the stable manage/cancel surface (OpenCollective has no
+	// pre-authenticated customer portal).
+	OpenCollectiveProjectURL string
 }
 
 // PlanStore is the slice of tenant state billing needs: resolve a sellable plan
@@ -78,8 +84,8 @@ func NewService(cfg Config, plans PlanStore, subs *Repo) *Service {
 	// One concrete provider implements both seams; assigning the same value to both
 	// fields keeps checkout and webhook handling on the same backend.
 	switch cfg.Provider {
-	case ProviderPolar:
-		if p := newPolarProvider(cfg); p != nil {
+	case ProviderOpenCollective:
+		if p := newOpenCollectiveProvider(cfg); p != nil {
 			s.checkout, s.webhook, s.portal = p, p, p
 		}
 	default: // ProviderStripe or unset — Stripe is the back-compatible default.
@@ -147,16 +153,20 @@ var ErrNoSubscription = errors.New("billing: no subscription to manage")
 
 // ManageURL returns a provider-hosted customer-portal URL where the workspace's
 // admin can update payment, download invoices, or cancel. It resolves the
-// workspace's provider customer id from its recorded subscription; any cancel made
-// in the portal comes back as a webhook, so this only hands the user off — it never
-// changes the plan itself. returnURL is where providers that support it send the
-// user back.
+// workspace's provider relationship from its recorded subscription; any cancel
+// made in the portal comes back as a webhook (Stripe), so this only hands the
+// user off — it never changes the plan itself. OpenCollective has no portal API,
+// so its provider returns the project page instead. The stripe-prefixed fields
+// are the provider-neutral customer/subscription ids (Stripe-named for
+// back-compat; OpenCollective stores its order id in StripeSubscriptionID), so a
+// recorded relationship counts when either is set. returnURL is where providers
+// that support it send the user back.
 func (s *Service) ManageURL(ctx context.Context, teamID, returnURL string) (string, error) {
 	if s.portal == nil {
 		return "", fmt.Errorf("billing: no payment provider configured")
 	}
 	sub, err := s.subs.ByTeam(ctx, teamID)
-	if err != nil || sub.StripeCustomerID == "" {
+	if err != nil || (sub.StripeCustomerID == "" && sub.StripeSubscriptionID == "") {
 		return "", ErrNoSubscription
 	}
 	return s.portal.createPortalSession(ctx, sub.StripeCustomerID, returnURL)
@@ -193,7 +203,8 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, headers htt
 // applyActivated upgrades the workspace named in the event to the plan named in
 // it. Both come from the checkout WE created (the provider echoes our metadata
 // back inside the signed event), so they are trustworthy here in a way the
-// browser's success redirect is not.
+// browser's success redirect is not. OpenCollective never reaches this path: it
+// has no signed webhook, so activation is operator-driven via the set-plan CLI.
 func (s *Service) applyActivated(ctx context.Context, evt providerEvent) error {
 	if evt.teamID == "" || evt.planCode == "" {
 		return fmt.Errorf("billing: activated event missing team_id/plan_code")

@@ -2007,7 +2007,20 @@ func landingFooter() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 150, "\" rel=\"noopener\" target=\"_blank\">GitHub ↗</a> <a href=\"/login\">Sign in</a></nav></div><div class=\"lp-wrap lp-footer-fine\"><span>AI Agent Memory · open-source agent memory · MCP · Go · Ollama · Qdrant</span></div></footer>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 150, "\" rel=\"noopener\" target=\"_blank\">GitHub ↗</a> <a href=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var87 templ.SafeURL
+		templ_7745c5c3_Var87, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(openCollectiveURL))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/views/landing.templ`, Line: 896, Col: 46}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var87))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 151, "\" rel=\"noopener\" target=\"_blank\">Support on Open Collective ↗</a> <a href=\"/login\">Sign in</a></nav></div><div class=\"lp-wrap lp-footer-fine\"><span>AI Agent Memory · open-source agent memory · MCP · Go · Ollama · Qdrant</span></div></footer>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -1,5 +1,7 @@
 # agentsmemory
 
+[![Support on Open Collective](https://opencollective.com/it-uoga/tiers/badge.svg)](https://opencollective.com/it-uoga/projects/ai-agents-memory)
+
 > A multi-tenant **memory palace** for AI agents — served as a remote **MCP** server, backed by **Ollama** and a swappable vector index (**Qdrant** for the SaaS, an **embedded** one for self-hosted).
 
 `agentsmemory` is the Go SaaS rewrite of the original Python [`mempalace`](#provenance):
@@ -923,6 +925,17 @@ called). Schema changes are additive migrations under `db/migrations/`.
 
 ---
 
+## Support
+
+AI Agent Memory is open source and free to self-host. If the hosted service
+helps you, you can support development on
+[Open Collective](https://opencollective.com/it-uoga/projects/ai-agents-memory)
+— contributions fund the always-on GPU the hosted recall runs on. The Pro plan's
+checkout is the project's €50/month contribution tier, so paying subscribers and
+donors land on the same page.
+
+---
+
 ## Roadmap
 
 - [x] Tenancy (workspaces, users, memberships, API keys) + plan/price tiers
@@ -943,7 +956,7 @@ called). Schema changes are additive migrations under `db/migrations/`.
 - [x] Migration — read-only `mempalace` exporter + streaming `POST /import` (drawers, diary, closets, KG facts, tunnels; re-embedded, graph rebuilt)
 - [x] Data export (BDAR/GDPR) — download a workspace's data as a self-contained SQLite file (`GET /projects/{teamID}/export`, membership-gated, tenant-scoped, secrets redacted)
 - [x] Web — per-member API-key reveal + rotation (each member reveals/rotates their own key — scoped to `(team, user)`, secret shown once, destructive-confirm flow)
-- [x] Subscriptions / billing — provider-agnostic (Stripe + Polar): hosted checkout, signature-verified webhooks, self-service customer portal (update card / cancel), FREE + PRO monthly/annual ladder
+- [x] Subscriptions / billing — provider-agnostic (Stripe + OpenCollective): hosted checkout, signature-verified webhooks (Stripe) / operator-activated contributions (OpenCollective), self-service customer portal, FREE + PRO monthly/annual ladder
 - [x] 2FA — per-user TOTP (Google-Authenticator compatible) + one-time recovery codes; enforced on password *and* social login
 - [x] Passwordless — WebAuthn passkeys (passwordless primary login + passkey as a 2nd factor)
 - [x] Operator plan override — unlimited (`-1` cap) plan + superadmin `set-plan` CLI

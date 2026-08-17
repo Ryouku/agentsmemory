@@ -6,24 +6,24 @@ import (
 )
 
 // This file defines the payment-provider seam. billing.Service is written once,
-// against these two small interfaces, and a concrete provider (Stripe or Polar)
-// is plugged in at construction. Keeping the seam this thin — one method to open
-// a checkout, one to turn a signed webhook into a normalized event — is what lets
-// the plan-flip use-case logic in Service stay provider-agnostic, so adding Polar
-// alongside Stripe touched no business rule (decision 2026-07-02: dual provider,
-// selected by BILLING_PROVIDER at boot).
+// against these two small interfaces, and a concrete provider (Stripe or
+// OpenCollective) is plugged in at construction. Keeping the seam this thin —
+// one method to open a checkout, one to turn a signed webhook into a normalized
+// event — is what lets the plan-flip use-case logic in Service stay
+// provider-agnostic (decision 2026-07-02: dual provider selected by
+// BILLING_PROVIDER at boot; Polar replaced by OpenCollective 2026-08-17).
 
 // Provider identifiers for Config.Provider. Stripe is the default so an existing
 // deployment with no BILLING_PROVIDER set keeps its current behavior.
 const (
-	ProviderStripe = "stripe"
-	ProviderPolar  = "polar"
+	ProviderStripe         = "stripe"
+	ProviderOpenCollective = "opencollective"
 )
 
 // checkoutInput is everything needed to open one hosted checkout, expressed in
 // billing's own terms so each payment SDK/API stays behind the seam. CancelURL is
-// honored by providers that support a cancel redirect (Stripe); Polar's hosted
-// checkout has no cancel URL, so its provider ignores it.
+// honored by providers that support a cancel redirect (Stripe); OpenCollective's
+// contribution checkout has no cancel URL, so its provider ignores it.
 type checkoutInput struct {
 	PriceID       string // the provider's price/product id the customer subscribes to
 	TeamID        string // workspace to upgrade; echoed back on the webhook
@@ -73,8 +73,8 @@ type providerEvent struct {
 // portalAPI opens a provider-hosted customer portal — where a subscriber updates
 // their payment method, downloads invoices, or cancels — and returns the URL to
 // send the customer to. customerID identifies the subscriber to the provider;
-// returnURL is where providers that support one send the customer back (Polar's
-// portal manages its own navigation and ignores it).
+// returnURL is where providers that support one send the customer back (Stripe
+// honors it; OpenCollective has no portal API and returns its project page).
 type portalAPI interface {
 	createPortalSession(ctx context.Context, customerID, returnURL string) (url string, err error)
 }
@@ -82,8 +82,9 @@ type portalAPI interface {
 // webhookParser verifies a raw webhook request and returns the normalized event.
 // Verification always comes first: an unsigned or mis-signed payload is a non-nil
 // error and nothing downstream runs. Headers is passed whole because providers
-// differ — Stripe carries one Stripe-Signature header, Polar carries the three
-// Standard-Webhooks headers — so the seam stays provider-agnostic.
+// differ — Stripe carries one Stripe-Signature header — so the seam stays
+// provider-agnostic. OpenCollective implements the interface too, but it has no
+// signed webhook channel: its parseWebhook fails closed on every call.
 type webhookParser interface {
 	parseWebhook(payload []byte, headers http.Header) (providerEvent, error)
 }
