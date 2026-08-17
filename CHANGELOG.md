@@ -181,3 +181,5 @@
 - 2026-08-17 `08ab682` feat(deploy): hosted-mode compose (docker-compose.prod.yml) from the GHCR image, OpenCollective billing vars documented in the Docker path, and an opt-in CI deploy workflow (SSH rollout of the exact released tag on vX.Y.Z)
 - 2026-08-17 deploy: harden the rollout — poll the registry until the tag image is pullable (the tag push also fires release.yml, which builds it), probe /healthz after up, and roll back to the previously-running tag on a failed probe
 - 2026-08-17 `a5c7e30` feat(deploy): deploying a release is the default — every strict vX.Y.Z tag rolls the host; the job skips green while DEPLOY_HOST/USER/SSH_KEY secrets are unset (never breaks a release), DEPLOY_ENABLED=false is the kill switch
+
+- 2026-08-17 `0b0833f` feat(server): real client IP behind a proxy — trust CF-Connecting-IP / True-Client-IP / X-Real-IP / leftmost X-Forwarded-For only when the peer is loopback, private, link-local or a Unix socket (a public peer keeps its own RemoteAddr and cannot spoof it); mounted first so access logs stop reading as the Docker network
