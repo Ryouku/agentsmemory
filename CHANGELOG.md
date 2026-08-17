@@ -176,3 +176,5 @@
 
 - 2026-08-17 `0227bb1` feat(billing): replace Polar with OpenCollective as the second payment provider — static contribution-checkout URLs per plan, operator-driven activation (OpenCollective sends no signed webhook), project page as manage/cancel surface; Stripe stays the default BILLING_PROVIDER
 - 2026-08-17 `0227bb1` docs(funding): Open Collective as the funding path — README badge + Support section, .github/FUNDING.yml, landing-footer "Support on Open Collective" link
+
+- 2026-08-17 `c326817` fix(web): unify the Free quota figure (hero stat no longer says "10k" while the pricing tier, hero note and FAQ say 1,000) and de-Stripe the billing copy after the OpenCollective swap (QA on /#pricing)
