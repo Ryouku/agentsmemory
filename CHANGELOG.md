@@ -178,3 +178,4 @@
 - 2026-08-17 `0227bb1` docs(funding): Open Collective as the funding path — README badge + Support section, .github/FUNDING.yml, landing-footer "Support on Open Collective" link
 
 - 2026-08-17 `c326817` fix(web): unify the Free quota figure (hero stat no longer says "10k" while the pricing tier, hero note and FAQ say 1,000) and de-Stripe the billing copy after the OpenCollective swap (QA on /#pricing)
+- 2026-08-17 `08ab682` feat(deploy): hosted-mode compose (docker-compose.prod.yml) from the GHCR image, OpenCollective billing vars documented in the Docker path, and an opt-in CI deploy workflow (SSH rollout of the exact released tag on vX.Y.Z)
