@@ -117,7 +117,12 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
-		LocalToken:       c.String("token"),
+		// Trimmed because the presented credential is: auth.bearerToken strips the
+		// space around the value it parses out of the header, so a configured token
+		// with a stray newline or trailing space — which a .env file or a copy-paste
+		// produces easily — could never be matched by any client, and would 401
+		// every request with nothing in the logs to explain it.
+		LocalToken: strings.TrimSpace(c.String("token")),
 		// Platform-superadmin allowlist (serve only). On the mcp CLI the flag is
 		// undefined so c.String returns "" → an empty allowlist, which is correct:
 		// the read-only CLI never edits the global skillset.

@@ -88,6 +88,22 @@ func TestLocalTokenFlag(t *testing.T) {
 	}
 }
 
+// TestLocalTokenIsTrimmed guards a silent-lockout footgun: the presented bearer
+// is trimmed when parsed out of the header, so a configured token carrying a
+// trailing newline or space — what a .env file or a copy-paste produces — could
+// never match anything a client can send, and every request would 401 with
+// nothing in the logs to explain it.
+func TestLocalTokenIsTrimmed(t *testing.T) {
+	if cfg := resolve(t, "--local", "--token", "  s3cret\n"); cfg.LocalToken != "s3cret" {
+		t.Errorf("--token = %q, want it trimmed to %q", cfg.LocalToken, "s3cret")
+	}
+	// Whitespace-only is indistinguishable from unset once trimmed, and must not
+	// arm a gate no client could pass.
+	if cfg := resolve(t, "--local", "--token", "   "); cfg.LocalToken != "" {
+		t.Errorf("whitespace-only --token = %q, want empty", cfg.LocalToken)
+	}
+}
+
 // TestLocalTokenEnv pins the env source, which is what a systemd unit or a
 // compose file actually uses. It must be AGENTSMEMORY_LOCAL_TOKEN and not
 // AGENTSMEMORY_TOKEN: that one is the client half of the pair (mcp-stdio
