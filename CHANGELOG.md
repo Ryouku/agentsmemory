@@ -173,3 +173,6 @@
 - 2026-08-17 `ec6e404` feat(server): `--socket` serves on a 0600 Unix socket, and `mcp-stdio` bridges it to stdio so Claude/Codex can spawn it (HTTP stays the default)
 - 2026-08-17 `ef0350c` test(server): socket listener (perms, stale socket, refuses a regular file) + stdio proxy (202 / JSON / SSE, transport errors, 512KB messages)
 - 2026-08-17 `0f9f154` feat(installer): `install --local --socket <path>` registers the stdio bridge for Claude and codex instead of an HTTP URL
+
+- 2026-08-17 `0227bb1` feat(billing): replace Polar with OpenCollective as the second payment provider — static contribution-checkout URLs per plan, operator-driven activation (OpenCollective sends no signed webhook), project page as manage/cancel surface; Stripe stays the default BILLING_PROVIDER
+- 2026-08-17 `0227bb1` docs(funding): Open Collective as the funding path — README badge + Support section, .github/FUNDING.yml, landing-footer "Support on Open Collective" link
