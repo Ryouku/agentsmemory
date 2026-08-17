@@ -30,7 +30,8 @@ services:
     # a host would make the container unreachable. The boundary here is the ports
     # entry below, which publishes to the host's loopback only. The server logs a
     # non-loopback warning on boot because it cannot see that; in this file it is
-    # expected, not a misconfiguration.
+    # expected, not a misconfiguration. (Setting AGENTSMEMORY_LOCAL_TOKEN in
+    # .env.docker replaces that warning with a line confirming the token gate.)
     command: ["serve", "--local", "--addr", ":8080", "--db", "/data/agentsmemory.db"]
     ports:
       # 127.0.0.1: is load-bearing. /mcp is UNAUTHENTICATED in local mode, so
@@ -39,6 +40,12 @@ services:
       # interface) with AGENTSMEMORY_HOST_PORT — Compose reads that one from your
       # shell or a .env file beside this one, NOT from .env.docker, which is
       # passed to the container rather than interpolated here.
+      #
+      # To serve other machines deliberately, set AGENTSMEMORY_LOCAL_TOKEN in
+      # .env.docker FIRST (the server picks it up with no change to command:
+      # above), and only then widen this to "8080:8080". The token is what makes
+      # the wider publish safe; without it, widening is the mistake this comment
+      # exists to prevent.
       - "127.0.0.1:${AGENTSMEMORY_HOST_PORT:-8080}:8080"
     volumes:
       # Holds both halves: /data/agentsmemory.db (the SQLite source of truth,

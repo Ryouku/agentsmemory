@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
@@ -71,5 +72,87 @@ func TestLocalRespectsVectorBackendEnv(t *testing.T) {
 	cfg := resolve(t, "--local")
 	if cfg.VectorBackend != config.VectorBackendSQLite {
 		t.Errorf("VECTOR_BACKEND env lost: got %q, want %q", cfg.VectorBackend, config.VectorBackendSQLite)
+	}
+}
+
+// TestLocalTokenFlag pins --token reaching Config, and that it does NOT move the
+// listen address: binding a routable interface stays an explicit --addr choice,
+// so adding a token never widens exposure on its own.
+func TestLocalTokenFlag(t *testing.T) {
+	cfg := resolve(t, "--local", "--token", "s3cret")
+	if cfg.LocalToken != "s3cret" {
+		t.Errorf("--token = %q, want %q", cfg.LocalToken, "s3cret")
+	}
+	if cfg.Addr != config.LocalAddr {
+		t.Errorf("--token moved the listen address to %q; it must stay %q", cfg.Addr, config.LocalAddr)
+	}
+}
+
+// TestLocalTokenIsTrimmed guards a silent-lockout footgun: the presented bearer
+// is trimmed when parsed out of the header, so a configured token carrying a
+// trailing newline or space — what a .env file or a copy-paste produces — could
+// never match anything a client can send, and every request would 401 with
+// nothing in the logs to explain it.
+func TestLocalTokenIsTrimmed(t *testing.T) {
+	if cfg := resolve(t, "--local", "--token", "  s3cret\n"); cfg.LocalToken != "s3cret" {
+		t.Errorf("--token = %q, want it trimmed to %q", cfg.LocalToken, "s3cret")
+	}
+	// Whitespace-only is indistinguishable from unset once trimmed, and must not
+	// arm a gate no client could pass.
+	if cfg := resolve(t, "--local", "--token", "   "); cfg.LocalToken != "" {
+		t.Errorf("whitespace-only --token = %q, want empty", cfg.LocalToken)
+	}
+}
+
+// TestLocalTokenEnv pins the env source, which is what a systemd unit or a
+// compose file actually uses. It must be AGENTSMEMORY_LOCAL_TOKEN and not
+// AGENTSMEMORY_TOKEN: that one is the client half of the pair (mcp-stdio
+// presents it), so a developer holding a hosted workspace key in their shell
+// must not have their local server silently start demanding it.
+func TestLocalTokenEnv(t *testing.T) {
+	t.Setenv("AGENTSMEMORY_LOCAL_TOKEN", "from-env")
+	if cfg := resolve(t, "--local"); cfg.LocalToken != "from-env" {
+		t.Errorf("AGENTSMEMORY_LOCAL_TOKEN = %q, want %q", cfg.LocalToken, "from-env")
+	}
+
+	t.Setenv("AGENTSMEMORY_LOCAL_TOKEN", "")
+	t.Setenv("AGENTSMEMORY_TOKEN", "hosted-workspace-key")
+	if cfg := resolve(t, "--local"); cfg.LocalToken != "" {
+		t.Errorf("AGENTSMEMORY_TOKEN leaked into the server's required token as %q", cfg.LocalToken)
+	}
+}
+
+// TestTokenRequiresLocal pins the refusal: a shared token means nothing on the
+// multi-tenant path (which resolves real per-workspace API keys), and silently
+// ignoring it would let an operator believe the server was locked down.
+func TestTokenRequiresLocal(t *testing.T) {
+	err := run(context.Background(), config.Config{LocalToken: "s3cret"})
+	if err == nil {
+		t.Fatal("--token without --local was accepted; it must fail loudly")
+	}
+	if !strings.Contains(err.Error(), "--token requires --local") {
+		t.Errorf("error = %q, want it to name the flag combination", err)
+	}
+}
+
+// TestAgentEndpoint pins the copy-paste URL printed at boot. The wildcard binds
+// are the interesting half: they are exactly what a home-network install uses,
+// and exactly what cannot be dialled from another machine, so they must yield a
+// placeholder rather than a line that looks right and silently fails.
+func TestAgentEndpoint(t *testing.T) {
+	const placeholder = "http://<this-machine-lan-ip>:8080/mcp"
+	tests := []struct{ addr, want string }{
+		{"0.0.0.0:8080", placeholder},
+		{":8080", placeholder},
+		{"[::]:8080", placeholder},
+		{"127.0.0.1:8080", "http://127.0.0.1:8080/mcp"},
+		{"192.168.1.50:8080", "http://192.168.1.50:8080/mcp"},
+		{"[::1]:8080", "http://[::1]:8080/mcp"},
+		{"memory.lan:8080", "http://memory.lan:8080/mcp"},
+	}
+	for _, tc := range tests {
+		if got := agentEndpoint(tc.addr); got != tc.want {
+			t.Errorf("agentEndpoint(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
 	}
 }

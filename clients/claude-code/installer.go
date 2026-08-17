@@ -67,6 +67,12 @@ const (
 	// would only 401), but connect anyway against a local one.
 	localEnvVar = "AGENTSMEMORY_LOCAL"
 
+	// localTokenEnvVar is the variable a self-hosted `agentsmemory --local --token`
+	// server reads its required token from. The installer reads the same one (it is
+	// the first source behind --token), so exporting it once configures both the
+	// server that demands the credential and the agent that presents it.
+	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell
 	// rc. Kept beside the config it belongs to, so deleting a sandbox deletes its
@@ -148,26 +154,31 @@ func (d dryRunner) runShell(script string) error {
 // hook, wires up the agentsmemory MCP, and (with recommended=true) installs the
 // companion extensions.
 type Installer struct {
-	kit            agentKit      // which agent CLI we are installing for (claude|codex|pi)
-	targetDir      string        // agent config dir to install into (~/.claude, ~/.codex, ~/.pi/agent or a sandbox)
-	sandboxName    string        // non-empty in isolated mode; drives messaging + run hint
-	explicitTarget bool          // true when --sandbox/--config-dir pinned the target ⇒ skip the mode prompt
-	agentBin       string        // resolved agent CLI name to drive for mcp/plugin ops
-	mcpURL         string        // agentsmemory remote MCP endpoint
-	socket         string        // non-empty ⇒ reach a --local server over this Unix socket, via the mcp-stdio bridge
-	serverBin      string        // agentsmemory server binary the stdio bridge is spawned from (socket mode only)
-	scope          string        // Claude MCP/plugin scope (user|local|project)
-	local          bool          // target a self-hosted `agentsmemory --local` server: no token anywhere
-	token          string        // agentsmemory workspace token (empty ⇒ prompt or skip)
-	copyGlobal     bool          // seed the target from the agent's global config dir
-	sharedAuth     bool          // link credentials back to the global config dir
-	recommended    bool          // also install codebase-memory + eidos + codex
-	yes            bool          // non-interactive: never prompt
-	dryRun         bool          // print instead of doing
-	out            io.Writer     // progress + banners
-	in             io.Reader     // interactive prompt source (mode + token)
-	reader         *bufio.Reader // shared line reader over in; lazily built so both prompts read one stream
-	runner         commandRunner // how external commands execute (exec / dry / fake)
+	kit            agentKit // which agent CLI we are installing for (claude|codex|pi)
+	targetDir      string   // agent config dir to install into (~/.claude, ~/.codex, ~/.pi/agent or a sandbox)
+	sandboxName    string   // non-empty in isolated mode; drives messaging + run hint
+	explicitTarget bool     // true when --sandbox/--config-dir pinned the target ⇒ skip the mode prompt
+	agentBin       string   // resolved agent CLI name to drive for mcp/plugin ops
+	mcpURL         string   // agentsmemory remote MCP endpoint
+	socket         string   // non-empty ⇒ reach a --local server over this Unix socket, via the mcp-stdio bridge
+	serverBin      string   // agentsmemory server binary the stdio bridge is spawned from (socket mode only)
+	scope          string   // Claude MCP/plugin scope (user|local|project)
+	local          bool     // target a self-hosted `agentsmemory --local` server
+	token          string   // agentsmemory workspace token (empty ⇒ prompt or skip)
+	// resolvedToken is what registration actually wrote, decided once by
+	// resolveToken. summary() reads it rather than inferring from local, because
+	// a self-hosted server may or may not require a token (server --token) and the
+	// follow-up steps differ: a token that was persisted has to be exported.
+	resolvedToken string
+	copyGlobal    bool          // seed the target from the agent's global config dir
+	sharedAuth    bool          // link credentials back to the global config dir
+	recommended   bool          // also install codebase-memory + eidos + codex
+	yes           bool          // non-interactive: never prompt
+	dryRun        bool          // print instead of doing
+	out           io.Writer     // progress + banners
+	in            io.Reader     // interactive prompt source (mode + token)
+	reader        *bufio.Reader // shared line reader over in; lazily built so both prompts read one stream
+	runner        commandRunner // how external commands execute (exec / dry / fake)
 
 	// src is where assets are read from. Leave it nil for the embedded kit —
 	// `update-skill` sets it to a source that fetches from GitHub instead.
@@ -636,8 +647,10 @@ func foreignHookPredicate(keep string) func(string) bool {
 // itself is the one step that genuinely diverges per agent.
 func (i *Installer) registerAgentsMemoryMCP() error {
 	token := i.resolveToken()
-	// A self-hosted --local server has no credential to present, so an empty token
-	// is the expected state there rather than the "user skipped it" state below.
+	i.resolvedToken = token
+	// A self-hosted --local server usually has no credential to present, so an
+	// empty token is the expected state there rather than the "user skipped it"
+	// state below.
 	if token == "" && !i.local {
 		fmt.Fprintln(i.out, "  no token provided — skipping agentsmemory MCP.")
 		fmt.Fprintf(i.out, "  add it later: %s\n", i.mcpAddHint())
@@ -1004,15 +1017,17 @@ func (i *Installer) line() (string, error) {
 // prints the full `mcp add`. In --yes / non-interactive mode (or on an empty
 // stdin) it returns "" and the caller skips MCP registration with a hint.
 func (i *Installer) resolveToken() string {
-	// A self-hosted server issues no tokens, so prompting for one would ask a
-	// question with no possible answer. Any inherited AGENTSMEMORY_TOKEN (the
-	// --token flag reads that env var) is dropped too, rather than written into a
-	// config where it would imply the local server checks it.
-	if i.local {
-		return ""
-	}
 	if i.token != "" {
 		return i.token
+	}
+	// A self-hosted server issues no tokens of its own, so prompting for one would
+	// ask a question that usually has no answer: `agentsmemory --local` requires a
+	// credential only when it was started with --token, and the common loopback and
+	// --socket installs never are. So local mode takes an explicitly supplied token
+	// (which is meaningful now that the server can check one) but never asks for
+	// one, and an absent token stays the expected state rather than a skip.
+	if i.local {
+		return ""
 	}
 	if i.dryRun {
 		return "<token>"
@@ -1112,7 +1127,19 @@ func (i *Installer) summary() {
 		if i.socket != "" {
 			fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local --socket %s   (this install bridges to that socket over stdio)\n", i.socket)
 		} else {
-			fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local   (this install points at %s)\n", i.mcpURL)
+			// Echo --token when one was registered: the agent will now send a bearer,
+			// and a server started without the matching flag answers 401 on every
+			// call, which reads as a broken install rather than a missing flag.
+			//
+			// Named as the env var, not the value — same policy as redactArgs, which
+			// keeps --dry-run from echoing a token into a terminal or captured log.
+			// A shell that exported it substitutes the real value, so the line stays
+			// copy-pasteable either way.
+			serverToken := ""
+			if i.resolvedToken != "" {
+				serverToken = ` --token "$` + localTokenEnvVar + `"`
+			}
+			fmt.Fprintf(i.out, "  - keep your server running: agentsmemory --local%s   (this install points at %s)\n", serverToken, i.mcpURL)
 		}
 	}
 
@@ -1125,7 +1152,7 @@ func (i *Installer) summary() {
 			fmt.Fprintf(i.out, "  - a sandbox has its own auth.json: sign in inside it, or pass a provider key (PI_CODING_AGENT_DIR=%s pi)\n", i.targetDir)
 		}
 		what := "the token"
-		if i.local {
+		if i.resolvedToken == "" {
 			what = "the endpoint" // no token was written; the file carries the URL
 		}
 		fmt.Fprintf(i.out, "  - launching plain `pi`? export %s first, e.g. add to your shell rc:\n", what)
@@ -1142,9 +1169,9 @@ func (i *Installer) summary() {
 		// isolated config starts logged out and every request 401s until you say so.
 		fmt.Fprintf(i.out, "  - a sandbox has its own login: CODEX_HOME=%s codex login\n", i.targetDir)
 	}
-	// Only meaningful when a token was actually persisted; a --local install wrote
-	// no file, and codex reads the endpoint straight out of its own config.toml.
-	if i.local {
+	// Only meaningful when a token was actually persisted; without one no file was
+	// written, and codex reads the endpoint straight out of its own config.toml.
+	if i.resolvedToken == "" {
 		return
 	}
 	fmt.Fprintf(i.out, "  - launching plain `codex`? export the token first, e.g. add to your shell rc:\n")
