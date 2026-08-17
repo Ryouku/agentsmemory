@@ -317,8 +317,10 @@ Windows, or want checksums? The same releases carry
 ```
 
 Then point your agent at *that* server. It is the same kit as the hosted
-service; `--local` aims it at `http://localhost:8080/mcp` and never asks for a
-token, because there is none to ask for:
+service; `--local` aims it at `http://localhost:8080/mcp` and never *asks* for a
+token, because a loopback server has none (pass `--token` only if you started the
+server with one — see [serving a home
+network](#serving-a-home-network---token)):
 
 ```bash
 aiagentmemory install --local                                # global, Claude (~/.claude) — the default agent
@@ -341,7 +343,7 @@ What changes:
 | | default | `--local` |
 |---|---|---|
 | Workspaces | many, created from the dashboard | exactly one, slug `local`, provisioned on first boot |
-| `/mcp` auth | Bearer token or OAuth | **none** — every request is the local workspace |
+| `/mcp` auth | Bearer token or OAuth | **none** — every request is the local workspace (unless [`--token`](#serving-a-home-network---token)) |
 | API keys | minted per member | none exist; none are stored |
 | Quota | per plan | uncapped (`plan_unlimited`) |
 | Dashboard, OAuth, billing webhooks | mounted | **not registered** (404) |
@@ -359,15 +361,58 @@ claude mcp add --transport http agentsmemory http://localhost:8080/mcp
 
 Two guardrails worth knowing:
 
-- **The endpoint is unauthenticated**, so reachability *is* authorization. That
-  is why the default binds loopback. Overriding `--addr` to a routable interface
-  still works (behind a reverse proxy or a private overlay network) but logs a
-  loud warning — anyone who can reach the port owns every memory in the file.
-  [`--socket`](#unix-socket-and-stdio-mcp---socket--mcp-stdio) tightens this
-  further than loopback can.
+- **The endpoint is unauthenticated by default**, so reachability *is*
+  authorization. That is why the default binds loopback. Overriding `--addr` to a
+  routable interface still works but logs a loud warning — anyone who can reach
+  the port owns every memory in the file. Two things tighten it:
+  [`--token`](#serving-a-home-network---token) puts a shared secret in front of
+  the port, and
+  [`--socket`](#unix-socket-and-stdio-mcp---socket--mcp-stdio) goes further than
+  loopback can.
 - **It refuses to start** if the database already holds a workspace that is not
   `local` — including the `demo` workspace the multi-tenant path seeds on first
   boot. Use a fresh `--db` file, or drop `--local`.
+
+#### Serving a home network (`--token`)
+
+Loopback is the right default for one machine, and the wrong one the moment you
+want the laptop in the other room to share the same memory. `--token` is what
+makes that safe: local mode then requires `Authorization: Bearer <token>` on
+`/mcp` and `/import`, so the shared secret takes over the job the loopback
+boundary was doing.
+
+```bash
+export AGENTSMEMORY_LOCAL_TOKEN="$(openssl rand -hex 32)"
+./agentsmemory --local --token "$AGENTSMEMORY_LOCAL_TOKEN" --addr 0.0.0.0:8080 --db agentsmemory.db
+```
+
+`0.0.0.0` binds every interface, which is what makes the server reachable from
+another machine. Then install the kit on each of those machines, pointing at the
+server's LAN address — one exported variable configures both halves, because the
+server and the installer read the same one:
+
+```bash
+export AGENTSMEMORY_LOCAL_TOKEN="…the same value…"
+aiagentmemory install --local --token "$AGENTSMEMORY_LOCAL_TOKEN" \
+  --mcp-url http://192.168.1.50:8080/mcp
+```
+
+Worth knowing:
+
+- **The token authenticates, it does not identify.** There is still exactly one
+  workspace, so everyone holding the token shares one memory palace and has full
+  read and write access to it. That is usually the point on a home network; it is
+  not a way to separate two people's memories.
+- **No token is stored server-side**, so there is nothing to rotate but the flag —
+  restart with a new value and re-run the installer.
+- **`/healthz` stays open** so container health checks keep working. It reveals
+  nothing but liveness.
+- **Without `--token`, nothing changes.** A loopback or `--socket` install carries
+  no credential, and a stray `Authorization` header left in an agent's config is
+  still ignored rather than rejected.
+- **Anything routable deserves TLS.** The token crosses the network in a header,
+  so on anything less trusted than your own LAN, put a reverse proxy with HTTPS in
+  front of it rather than exposing the port directly.
 
 Local mode also picks its own search index: **chromem**, a vector database that
 runs inside the server process. It keeps the vectors in memory and persists them
@@ -848,6 +893,7 @@ All flags have sensible local defaults:
 |---|---|---|
 | `--addr` | `:8080` (`127.0.0.1:8080` with `--local`) | HTTP / MCP listen address |
 | `--local` | `false` | Self-hosted single-workspace mode: one `local` workspace, unauthenticated `/mcp`, no dashboard |
+| `--token` | *(empty)* | `--local` only (`AGENTSMEMORY_LOCAL_TOKEN`): require this bearer on `/mcp` and `/import`, so the server can safely bind a LAN address |
 | `--db` | `agentsmemory.db` | SQLite database path |
 | `--vector-backend` | `sqlite` (`chromem` with `--local`) | Search index: `sqlite` \| `chromem` \| `qdrant` — SQLite is always the source of truth |
 | `--qdrant-url` | `http://localhost:6333` | Qdrant base URL |
