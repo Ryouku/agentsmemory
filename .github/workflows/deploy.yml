@@ -3,11 +3,12 @@ name: deploy
 # Deploys the released container image to the host running the hosted service
 # (docker-compose.prod.yml — the multi-tenant shape behind aiagentmemory.dev).
 # Gated on the same strict vX.Y.Z tag as build.yml/release.yml (identical check
-# job; each workflow is independent). Skipped — never failed — until the
-# operator opts in by setting the repository VARIABLE DEPLOY_ENABLED=true and
-# the secrets DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (optionally
-# DEPLOY_PORT, default 22, and DEPLOY_DIR, default /opt/agentsmemory). An
-# unconfigured deploy must never break a release.
+# job; each workflow is independent). Deploying a release is the DEFAULT: every
+# strict tag rolls the host. It still must never break a release, so the deploy
+# job skips green (with a notice) while the host secrets DEPLOY_HOST,
+# DEPLOY_USER, DEPLOY_SSH_KEY are unset (optionally DEPLOY_PORT, default 22,
+# and DEPLOY_DIR, default /opt/agentsmemory), and the operator can force it off
+# by setting the repository VARIABLE DEPLOY_ENABLED=false (kill switch).
 #
 # The host needs Docker and a one-time docker-compose.prod.yml + .env.prod
 # (see README "Hosted mode & billing"): the workflow fetches the compose file
@@ -49,11 +50,27 @@ jobs:
 
   deploy:
     needs: check
-    # Opt-in: the workflow is skipped until the operator sets DEPLOY_ENABLED.
-    if: needs.check.outputs.release == 'true' && vars.DEPLOY_ENABLED == 'true'
+    # Default-on for every strict release tag. The guard step below skips green
+    # while the host secrets are unset, so an unconfigured deploy never breaks
+    # a release. vars.DEPLOY_ENABLED=false is the operator's explicit opt-out.
+    if: needs.check.outputs.release == 'true' && vars.DEPLOY_ENABLED != 'false'
     runs-on: ubuntu-latest
     steps:
+      - name: Guard - skip (never fail) while the host is unconfigured
+        id: guard
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::notice title=deploy skipped::DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY secrets unset; set them so releases auto-deploy (DEPLOY_ENABLED=false opts out)."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Roll the released image
+        if: steps.guard.outputs.ok == 'true'
         uses: appleboy/ssh-action@v1.2.5
         env:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/agentsmemory' }}
