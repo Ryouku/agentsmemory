@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -77,21 +78,53 @@ func WithTenant(ctx context.Context, t tenant.Tenant) context.Context {
 }
 
 // LocalTenant returns middleware that puts a fixed tenant on every request's
-// context, admitting the caller with no credential at all. It is the
-// self-hosted (--local) counterpart to the OAuth gate: same seam, same context
-// key, so Bridge forwards it and every tool reads it through TenantFrom without
-// knowing which one ran.
+// context. It is the self-hosted (--local) counterpart to the OAuth gate: same
+// seam, same context key, so Bridge forwards it and every tool reads it through
+// TenantFrom without knowing which one ran.
 //
-// It authenticates nothing by design — there is exactly one workspace, so there
-// is nothing to tell apart. That makes the listen address the only thing
-// standing between the caller and the whole database, which is why local mode
-// defaults to binding loopback (config.LocalAddr).
-func LocalTenant(t tenant.Tenant) func(http.Handler) http.Handler {
+// With an empty token it authenticates nothing by design — there is exactly one
+// workspace, so there is nothing to tell apart. That makes the listen address
+// the only thing standing between the caller and the whole database, which is
+// why local mode defaults to binding loopback (config.LocalAddr).
+//
+// With a non-empty token it additionally requires "Authorization: Bearer
+// <token>" and answers 401 otherwise. That is what makes a routable bind — a
+// home network rather than one machine — defensible: the shared secret replaces
+// the network boundary loopback was providing. It still identifies nobody; it
+// only decides who gets in.
+//
+// The two behaviours are one function rather than two middlewares because they
+// are the same seam under different exposure, and splitting them would let a
+// caller mount the credential-free one by mistake.
+func LocalTenant(t tenant.Tenant, token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Only reject when a token is configured. Without one, a stray bearer
+			// left in an agent config is ignored rather than rejected, so pointing
+			// a previously-hosted agent at a local server keeps working.
+			if token != "" && !tokenMatches(token, bearerToken(r)) {
+				// Name the scheme so a client knows what to present; the body stays
+				// terse because the only reader is an agent, not a browser.
+				w.Header().Set("WWW-Authenticate", `Bearer realm="agentsmemory"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithTenant(r.Context(), t)))
 		})
 	}
+}
+
+// tokenMatches reports whether a presented bearer equals the configured local
+// token, compared in constant time.
+//
+// subtle.ConstantTimeCompare is not superstition here: unlike the hosted path —
+// which looks up a SHA-256 hash and so leaks nothing about the plaintext — this
+// compares the secret itself, and the whole point of the token is to face a
+// network where an attacker can time many attempts. It returns 0 for
+// different-length inputs, so an empty or absent header fails on the same path
+// as a wrong one.
+func tokenMatches(want, got string) bool {
+	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
 }
 
 // Bridge is an mcp-go HTTPContextFunc that carries a tenant already resolved by

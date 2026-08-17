@@ -129,10 +129,31 @@ type Config struct {
 	// apart, so there is no token to carry, and there is nothing for a dashboard
 	// to manage.
 	//
-	// Because the endpoint is unauthenticated, anyone who can reach the port owns
-	// every memory in the database; LocalAddr is therefore the default listen
-	// address in this mode.
+	// Because the endpoint is unauthenticated by default, anyone who can reach the
+	// port owns every memory in the database; LocalAddr is therefore the default
+	// listen address in this mode. LocalToken is what lifts that restriction.
 	Local bool
+
+	// LocalToken, when non-empty, is the shared secret local mode requires as
+	// "Authorization: Bearer <token>" on its agent endpoints. Empty — the default
+	// — keeps local mode credential-free, which is the right trade on a loopback
+	// or Unix-socket bind where the operating system is already the boundary.
+	//
+	// It exists for the one case loopback cannot serve: reaching the server from
+	// another machine on a home network. Binding a routable address there turns
+	// "anyone on this machine" into "anyone on this wifi", and a single shared
+	// secret is the proportionate answer — there is exactly one workspace, so
+	// there is nothing to tell apart, only something to keep strangers out of.
+	//
+	// It is deliberately NOT a per-workspace API key: local mode mints none (see
+	// tenant.EnsureLocalWorkspace), because a credential the server stores is one
+	// somebody has to rotate. This one lives only in the operator's process
+	// environment and in the agent config they point at it.
+	//
+	// Meaningless outside Local mode — the multi-tenant path resolves real
+	// per-workspace keys — so cmd/server rejects the flag combination rather than
+	// silently ignoring it.
+	LocalToken string
 
 	// SuperAdminEmails is the platform-superadmin allowlist: users whose email is
 	// in this set may edit the GLOBAL skillset (the am_skillset wakeup playbook)

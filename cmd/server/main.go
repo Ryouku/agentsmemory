@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -116,6 +117,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
+		LocalToken:       c.String("token"),
 		// Platform-superadmin allowlist (serve only). On the mcp CLI the flag is
 		// undefined so c.String returns "" → an empty allowlist, which is correct:
 		// the read-only CLI never edits the global skillset.
@@ -165,12 +167,26 @@ func serveFlags(def config.Config) []cli.Flag {
 		// where to dial, so the pair cannot drift apart.
 		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
 		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
+		// Deliberately NOT AGENTSMEMORY_TOKEN: that variable is the client side of
+		// the pair (mcp-stdio presents it, the installer registers it), and a
+		// developer with a hosted workspace key exported would otherwise find their
+		// local server silently demanding it.
+		&cli.StringFlag{Name: "token", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL_TOKEN"), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
 }
 
 // run opens the database, migrates, wires dependencies, and serves until error.
 func run(ctx context.Context, cfg config.Config) error {
+	// --token is a local-mode concept: the multi-tenant path resolves real
+	// per-workspace API keys, so a single shared secret there would authenticate
+	// nothing and silently ignoring it would let an operator believe the server
+	// was locked down when it was not. Fail loudly instead, before the database
+	// is even opened.
+	if cfg.LocalToken != "" && !cfg.Local {
+		return fmt.Errorf("--token requires --local: multi-tenant mode authenticates with per-workspace API keys, not a shared token")
+	}
+
 	if cfg.Debug {
 		// Make the "why is it silent?" answer obvious on boot: echo the effective
 		// wiring so a misread flag/env is visible before any request arrives.
@@ -425,17 +441,26 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	}
 
 	// One middleware stands in for the entire auth stack: every request already
-	// belongs to the only workspace there is.
-	local := auth.LocalTenant(t)
+	// belongs to the only workspace there is. With --token it also gates entry, so
+	// both agent surfaces are covered by construction — /healthz stays open, since
+	// a liveness probe reveals nothing and a container health check has no token.
+	local := auth.LocalTenant(t, cfg.LocalToken)
 	r.Handle("/mcp", local(mcpHandler))
 	r.Handle("/import", local(importer.Handler(svc.drawers, svc.usage)))
 
-	// The exposure warning is about TCP only. A socket is bound at 0600, so the
-	// operating system already restricts the unauthenticated endpoint to this
-	// user — a tighter boundary than any loopback port, which every process on
-	// the machine may open. Warning there would train operators to ignore it.
-	if cfg.SocketPath == "" && !config.IsLoopback(cfg.Addr) {
-		log.Printf("WARNING: --local serves an UNAUTHENTICATED /mcp, and %s is not a loopback address — anyone who can reach this port has full read and write access to every memory in %s. Bind %s, use --socket, or run multi-tenant.",
+	// The exposure warning is about an unauthenticated TCP port, so both escapes
+	// silence it. A socket is bound at 0600, so the operating system already
+	// restricts the endpoint to this user — tighter than any loopback port, which
+	// every process on the machine may open. A token replaces the network boundary
+	// with a credential, which is the whole point of --token. Warning in either
+	// case would train operators to ignore it.
+	switch {
+	case cfg.SocketPath != "", config.IsLoopback(cfg.Addr):
+	case cfg.LocalToken != "":
+		log.Printf("--local is bound to %s (beyond this machine) and is protected by --token: agents must send \"Authorization: Bearer <token>\". Anyone holding that token has full read and write access to every memory in %s.",
+			cfg.Addr, cfg.DBPath)
+	default:
+		log.Printf("WARNING: --local serves an UNAUTHENTICATED /mcp, and %s is not a loopback address — anyone who can reach this port has full read and write access to every memory in %s. Set --token, bind %s, use --socket, or run multi-tenant.",
 			cfg.Addr, cfg.DBPath, config.LocalAddr)
 	}
 
@@ -445,7 +470,11 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	}
 	defer ln.Close()
 
-	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, no token required, no dashboard)", listenDescription(cfg), tenant.LocalSlug)
+	credential := "no token required"
+	if cfg.LocalToken != "" {
+		credential = "bearer token required"
+	}
+	log.Printf("agentsmemory listening on %s (local mode: workspace %q, MCP /mcp, %s, no dashboard)", listenDescription(cfg), tenant.LocalSlug, credential)
 	// Registering the server is only half the job: an MCP endpoint is a catalogue
 	// of verbs, and an agent calls none of them unless something instructs it to.
 	// So point at both halves — the connection AND the protocol that drives it —
@@ -455,14 +484,46 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	// proxy. That is the whole point of shipping the proxy in this binary: the
 	// same executable that is already running is also the command the agent
 	// spawns, so there is nothing further to install.
+	install := "aiagentmemory install --local"
 	if cfg.SocketPath == "" {
-		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory http://%s/mcp", strings.TrimPrefix(cfg.Addr, ":"))
+		// A token has to appear in the hint, not just in the docs: the agent config
+		// is written once and a 401 later reads as "the server is broken".
+		header := ""
+		if cfg.LocalToken != "" {
+			header = fmt.Sprintf(" --header %q", "Authorization: Bearer "+cfg.LocalToken)
+			install += " --token " + cfg.LocalToken
+		}
+		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory %s%s", agentEndpoint(cfg.Addr), header)
 	} else {
 		log.Printf("connect an agent:  claude mcp add agentsmemory -- %s mcp-stdio --socket %s", executableName(), cfg.SocketPath)
 		log.Printf("           codex:  codex mcp add agentsmemory -- %s mcp-stdio --socket %s", executableName(), cfg.SocketPath)
+		install += " --socket " + cfg.SocketPath
 	}
-	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  aiagentmemory install")
+	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  %s", install)
 	return http.Serve(ln, r)
+}
+
+// agentEndpoint renders the /mcp URL to hand an agent for a given listen
+// address.
+//
+// The wildcard forms — "0.0.0.0:8080", ":8080", "[::]:8080" — name every
+// interface, which is precisely the bind a home-network install uses and
+// precisely the one that is useless as a URL: a second machine cannot dial
+// 0.0.0.0. Rather than print a copy-pasteable line that silently fails, those
+// yield an obvious placeholder for the operator to substitute. A concrete host
+// is printed as-is, because it is already the right answer.
+func agentEndpoint(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Not a host:port; echo it rather than inventing structure.
+		return "http://" + addr + "/mcp"
+	}
+	// net.ParseIP("") is nil, so the bare ":8080" form falls through to the
+	// placeholder too — it binds every interface exactly like 0.0.0.0.
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		return "http://<this-machine-lan-ip>:" + port + "/mcp"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/mcp"
 }
 
 // listenDescription renders the bound address for the startup logs: the socket
