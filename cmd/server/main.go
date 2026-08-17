@@ -246,6 +246,12 @@ func run(ctx context.Context, cfg config.Config) error {
 	// The base router both modes share: logging (debug only), panic recovery, and
 	// the liveness probe. Everything mounted after this point differs per mode.
 	r := chi.NewRouter()
+	// First in the chain: behind a reverse proxy (a cloudflared sidecar, nginx)
+	// the peer is the proxy, so every log line would otherwise read as the
+	// container network. realIP restores the client address for everything that
+	// runs after it — Logger included. It trusts the forwarding headers only
+	// when the peer is local/private, so a direct public request cannot spoof it.
+	r.Use(realIP)
 	// Logger before Recoverer so even a panicked request (recovered as a 500) is
 	// still logged. Gated on Debug: the server is intentionally silent in
 	// production, and APP_DEBUG=true is what surfaces per-request access logs.
