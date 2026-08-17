@@ -22,9 +22,19 @@ func registerDiary(reg *registrar, drawers *palace.Service, usageSvc *usage.Serv
 // registerDiaryWrite: append a journal entry for an agent. The entry is filed as
 // a drawer in the agent's diary room (chunked + embedded like any memory) but is
 // timestamp-unique, so re-journaling identical text keeps both entries.
+//
+// The description asks for the wrong assumption and the failed approach by name.
+// That is deliberate: a repository records only what worked — the dead ends are
+// what a later session repeats, and they exist nowhere but here. It is carried in
+// the tool description rather than only in the wakeup playbook or a client's Stop
+// hook because this text is the one surface every client sees, unconditionally,
+// at the moment of the call; the hook exists only on some installs. It also names
+// a cheap escape ("say so briefly"), because a prompt that demands a lesson from
+// a session that had none gets an invented one — and drawers are verbatim and
+// immutable, so a confabulated lesson is recalled forever.
 func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("diary_write",
-		mcp.WithDescription("Append a diary entry to an agent's journal (in AAAK format). Entries are timestamped and accumulate in the agent's diary room over time."),
+		mcp.WithDescription("Append a diary entry to an agent's journal (in AAAK format). Entries are timestamped and accumulate in the agent's diary room over time. Record what the next session cannot recover from the code: what you decided and why, which assumption turned out wrong, and which approach you tried that failed — a repository keeps only what worked, so dead ends are lost unless they are written here. When nothing went wrong, say so briefly rather than inventing a lesson. Use a stable agent_name so entries thread across sessions."),
 		mcp.WithString("agent_name", mcp.Required(), mcp.Description("Whose journal to write to (case-insensitive; stored lowercased).")),
 		mcp.WithString("entry", mcp.Description("The diary entry text, ideally in AAAK. Either entry or content is required; entry wins if both are given.")),
 		mcp.WithString("content", mcp.Description("Alias for entry — accepted because am_add_drawer uses \"content\".")),
