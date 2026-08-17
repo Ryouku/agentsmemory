@@ -27,19 +27,36 @@ write a line of code, confirm the `am_*` MCP tools are actually reachable:
    (`ToolSearch "select:am_skillset,am_status,am_search"` on Claude Code), *then*
    call. Do not conclude the tools are missing because the first call errored on
    its arguments.
+   Likewise, a server that answers is not the right server: a workspace token
+   from another project still returns OK. Only step 4's wing check proves
+   you're home.
 3. **Probe, don't assume.** Call `am_skillset` and then `am_status`. A non-error
-   return from both means the tools are present and the workspace token is valid.
-4. **Likewise for skills.** A skill missing from your harness's *local* list is
+   return from both means the tools are present and the workspace token is valid
+   — for *some* workspace. That is not enough.
+4. **Verify the workspace identity.** `am_status` must list this repo's wing,
+   **`wing_agentmemories`**. If it doesn't, the MCP is scoped to the *wrong*
+   workspace — the usual cause is a global registration carrying another
+   project's token, which answers every probe happily. That is worse than a
+   connection error: you'd recall another project's decisions as if they were
+   this team's, and every write would land in the wrong palace. Treat a missing
+   `wing_agentmemories` exactly like an absent connection — stop and run the
+   absent path. Do not start the task, and do not write anything to the
+   wrong-scoped palace (no diary, no KG, no drawers — that's poisoning another
+   project).
+5. **Likewise for skills.** A skill missing from your harness's *local* list is
    usually **centralised**, not absent — `am_list_skills` is the catalogue,
    `am_load_skill(<name>)` fetches the body. Check it before you decide the team
    has no convention for your stack.
 
-**Present** → follow *[When the tools are present](#when-the-tools-are-present)*
-below and get on with the work.
+**Present and correctly scoped** → follow
+*[When the tools are present](#when-the-tools-are-present)* below and get on
+with the work.
 
-**Absent** — no `am_*` names in the tool list at all, or `am_skillset` /
-`am_status` fail with a transport, auth, or connection error — → stop and run
-*[When the tools are absent](#when-the-tools-are-absent)*. Do not start the task.
+**Absent or wrong workspace** — no `am_*` names in the tool list at all,
+`am_skillset` / `am_status` fail with a transport, auth, or connection error,
+or `am_status` returns a wing list without `wing_agentmemories` — → stop and
+run *[When the tools are absent](#when-the-tools-are-absent)*. Do not start the
+task.
 
 ---
 
