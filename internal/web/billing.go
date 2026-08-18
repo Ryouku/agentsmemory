@@ -161,14 +161,15 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, u ten
 		}
 	}
 	s.render(w, r, views.ProjectDetailPage(views.ProjectDetailData{
-		UserEmail:  u.Email,
-		Project:    proj,
-		Skills:     toSkillVMs(summaries),
-		CanWrite:   webSkillCaller{role: role}.CanWrite(),
-		ServerBase: requestBaseURL(r),
-		Share:      s.buildShareData(r.Context(), u, teamID, role),
-		Merge:      s.buildMergeData(r.Context(), u, teamID, role),
-		Members:    members,
-		Flash:      flash,
+		UserEmail:    u.Email,
+		Project:      proj,
+		Skills:       toSkillVMs(summaries),
+		CanWrite:     webSkillCaller{role: role}.CanWrite(),
+		ServerBase:   requestBaseURL(r),
+		Share:        s.buildShareData(r.Context(), u, teamID, role),
+		Merge:        s.buildMergeData(r.Context(), u, teamID, role),
+		WingTransfer: s.buildWingTransferData(r, teamID, role),
+		Members:      members,
+		Flash:        flash,
 	}))
 }

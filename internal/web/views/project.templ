@@ -49,6 +49,7 @@ templ ProjectDetailPage(d ProjectDetailData) {
 		if d.Merge.CanManage {
 			@MergeCard(d.Merge)
 		}
+		@WingTransferCard(d.WingTransfer)
 		@MigrateCard(d.ServerBase)
 		@ExportCard(d.Project.TeamID)
 	}
@@ -81,6 +82,137 @@ templ ExportCard(teamID string) {
 				API-key secrets are redacted. Large workspaces may take a moment.
 			</span>
 		</div>
+	</section>
+}
+
+// WingTransferCard moves ONE wing in or out of this workspace as a portable
+// bundle file — the counterpart to ExportCard's whole-workspace archive.
+//
+// The two halves are deliberately asymmetric, because that asymmetry is the
+// feature: the download names a wing, and the file it produces names none, so
+// the upload decides where the memories land. That is what lets a bundle be
+// restored beside its original, renamed into a fresh workspace, or forked.
+//
+// The download picker is seeded with a real wing rather than a "choose one…"
+// placeholder, so the link is always valid and the card needs no disabled state.
+// The anchor carries a server-rendered href as well as the datastar binding, so
+// it downloads the picked wing with JavaScript on and the first wing without it.
+//
+// The upload is a plain multipart form, NOT a datastar action: a file upload is
+// ordinary HTTP, and signals carry JSON, so forcing it through the SSE path would
+// fight the framework for nothing. Both inputs are `required`, which gets native,
+// accessible validation without a line of script.
+templ WingTransferCard(d WingTransferVM) {
+	<section
+		class="card wing-card"
+		aria-labelledby="wing-h"
+		data-signals={ "{wingExport:" + jsString(firstWing(d.Wings)) + "}" }
+	>
+		<p class="eyebrow">Transfer</p>
+		<h2 id="wing-h">Move a wing</h2>
+		<p class="wing-lede">
+			Download one wing as a portable file, then load it into any workspace under
+			whatever name you choose. The file records no wing of its own — you name the
+			destination on the way in — so the same bundle can restore a wing, rename it,
+			or seed a second copy alongside the first.
+		</p>
+		if len(d.Wings) == 0 {
+			<div class="note" role="note">
+				This workspace has no wings yet. Once your agents file their first memories,
+				each wing will be downloadable here.
+			</div>
+		} else {
+			<div class="wing-half">
+				<div class="kv">Download a wing</div>
+				<div class="wing-grid">
+					<div class="field">
+						<label for="wingExport">Wing</label>
+						<select class="input" id="wingExport" data-bind:wing-export>
+							for _, wname := range d.Wings {
+								<option value={ wname }>{ wname }</option>
+							}
+						</select>
+					</div>
+					<div class="field wing-field-action">
+						<a
+							class="btn btn-primary btn-block"
+							href={ templ.SafeURL(WingExportURL(d.TeamID, firstWing(d.Wings))) }
+							data-attr:href={ "'/projects/" + d.TeamID + "/wings/export?wing=' + encodeURIComponent($wingExport)" }
+							download
+						>
+							Download bundle
+						</a>
+					</div>
+				</div>
+				<span class="cmd-hint">
+					A text file, one memory per line — drawers, closets and any tunnel with both
+					ends inside the wing. Search vectors are rebuilt on import, so a bundle stays
+					portable across embedding models.
+				</span>
+			</div>
+		}
+		if d.CanImport {
+			// "then" only reads as a sequence when there is a download half above it.
+			// A workspace with no wings yet sees the upload alone — which is exactly
+			// the flow that seeds a fresh workspace from somewhere else.
+			if len(d.Wings) > 0 {
+				<div class="divider">then</div>
+			}
+			<div class="wing-half">
+				<div class="kv">Load a bundle in</div>
+				<form
+					method="post"
+					action={ templ.SafeURL("/projects/" + d.TeamID + "/wings/import") }
+					enctype="multipart/form-data"
+				>
+					<div class="wing-import-grid">
+						<div class="field">
+							<label for="wingBundle">Bundle file</label>
+							<input
+								class="input wing-file"
+								type="file"
+								id="wingBundle"
+								name="bundle"
+								accept=".ndjson,.json,application/x-ndjson"
+								required
+							/>
+						</div>
+						<div class="field">
+							<label for="wingTarget">Import into wing</label>
+							<input
+								class="input"
+								type="text"
+								id="wingTarget"
+								name="wing"
+								list="wing-target-list"
+								placeholder="existing or new wing name"
+								autocomplete="off"
+								spellcheck="false"
+								required
+							/>
+							<datalist id="wing-target-list">
+								for _, wname := range d.Wings {
+									<option value={ wname }></option>
+								}
+							</datalist>
+						</div>
+					</div>
+					<div class="wing-actions">
+						<button class="btn btn-primary" type="submit">Import bundle</button>
+						<span class="hint">
+							Naming a wing that already exists merges the bundle into it; importing the
+							same file twice is safe and never duplicates. Up to 64 MB here — for a
+							larger palace use the <span class="mono">agentsmemory wing import</span> command.
+						</span>
+					</div>
+				</form>
+			</div>
+		} else {
+			<div class="note" role="note">
+				You have read-only access to this workspace. Ask an admin for the
+				<b>writer</b> role to load a bundle in.
+			</div>
+		}
 	</section>
 }
 
