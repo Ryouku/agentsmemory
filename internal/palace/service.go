@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +34,14 @@ const (
 	MaxSearchLimit      = 100
 	DefaultMaxDistance  = 1.5
 	DefaultDupThreshold = 0.9
+
+	// DefaultRerankPool is how many fused candidates a configured cross-encoder
+	// scores. Widening the pool is the point of reranking: hybridCandidateMultiplier
+	// alone shows the ranker only limit*3 candidates (15 for a default search), so a
+	// document the vector pass ranked 40th can never reach the page no matter how
+	// well it answers the query. 50 is wide enough to change the answer and small
+	// enough to cross-encode within a search's latency budget.
+	DefaultRerankPool = 50
 
 	// searchCandidatePool is how many nearest neighbours to pull before applying
 	// a wing/room filter. The vector seam's Search has no server-side filter, so
@@ -92,6 +102,18 @@ type Embedder interface {
 	EmbedOne(ctx context.Context, input string) ([]float32, error)
 }
 
+// Reranker scores candidate documents against a query with a cross-encoder,
+// returning one score per document IN INPUT ORDER (higher is better). Like
+// Embedder it is declared at the consumer, so the service depends on the
+// capability rather than on the TEI client that currently provides it.
+//
+// A cross-encoder reads the query and the document together, which is strictly
+// more evidence than the vector+BM25 blend that selects the candidates — but it
+// is also far more expensive, which is why it only ever sees a shortlist.
+type Reranker interface {
+	Rerank(ctx context.Context, query string, docs []string) ([]float64, error)
+}
+
 // Service is the core memory loop: it files drawers (chunk -> embed -> store) and
 // recalls them (embed query -> nearest-neighbour -> join metadata). It composes
 // the metadata Repo, an Embedder, and the vector store seam; everything is
@@ -101,6 +123,12 @@ type Service struct {
 	embed   Embedder
 	vectors store.VectorStore
 	dim     int // embedding dimension new namespaces are created with (bge-m3 = 1024)
+	// rerank, when non-nil, cross-encodes the top rerankPool fused candidates and
+	// reorders them before Search pages. nil is the default and means recall stops
+	// at the vector+BM25+closet fusion — the behaviour every deployment had before
+	// a reranker endpoint was configurable.
+	rerank     Reranker
+	rerankPool int
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -119,6 +147,23 @@ type Service struct {
 // is authoritative and used in Add; dim is only the seed/fallback).
 func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) *Service {
 	return &Service{repo: repo, embed: embed, vectors: vectors, dim: dim}
+}
+
+// WithReranker attaches a cross-encoder to Search and returns s for chaining.
+// pool is how many fused candidates get cross-encoded; values below 1 fall back
+// to DefaultRerankPool.
+//
+// It is a post-construction setter rather than a NewService parameter because
+// reranking is optional deployment wiring, not a collaborator the service needs
+// to exist — every call site that has no reranker configured simply never calls
+// this. It must be called before the service is shared across goroutines: the
+// field is read without synchronization on the search path.
+func (s *Service) WithReranker(r Reranker, pool int) *Service {
+	if pool < 1 {
+		pool = DefaultRerankPool
+	}
+	s.rerank, s.rerankPool = r, pool
+	return s
 }
 
 // AddInput is the add_drawer payload: where the memory goes (wing, room — both
@@ -371,6 +416,22 @@ type SearchQuery struct {
 	Room        string  // optional filter
 	Limit       int     // 1..100, defaults to DefaultSearchLimit
 	MaxDistance float64 // drop hits farther than this; <=0 disables the filter
+	// Context is optional background the caller can supply to sharpen reranking —
+	// what it is working on, so an ambiguous query lands in the right sense. It
+	// feeds the cross-encoder ONLY (see rerankQuery); it deliberately does not
+	// touch the embedding, because widening the query vector would quietly change
+	// which candidates are retrieved rather than how they are ordered.
+	Context string
+}
+
+// rerankQuery returns the text the cross-encoder scores against: the (already
+// capped) query, with Context appended when the caller supplied any. A blank
+// Context leaves the query exactly as the vector pass saw it.
+func (q SearchQuery) rerankQuery(query string) string {
+	if c := strings.TrimSpace(q.Context); c != "" {
+		return query + "\n\n" + c
+	}
+	return query
 }
 
 // Search recalls drawers by hybrid relevance to a query. It embeds the query and
@@ -411,6 +472,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// wing/room the survivors are a subset of the pool, so over-fetch far more
 	// (searchCandidatePool) to be sure the page can still be filled.
 	candidateK := limit * hybridCandidateMultiplier
+	// A cross-encoder can only promote what retrieval surfaced, so widening the
+	// pool it sees is where the accuracy actually comes from — not from the
+	// scoring alone. Pull at least a full rerank pool when one is configured.
+	if s.rerank != nil && candidateK < s.rerankPool {
+		candidateK = s.rerankPool
+	}
 	filtering := q.Wing != "" || q.Room != ""
 	if filtering && candidateK < searchCandidatePool {
 		candidateK = searchCandidatePool
@@ -468,6 +535,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	ranked := rankHybrid(query, docs, dists, boosts)
 
+	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
+	// from a query vector and term overlap; a cross-encoder reads the query and the
+	// document together and is the better judge, so when one is configured its
+	// score — not the fused score — decides the order. Both are reported.
+	ranked = s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+
 	results := make([]SearchHit, 0, limit)
 	for _, r := range ranked {
 		if len(results) >= limit {
@@ -477,9 +550,52 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
+		hit.RerankScore = r.Rerank
 		results = append(results, hit)
 	}
 	return results, nil
+}
+
+// applyRerank cross-encodes the best rerankPool candidates and returns ranked
+// reordered by cross-encoder score, with each reordered entry's Rerank set. The
+// tail beyond the pool keeps its fused order and a zero Rerank — it was never
+// scored, and pretending otherwise would put an unscored drawer above a scored
+// one.
+//
+// It fails OPEN: with no reranker configured, nothing to score, or any error
+// from the endpoint, ranked is returned untouched and search proceeds on the
+// hybrid order. That mirrors the closet boost's rule that a ranking input is a
+// signal, never a gate — a reranker that is down or slow must degrade recall,
+// never break it.
+func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []HybridScore {
+	if s.rerank == nil || len(ranked) == 0 {
+		return ranked
+	}
+	pool := min(s.rerankPool, len(ranked))
+	docs := make([]string, pool)
+	for i := range docs {
+		docs[i] = survivors[ranked[i].Index].Drawer.Content
+	}
+
+	scores, err := s.rerank.Rerank(ctx, query, docs)
+	if err != nil {
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
+		return ranked
+	}
+	if len(scores) != pool {
+		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		return ranked
+	}
+
+	head := make([]HybridScore, pool)
+	for i := range head {
+		head[i] = ranked[i]
+		head[i].Rerank = scores[i]
+	}
+	// Stable so equal cross-encoder scores keep the fused order as the tie-break,
+	// exactly as rankHybrid keeps the vector order.
+	sort.SliceStable(head, func(a, b int) bool { return head[a].Rerank > head[b].Rerank })
+	return append(head, ranked[pool:]...)
 }
 
 // DuplicateResult is the check_duplicate verdict: whether the most similar

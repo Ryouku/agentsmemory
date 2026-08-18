@@ -152,7 +152,7 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | `am_add_drawer` | ✅ | File a verbatim memory (chunked + embedded; idempotent by source) |
 | `am_get_drawer` / `am_update_drawer` / `am_delete_drawer` | ✅ | Read, edit-in-place, or remove a drawer by id |
 | `am_list_drawers` | ✅ | Paginate drawers, optionally filtered by wing/room |
-| `am_search` | ✅ | Hybrid recall — vector candidates re-ranked by vector + BM25 + closet boost |
+| `am_search` | ✅ | Hybrid recall — vector candidates re-ranked by vector + BM25 + closet boost, then optionally by a TEI cross-encoder (`RERANK_URL`) |
 | `am_check_duplicate` | ✅ | Is content near-identical to an existing drawer? |
 | `am_list_wings` / `am_list_rooms` / `am_get_taxonomy` | ✅ | Indexed wing/room aggregations of a team's memory |
 | `am_get_aaak_spec` | ✅ | The AAAK compressed-memory dialect reference |
@@ -900,6 +900,48 @@ All flags have sensible local defaults:
 | `--qdrant-api-key` | *(empty)* | Qdrant API key (optional) |
 | `--ollama-url` | `http://localhost:11434` | Ollama base URL |
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
+| `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
+| `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
+
+### Cross-encoder re-ranking (optional)
+
+`am_search` fuses vector similarity, BM25 and the closet boost. All three are
+*proxies* — they score the query and the drawer separately and combine the
+numbers. A cross-encoder reads both together, so it judges relevance far better;
+it is also far slower, which is why it only ever sees a shortlist.
+
+Set `RERANK_URL` and search gains a fourth stage: the top `RERANK_POOL` fused
+candidates are cross-encoded and reordered, and the cross-encoder's score — not
+the fused score — decides the page. Both are reported (`rerank_score` beside
+`score`, `bm25_score` and `closet_boost`), so you can see when they disagree.
+Widening the pool is most of the win: without it the ranker only ever sees
+`limit × 3` candidates, so a drawer buried at rank 40 can never surface.
+
+It **fails open**. A reranker that is down, slow or returning nonsense costs
+ordering quality, never recall — search falls back to the hybrid order and logs a
+warning. Nothing else changes, so leaving `RERANK_URL` unset keeps the exact
+behaviour every deployment had before.
+
+Run one with [TEI](https://github.com/huggingface/text-embeddings-inference):
+
+```bash
+docker run -d --name reranker -p 12434:80 -v $PWD/tei-data:/data --pull always \
+  ghcr.io/huggingface/text-embeddings-inference:cpu-1.9 \
+  --model-id BAAI/bge-reranker-v2-m3
+# CUDA host: swap cpu-1.9 -> cuda-1.9 and add --gpus all
+# TEI listens on port 80 INSIDE the container — map to 80, not 8080.
+
+export RERANK_URL=http://localhost:12434
+```
+
+> **Ollama cannot do this job.** It exposes only a model's embedding layer, never
+> the cross-encoder classification head, so it has no rerank endpoint
+> ([ollama/ollama#10467](https://github.com/ollama/ollama/issues/10467)) — pulling
+> a `bge-reranker` tag into Ollama gets you embeddings, not relevance scores.
+> Keep Ollama for `bge-m3` embeddings and run TEI alongside it.
+
+`am_search`'s optional `context` argument feeds this stage: it sharpens the
+re-ranking without changing which drawers are retrieved.
 
 ---
 

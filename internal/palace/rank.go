@@ -147,6 +147,12 @@ type HybridScore struct {
 	Fused float64 // 0.6*vecSim + 0.4*bm25Norm + closetBoost, higher is better
 	BM25  float64 // raw Okapi-BM25 score (pre-normalization)
 	Boost float64 // closet boost added to this candidate (0 when none)
+	// Rerank is the cross-encoder's relevance score in (0,1), set only for the
+	// candidates a configured reranker actually scored. Zero therefore means "not
+	// reranked" — either no reranker is wired, the call failed, or this candidate
+	// fell outside the pool — which is safe to read as such because a sigmoid
+	// score is never exactly zero.
+	Rerank float64
 }
 
 // rankHybrid fuses vector similarity, BM25 and an optional closet boost over a

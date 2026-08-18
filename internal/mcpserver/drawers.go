@@ -241,6 +241,7 @@ type searchHitView struct {
 	BM25        float64 `json:"bm25_score"`   // raw lexical BM25 component, for transparency
 	ClosetBoost float64 `json:"closet_boost"` // closet rank boost folded into score, for transparency
 	Distance    float64 `json:"distance"`     // raw cosine distance in [0,2], lower is closer
+	RerankScore float64 `json:"rerank_score"` // cross-encoder relevance when a reranker is configured; 0 = not reranked
 }
 
 // registerSearch: hybrid recall over a team's drawers — vector candidates
@@ -253,7 +254,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
-		mcp.WithString("context", mcp.Description("Optional background context (reserved for future re-ranking; not used yet).")),
+		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -270,13 +271,14 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			Room:        req.GetString("room", ""),
 			Limit:       req.GetInt("limit", palace.DefaultSearchLimit),
 			MaxDistance: req.GetFloat("max_distance", palace.DefaultMaxDistance),
+			Context:     req.GetString("context", ""),
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		views := make([]searchHitView, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance}
+			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
 		}
 		return jsonResult(map[string]any{"hits": views, "count": len(views)}), nil
 	})
