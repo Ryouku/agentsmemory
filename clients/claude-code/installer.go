@@ -947,18 +947,40 @@ func (i *Installer) addStdioMCP(name, bin string, argv ...string) error {
 	return i.agent(false, append([]string{"mcp", "add", "--transport", "stdio", "--scope", i.scope, name, "--", bin}, argv...)...)
 }
 
-// agent runs the resolved agent CLI with its config-dir env var (CLAUDE_CONFIG_DIR
-// or CODEX_HOME) pinned to the target dir, so MCP/plugin registration lands in the
-// config we are installing into (a sandbox or the global dir) rather than wherever
-// the process happens to point. When ignoreErr is true a failure is swallowed —
-// used for the pre-emptive `mcp remove` and `marketplace add` that legitimately
-// fail when nothing exists.
+// agent runs the resolved agent CLI, pinning its config-dir env var
+// (CLAUDE_CONFIG_DIR / CODEX_HOME / PI_CODING_AGENT_DIR) to the target dir when —
+// and only when — that dir is NOT where the agent already looks by default. See
+// pinConfigDir for why the distinction is load-bearing. When ignoreErr is true a
+// failure is swallowed — used for the pre-emptive `mcp remove` and
+// `marketplace add` that legitimately fail when nothing exists.
 func (i *Installer) agent(ignoreErr bool, args ...string) error {
-	env := []string{i.kit.configEnv + "=" + i.targetDir}
+	var env []string
+	if i.pinConfigDir() {
+		env = []string{i.kit.configEnv + "=" + i.targetDir}
+	}
 	if err := i.runner.run(i.agentBin, args, env); err != nil && !ignoreErr {
 		return err
 	}
 	return nil
+}
+
+// pinConfigDir reports whether the agent CLI must be told where its config lives.
+//
+// A sandbox (or an explicit --config-dir) is not a place the agent looks on its
+// own, so registration there only lands correctly with the env var set — and
+// `aiagentmemory run <name>` exports the same variable at launch, so what the
+// install wrote is what the launch reads.
+//
+// The GLOBAL install is the opposite case, and pinning it is actively wrong for
+// Claude: CLAUDE_CONFIG_DIR=~/.claude moves the MCP registry from ~/.claude.json
+// to ~/.claude/.claude.json, and a later plain `claude` — with no such variable
+// exported — reads ~/.claude.json and finds no agentsmemory server. The install
+// reports success, the agent has no am_* tools, and the memory protocol then runs
+// its whole "tools are absent" ceremony against a server that is running fine.
+// Leaving the environment alone lets the agent resolve its own default, which is
+// exactly what a global install means.
+func (i *Installer) pinConfigDir() bool {
+	return i.targetDir != i.kit.globalConfigDir(homeDir())
 }
 
 // promptInstallMode asks, interactively, whether to install globally or into an

@@ -133,6 +133,52 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	}
 }
 
+// TestGlobalInstallDoesNotPinConfigDir pins the fix for the silent-no-tools bug:
+// a global install must leave the agent's config-dir variable alone. Pinning
+// CLAUDE_CONFIG_DIR=~/.claude moves the MCP registry to ~/.claude/.claude.json,
+// while a later plain `claude` reads ~/.claude.json and finds nothing.
+func TestGlobalInstallDoesNotPinConfigDir(t *testing.T) {
+	rr := &recordingRunner{}
+	inst := &Installer{
+		targetDir: claudeKit.globalConfigDir(homeDir()),
+		kit:       claudeKit,
+		agentBin:  claudeKit.bin,
+		out:       &bytes.Buffer{},
+		runner:    rr,
+	}
+	if err := inst.agent(false, "mcp", "add", "agentsmemory"); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	if len(rr.calls) != 1 {
+		t.Fatalf("expected 1 recorded call, got %d", len(rr.calls))
+	}
+	if len(rr.calls[0].env) != 0 {
+		t.Errorf("global install pinned %v; it must inherit the environment", rr.calls[0].env)
+	}
+}
+
+// TestSandboxInstallPinsConfigDir is the other half: a sandbox is not a directory
+// the agent looks in on its own, so registration only lands there with the
+// variable set — and `aiagentmemory run <name>` exports the same one at launch.
+func TestSandboxInstallPinsConfigDir(t *testing.T) {
+	rr := &recordingRunner{}
+	dir := sandboxDir("acme")
+	inst := &Installer{
+		targetDir:   dir,
+		sandboxName: "acme",
+		kit:         claudeKit,
+		agentBin:    claudeKit.bin,
+		out:         &bytes.Buffer{},
+		runner:      rr,
+	}
+	if err := inst.agent(false, "mcp", "add", "agentsmemory"); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	if want := "CLAUDE_CONFIG_DIR=" + dir; len(rr.calls[0].env) == 0 || rr.calls[0].env[0] != want {
+		t.Errorf("sandbox install env = %v, want %s", rr.calls[0].env, want)
+	}
+}
+
 func TestInstallRecommendedSequence(t *testing.T) {
 	inst, rr, _ := newTestInstaller(t, true)
 	if err := inst.run(); err != nil {
