@@ -474,6 +474,15 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	// case would train operators to ignore it.
 	switch {
 	case cfg.SocketPath != "", config.IsLoopback(cfg.Addr):
+	case publishedLoopback():
+		// Docker publishes 127.0.0.1:8080 to the host and hands the container a
+		// non-loopback bind, because a published port cannot reach a
+		// loopback-bound process. The process cannot see that boundary from
+		// inside, so the compose file states it (AGENTSMEMORY_PUBLISHED_LOOPBACK)
+		// and we trust the operator's own file over a guess we cannot make.
+		// Warning on every boot of the DEFAULT shipped path is how operators learn
+		// to scroll past warnings that matter.
+		log.Printf("--local is bound to %s inside this container; the compose file publishes it on the host loopback only.", cfg.Addr)
 	case cfg.LocalToken != "":
 		log.Printf("--local is bound to %s (beyond this machine) and is protected by --token: agents must send \"Authorization: Bearer <token>\". Anyone holding that token has full read and write access to every memory in %s.",
 			cfg.Addr, cfg.DBPath)
@@ -543,6 +552,13 @@ func agentEndpoint(addr string) string {
 	// net.ParseIP("") is nil, so the bare ":8080" form falls through to the
 	// placeholder too — it binds every interface exactly like 0.0.0.0.
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		// A container publishing to the host's loopback is the exception: the
+		// wildcard bind is then an implementation detail of the port mapping, and
+		// the URL that actually works is localhost. The operator states that in
+		// the compose file, and a hint nobody can paste is worse than none.
+		if publishedLoopback() {
+			return "http://localhost:" + port + "/mcp"
+		}
 		return "http://<this-machine-lan-ip>:" + port + "/mcp"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/mcp"
@@ -834,6 +850,22 @@ func (c crossEncoder) Rerank(ctx context.Context, query string, documents []stri
 		out[i] = palace.RerankScore{Index: s.Index, Score: s.Score}
 	}
 	return out, nil
+}
+
+// publishedLoopback reports whether the operator declared that this process's
+// port is published on the host's loopback interface only — the shape every
+// container-with-published-port has, where the container's own bind address says
+// nothing about who can reach it.
+//
+// It is deliberately an assertion the operator makes (in the compose file that
+// creates the boundary), not something inferred: a process cannot see its own
+// port mapping, and guessing wrong in either direction is worse than asking.
+func publishedLoopback() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTSMEMORY_PUBLISHED_LOOPBACK"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 // reconcileChromem fills an empty chromem index from the SQLite source of truth,

@@ -9,15 +9,20 @@
 # the session is persisted (or the reminder is acknowledged).
 #
 # Modes (env AGENTSMEMORY_STOP_HOOK):
-#   on   (default) — remind on every Stop, like mempalace.
-#   once           — remind only on the first Stop of a session, then stay quiet.
+#   once (default) — remind on the first Stop of a session, then stay quiet.
+#   on             — remind on every Stop, like mempalace.
 #   off            — disabled.
+#
+# `once` is the default because this hook exits 2, which BLOCKS the stop: on every
+# turn of a long session that is a lot of interruption for a reminder the agent
+# has already acted on. One checkpoint per session is the nudge; repeating it each
+# turn is what teaches an agent (and a human) to dismiss it unread.
 set -euo pipefail
 
 # Consume stdin so the hook is a clean filter even when nothing reads it.
 INPUT="$(cat || true)"
 
-MODE="${AGENTSMEMORY_STOP_HOOK:-on}"
+MODE="${AGENTSMEMORY_STOP_HOOK:-once}"
 [ "$MODE" = "off" ] && exit 0
 
 # Loop prevention — mirror mempalace's hook: Claude Code sets stop_hook_active=true
@@ -47,6 +52,7 @@ agentsmemory checkpoint — persist this session into team memory before stoppin
   2. am_kg_add      — new durable facts as subject -> predicate -> object triples.
   3. am_add_drawer  — notable decisions / code, verbatim, into the right wing + room.
 Use the agentsmemory MCP tools (am_ prefix). Skip only if nothing was worth
-remembering — and say so. Disable this reminder with AGENTSMEMORY_STOP_HOOK=off (or =once).
+remembering — and say so. This fires once per session; AGENTSMEMORY_STOP_HOOK=on
+reminds every turn, =off disables it.
 MSG
 exit 2
