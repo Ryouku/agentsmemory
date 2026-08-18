@@ -298,7 +298,10 @@ func (s *Service) purgeClosetSource(ctx context.Context, teamID, source string) 
 // boosts and search proceeds on vector+BM25 alone.
 func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32) map[string]float64 {
 	boosts := map[string]float64{}
-	hits, err := s.vectors.Search(ctx, closetNamespace(teamID), vec, len(closetRankBoosts))
+	// No filter: a closet summarises a whole source, so its boost is not scoped to
+	// the wing/room a search happens to be narrowed to — the drawers it lifts are
+	// filtered on their own way in.
+	hits, err := s.vectors.Search(ctx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
 	if err != nil || len(hits) == 0 {
 		return boosts
 	}

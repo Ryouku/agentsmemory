@@ -33,15 +33,6 @@ const (
 	DefaultMaxDistance  = 1.5
 	DefaultDupThreshold = 0.9
 
-	// searchCandidatePool is how many nearest neighbours to pull before applying
-	// a wing/room filter. The vector seam's Search has no server-side filter, so
-	// a filtered search must over-fetch and discard non-matching candidates in Go.
-	// This is set high enough that a wing/room with results far down the global
-	// ranking is not cut before the filter sees it; on the brute-force SQLite
-	// backend an over-fetch is free (it scans everything anyway), and Qdrant caps
-	// the scan at this bound. The principled fix — pushing the filter into the
-	// store as a payload predicate — lands with the hybrid-ranking phase.
-	searchCandidatePool = 10000
 )
 
 // Diary defaults, mirroring the frozen Python diary tools so the journal behaves
@@ -373,6 +364,23 @@ type SearchQuery struct {
 	MaxDistance float64 // drop hits farther than this; <=0 disables the filter
 }
 
+// searchFilter renders a query's wing/room scope as the backend filter, matching
+// the payload keys written at upsert time (see the Payload literals above). An
+// unscoped query yields nil, which every driver reads as "search everything".
+func searchFilter(q SearchQuery) store.Filter {
+	if q.Wing == "" && q.Room == "" {
+		return nil
+	}
+	f := store.Filter{}
+	if q.Wing != "" {
+		f["wing"] = q.Wing
+	}
+	if q.Room != "" {
+		f["room"] = q.Room
+	}
+	return f
+}
+
 // Search recalls drawers by hybrid relevance to a query. It embeds the query and
 // over-fetches a pool of nearest vector neighbours, applies the wing/room and
 // max-distance filters, then RE-RANKS the survivors by a convex blend of vector
@@ -407,15 +415,16 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
-	// lexical match outside the top-N to be promoted into it. When filtering by
-	// wing/room the survivors are a subset of the pool, so over-fetch far more
-	// (searchCandidatePool) to be sure the page can still be filled.
+	// lexical match outside the top-N to be promoted into it.
+	//
+	// The wing/room scope goes to the backend rather than being applied to the
+	// results: every candidate the index returns is already in scope, so the pool
+	// stays the size the re-rank was designed for no matter how narrow the filter
+	// is. (This used to over-fetch searchCandidatePool candidates and drop the
+	// non-matching ones here — a cost that grew with the palace and was paid on
+	// every scoped search.)
 	candidateK := limit * hybridCandidateMultiplier
-	filtering := q.Wing != "" || q.Room != ""
-	if filtering && candidateK < searchCandidatePool {
-		candidateK = searchCandidatePool
-	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK)
+	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -432,6 +441,9 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	// Keep the survivors that pass the wing/room/max-distance filters, in vector
 	// order, carrying content (for BM25) and distance (for vector similarity).
+	// The wing/room comparisons are redundant when the index honoured the filter
+	// above, and deliberately kept: the drawer row is the truth about where a
+	// drawer lives, and a stale index must never surface another wing's memory.
 	survivors := make([]SearchHit, 0, len(hits))
 	for _, h := range hits {
 		d, ok := rows[h.ID]
@@ -512,7 +524,7 @@ func (s *Service) CheckDuplicate(ctx context.Context, teamID, content string, th
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("embed content: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, 1)
+	hits, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("vector search: %w", err)
 	}

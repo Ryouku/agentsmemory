@@ -87,7 +87,7 @@ func (s *Store) Upsert(ctx context.Context, namespace string, points []store.Poi
 // Search scans the namespace and ranks every stored vector by cosine similarity.
 // Brute force is intentional: the SQLite tier is the dev/fallback path, while
 // Qdrant is the scale path for real query volume.
-func (s *Store) Search(ctx context.Context, namespace string, vector []float32, k int) ([]store.Hit, error) {
+func (s *Store) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
 	if k <= 0 {
 		return nil, nil
 	}
@@ -98,10 +98,17 @@ func (s *Store) Search(ctx context.Context, namespace string, vector []float32, 
 	queryNorm := norm(vector) // precomputed once; reused for every candidate
 	hits := make([]store.Hit, 0, len(rows))
 	for _, r := range rows {
+		payload := decodePayload(r.Payload)
+		// This backend already reads every row, so the filter is applied here
+		// rather than in SQL: the payload is an opaque JSON blob with no columns
+		// to index, and a LIKE over it would be neither faster nor correct.
+		if !payloadMatches(payload, filter) {
+			continue
+		}
 		hits = append(hits, store.Hit{
 			ID:      r.ID,
 			Score:   cosine(vector, queryNorm, decodeVector(r.Vector)),
-			Payload: decodePayload(r.Payload),
+			Payload: payload,
 		})
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
@@ -109,6 +116,23 @@ func (s *Store) Search(ctx context.Context, namespace string, vector []float32, 
 		hits = hits[:k]
 	}
 	return hits, nil
+}
+
+// payloadMatches reports whether a payload satisfies every entry of filter,
+// comparing values as strings. A nil or empty filter matches everything, and a
+// key the payload does not carry never matches — so a filter can only ever narrow
+// the result set, never widen it.
+func payloadMatches(payload map[string]any, filter store.Filter) bool {
+	for key, want := range filter {
+		got, ok := payload[key]
+		if !ok {
+			return false
+		}
+		if str, ok := got.(string); !ok || str != want {
+			return false
+		}
+	}
+	return true
 }
 
 // Delete removes the given IDs within the namespace; absent IDs are ignored.

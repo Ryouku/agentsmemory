@@ -2,11 +2,14 @@ package qdrant
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
 
 // TestCollectionNameIsDeterministicAndScoped verifies the tenancy invariant the
@@ -68,5 +71,26 @@ func TestDeleteCollection(t *testing.T) {
 	defer srv.Close()
 	if err := New(srv.URL, "", time.Second).DeleteCollection(ctx, "team-x"); err == nil {
 		t.Error("status 500: want error, got nil")
+	}
+}
+
+// TestMatchFilter pins the Qdrant request shape: a must-match clause per key, in
+// sorted order so the body is stable, and nil when there is nothing to filter on
+// (Qdrant rejects an empty filter object).
+func TestMatchFilter(t *testing.T) {
+	if got := matchFilter(nil); got != nil {
+		t.Errorf("nil filter rendered %v, want nil", got)
+	}
+	if got := matchFilter(store.Filter{}); got != nil {
+		t.Errorf("empty filter rendered %v, want nil", got)
+	}
+
+	got, err := json.Marshal(matchFilter(store.Filter{"room": "diary", "wing": "wing_two"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"must":[{"key":"room","match":{"value":"diary"}},{"key":"wing","match":{"value":"wing_two"}}]}`
+	if string(got) != want {
+		t.Errorf("filter body =\n %s\nwant\n %s", got, want)
 	}
 }

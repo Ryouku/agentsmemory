@@ -32,7 +32,7 @@ func (f *fakeSoT) Upsert(_ context.Context, ns string, pts []store.Point) error 
 	return nil
 }
 
-func (f *fakeSoT) Search(_ context.Context, _ string, _ []float32, _ int) ([]store.Hit, error) {
+func (f *fakeSoT) Search(_ context.Context, _ string, _ []float32, _ int, _ store.Filter) ([]store.Hit, error) {
 	return nil, errors.New("source of truth should not serve search")
 }
 
@@ -103,7 +103,7 @@ func (f *fakeIndex) Upsert(_ context.Context, ns string, pts []store.Point) erro
 	return nil
 }
 
-func (f *fakeIndex) Search(_ context.Context, _ string, _ []float32, _ int) ([]store.Hit, error) {
+func (f *fakeIndex) Search(_ context.Context, _ string, _ []float32, _ int, _ store.Filter) ([]store.Hit, error) {
 	return f.searchHits, nil
 }
 
@@ -166,7 +166,7 @@ func TestHybridSearchRoutesToIndex(t *testing.T) {
 	idx.searchHits = []store.Hit{{ID: "a", Score: 0.9}}
 	h := store.NewHybrid(sot, idx)
 
-	hits, err := h.Search(context.Background(), "team1", []float32{1, 0}, 5)
+	hits, err := h.Search(context.Background(), "team1", []float32{1, 0}, 5, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err) // would error if it hit the SoT
 	}
