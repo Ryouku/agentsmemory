@@ -1,0 +1,135 @@
+# agentsmemory — the full-quality overlay: Qdrant for search, a cross-encoder for
+# precision, and (optionally) Ollama in the stack so nothing has to be installed
+# on the host first.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
+#
+# ...and, if you have no Ollama on the host, add the embedder too:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml --profile ollama up -d
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml exec ollama ollama pull bge-m3
+#
+# WHY THIS IS AN OVERLAY AND NOT THE DEFAULT
+# The base file is deliberately one container: no second service to run, wait for,
+# or back up. That is the right default for one person on one machine, and it
+# stays the default. This file is for when recall quality matters more than
+# dependency count — a palace big enough that an in-process index costs real
+# memory, or a team sharing one index.
+#
+# SWITCHING AN EXISTING INSTALL
+# SQLite is the source of truth, so nothing is re-embedded: after the first
+# `up -d` with this overlay, replay the stored vectors into Qdrant once with
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml run --rm agentsmemory sync
+#
+# Going back is just dropping the -f docker-compose.full.yml — the chromem index
+# is still on the volume, and the server refills it from SQLite if it is not.
+#
+# WHAT THE CROSS-ENCODER BUYS
+# The embedder scores a drawer against a query it never saw; a cross-encoder reads
+# the pair together. It only runs over the top RERANK_TOP_K candidates hybrid
+# ranking already surfaced, so the cost is bounded per search rather than per
+# palace. If the reranker is down, search silently falls back to the fused
+# vector+BM25 ranking — it refines recall, it is never required for it.
+
+services:
+  agentsmemory:
+    # depends_on is start ORDER, not readiness — but both neighbours below have
+    # healthchecks, so service_healthy makes it readiness here. A cold first boot
+    # therefore no longer races Qdrant (the failure was "ensure local vector
+    # namespace: ... connection refused" recovered by a restart).
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+    environment:
+      # These win over .env.docker: an overlay that needs the operator to also
+      # edit an env file is an overlay that half-applies.
+      VECTOR_BACKEND: qdrant
+      QDRANT_URL: http://qdrant:6333
+      RERANK_URL: http://reranker:8080/v1/rerank
+      RERANK_MODEL: bge-reranker-v2-m3
+      RERANK_TOP_K: "50"
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.0
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      # Loopback only: this port is unauthenticated unless you set a Qdrant API
+      # key. Drop the mapping entirely if you do not want the dashboard at
+      # http://localhost:6333/dashboard — the server reaches Qdrant over the
+      # compose network either way.
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      # Qdrant's image has no curl or wget, but it does have bash — so /dev/tcp
+      # is the portable probe here. It answers as soon as the HTTP port accepts,
+      # which is exactly the readiness the server needs.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  reranker:
+    # llama.cpp's server, which ships native arm64 AND amd64 images and serves a
+    # Cohere-shaped /v1/rerank. text-embeddings-inference is the better-known
+    # option and speaks the same client (see internal/rerank), but it publishes
+    # amd64 only — on Apple Silicon it would run under emulation, which is slower
+    # than the CPU inference it is meant to accelerate. Point RERANK_URL at TEI
+    # instead if you deploy on x86 and prefer it.
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    command:
+      # Q4_K_M keeps a 568M-parameter cross-encoder around 360MB of RAM and
+      # answers a 50-candidate rerank in well under a second on CPU. The model is
+      # fetched once into the volume below, not baked into the image.
+      - "-hf"
+      - "gpustack/bge-reranker-v2-m3-GGUF:Q4_K_M"
+      - "--reranking"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      # A drawer is at most ~1600 characters (see palace.ChunkSize) and the query
+      # is capped at 250, so 2048 tokens of context is enough for a query/drawer
+      # pair with room to spare.
+      - "-c"
+      - "2048"
+    volumes:
+      - reranker-models:/root/.cache/llama.cpp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      # Generous: the first start downloads the model. Later starts hit the cache
+      # and pass on the first probe.
+      retries: 60
+      start_period: 30s
+
+  ollama:
+    # Opt-in, because most people already run Ollama on the host and a second copy
+    # re-downloads several GB. It is here so a machine with nothing installed can
+    # still get a complete stack from one command.
+    #
+    # On macOS and Windows a containerised Ollama is CPU-only — Docker cannot
+    # reach Metal — so the host install is meaningfully faster. Prefer it, and
+    # keep this profile for Linux boxes and CI.
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  qdrant-data:
+  reranker-models:
+  ollama-models:
