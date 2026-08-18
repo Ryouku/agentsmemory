@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -580,7 +581,15 @@ func (s *Service) crossEncode(ctx context.Context, query string, hits []SearchHi
 		docs[i] = hits[i].Drawer.Content
 	}
 	scores, err := s.reranker.Rerank(ctx, query, docs)
-	if err != nil || len(scores) == 0 {
+	if err != nil {
+		// Degrade, but say so. A silent fallback means a reranker that has been
+		// broken for a week looks exactly like one that is working — the operator
+		// only sees results that are slightly worse than they should be, with
+		// nothing anywhere to explain why.
+		log.Printf("search: reranker unavailable, keeping the hybrid order: %v", err)
+		return hits
+	}
+	if len(scores) == 0 {
 		return hits
 	}
 

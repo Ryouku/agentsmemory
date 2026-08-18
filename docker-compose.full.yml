@@ -98,6 +98,16 @@ services:
       # pair with room to spare.
       - "-c"
       - "2048"
+      # ...but context is not the binding constraint: a cross-encoder scores the
+      # pair in ONE forward pass, so the whole pair must fit in a single physical
+      # batch. llama.cpp defaults that to 512 and answers a real drawer with
+      # `input (538 tokens) is too large to process. increase the physical batch
+      # size`, which the server then degrades to the hybrid order. Both batch
+      # sizes therefore match the context window.
+      - "-b"
+      - "2048"
+      - "-ub"
+      - "2048"
     volumes:
       - reranker-models:/root/.cache/llama.cpp
     healthcheck:
