@@ -230,6 +230,10 @@ func initCommand() *cli.Command {
 				Name:  "agent",
 				Usage: "agent CLI to launch: claude | codex | pi (recorded in " + projectConfigFile + ")",
 			},
+			&cli.StringFlag{
+				Name:  "wing",
+				Usage: "memory wing this project's drawers and diary entries are filed under (recorded in " + projectConfigFile + "; default: derived from the git remote)",
+			},
 		},
 		Action: func(_ context.Context, c *cli.Command) error {
 			dir, err := os.Getwd()
@@ -255,12 +259,15 @@ func initCommand() *cli.Command {
 				}
 			}
 
-			cfg := projectConfig{agent: agent, args: c.Args().Slice()}
+			cfg := projectConfig{agent: agent, args: c.Args().Slice(), wing: c.String("wing")}
 			path := filepath.Join(dir, projectConfigFile)
 			if err := os.WriteFile(path, renderProjectConfig(cfg), 0o644); err != nil {
 				return fmt.Errorf("write %s: %w", path, err)
 			}
 			fmt.Printf("wrote %s (agent %s)\n", projectConfigFile, agentOrDefault(agent))
+			if cfg.wing != "" {
+				fmt.Printf("  memory wing: %s\n", cfg.wing)
+			}
 			if len(cfg.args) > 0 {
 				fmt.Printf("  agent flags: %s\n", formatArgs(cfg.args))
 			}
@@ -301,7 +308,11 @@ func loadCommand() *cli.Command {
 			"sandbox in this order, most specific first:\n" +
 			"  --sandbox  >  $" + sandboxEnvVar + "  >  ~/.sandboxes/" + agentRegistryFile + "  >  " + projectLocalFile + "  >  " + projectConfigFile + "\n\n" +
 			"Arguments after -- are appended to the recorded flags, so they win when\n" +
-			"the same flag appears in both.",
+			"the same flag appears in both.\n\n" +
+			"The project's memory wing resolves as $" + wingEnvVar + "  >  " + projectLocalFile +
+			"  >  " + projectConfigFile + ",\n" +
+			"and is exported to the agent as $" + wingEnvVar + ". Unset means the memory protocol\n" +
+			"derives one from the git remote.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "sandbox",
@@ -331,6 +342,7 @@ func loadCommand() *cli.Command {
 				local:       local,
 				shared:      shared,
 				extraArgs:   c.Args().Slice(),
+				envWing:     os.Getenv(wingEnvVar),
 			})
 			if err != nil {
 				return err
@@ -344,6 +356,9 @@ func loadCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
+			// The wing rides along with the config dir: both are things the agent
+			// cannot work out for itself from inside a sandbox.
+			plan.wing = res.wing
 			if plan.configDir == "" {
 				// planRun falls back to launching an agent of the same name when
 				// the sandbox is missing, which is right for `run claude` but

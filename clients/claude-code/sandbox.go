@@ -60,6 +60,13 @@ type launchPlan struct {
 	bin       string
 	configDir string
 	configEnv string
+
+	// wing is the project's memory wing, exported to the agent as
+	// $AGENTSMEMORY_WING so the memory protocol files this project's drawers and
+	// diary entries apart from every other project sharing the same palace. Empty
+	// means "not configured here" — the protocol then derives one from the git
+	// remote rather than defaulting everything into one shared wing.
+	wing string
 }
 
 // planRun decides what `run <name>` launches for the selected kit. Sandboxes win:
@@ -124,6 +131,9 @@ func execAgent(kit agentKit, plan launchPlan, agentArgs []string) error {
 	}
 	for k, v := range tokenEnv(configDir) {
 		env = setEnv(env, k, v)
+	}
+	if plan.wing != "" {
+		env = setEnv(env, wingEnvVar, plan.wing)
 	}
 
 	// Shared credentials can stop being shared without anyone noticing: an agent
