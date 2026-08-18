@@ -149,7 +149,7 @@ func fromTunnelRow(r tunnelRow) Tunnel {
 		ID: r.ID, TeamID: r.TeamID,
 		Source: Endpoint{Wing: r.SourceWing, Room: r.SourceRoom, DrawerID: r.SourceDrawerID},
 		Target: Endpoint{Wing: r.TargetWing, Room: r.TargetRoom, DrawerID: r.TargetDrawerID},
-		Label: r.Label, Kind: TunnelKind(r.Kind), CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		Label:  r.Label, Kind: TunnelKind(r.Kind), CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 		Dynamics: Dynamics{Strength: r.Strength, Stability: r.Stability, LastActivated: r.LastActivated, AccessCount: r.AccessCount},
 	}
 }
@@ -224,9 +224,9 @@ func (r *Repo) DeleteTunnelsByKind(ctx context.Context, teamID string, kind Tunn
 // recent content date seen — the raw rows build-graph folds into the room->wings
 // view. The "general" room and blank wings are excluded as in the frozen graph.
 type RoomWing struct {
-	Room  string `gorm:"column:room"`
-	Wing  string `gorm:"column:wing"`
-	Count int    `gorm:"column:count"`
+	Room   string `gorm:"column:room"`
+	Wing   string `gorm:"column:wing"`
+	Count  int    `gorm:"column:count"`
 	Recent string `gorm:"column:recent"`
 }
 

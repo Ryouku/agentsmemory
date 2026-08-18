@@ -13,6 +13,10 @@
 #   on             — remind on every Stop, like mempalace.
 #   off            — disabled.
 #
+# It also prints a short recall report from a self-hosted server (AGENTSMEMORY_STATS=off
+# to suppress, AGENTSMEMORY_STATS_HOURS to widen the window, AGENTSMEMORY_STATS_URL
+# to point elsewhere) — see the bottom of this file for why that belongs here.
+#
 # `once` is the default because this hook exits 2, which BLOCKS the stop: on every
 # turn of a long session that is a lot of interruption for a reminder the agent
 # has already acted on. One checkpoint per session is the nudge; repeating it each
@@ -55,4 +59,22 @@ Use the agentsmemory MCP tools (am_ prefix). Skip only if nothing was worth
 remembering — and say so. This fires once per session; AGENTSMEMORY_STOP_HOOK=on
 reminds every turn, =off disables it.
 MSG
+
+# ...and the half a reminder cannot give you: whether the memory is actually
+# EARNING its place. A checkpoint that only ever asks for writes trains a team to
+# fill a cabinet nobody opens. These lines say how many recalls this session ran,
+# how many came back with something, and — most useful of all — what it looked for
+# and did not find.
+#
+# Self-hosted only, and deliberately silent when anything is off: no server, an
+# older server without /stats, no curl. A statistics line must never be the reason
+# a Stop hook fails.
+STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?hours=${AGENTSMEMORY_STATS_HOURS:-2}}"
+if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; then
+  AUTH=()
+  [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}")
+  STATS="$(curl -fsS -m 3 "${AUTH[@]}" "$STATS_URL" 2>/dev/null || true)"
+  [ -n "$STATS" ] && printf '\n%s' "$STATS" >&2
+fi
+
 exit 2

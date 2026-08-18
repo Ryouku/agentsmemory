@@ -2,12 +2,62 @@ package mcpserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+// registerRecallStats adds recall_stats: is the memory being used, and does it
+// answer? Drawer counts say how much is remembered; this says whether remembering
+// is working, which is the only question an operator can act on.
+func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+	tool := newTool("recall_stats",
+		mcp.WithDescription("How well memory is working, per wing: searches run, how many came back with something, drawers held, and the recent queries that found NOTHING (the memories the team looked for and does not have). Use it to see whether recall is earning its keep rather than guessing."),
+		mcp.WithNumber("hours", mcp.Description("Window to report on, in hours (default 24).")),
+		mcp.WithNumber("unanswered", mcp.Description("How many unanswered queries to list (default 10).")),
+	)
+	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, errResult, ok := admit(ctx, usageSvc)
+		if !ok {
+			return errResult, nil
+		}
+		hours := req.GetInt("hours", 24)
+		if hours <= 0 {
+			hours = 24
+		}
+		stats, err := drawers.RecallStats(ctx, t.TeamID, time.Duration(hours)*time.Hour, req.GetInt("unanswered", 10))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		wings := make([]map[string]any, 0, len(stats.Wings))
+		for _, w := range stats.Wings {
+			wings = append(wings, map[string]any{
+				"wing":          w.Wing,
+				"searches":      w.Searches,
+				"answered":      w.Answered,
+				"answered_pct":  w.AnsweredPct(),
+				"avg_top_score": w.AvgTop,
+				"drawers":       w.Drawers,
+				"last_used":     w.LastUsed,
+				"last_filed":    w.LastFiled,
+			})
+		}
+		return jsonResult(map[string]any{
+			"window_hours": hours,
+			"since":        stats.Since,
+			"searches":     stats.Searches,
+			"answered":     stats.Answered,
+			"answered_pct": stats.AnsweredPct(),
+			"writes":       stats.Writes,
+			"wings":        wings,
+			"unanswered":   stats.Unanswered,
+			"hint":         "answered_pct climbing over weeks means the palace is learning the questions this team actually asks; a wing with drawers and no searches is written-to and never read.",
+		}), nil
+	})
+}
 
 // registerAdmin wires the palace-maintenance tools: merge_wing (fold wings
 // together) and memories_filed_away (a recent-activity summary). The frozen sync

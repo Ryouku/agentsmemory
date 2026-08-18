@@ -598,7 +598,33 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	if len(ordered) > limit {
 		ordered = ordered[:limit]
 	}
+
+	// Record what this recall found. Best-effort by construction: measurement must
+	// never be able to fail the thing it measures, so the write ignores its error
+	// and happens after the page is final.
+	ev := searchEventRow{
+		TeamID:     teamID,
+		Wing:       q.Wing,
+		Room:       q.Room,
+		Query:      query,
+		Candidates: len(hits),
+		Hits:       len(ordered),
+		Reranked:   boolToInt(s.reranker != nil),
+	}
+	if len(ordered) > 0 {
+		ev.TopScore = ordered[0].Score
+	}
+	s.repo.recordSearch(ctx, ev)
+
 	return ordered, nil
+}
+
+// boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // crossEncode reorders the head of a hybrid-ranked page with the configured

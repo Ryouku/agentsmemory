@@ -19,7 +19,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
@@ -465,6 +467,11 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	local := auth.LocalTenant(t, cfg.LocalToken)
 	r.Handle("/mcp", local(mcpHandler))
 	r.Handle("/import", local(importer.Handler(svc.drawers, svc.usage)))
+	// A plain-text recall report, for things that are not MCP clients — the Stop
+	// hook prints it at the end of a session. It exists as its own endpoint
+	// because the alternative is asking a bash script to speak JSON-RPC over a
+	// streamable-HTTP transport to read six numbers.
+	r.Handle("/stats", local(recallStatsHandler(svc.drawers, t.TeamID)))
 
 	// The exposure warning is about an unauthenticated TCP port, so both escapes
 	// silence it. A socket is bound at 0600, so the operating system already
@@ -831,6 +838,65 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
 			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
 	}
+}
+
+// recallStatsHandler serves the recall report as plain text: GET /stats?hours=1.
+//
+// Text, not JSON, because its only readers are a human and a Stop hook echoing it
+// into a terminal. A report nobody can read at a glance is a report nobody reads.
+func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hours := 1
+		if v := r.URL.Query().Get("hours"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				hours = n
+			}
+		}
+		stats, err := drawers.RecallStats(r.Context(), teamID, time.Duration(hours)*time.Hour, 5)
+		if err != nil {
+			http.Error(w, "recall stats: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+		var b strings.Builder
+		if stats.Searches == 0 && stats.Writes == 0 {
+			fmt.Fprintf(&b, "memory: nothing recalled or filed in the last %dh\n", hours)
+			_, _ = io.WriteString(w, b.String())
+			return
+		}
+		fmt.Fprintf(&b, "memory, last %dh: %s recalled, %d answered (%d%%), %s filed\n",
+			hours, plural(stats.Searches, "search", "searches"), stats.Answered, stats.AnsweredPct(),
+			plural(stats.Writes, "memory", "memories"))
+		for _, wing := range stats.Wings {
+			if wing.Searches == 0 && wing.Drawers == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "  %-24s %d/%d answered", wing.Wing, wing.Answered, wing.Searches)
+			if wing.Searches > 0 {
+				fmt.Fprintf(&b, " (%d%%)", wing.AnsweredPct())
+			}
+			fmt.Fprintf(&b, ", %s\n", plural(wing.Drawers, "drawer", "drawers"))
+		}
+		if len(stats.Unanswered) > 0 {
+			// The most useful line in the report: each of these is a memory the
+			// team went looking for and does not have.
+			b.WriteString("  found nothing for: ")
+			b.WriteString(strings.Join(stats.Unanswered, " | "))
+			b.WriteString("\n")
+		}
+		_, _ = io.WriteString(w, b.String())
+	})
+}
+
+// plural renders a count with the right noun, because this report is read by a
+// human at the end of a session and "1 searches" is the kind of detail that makes
+// a tool feel unowned.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // crossEncoder adapts the rerank client to the palace's Reranker seam. The two

@@ -62,11 +62,11 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 // FiledAwayResult is the memories_filed_away summary: how much a team has filed,
 // when it last filed, and the breadth of its palace.
 type FiledAwayResult struct {
-	Count        int64  `json:"count"`
-	Wings        int64  `json:"wings"`
-	Rooms        int64  `json:"rooms"`
-	LastFiledAt  string `json:"last_filed_at,omitempty"`
-	Message      string `json:"message"`
+	Count       int64  `json:"count"`
+	Wings       int64  `json:"wings"`
+	Rooms       int64  `json:"rooms"`
+	LastFiledAt string `json:"last_filed_at,omitempty"`
+	Message     string `json:"message"`
 }
 
 // MemoriesFiledAway summarises what a team has stored — total drawers, distinct
