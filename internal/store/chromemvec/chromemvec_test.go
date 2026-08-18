@@ -2,6 +2,7 @@ package chromemvec
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,6 +25,53 @@ func newTestIndex(t *testing.T) *Index {
 // index rather than by the caller: the nearest vector is in the wrong wing, and a
 // filtered search must skip past it instead of returning it for the caller to
 // discard.
+// TestOpenDiscardsAnOlderIndexLayout covers the upgrade path for an install that
+// already has an index on disk: a directory written before the flat filter keys
+// existed must be thrown away and rebuilt, not read. Reading it would silently
+// return an empty page for every wing-scoped search — a wrong answer, where a
+// rebuild costs only a replay of vectors SQLite still holds.
+func TestOpenDiscardsAnOlderIndexLayout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agentsmemory.chromem")
+	if err := os.MkdirAll(filepath.Join(dir, "team1"), 0o755); err != nil {
+		t.Fatalf("seed old index: %v", err)
+	}
+	stale := filepath.Join(dir, "team1", "doc.gob")
+	if err := os.WriteFile(stale, []byte("pre-v2 document"), 0o644); err != nil {
+		t.Fatalf("seed old document: %v", err)
+	}
+
+	if _, err := New(dir); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale document survived the layout change (err=%v)", err)
+	}
+	stamp, err := os.ReadFile(filepath.Join(dir, schemaFile))
+	if err != nil || string(stamp) != schemaVersion {
+		t.Errorf("schema stamp = %q (err %v), want %q", stamp, err, schemaVersion)
+	}
+
+	// Re-opening a stamped directory must keep what is in it — otherwise every
+	// restart would throw the index away and pay for a full rebuild.
+	idx, err := New(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if err := idx.Upsert(context.Background(), "team1", []store.Point{{ID: "a", Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := New(dir); err != nil {
+		t.Fatalf("third open: %v", err)
+	}
+	again, err := New(dir)
+	if err != nil {
+		t.Fatalf("fourth open: %v", err)
+	}
+	if n, err := again.Count("team1"); err != nil || n != 1 {
+		t.Errorf("reopen lost the index: count=%d err=%v", n, err)
+	}
+}
+
 func TestSearchFilterNarrowsToPayload(t *testing.T) {
 	idx := newTestIndex(t)
 	ctx := context.Background()
