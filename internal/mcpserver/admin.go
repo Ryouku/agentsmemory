@@ -10,6 +10,83 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// registerAnchors wires the two halves of staleness detection: list_anchors hands
+// out the questions, mark_anchors takes back the answers.
+//
+// The split exists because the server usually cannot see the code it stores
+// memories about — it runs in a container, the repository is on someone's laptop.
+// Whoever CAN read the working tree (the `aiagentmemory verify` command) does the
+// checking; the server only keeps score.
+func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+	list := newTool("list_anchors",
+		mcp.WithDescription("List code anchors — the (file, snippet) pairs memories are pinned to — so a client that can read the working tree can verify them. Filter by wing, repo label, or status (unchecked|verified|drifted|missing)."),
+		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing.")),
+		mcp.WithString("repo", mcp.Description("Only anchors carrying this repo label.")),
+		mcp.WithString("status", mcp.Description("Only anchors in this state.")),
+		mcp.WithNumber("limit", mcp.Description("Max anchors to return (default 500).")),
+	)
+	reg.add(list, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, errResult, ok := admit(ctx, usageSvc)
+		if !ok {
+			return errResult, nil
+		}
+		anchors, err := drawers.ListAnchors(ctx, t.TeamID, palace.AnchorFilter{
+			Wing:   req.GetString("wing", ""),
+			Repo:   req.GetString("repo", ""),
+			Status: req.GetString("status", ""),
+			Limit:  req.GetInt("limit", 0),
+		})
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		out := make([]map[string]any, 0, len(anchors))
+		for _, a := range anchors {
+			out = append(out, map[string]any{
+				"id": a.ID, "drawer_id": a.DrawerID, "repo": a.Repo, "path": a.Path,
+				"snippet": a.Snippet, "status": a.Status, "line": a.Line, "checked_at": a.CheckedAt,
+			})
+		}
+		return jsonResult(map[string]any{"anchors": out, "count": len(out)}), nil
+	})
+
+	mark := newTool("mark_anchors",
+		mcp.WithDescription("Record verification verdicts for code anchors: [{\"id\":\"<anchor id>\",\"status\":\"verified|drifted|missing\",\"line\":123}]. Writes only the verdict, never the memory, so stamping never re-embeds anything."),
+		mcp.WithArray("verdicts", mcp.Required(), mcp.Description("The results, one object per anchor checked.")),
+	)
+	reg.add(mark, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, errResult, ok := admit(ctx, usageSvc)
+		if !ok {
+			return errResult, nil
+		}
+		raw, ok := req.GetArguments()["verdicts"].([]any)
+		if !ok {
+			return mcp.NewToolResultError("verdicts must be an array of {id, status, line} objects"), nil
+		}
+		verdicts := make([]palace.AnchorVerdict, 0, len(raw))
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			status, _ := m["status"].(string)
+			line := 0
+			if f, ok := m["line"].(float64); ok {
+				line = int(f)
+			}
+			if id == "" || status == "" {
+				continue
+			}
+			verdicts = append(verdicts, palace.AnchorVerdict{ID: id, Status: status, Line: line})
+		}
+		n, err := drawers.MarkAnchors(ctx, t.TeamID, verdicts)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"marked": n}), nil
+	})
+}
+
 // registerRecallStats adds recall_stats: is the memory being used, and does it
 // answer? Drawer counts say how much is remembered; this says whether remembering
 // is working, which is the only question an operator can act on.

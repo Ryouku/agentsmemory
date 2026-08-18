@@ -52,6 +52,7 @@ func main() {
 		Version: version,
 		Commands: []*cli.Command{
 			installCommand(),
+			verifyCommand(),
 			updateCommand(),
 			updateSkillCommand(),
 			initCommand(),

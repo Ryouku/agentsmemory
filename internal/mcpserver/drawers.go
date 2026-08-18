@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
@@ -82,6 +83,11 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to remember — stored exactly, never summarised.")),
 		mcp.WithString("source_file", mcp.Description("Optional provenance of the content (a path or label).")),
 		mcp.WithString("content_date", mcp.Description("Optional date the memory is about (e.g. 2026-06-26).")),
+		mcp.WithArray("code_anchors", mcp.Description(
+			"Optional: pin this memory to the code it is about, as [{\"path\":\"internal/x/y.go\",\"snippet\":\"<verbatim lines>\",\"repo\":\"<optional label>\"}]. "+
+				"Paste the exact code, NOT a line number — line numbers move on every edit above them. When the snippet later "+
+				"disappears from the file, search marks this memory STALE instead of letting the next session act on a fact "+
+				"that stopped being true. Anchor whenever a memory explains a specific piece of code.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -115,6 +121,19 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 			views[i] = toView(d)
 		}
 		out := map[string]any{"ok": true, "chunks": len(created.Drawers), "drawers": views}
+
+		// Anchors pin the FIRST chunk: it is the parent handle for a multi-chunk
+		// write, and the one search returns as the memory's identity.
+		if anchors := parseAnchors(req.GetArguments()["code_anchors"]); len(anchors) > 0 && len(created.Drawers) > 0 {
+			n, err := drawers.AddAnchors(ctx, t.TeamID, created.Drawers[0].ID, anchors)
+			if err != nil {
+				// The memory is already filed; an anchor failure must not present
+				// as a failed write, so it is reported beside the success.
+				out["anchor_error"] = err.Error()
+			} else {
+				out["code_anchors"] = n
+			}
+		}
 		if created.PendingEmbedding {
 			// Say it in a field the caller can branch on AND in prose it will read
 			// out loud. A memory that is stored but not yet searchable looks
@@ -125,6 +144,31 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		}
 		return jsonResult(out), nil
 	})
+}
+
+// parseAnchors reads the code_anchors argument: a list of {path, snippet, repo}
+// objects. It is tolerant by design — an unparseable entry is skipped rather than
+// failing the write, because the memory itself is worth more than its anchor.
+func parseAnchors(raw any) []palace.AnchorInput {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]palace.AnchorInput, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := m["path"].(string)
+		snippet, _ := m["snippet"].(string)
+		repo, _ := m["repo"].(string)
+		if strings.TrimSpace(path) == "" || strings.TrimSpace(snippet) == "" {
+			continue
+		}
+		out = append(out, palace.AnchorInput{Repo: repo, Path: path, Snippet: snippet})
+	}
+	return out
 }
 
 // pendingEmbeddingWarning is the one sentence a caller must pass on when a write
@@ -263,6 +307,18 @@ type searchHitView struct {
 	// into score because the two are not on the same scale — an agent reading the
 	// page should be able to see which signal decided the order.
 	RerankScore float64 `json:"rerank_score,omitempty"`
+	// Anchors are the code this memory was written about, with the verdict of the
+	// last verification pass. Stale is the summary an agent should branch on.
+	Anchors []anchorView `json:"code_anchors,omitempty"`
+	Stale   bool         `json:"stale,omitempty"`
+}
+
+// anchorView is one code anchor as search reports it.
+type anchorView struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"` // unchecked | verified | drifted | missing
+	Line      int    `json:"line,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 // registerSearch: hybrid recall over a team's drawers — vector candidates
@@ -297,10 +353,37 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		views := make([]searchHitView, len(hits))
+		ids := make([]string, len(hits))
 		for i, h := range hits {
 			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
+			ids[i] = h.Drawer.ID
 		}
-		return jsonResult(map[string]any{"hits": views, "count": len(views)}), nil
+		// Staleness travels WITH the memory. A recalled sentence about code that
+		// has since changed is the one failure mode a confident agent cannot catch
+		// on its own — it reads as knowledge either way.
+		stale := 0
+		if anchors, err := drawers.AnchorsForDrawers(ctx, t.TeamID, ids); err == nil {
+			for i := range views {
+				for _, a := range anchors[ids[i]] {
+					views[i].Anchors = append(views[i].Anchors, anchorView{
+						Path: a.Path, Status: a.Status, Line: a.Line, CheckedAt: a.CheckedAt,
+					})
+					if a.Stale() {
+						views[i].Stale = true
+					}
+				}
+				if views[i].Stale {
+					stale++
+				}
+			}
+		}
+		out := map[string]any{"hits": views, "count": len(views)}
+		if stale > 0 {
+			out["stale_hits"] = stale
+			out["warning"] = "some hits are marked STALE: the code they were written about has changed since. " +
+				"Re-read that code before acting on the memory, and re-file the memory if it is now wrong."
+		}
+		return jsonResult(out), nil
 	})
 }
 

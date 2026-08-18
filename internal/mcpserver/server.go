@@ -126,6 +126,8 @@ func New(deps Deps) *server.MCPServer {
 	registerAdmin(reg, deps.Drawers, deps.Usage)
 	// Recall measurement: how well the memory answers, per wing.
 	registerRecallStats(reg, deps.Drawers, deps.Usage)
+	// Staleness: pin memories to code, and record what verification found.
+	registerAnchors(reg, deps.Drawers, deps.Usage)
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)

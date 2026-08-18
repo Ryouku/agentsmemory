@@ -1,0 +1,316 @@
+// verify.go implements `aiagentmemory verify`: the half of staleness detection
+// that has to run where the code is.
+//
+// A memory that explains code is the most valuable kind — it carries the WHY the
+// code itself never states — and the only kind that can go quietly wrong. The
+// code gets fixed, the sentence does not, and the next session recalls it with
+// full confidence. Nothing in the palace can notice on its own: the server
+// usually runs in a container and has never seen the repository.
+//
+// So the split is deliberate. The server holds the anchors (file + verbatim
+// snippet) and the verdicts; this command reads the working tree, decides which
+// anchors still match, and posts the answers back. It needs no parser and no
+// index: the snippet is either still in the file or it is not.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/urfave/cli/v3"
+)
+
+// anchor is one pin as the server hands it out.
+type anchor struct {
+	ID       string `json:"id"`
+	DrawerID string `json:"drawer_id"`
+	Repo     string `json:"repo"`
+	Path     string `json:"path"`
+	Snippet  string `json:"snippet"`
+	Status   string `json:"status"`
+}
+
+// verdict is what we send back.
+type verdict struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Line   int    `json:"line,omitempty"`
+}
+
+// Verdict values, mirroring internal/palace's anchor statuses.
+const (
+	statusVerified = "verified"
+	statusDrifted  = "drifted"
+	statusMissing  = "missing"
+)
+
+// verifyCommand builds `verify`.
+func verifyCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "verify",
+		Usage: "check that memories still match the code they were written about",
+		Description: "Reads the code anchors filed with this project's memories and checks each\n" +
+			"verbatim snippet against the working tree, then records the verdicts.\n\n" +
+			"A memory whose snippet has vanished is marked DRIFTED, and search says so\n" +
+			"on every later recall — which is the difference between remembering and\n" +
+			"misleading. Run it after a refactor, or from a session-start hook.\n\n" +
+			"The wing defaults to $" + wingEnvVar + " or the nearest " + projectConfigFile + ".",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "wing", Usage: "verify anchors on drawers in this wing (default: the project's wing)"},
+			&cli.StringFlag{Name: "repo", Usage: "verify anchors carrying this repo label"},
+			&cli.StringFlag{Name: "root", Usage: "repository root the paths are relative to (default: the working directory)"},
+			&cli.StringFlag{Name: "mcp-url", Sources: cli.EnvVars(mcpURLEnvVar), Value: defaultMCPURL, Usage: "agentsmemory MCP endpoint"},
+			&cli.StringFlag{Name: "token", Sources: cli.EnvVars(tokenEnvVar), Usage: "workspace token (a --local server needs none)"},
+			&cli.BoolFlag{Name: "dry-run", Usage: "report what changed without recording any verdict"},
+		},
+		Action: func(ctx context.Context, c *cli.Command) error {
+			return runVerify(ctx, c, os.Stdout)
+		},
+	}
+}
+
+// runVerify is the whole flow: fetch anchors, check them on disk, post verdicts.
+func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
+	root := c.String("root")
+	if root == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("determine the repository root: %w", err)
+		}
+		root = wd
+	}
+	wing := c.String("wing")
+	if wing == "" {
+		wing = resolveProjectWing(root)
+	}
+
+	cli, err := dialMCP(ctx, c.String("mcp-url"), c.String("token"), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cli.Close()
+
+	anchors, err := listAnchors(ctx, cli, wing, c.String("repo"))
+	if err != nil {
+		return err
+	}
+	if len(anchors) == 0 {
+		fmt.Fprintf(out, "no code anchors filed%s — nothing to verify.\n", wingLabel(wing))
+		fmt.Fprintf(out, "Anchor a memory by passing code_anchors to am_add_drawer: the file and the verbatim lines it is about.\n")
+		return nil
+	}
+
+	// Read each file once: several memories usually pin the same file, and a
+	// re-read per anchor turns a fast check into a slow one on a large palace.
+	files := map[string]*sourceFile{}
+	var verdicts []verdict
+	var drifted, missing, verified int
+	for _, a := range anchors {
+		src, ok := files[a.Path]
+		if !ok {
+			src = readSource(filepath.Join(root, a.Path))
+			files[a.Path] = src
+		}
+		v := verdict{ID: a.ID}
+		switch {
+		case !src.exists:
+			v.Status, missing = statusMissing, missing+1
+			fmt.Fprintf(out, "  MISSING  %s — file is gone (memory %s)\n", a.Path, short(a.DrawerID))
+		default:
+			if line, ok := src.find(a.Snippet); ok {
+				v.Status, v.Line, verified = statusVerified, line, verified+1
+			} else {
+				v.Status, drifted = statusDrifted, drifted+1
+				fmt.Fprintf(out, "  DRIFTED  %s — the pinned code is no longer there (memory %s)\n", a.Path, short(a.DrawerID))
+				fmt.Fprintf(out, "           was: %s\n", firstLine(a.Snippet, 88))
+			}
+		}
+		verdicts = append(verdicts, v)
+	}
+
+	if c.Bool("dry-run") {
+		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing (dry run — nothing recorded)\n",
+			len(anchors), wingLabel(wing), verified, drifted, missing)
+		return nil
+	}
+	marked, err := markAnchors(ctx, cli, verdicts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing — %d verdict(s) recorded\n",
+		len(anchors), wingLabel(wing), verified, drifted, missing, marked)
+	if drifted+missing > 0 {
+		fmt.Fprintf(out, "Search now flags those memories as STALE. Re-read the code and re-file whichever are wrong.\n")
+	}
+	return nil
+}
+
+// sourceFile is one file's contents, read once and reused across the anchors that
+// point at it.
+type sourceFile struct {
+	exists     bool
+	lines      []string
+	normalized []string // whitespace-collapsed, for matching
+}
+
+// readSource loads a file, tolerating absence — a deleted file is a verdict, not
+// an error.
+func readSource(path string) *sourceFile {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return &sourceFile{}
+	}
+	lines := strings.Split(string(raw), "\n")
+	norm := make([]string, len(lines))
+	for i, l := range lines {
+		norm[i] = normalizeSnippet(l)
+	}
+	return &sourceFile{exists: true, lines: lines, normalized: norm}
+}
+
+// find reports whether the snippet is still in the file, and on which line it
+// starts (1-based).
+//
+// Matching is whitespace-normalized and line-by-line so a re-indent, a gofmt, or
+// a wrapped argument list does not read as drift — the flag is worthless if it
+// fires on formatting. A single-line snippet matches a substring of a line, which
+// is what makes an anchor on one distinctive expression survive edits around it.
+func (s *sourceFile) find(snippet string) (int, bool) {
+	want := strings.Split(strings.TrimSpace(snippet), "\n")
+	var norm []string
+	for _, w := range want {
+		if n := normalizeSnippet(w); n != "" {
+			norm = append(norm, n)
+		}
+	}
+	if len(norm) == 0 {
+		return 0, false
+	}
+	for i := range s.normalized {
+		if !strings.Contains(s.normalized[i], norm[0]) {
+			continue
+		}
+		if len(norm) == 1 {
+			return i + 1, true
+		}
+		// Multi-line: the remaining lines must follow, in order, allowing blank
+		// lines between them so an inserted newline is not drift.
+		j, matched := i+1, 1
+		for j < len(s.normalized) && matched < len(norm) {
+			if s.normalized[j] == "" {
+				j++
+				continue
+			}
+			if !strings.Contains(s.normalized[j], norm[matched]) {
+				break
+			}
+			matched++
+			j++
+		}
+		if matched == len(norm) {
+			return i + 1, true
+		}
+	}
+	return 0, false
+}
+
+// normalizeSnippet collapses runs of whitespace, mirroring the server's
+// palace.NormalizeSnippet so both sides agree on what "the same code" means.
+func normalizeSnippet(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// listAnchors fetches the anchors to check.
+func listAnchors(ctx context.Context, c mcpCaller, wing, repo string) ([]anchor, error) {
+	args := map[string]any{"limit": 500}
+	if wing != "" {
+		args["wing"] = wing
+	}
+	if repo != "" {
+		args["repo"] = repo
+	}
+	var payload struct {
+		Anchors []anchor `json:"anchors"`
+	}
+	if err := callJSON(ctx, c, toolPrefix+"list_anchors", args, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Anchors, nil
+}
+
+// markAnchors posts the verdicts and returns how many the server recorded.
+func markAnchors(ctx context.Context, c mcpCaller, verdicts []verdict) (int, error) {
+	items := make([]any, 0, len(verdicts))
+	for _, v := range verdicts {
+		items = append(items, map[string]any{"id": v.ID, "status": v.Status, "line": v.Line})
+	}
+	var payload struct {
+		Marked int `json:"marked"`
+	}
+	if err := callJSON(ctx, c, toolPrefix+"mark_anchors", map[string]any{"verdicts": items}, &payload); err != nil {
+		return 0, err
+	}
+	return payload.Marked, nil
+}
+
+// mcpCaller is the slice of the MCP client this file needs, declared here so the
+// flow is testable against a fake without a server.
+type mcpCaller interface {
+	CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error)
+}
+
+// callJSON calls a tool and decodes its JSON text result into out.
+func callJSON(ctx context.Context, c mcpCaller, tool string, args map[string]any, out any) error {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = tool
+	req.Params.Arguments = args
+	res, err := c.CallTool(ctx, req)
+	if err != nil {
+		return fmt.Errorf("%s: %w", tool, err)
+	}
+	if len(res.Content) == 0 {
+		return fmt.Errorf("%s: empty response", tool)
+	}
+	text, ok := mcp.AsTextContent(res.Content[0])
+	if !ok {
+		return fmt.Errorf("%s: unexpected response type", tool)
+	}
+	if res.IsError {
+		return fmt.Errorf("%s: %s", tool, text.Text)
+	}
+	if err := json.Unmarshal([]byte(text.Text), out); err != nil {
+		return fmt.Errorf("%s: decode response: %w", tool, err)
+	}
+	return nil
+}
+
+// resolveProjectWing finds the wing for a directory the same way `load` does, so
+// `verify` checks this project's memories without being told which they are.
+func resolveProjectWing(dir string) string {
+	if w := strings.TrimSpace(os.Getenv(wingEnvVar)); w != "" {
+		return w
+	}
+	shared, local, _ := findProjectConfig(dir)
+	return firstNonEmpty(local.wing, shared.wing)
+}
+
+// wingLabel renders the scope for the report, or nothing when unscoped.
+func wingLabel(wing string) string {
+	if wing == "" {
+		return ""
+	}
+	return " in " + wing
+}
+
+// short truncates an id for human output.
+func short(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
