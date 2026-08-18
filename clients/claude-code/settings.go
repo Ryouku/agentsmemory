@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// ensureStopHook registers hookCmd as a Claude Code Stop hook in the settings
+// ensureHook registers hookCmd for a Claude Code hook EVENT ("Stop",
+// "SessionStart", …) in the settings
 // JSON at path, idempotently. It preserves any existing settings, backs the file
 // up (timestamped) before writing, and never adds a duplicate entry for the same
 // command. It returns true if it changed the file.
@@ -24,7 +25,7 @@ import (
 //
 // This is the Go replacement for the jq block in the old install.sh — same
 // behaviour and same on-disk shape, with no external jq dependency.
-func ensureStopHook(path, hookCmd string, isObsolete func(cmd string) bool) (bool, error) {
+func ensureHook(path, event, hookCmd string, isObsolete func(cmd string) bool) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -43,18 +44,18 @@ func ensureStopHook(path, hookCmd string, isObsolete func(cmd string) bool) (boo
 	if err != nil {
 		return false, err
 	}
-	stop, err := childArray(hooks, "Stop")
+	stop, err := childArray(hooks, event)
 	if err != nil {
 		return false, err
 	}
 
-	pruned, dropped := dropStopHook(stop, isObsolete)
-	if stopHookPresent(pruned, hookCmd) && !dropped {
+	pruned, dropped := dropHook(stop, isObsolete)
+	if hookPresent(pruned, hookCmd) && !dropped {
 		return false, nil
 	}
 
-	if !stopHookPresent(pruned, hookCmd) {
-		// Append a matcher-less Stop entry carrying our command — the same shape
+	if !hookPresent(pruned, hookCmd) {
+		// Append a matcher-less entry carrying our command — the same shape
 		// Claude Code writes and the same shape the old install.sh produced.
 		pruned = append(pruned, map[string]any{
 			"hooks": []any{
@@ -62,7 +63,7 @@ func ensureStopHook(path, hookCmd string, isObsolete func(cmd string) bool) (boo
 			},
 		})
 	}
-	hooks["Stop"] = pruned
+	hooks[event] = pruned
 	settings["hooks"] = hooks
 
 	// Back up the original before writing, mirroring install.sh's .bak.<ts>.
@@ -114,12 +115,12 @@ func childArray(m map[string]any, key string) ([]any, error) {
 	}
 }
 
-// dropStopHook returns stop without any hook whose command isObsolete matches,
+// dropHook returns the event's entries without any hook whose command isObsolete matches,
 // and reports whether anything was removed. An entry carrying other hooks
 // alongside the matched one keeps those: only the matching hook is taken out, so
 // a user's own command sitting beside ours survives. A nil predicate is a no-op,
 // which is what callers with nothing to supersede pass.
-func dropStopHook(stop []any, isObsolete func(string) bool) ([]any, bool) {
+func dropHook(stop []any, isObsolete func(string) bool) ([]any, bool) {
 	if isObsolete == nil {
 		return stop, false
 	}
@@ -155,9 +156,9 @@ func dropStopHook(stop []any, isObsolete func(string) bool) ([]any, bool) {
 	return out, dropped
 }
 
-// stopHookPresent reports whether any Stop entry already registers command cmd,
+// hookPresent reports whether any entry already registers command cmd,
 // so re-running the installer never duplicates the hook.
-func stopHookPresent(stop []any, cmd string) bool {
+func hookPresent(stop []any, cmd string) bool {
 	for _, entry := range stop {
 		em, ok := entry.(map[string]any)
 		if !ok {

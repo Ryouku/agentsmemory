@@ -99,8 +99,8 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	// Commands + hook must be on disk.
-	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile} {
+	// Commands + both hooks must be on disk.
+	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
@@ -108,8 +108,15 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 
 	// Stop hook must be registered pointing at the installed hook.
 	wantCmd := "bash " + filepath.Join(dir, hookFile)
-	if !stopHookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
+	if !hookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered", wantCmd)
+	}
+
+	// ...and its SessionStart companion, which is what makes anchor verification
+	// automatic rather than a command nobody remembers to run.
+	wantVerify := "bash " + filepath.Join(dir, verifyHookFile)
+	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionStart"), wantVerify) {
+		t.Errorf("SessionStart hook %q not registered", wantVerify)
 	}
 
 	// Only the two agentsmemory MCP calls should have run (no extensions).
@@ -430,7 +437,7 @@ func TestInstallCodexCore(t *testing.T) {
 	}
 
 	wantCmd := "bash " + filepath.Join(dir, hookFile)
-	if !stopHookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
+	if !hookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered in hooks.json", wantCmd)
 	}
 
@@ -623,7 +630,7 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyCmd := "bash " + legacy
-	if _, err := ensureStopHook(filepath.Join(dir, "settings.json"), legacyCmd, nil); err != nil {
+	if _, err := ensureHook(filepath.Join(dir, "settings.json"), "Stop", legacyCmd, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -639,10 +646,10 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 	}
 
 	stop := readStop(t, filepath.Join(dir, "settings.json"))
-	if stopHookPresent(stop, legacyCmd) {
+	if hookPresent(stop, legacyCmd) {
 		t.Error("the stale Stop entry survived; it would run a deleted file on every stop")
 	}
-	if want := "bash " + filepath.Join(dir, hookFile); !stopHookPresent(stop, want) {
+	if want := "bash " + filepath.Join(dir, hookFile); !hookPresent(stop, want) {
 		t.Errorf("relocated Stop hook %q not registered", want)
 	}
 }

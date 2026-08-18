@@ -27,6 +27,11 @@ import "embed"
 // load-skill.md ship. load-skill.md is the /load-skill nicety over the
 // am_load_skill MCP tool — it fetches a team-shared skill and installs it locally.
 //
+// The SessionStart hook (hooks/agentsmemory-verify-hook.sh) is the other half of
+// code anchors: it checks, before a session acts on anything, that the memories
+// about this project's code still match the code. Detection that arrives after
+// the wrong decision is not detection.
+//
 // bootstrap.md is the always-on operating protocol the installer writes into the
 // target config dir as agentsmemory-bootstrap.md and imports from CLAUDE.md, so
 // the memory-first workflow applies every session without typing /am.
@@ -35,7 +40,7 @@ import "embed"
 // system, so that one extension both re-registers the remote agentsmemory tools
 // natively and fires the end-of-turn memory checkpoint.
 //
-//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh bootstrap.md extensions/agentsmemory.ts
+//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS
 
 // commandAssets are the slash-command files the kit installs, in the order they

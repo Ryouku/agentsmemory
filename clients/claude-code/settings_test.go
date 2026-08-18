@@ -11,6 +11,13 @@ import (
 // hook array, failing the test on any structural surprise.
 func readStop(t *testing.T, path string) []any {
 	t.Helper()
+	return readHookEvent(t, path, "Stop")
+}
+
+// readHookEvent returns the entries registered for one hook event, so a test can
+// assert on Stop and SessionStart through the same reader.
+func readHookEvent(t *testing.T, path, event string) []any {
+	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -23,11 +30,11 @@ func readStop(t *testing.T, path string) []any {
 	if !ok {
 		t.Fatalf("hooks is %T, want object", m["hooks"])
 	}
-	stop, ok := hooks["Stop"].([]any)
+	entries, ok := hooks[event].([]any)
 	if !ok {
-		t.Fatalf("Stop is %T, want array", hooks["Stop"])
+		t.Fatalf("%s is %T, want array", event, hooks[event])
 	}
-	return stop
+	return entries
 }
 
 func TestEnsureStopHookFreshFile(t *testing.T) {
@@ -35,7 +42,7 @@ func TestEnsureStopHookFreshFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
 
-	added, err := ensureStopHook(path, cmd, nil)
+	added, err := ensureHook(path, "Stop", cmd, nil)
 	if err != nil {
 		t.Fatalf("ensureStopHook: %v", err)
 	}
@@ -45,7 +52,7 @@ func TestEnsureStopHookFreshFile(t *testing.T) {
 	if stop := readStop(t, path); len(stop) != 1 {
 		t.Fatalf("Stop entries = %d, want 1", len(stop))
 	}
-	if !stopHookPresent(readStop(t, path), cmd) {
+	if !hookPresent(readStop(t, path), cmd) {
 		t.Fatal("hook command not present after install")
 	}
 }
@@ -55,10 +62,10 @@ func TestEnsureStopHookIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
 
-	if _, err := ensureStopHook(path, cmd, nil); err != nil {
+	if _, err := ensureHook(path, "Stop", cmd, nil); err != nil {
 		t.Fatalf("first ensureStopHook: %v", err)
 	}
-	added, err := ensureStopHook(path, cmd, nil)
+	added, err := ensureHook(path, "Stop", cmd, nil)
 	if err != nil {
 		t.Fatalf("second ensureStopHook: %v", err)
 	}
@@ -88,7 +95,7 @@ func TestEnsureStopHookPreservesExisting(t *testing.T) {
 	}
 
 	cmd := "bash /x/hooks/agentsmemory-stop-hook.sh"
-	added, err := ensureStopHook(path, cmd, nil)
+	added, err := ensureHook(path, "Stop", cmd, nil)
 	if err != nil {
 		t.Fatalf("ensureStopHook: %v", err)
 	}
@@ -100,10 +107,10 @@ func TestEnsureStopHookPreservesExisting(t *testing.T) {
 	if len(stop) != 2 {
 		t.Fatalf("Stop entries = %d, want 2 (existing + ours)", len(stop))
 	}
-	if !stopHookPresent(stop, "bash /other/hook.sh") {
+	if !hookPresent(stop, "bash /other/hook.sh") {
 		t.Fatal("pre-existing hook was dropped")
 	}
-	if !stopHookPresent(stop, cmd) {
+	if !hookPresent(stop, cmd) {
 		t.Fatal("our hook was not added")
 	}
 
@@ -137,7 +144,7 @@ func TestEnsureStopHookMalformedRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ensureStopHook(path, "bash /x.sh", nil); err == nil {
+	if _, err := ensureHook(path, "Stop", "bash /x.sh", nil); err == nil {
 		t.Fatal("ensureStopHook accepted malformed JSON, want an error")
 	}
 	got, _ := os.ReadFile(path)

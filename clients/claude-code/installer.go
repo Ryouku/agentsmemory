@@ -15,6 +15,10 @@ import (
 // hookAsset is the embedded Stop-hook path inside the binary's embed FS.
 const hookAsset = "hooks/agentsmemory-stop-hook.sh"
 
+// verifyHookAsset is the embedded SessionStart hook: it verifies this project's
+// code anchors before the session starts using its memories.
+const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -23,6 +27,11 @@ const (
 	// directory is ours and has nothing to do with pi. Claude and codex register
 	// the hook by absolute path, so where it lives is ours to choose.
 	hookFile = "agentsmemory-stop-hook.sh"
+
+	// verifyHookFile is where the SessionStart hook lands, beside the Stop hook
+	// and for the same reason: flat in the config dir, so the registered command
+	// is a stable path a user can read in settings.json.
+	verifyHookFile = "agentsmemory-verify-hook.sh"
 
 	// legacyHookRel is where installs before that change put the hook. It is
 	// removed on the next install (along with its now-stale Stop entry) so the
@@ -516,6 +525,20 @@ func (i *Installer) writeAssets() error {
 		return err
 	}
 	i.ok("hook %s", filepath.Base(i.hookPath()))
+
+	// The SessionStart companion. Claude runs SessionStart hooks; codex does not,
+	// so it ships only where it can run — writing a script the agent will never
+	// call would just be litter in someone's config dir.
+	if i.kit.name == "claude" {
+		verifyHook, err := i.source().ReadFile(verifyHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.verifyHookPath(), verifyHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.verifyHookPath()))
+	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
 	i.clearLegacyHook()
@@ -560,6 +583,9 @@ func (i *Installer) notePiLegacyHook() {
 
 // hookPath is the absolute install path of the Stop hook under the target dir.
 func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFile) }
+
+// verifyHookPath is where the SessionStart hook is installed.
+func (i *Installer) verifyHookPath() string { return filepath.Join(i.targetDir, verifyHookFile) }
 
 // legacyHookPath is where earlier installs wrote the hook, under hooks/.
 func (i *Installer) legacyHookPath() string { return filepath.Join(i.targetDir, legacyHookRel) }
@@ -625,7 +651,7 @@ func (i *Installer) registerStopHook() error {
 		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
 		return nil
 	}
-	changed, err := ensureStopHook(hooksFile, hookCmd, foreignHookPredicate(hookCmd))
+	changed, err := ensureHook(hooksFile, "Stop", hookCmd, foreignHookPredicate(hookCmd))
 	if err != nil {
 		return err
 	}
@@ -633,6 +659,34 @@ func (i *Installer) registerStopHook() error {
 		i.ok("registered Stop hook in %s", i.kit.hooksFile)
 	} else {
 		i.ok("Stop hook already registered")
+	}
+	return i.registerVerifyHook()
+}
+
+// registerVerifyHook adds the SessionStart hook that verifies this project's code
+// anchors. Claude only: it is the agent with a SessionStart event.
+//
+// It is registered even though it does nothing until a memory carries an anchor —
+// the alternative is asking people to install a second thing later, at the exact
+// moment they are least likely to.
+func (i *Installer) registerVerifyHook() error {
+	if i.kit.name != "claude" || i.kit.hooksFile == "" {
+		return nil
+	}
+	hookCmd := "bash " + i.verifyHookPath()
+	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register SessionStart hook in %s: %q\n", hooksFile, hookCmd)
+		return nil
+	}
+	changed, err := ensureHook(hooksFile, "SessionStart", hookCmd, foreignHookPredicate(hookCmd))
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered SessionStart hook (verifies memories against your code)")
+	} else {
+		i.ok("SessionStart hook already registered")
 	}
 	return nil
 }

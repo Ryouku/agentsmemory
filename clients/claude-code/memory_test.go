@@ -121,7 +121,7 @@ func TestEnsureMemoryImportReplacesStaleBlock(t *testing.T) {
 
 // TestEnsureMemoryImportUnbalancedRefuses: a file with a corrupt/half-edited block
 // (only one marker) must fail loudly and be left byte-for-byte untouched, never
-// half-rewritten — the same stance ensureStopHook takes on malformed JSON.
+// half-rewritten — the same stance ensureHook takes on malformed JSON.
 func TestEnsureMemoryImportUnbalancedRefuses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 	broken := "# rules\n\n" + memBeginMarker + "\n@agentsmemory-bootstrap.md\n(no end marker)\n"

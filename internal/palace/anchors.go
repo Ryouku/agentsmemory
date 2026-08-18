@@ -163,7 +163,13 @@ func (s *Service) ListAnchors(ctx context.Context, teamID string, f AnchorFilter
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
-	q := s.repo.db.WithContext(ctx).Model(&anchorRow{}).Where("drawer_anchors.team_id = ?", teamID)
+	// Join drawers unconditionally: an anchor whose drawer no longer exists must
+	// never reach a verifier, or it reports drift on a memory that is gone. The
+	// delete path prunes anchors too, so this is the belt to that braces — cheap,
+	// and it also covers rows deleted by any path added later.
+	q := s.repo.db.WithContext(ctx).Model(&anchorRow{}).
+		Joins("JOIN drawers ON drawers.id = drawer_anchors.drawer_id AND drawers.team_id = drawer_anchors.team_id").
+		Where("drawer_anchors.team_id = ?", teamID)
 	if f.Repo != "" {
 		q = q.Where("drawer_anchors.repo = ?", f.Repo)
 	}
@@ -171,10 +177,10 @@ func (s *Service) ListAnchors(ctx context.Context, teamID string, f AnchorFilter
 		q = q.Where("drawer_anchors.status = ?", f.Status)
 	}
 	if f.Wing != "" {
-		// Wing lives on the drawer, so scope through it — one join beats storing
-		// the wing twice and letting the copies disagree after a merge_wing.
-		q = q.Joins("JOIN drawers ON drawers.id = drawer_anchors.drawer_id AND drawers.team_id = drawer_anchors.team_id").
-			Where("drawers.wing = ?", f.Wing)
+		// Wing lives on the drawer (already joined above), so scope through it —
+		// one join beats storing the wing twice and letting the copies disagree
+		// after a merge_wing.
+		q = q.Where("drawers.wing = ?", f.Wing)
 	}
 	var rows []anchorRow
 	if err := q.Order("drawer_anchors.created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
