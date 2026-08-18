@@ -17,8 +17,19 @@
 #
 # WHAT IT COSTS: on macOS and Windows a containerised Ollama cannot reach the
 # GPU (no Metal passthrough), so embedding runs on CPU and is slower than a host
-# install. On Linux it is the same engine either way. If you already run Ollama
-# on the host and it works, prefer it: leave this file out.
+# install — and the model is downloaded a second time into the volume below,
+# separately from whatever ~/.ollama already holds. On Linux it is the same
+# engine either way.
+#
+# SO ON A MAC, PREFER THE HOST and leave this file out — the reason people reach
+# for it is usually that Ollama was not running, and the fix for THAT is to make
+# it start on its own:
+#
+#   brew services start ollama    # survives reboots, keeps Metal
+#
+# This service publishes no ports, so it cannot collide with a host Ollama on
+# 11434 even if both run; the cost of keeping both is a duplicated model and an
+# idle daemon, not a conflict.
 
 services:
   agentsmemory:
