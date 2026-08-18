@@ -846,27 +846,38 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 // into a terminal. A report nobody can read at a glance is a report nobody reads.
 func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hours := 1
+		// minutes wins over hours: a hook that knows exactly how long this session
+		// has been running should be able to ask for exactly that window, rather
+		// than rounding a 40-minute session up to "the last hour" and reporting
+		// the previous session's work as if it were this one's.
+		window := time.Hour
 		if v := r.URL.Query().Get("hours"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				hours = n
+				window = time.Duration(n) * time.Hour
 			}
 		}
-		stats, err := drawers.RecallStats(r.Context(), teamID, time.Duration(hours)*time.Hour, 5)
+		if v := r.URL.Query().Get("minutes"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				window = time.Duration(n) * time.Minute
+			}
+		}
+		stats, err := drawers.RecallStats(r.Context(), teamID, window, 5)
 		if err != nil {
 			http.Error(w, "recall stats: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
+		label := windowLabel(window, r.URL.Query().Get("label"))
+
 		var b strings.Builder
 		if stats.Searches == 0 && stats.Writes == 0 {
-			fmt.Fprintf(&b, "memory: nothing recalled or filed in the last %dh\n", hours)
+			fmt.Fprintf(&b, "memory, %s: nothing recalled or filed\n", label)
 			_, _ = io.WriteString(w, b.String())
 			return
 		}
-		fmt.Fprintf(&b, "memory, last %dh: %s recalled, %d answered (%d%%), %s filed\n",
-			hours, plural(stats.Searches, "search", "searches"), stats.Answered, stats.AnsweredPct(),
+		fmt.Fprintf(&b, "memory, %s: %s recalled, %d answered (%d%%), %s filed\n",
+			label, plural(stats.Searches, "search", "searches"), stats.Answered, stats.AnsweredPct(),
 			plural(stats.Writes, "memory", "memories"))
 		for _, wing := range stats.Wings {
 			if wing.Searches == 0 && wing.Drawers == 0 {
@@ -892,6 +903,22 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 		}
 		_, _ = io.WriteString(w, b.String())
 	})
+}
+
+// windowLabel names the period the report covers. A caller that knows what the
+// window MEANS (a hook that measured this session) passes its own label, because
+// "this session" tells a reader something "the last 43m" does not.
+func windowLabel(window time.Duration, custom string) string {
+	if custom = strings.TrimSpace(custom); custom != "" {
+		if len(custom) > 40 {
+			custom = custom[:40]
+		}
+		return custom
+	}
+	if window < 90*time.Minute {
+		return fmt.Sprintf("last %dm", int(window.Minutes()))
+	}
+	return fmt.Sprintf("last %dh", int(window.Hours()))
 }
 
 // plural renders a count with the right noun, because this report is read by a

@@ -32,6 +32,11 @@ import "embed"
 // about this project's code still match the code. Detection that arrives after
 // the wrong decision is not detection.
 //
+// The SessionEnd hook closes the loop the other two open: Stop asks the agent to
+// persist, SessionStart checks what is stored against the code, and this reports
+// what recall actually did across the whole session — the only one of the three
+// that can, because at Stop the session has barely begun.
+//
 // bootstrap.md is the always-on operating protocol the installer writes into the
 // target config dir as agentsmemory-bootstrap.md and imports from CLAUDE.md, so
 // the memory-first workflow applies every session without typing /am.
@@ -40,7 +45,7 @@ import "embed"
 // system, so that one extension both re-registers the remote agentsmemory tools
 // natively and fires the end-of-turn memory checkpoint.
 //
-//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh bootstrap.md extensions/agentsmemory.ts
+//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh hooks/agentsmemory-session-end-hook.sh bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS
 
 // commandAssets are the slash-command files the kit installs, in the order they

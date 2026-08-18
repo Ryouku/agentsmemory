@@ -69,7 +69,27 @@ MSG
 # Self-hosted only, and deliberately silent when anything is off: no server, an
 # older server without /stats, no curl. A statistics line must never be the reason
 # a Stop hook fails.
-STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?hours=${AGENTSMEMORY_STATS_HOURS:-2}}"
+# The window is THIS SESSION, measured from the transcript file the event names,
+# not a fixed number of hours. A fixed window at the first Stop of a session
+# reports mostly the PREVIOUS session's work — the numbers looked plausible and
+# described the wrong thing, which is worse than no numbers.
+STATS_QUERY="hours=${AGENTSMEMORY_STATS_HOURS:-2}"
+TRANSCRIPT="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+if [ -n "${TRANSCRIPT:-}" ] && [ -f "$TRANSCRIPT" ]; then
+  # Birth time where the filesystem records it (macOS %B, APFS), modification
+  # time everywhere else — either bounds the session closely enough, and a bad
+  # value simply falls back to the fixed window below.
+  BORN="$(stat -f %B "$TRANSCRIPT" 2>/dev/null || stat -c %W "$TRANSCRIPT" 2>/dev/null || true)"
+  case "${BORN:-0}" in ''|*[!0-9]*|0) BORN="$(stat -f %m "$TRANSCRIPT" 2>/dev/null || stat -c %Y "$TRANSCRIPT" 2>/dev/null || echo 0)" ;; esac
+  NOW="$(date +%s)"
+  if [ "${BORN:-0}" -gt 0 ] && [ "$NOW" -ge "$BORN" ]; then
+    MINUTES=$(( (NOW - BORN) / 60 + 1 ))
+    [ "$MINUTES" -gt 1440 ] && MINUTES=1440
+    STATS_QUERY="minutes=${MINUTES}&label=this%20session"
+  fi
+fi
+
+STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?${STATS_QUERY}}"
 if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; then
   # No arrays: macOS ships bash 3.2, where expanding an EMPTY array under `set -u`
   # aborts the script ("AUTH[@]: unbound variable"). Two explicit calls are longer
@@ -79,7 +99,9 @@ if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; 
   else
     STATS="$(curl -fsS -m 3 "$STATS_URL" 2>/dev/null || true)"
   fi
-  [ -n "$STATS" ] && printf '\n%s' "$STATS" >&2
+  # $(...) strips trailing newlines, so the report needs its last one back —
+  # without it whatever the terminal prints next continues the report's last line.
+  [ -n "$STATS" ] && printf '\n%s\n' "$STATS" >&2
 fi
 
 exit 2

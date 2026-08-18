@@ -19,6 +19,9 @@ const hookAsset = "hooks/agentsmemory-stop-hook.sh"
 // code anchors before the session starts using its memories.
 const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
 
+// sessionEndHookAsset is the embedded SessionEnd hook: the closing recall report.
+const sessionEndHookAsset = "hooks/agentsmemory-session-end-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -32,6 +35,9 @@ const (
 	// and for the same reason: flat in the config dir, so the registered command
 	// is a stable path a user can read in settings.json.
 	verifyHookFile = "agentsmemory-verify-hook.sh"
+
+	// sessionEndHookFile is where the SessionEnd hook lands.
+	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
 
 	// legacyHookRel is where installs before that change put the hook. It is
 	// removed on the next install (along with its now-stale Stop entry) so the
@@ -538,6 +544,15 @@ func (i *Installer) writeAssets() error {
 			return err
 		}
 		i.ok("hook %s", filepath.Base(i.verifyHookPath()))
+
+		endHook, err := i.source().ReadFile(sessionEndHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.sessionEndHookPath(), endHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
@@ -586,6 +601,11 @@ func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFi
 
 // verifyHookPath is where the SessionStart hook is installed.
 func (i *Installer) verifyHookPath() string { return filepath.Join(i.targetDir, verifyHookFile) }
+
+// sessionEndHookPath is where the SessionEnd hook is installed.
+func (i *Installer) sessionEndHookPath() string {
+	return filepath.Join(i.targetDir, sessionEndHookFile)
+}
 
 // legacyHookPath is where earlier installs wrote the hook, under hooks/.
 func (i *Installer) legacyHookPath() string { return filepath.Join(i.targetDir, legacyHookRel) }
@@ -687,6 +707,17 @@ func (i *Installer) registerVerifyHook() error {
 		i.ok("registered SessionStart hook (verifies memories against your code)")
 	} else {
 		i.ok("SessionStart hook already registered")
+	}
+
+	endCmd := "bash " + i.sessionEndHookPath()
+	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
+	if err != nil {
+		return err
+	}
+	if endChanged {
+		i.ok("registered SessionEnd hook (reports what recall did this session)")
+	} else {
+		i.ok("SessionEnd hook already registered")
 	}
 	return nil
 }

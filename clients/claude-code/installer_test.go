@@ -100,7 +100,7 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	}
 
 	// Commands + both hooks must be on disk.
-	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile} {
+	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile, sessionEndHookFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
@@ -117,6 +117,13 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	wantVerify := "bash " + filepath.Join(dir, verifyHookFile)
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionStart"), wantVerify) {
 		t.Errorf("SessionStart hook %q not registered", wantVerify)
+	}
+
+	// ...and the closing report, which is the only one of the three that sees a
+	// whole session.
+	wantEnd := "bash " + filepath.Join(dir, sessionEndHookFile)
+	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionEnd"), wantEnd) {
+		t.Errorf("SessionEnd hook %q not registered", wantEnd)
 	}
 
 	// Only the two agentsmemory MCP calls should have run (no extensions).
