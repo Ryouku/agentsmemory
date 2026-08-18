@@ -21,6 +21,22 @@ import (
 	"time"
 )
 
+// maxBatch is how many texts may go in ONE request to TEI. It mirrors TEI's
+// --max-client-batch-size default, which rejects a larger array outright:
+//
+//	HTTP 422 {"error":"batch size 50 > maximum allowed batch size 32"}
+//
+// The rerank pool is a search-quality decision and must not be held hostage to a
+// server-side request limit, so Rerank splits the pool into batches rather than
+// forcing the pool down to 32. Batching is exact, not an approximation: a
+// cross-encoder scores each (query, document) pair independently, so how the
+// pairs are grouped into requests cannot change any score.
+//
+// It is a constant rather than config because a SMALLER batch is always accepted
+// — an operator who raises TEI's limit loses nothing here, and one who lowers it
+// below 32 gets a 422 that search fails open on, with the reason in the log.
+const maxBatch = 32
+
 // Client is a client for TEI's /rerank endpoint.
 type Client struct {
 	endpoint string
@@ -28,8 +44,9 @@ type Client struct {
 }
 
 // New constructs a Client for the given TEI base URL (e.g. http://host:12434).
-// timeout bounds the whole call: cross-encoding a full pool is the slowest step
-// in search, and recall must degrade rather than hang when the box is loaded.
+// timeout bounds each batched call: cross-encoding a full pool is the slowest
+// step in search, and recall must degrade rather than hang when the box is
+// loaded.
 func New(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		endpoint: strings.TrimRight(baseURL, "/") + "/rerank",
@@ -62,10 +79,30 @@ type rerankResult struct {
 // caller, which is the only place that knows what else feeds the rank.
 //
 // An empty texts slice short-circuits to nil so callers need not special-case it.
+// Inputs longer than maxBatch are sent as several sequential requests; the
+// batches are joined back into one score per input.
 func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	scores := make([]float64, len(texts))
+	for start := 0; start < len(texts); start += maxBatch {
+		end := min(start+maxBatch, len(texts))
+		batch, err := c.rerankBatch(ctx, query, texts[start:end])
+		if err != nil {
+			// One failed batch means an incomplete ranking, which would order the
+			// page on a mix of scored and unscored candidates. Fail the whole call
+			// so the caller falls back to a ranking that is at least coherent.
+			return nil, err
+		}
+		copy(scores[start:end], batch)
+	}
+	return scores, nil
+}
+
+// rerankBatch scores one batch of at most maxBatch texts, returning the scores
+// in the batch's own input order.
+func (c *Client) rerankBatch(ctx context.Context, query string, texts []string) ([]float64, error) {
 	raw, err := json.Marshal(rerankRequest{Query: query, Texts: texts})
 	if err != nil {
 		return nil, err
