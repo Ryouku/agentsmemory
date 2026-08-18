@@ -71,9 +71,14 @@ MSG
 # a Stop hook fails.
 STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?hours=${AGENTSMEMORY_STATS_HOURS:-2}}"
 if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; then
-  AUTH=()
-  [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}")
-  STATS="$(curl -fsS -m 3 "${AUTH[@]}" "$STATS_URL" 2>/dev/null || true)"
+  # No arrays: macOS ships bash 3.2, where expanding an EMPTY array under `set -u`
+  # aborts the script ("AUTH[@]: unbound variable"). Two explicit calls are longer
+  # and cannot break the hook on the one platform most of these installs run on.
+  if [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ]; then
+    STATS="$(curl -fsS -m 3 -H "Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}" "$STATS_URL" 2>/dev/null || true)"
+  else
+    STATS="$(curl -fsS -m 3 "$STATS_URL" 2>/dev/null || true)"
+  fi
   [ -n "$STATS" ] && printf '\n%s' "$STATS" >&2
 fi
 

@@ -885,6 +885,11 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 			b.WriteString(strings.Join(stats.Unanswered, " | "))
 			b.WriteString("\n")
 		}
+		// A trailing newline: the hook pipes this straight to a terminal, and
+		// without it the next line of output starts mid-sentence.
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
 		_, _ = io.WriteString(w, b.String())
 	})
 }
