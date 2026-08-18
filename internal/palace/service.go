@@ -578,6 +578,14 @@ func (s *Service) Rooms(ctx context.Context, teamID, wing string) ([]RoomStat, e
 	return s.repo.Rooms(ctx, teamID, wing)
 }
 
+// ClosetsByWing lists one wing's closets — the pointer index built by mining.
+// It completes the read surface a wing export needs (drawers, closets, tunnels,
+// wing stats), so one *Service satisfies both halves of a wing transfer rather
+// than callers having to hold a separate repository handle for this one query.
+func (s *Service) ClosetsByWing(ctx context.Context, teamID, wing string) ([]Closet, error) {
+	return s.repo.ClosetsByWing(ctx, teamID, wing)
+}
+
 // Reconnect re-readies a tenant's vector namespace and confirms the store is
 // reachable. The Python tool invalidated a cached Qdrant client; this server is
 // stateless (no per-session cache), so reconnect has no client to drop — it is

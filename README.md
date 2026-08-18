@@ -972,6 +972,69 @@ Implementation: [`internal/dataexport`](internal/dataexport/dataexport.go)
 
 ---
 
+## Moving a single wing (`wing export` / `wing import`)
+
+The whole-workspace export above takes *everything*. To move **one wing** —
+restore a backup, seed a new workspace, fork a wing under a second name, or lift a
+project's memory out of a self-hosted install and into the hosted service — use a
+**wing bundle**.
+
+The defining property is that **a bundle carries no wing name**. Not on a record,
+not in a header, nowhere. Exporting is "take this wing's *contents*", and the
+destination is named on the way **in**:
+
+```bash
+# Self-hosted: straight against the database, no server and no token needed.
+agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_forumchat --out forumchat.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file forumchat.ndjson --as wing_abc
+```
+
+`--as` is **required**. A bundle names no wing, so importing without a
+destination would file every memory into an unnamed wing — an import that looks
+like it worked and leaves the memories where nobody looks.
+
+On a multi-workspace database add `--project <slug>` (it defaults to the single
+`local` workspace). The same bundle works over HTTP:
+
+```bash
+# Agents / scripts: the same endpoint the mempalace migration uses, plus ?as=
+curl -X POST -H "Authorization: Bearer $KEY" --data-binary @forumchat.ndjson \
+  "https://your-host/import?as=wing_abc&recompute=1"
+
+# Browser: project page → "Move a wing" (download a wing, upload a bundle).
+```
+
+**What travels, and what deliberately does not:**
+
+| Carried | Left behind |
+|---|---|
+| Drawers, including diary (agent + topic preserved) | **Vectors** — the destination re-embeds |
+| Closets (the mined pointer index) | **Knowledge-graph facts** — team-global, not wing-scoped |
+| Explicit tunnels with **both** ends inside the wing | Hallways and derived tunnels — recomputed |
+
+Both omissions are deliberate. Vectors would multiply the file size *and*
+silently corrupt search if the destination runs a different embedding model or
+dimension, so a bundle stays text and the background worker indexes it on
+arrival. KG facts belong to the whole team rather than to any wing, so shipping
+them with "one wing" would sweep every *other* wing's facts along with it.
+
+A tunnel with one endpoint outside the wing is dropped because the importer
+requires each endpoint room to already hold a drawer — the far end simply isn't
+in the bundle. Since an explicit tunnel exists to link two *different* wings, a
+single-wing bundle usually carries none; the CLI says so rather than leaving you
+to wonder.
+
+Every record id is deterministic, so importing the same bundle twice **upserts
+rather than duplicates**, and importing into an existing wing merges into it.
+Exporting a wing that does not exist fails and lists the wings that do — an
+export must never produce a valid, empty file.
+
+Implementation: [`internal/wingbundle`](internal/wingbundle/wingbundle.go) (the
+format + exporter), `internal/importer` (`?as=`), `cmd/server/wing.go` (the CLI)
+and `internal/web/wing.go` (the dashboard routes).
+
+---
+
 ## Project layout
 
 ```
@@ -989,6 +1052,8 @@ internal/
   palace/              core memory domain types (wing/room/drawer/hallway/tunnel)
   mcpserver/           MCP tool wiring (status, load_skill, …)
   dataexport/          per-workspace SQLite data export (BDAR right of access)
+  wingbundle/          portable single-wing bundle format (carries no wing name)
+  importer/            POST /import — bundle ingest, ?as= names the target wing
   web/                 dashboard (templ + datastar): projects, keys, export
 ```
 

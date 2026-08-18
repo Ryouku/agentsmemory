@@ -89,6 +89,7 @@ func main() {
 			mcpCommand(def),
 			stdioCommand(def),
 			syncCommand(def),
+			wingCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
 			projectsCommand(def),
@@ -333,7 +334,7 @@ func run(ctx context.Context, cfg config.Config) error {
 
 	// The human-facing dashboard (register/login/create project) shares the same
 	// chi router and database; agents use /mcp, people use the web routes.
-	webSrv := web.New(tenants, usageSvc, skills, svc.skillsets, svc.shares, svc.merges, billingSrv, exporter, passkeys, cfg.SuperAdminEmails, sessionKey())
+	webSrv := web.New(tenants, usageSvc, skills, svc.skillsets, svc.shares, svc.merges, billingSrv, exporter, svc.drawers, passkeys, cfg.SuperAdminEmails, sessionKey())
 
 	// OAuth discovery + endpoints for the claude.ai remote-connector handshake.
 	r.Get("/.well-known/oauth-protected-resource", authSrv.ProtectedResourceMetadata)
