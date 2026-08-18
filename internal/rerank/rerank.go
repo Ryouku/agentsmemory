@@ -84,17 +84,27 @@ type response struct {
 }
 
 type scored struct {
-	Index          int     `json:"index"`
-	Score          float64 `json:"score"`
-	RelevanceScore float64 `json:"relevance_score"`
+	Index int `json:"index"`
+	// Pointers, not plain float64s, because the question is WHICH FIELD THE
+	// SERVER SENT — not which one is nonzero. A cross-encoder emits logits, and a
+	// logit of exactly 0.0 is a perfectly ordinary score; keying off zero would
+	// silently read the absent field in that case.
+	Score          *float64 `json:"score"`
+	RelevanceScore *float64 `json:"relevance_score"`
 }
 
-// value returns whichever score field the server populated.
+// value returns whichever score field the server populated, and 0 when neither
+// is present — a result with no score at all still holds its place in the
+// server's ordering, which is the information we actually use.
 func (s scored) value() float64 {
-	if s.Score != 0 {
-		return s.Score
+	switch {
+	case s.Score != nil:
+		return *s.Score
+	case s.RelevanceScore != nil:
+		return *s.RelevanceScore
+	default:
+		return 0
 	}
-	return s.RelevanceScore
 }
 
 // Rerank scores every document against the query and returns the results

@@ -54,6 +54,24 @@ func TestRerankAcceptsBothDialects(t *testing.T) {
 	}
 }
 
+// TestRerankReadsAZeroScore guards the field-presence rule: a cross-encoder logit
+// of exactly 0.0 is an ordinary score, so "which field did the server send" must
+// not be decided by whether the value is nonzero.
+func TestRerankReadsAZeroScore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"index":0,"score":0.0},{"index":1,"score":-2.5}]`))
+	}))
+	defer srv.Close()
+
+	scores, err := New(srv.URL, "", time.Second).Rerank(context.Background(), "q", []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(scores) != 2 || scores[0].Index != 0 || scores[0].Score != 0 || scores[1].Score != -2.5 {
+		t.Fatalf("zero score not carried through: %+v", scores)
+	}
+}
+
 // TestNewAppendsDefaultPath covers the one bit of URL guessing this client does:
 // a bare host means "the usual endpoint", while any path is taken verbatim so an
 // operator can point at llama.cpp's /v1/rerank without a second setting.
