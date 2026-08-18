@@ -518,10 +518,18 @@ which is the sharper judgement — and it only runs over what hybrid ranking
 already surfaced, so the cost is bounded per search rather than per palace. If it
 is down, search falls back to the fused vector+BM25 order instead of failing.
 
-Add `--profile ollama` if you have no Ollama at all and want the embedder in the
-stack too (`docker compose … --profile ollama up -d`, then
-`docker compose … exec ollama ollama pull bge-m3`). On macOS and Windows prefer
-the host install: a containerised Ollama cannot reach Metal and runs on CPU.
+If you have no Ollama at all, a third file adds it — and, unlike a profile,
+points the server at it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.full.yml \
+               -f docker-compose.ollama.yml up -d
+```
+
+It pulls the embedding model on first boot and reports healthy only once that
+model exists, so `up -d` really is the whole setup and nothing starts before it
+can embed. On macOS and Windows prefer a host install where you have one: a
+containerised Ollama cannot reach Metal and runs on CPU.
 
 Going back is dropping the second `-f` — the chromem index is still on the
 volume, and the server refills it from SQLite if it is not.

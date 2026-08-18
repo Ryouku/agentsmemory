@@ -4,10 +4,10 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
 #
-# ...and, if you have no Ollama on the host, add the embedder too:
+# ...and, if you have no Ollama on the host, add the embedder too — a third file,
+# because it does not just START Ollama, it points the server at it:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.full.yml --profile ollama up -d
-#   docker compose -f docker-compose.yml -f docker-compose.full.yml exec ollama ollama pull bge-m3
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml -f docker-compose.ollama.yml up -d
 #
 # WHY THIS IS AN OVERLAY AND NOT THE DEFAULT
 # The base file is deliberately one container: no second service to run, wait for,
@@ -119,27 +119,6 @@ services:
       retries: 60
       start_period: 30s
 
-  ollama:
-    # Opt-in, because most people already run Ollama on the host and a second copy
-    # re-downloads several GB. It is here so a machine with nothing installed can
-    # still get a complete stack from one command.
-    #
-    # On macOS and Windows a containerised Ollama is CPU-only — Docker cannot
-    # reach Metal — so the host install is meaningfully faster. Prefer it, and
-    # keep this profile for Linux boxes and CI.
-    profiles: ["ollama"]
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    volumes:
-      - ollama-models:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 10s
-
 volumes:
   qdrant-data:
   reranker-models:
-  ollama-models:
