@@ -392,11 +392,94 @@ func TestServiceAddValidates(t *testing.T) {
 	}
 }
 
+// brokenEmbedder stands in for an Ollama that is not running — the single most
+// common self-hosted failure, and the one that used to lose memories.
+type brokenEmbedder struct{ fakeEmbedder }
+
+func (brokenEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:11434: connect: connection refused")
+}
+
+func (b brokenEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:11434: connect: connection refused")
+}
+
+// TestFilingSurvivesAnEmbedderOutage is the whole point of the deferred path: a
+// memory written while the embedder is down must still EXIST. Losing the text
+// because the index could not be built is the worst trade this system can make —
+// the text is the memory, the vector is only how it is found.
+func TestFilingSurvivesAnEmbedderOutage(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	svc.embed = brokenEmbedder{}
+	const team = "team-outage"
+
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "the embedder was down when this was written"})
+	if err != nil {
+		t.Fatalf("add must not fail when the embedder is down: %v", err)
+	}
+	if !res.PendingEmbedding {
+		t.Error("PendingEmbedding not reported; the caller cannot tell the memory is unsearchable")
+	}
+	if len(res.Drawers) != 1 {
+		t.Fatalf("want 1 drawer, got %d", len(res.Drawers))
+	}
+
+	diary, err := svc.WriteDiary(ctx, team, DiaryWriteInput{Agent: "tester", Entry: "journal written during the outage"})
+	if err != nil {
+		t.Fatalf("diary_write must not fail when the embedder is down: %v", err)
+	}
+	if !diary.PendingEmbedding {
+		t.Error("diary PendingEmbedding not reported")
+	}
+
+	// The rows are durable and queued — which is exactly the state the background
+	// worker drains.
+	pending, err := svc.PendingCount(ctx, team)
+	if err != nil {
+		t.Fatalf("pending count: %v", err)
+	}
+	if pending != 2 {
+		t.Fatalf("want 2 rows awaiting embedding, got %d", pending)
+	}
+	stored, err := svc.Get(ctx, team, res.Drawers[0].ID)
+	if err != nil {
+		t.Fatalf("the drawer must be readable back immediately: %v", err)
+	}
+	if stored.Content != "the embedder was down when this was written" {
+		t.Errorf("content not stored verbatim: %q", stored.Content)
+	}
+
+	// Embedder returns: the queue drains and the memories become searchable, with
+	// no re-filing by anyone.
+	svc.embed = fakeEmbedder{}
+	n, err := svc.EmbedPendingForTeam(ctx, team, 10)
+	if err != nil {
+		t.Fatalf("drain queue: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("worker embedded %d rows, want 2", n)
+	}
+	if pending, err = svc.PendingCount(ctx, team); err != nil || pending != 0 {
+		t.Fatalf("queue not drained: %d (err %v)", pending, err)
+	}
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "journal written during the outage", Limit: 5})
+	if err != nil {
+		t.Fatalf("search after recovery: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("memories written during the outage never became searchable")
+	}
+}
+
 func mustAdd(t *testing.T, svc *Service, team string, in AddInput) []Drawer {
 	t.Helper()
-	d, err := svc.Add(context.Background(), team, in)
+	res, err := svc.Add(context.Background(), team, in)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	return d
+	if res.PendingEmbedding {
+		t.Fatalf("add deferred embedding unexpectedly (is the fake embedder failing?)")
+	}
+	return res.Drawers
 }

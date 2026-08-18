@@ -110,13 +110,29 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		views := make([]drawerView, len(created))
-		for i, d := range created {
+		views := make([]drawerView, len(created.Drawers))
+		for i, d := range created.Drawers {
 			views[i] = toView(d)
 		}
-		return jsonResult(map[string]any{"ok": true, "chunks": len(created), "drawers": views}), nil
+		out := map[string]any{"ok": true, "chunks": len(created.Drawers), "drawers": views}
+		if created.PendingEmbedding {
+			// Say it in a field the caller can branch on AND in prose it will read
+			// out loud. A memory that is stored but not yet searchable looks
+			// identical to a healthy one from here, and the operator is the only
+			// one who can fix what caused it.
+			out["pending_embedding"] = true
+			out["warning"] = pendingEmbeddingWarning
+		}
+		return jsonResult(out), nil
 	})
 }
+
+// pendingEmbeddingWarning is the one sentence a caller must pass on when a write
+// was stored without its vector: the memory is safe, it is simply not findable
+// yet, and something outside this server has to be fixed for that to change.
+const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder could not be reached, " +
+	"so this memory is queued for background indexing. It will become searchable once the embedder is " +
+	"running again (check the Ollama server the agentsmemory server points at). Tell the user."
 
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {

@@ -178,25 +178,38 @@ type AddInput struct {
 	ContentDate string
 }
 
+// AddResult is what a filing returned: the drawers written, and whether their
+// vectors are still owed.
+//
+// PendingEmbedding is not an error and not a detail — it is the difference
+// between "this memory is findable" and "this memory exists but nothing will
+// recall it yet". The caller is expected to say so out loud, because the failure
+// it comes from (an embedder that is down) is invisible from the outside: the
+// write succeeded, the text is durable, and search simply will not surface it
+// until the background worker catches up.
+type AddResult struct {
+	Drawers          []Drawer
+	PendingEmbedding bool
+}
+
 // Add files a memory: it chunks oversized content, embeds every chunk in one
 // batch, writes the vectors, then writes the metadata rows. Vectors are written
 // before rows so a row never exists without its embedding — search joins row to
 // vector, and the inverse orphan (a vector with no row) is harmless because
 // search skips ids it cannot resolve. It returns the drawers created (one per
 // chunk), so the tool can report their ids.
-func (s *Service) Add(ctx context.Context, teamID string, in AddInput) ([]Drawer, error) {
+func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResult, error) {
 	wing := strings.TrimSpace(in.Wing)
 	room := strings.TrimSpace(in.Room)
 	content := strings.TrimSpace(in.Content)
 	if wing == "" || room == "" || content == "" {
-		return nil, fmt.Errorf("%w: wing, room and content are required", ErrInvalidInput)
+		return AddResult{}, fmt.Errorf("%w: wing, room and content are required", ErrInvalidInput)
 	}
 
 	chunks := ChunkText(content, ChunkSize, ChunkOverlap, ChunkMin)
-	vectors, err := s.embedChunks(ctx, chunks)
-	if err != nil {
-		return nil, err
-	}
+	// A failed embed does not fail the write — see deferEmbedding. vectors is nil
+	// in that case and the rows are absorbed onto the background queue instead.
+	vectors := s.embedOrDefer(ctx, chunks)
 
 	filedAt := time.Now().UTC().Format(time.RFC3339)
 	drawers := make([]Drawer, len(chunks))
@@ -227,14 +240,43 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) ([]Drawer
 	// is a standalone memory (deduped by its content-hash id), so it is not purged.
 	if in.SourceFile != "" {
 		if err := s.purgeSource(ctx, teamID, wing, room, in.SourceFile); err != nil {
-			return nil, err
+			return AddResult{}, err
 		}
 	}
 
-	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
-		return nil, err
+	if vectors == nil {
+		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
+			return AddResult{}, fmt.Errorf("save drawers (embedding deferred): %w", err)
+		}
+		return AddResult{Drawers: drawers, PendingEmbedding: true}, nil
 	}
-	return drawers, nil
+	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{Drawers: drawers}, nil
+}
+
+// embedOrDefer embeds chunks, returning nil when the embedder could not do it.
+//
+// A nil result means "write the rows without vectors and let the background
+// worker finish the job" — the durable half of a memory is its text, and losing
+// that because an optional-at-this-instant service is down is the worst possible
+// trade. The queue this feeds (embedded_at IS NULL) already exists for migration
+// imports, so a deferred row is picked up by exactly the same worker, embedded by
+// exactly the same model, with no new machinery.
+//
+// EVERY embed failure defers, not just a refused connection: a timeout, a 500, a
+// model that was never pulled. Classifying them would mean deciding which
+// failures are worth losing a memory over, and none are. The cost of being wrong
+// is a row that stays unsearchable until the operator fixes the embedder — which
+// the result's PendingEmbedding flag tells them to do.
+func (s *Service) embedOrDefer(ctx context.Context, chunks []Chunk) [][]float32 {
+	vectors, err := s.embedChunks(ctx, chunks)
+	if err == nil {
+		return vectors
+	}
+	log.Printf("filing: embedder unavailable, storing %d chunk(s) for background embedding: %v", len(chunks), err)
+	return nil
 }
 
 // embedChunks embeds a batch of chunks, returning one vector per chunk in order.
@@ -466,7 +508,11 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	vec, err := s.embed.EmbedOne(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
+		// Recall genuinely cannot proceed — a query has to become a vector — so
+		// unlike filing this fails. Name the cause, because the same outage lets
+		// writes succeed (queued), and an agent seeing one work and the other not
+		// will otherwise conclude the memory itself is broken.
+		return nil, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
@@ -743,6 +789,10 @@ type DiaryWriteResult struct {
 	Timestamp string
 	Chunks    int
 	ChunkIDs  []string
+	// PendingEmbedding is true when the entry is durable but not yet searchable
+	// because the embedder could not be reached; the background worker will index
+	// it. See AddResult for why this is surfaced rather than swallowed.
+	PendingEmbedding bool
 }
 
 // WriteDiary files an agent's journal entry. It mirrors the frozen tool: the
@@ -805,10 +855,7 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 	// canonical, fetchable handle); the frozen tool's logical handle was opaque and
 	// un-fetchable, but for the common single-chunk AAAK entry the two coincide.
 	chunks := diaryChunks(entry, ChunkSize)
-	vectors, err := s.embedChunks(ctx, chunks)
-	if err != nil {
-		return DiaryWriteResult{}, err
-	}
+	vectors := s.embedOrDefer(ctx, chunks)
 
 	drawers := make([]Drawer, len(chunks))
 	for i, c := range chunks {
@@ -830,16 +877,22 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 			Topic:       topic,
 		}
 	}
-	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
+	pending := vectors == nil
+	if pending {
+		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
+			return DiaryWriteResult{}, fmt.Errorf("save diary entry (embedding deferred): %w", err)
+		}
+	} else if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
 		return DiaryWriteResult{}, err
 	}
 
 	res := DiaryWriteResult{
-		EntryID:   drawers[0].ID,
-		Agent:     agent,
-		Topic:     topic,
-		Timestamp: filedAt,
-		Chunks:    len(drawers),
+		PendingEmbedding: pending,
+		EntryID:          drawers[0].ID,
+		Agent:            agent,
+		Topic:            topic,
+		Timestamp:        filedAt,
+		Chunks:           len(drawers),
 	}
 	// A single-chunk entry's id is already EntryID; only a chunked entry needs its
 	// physical ids enumerated so a caller can fetch each piece by id.

@@ -81,6 +81,10 @@ func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage
 		if len(res.ChunkIDs) > 0 {
 			out["chunk_ids"] = res.ChunkIDs
 		}
+		if res.PendingEmbedding {
+			out["pending_embedding"] = true
+			out["warning"] = pendingEmbeddingWarning
+		}
 		return jsonResult(out), nil
 	})
 }
