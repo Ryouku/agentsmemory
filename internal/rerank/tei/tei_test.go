@@ -3,6 +3,7 @@ package tei
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,62 @@ func TestRerankTrailingSlashBaseURL(t *testing.T) {
 	}
 }
 
+// TestRerankSplitsOversizedInput pins the fix for a bug that was invisible in
+// unit tests and silent in production: TEI rejects an array larger than its
+// --max-client-batch-size (32) with a 422, and because search fails open, a pool
+// of 50 meant a configured reranker quietly never reranked anything. The batches
+// must also stay index-aligned — each request's indices are batch-relative, so a
+// missing offset would scatter later batches' scores onto the wrong documents.
+func TestRerankSplitsOversizedInput(t *testing.T) {
+	const n = maxBatch*2 + 5 // three batches, last one partial
+
+	var batchSizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rerankRequest
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("server: bad request body: %v", err)
+		}
+		if len(req.Texts) > maxBatch {
+			t.Errorf("server received %d texts, over TEI's limit of %d", len(req.Texts), maxBatch)
+		}
+		batchSizes = append(batchSizes, len(req.Texts))
+
+		// Score each text by the number it carries, so a misaligned scatter shows
+		// up as a score landing on the wrong document.
+		results := make([]rerankResult, len(req.Texts))
+		for i, txt := range req.Texts {
+			var num int
+			if _, err := fmt.Sscanf(txt, "doc-%d", &num); err != nil {
+				t.Errorf("server: unexpected text %q", txt)
+			}
+			results[i] = rerankResult{Index: i, Score: float64(num)}
+		}
+		_ = json.NewEncoder(w).Encode(results)
+	}))
+	defer srv.Close()
+
+	texts := make([]string, n)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("doc-%d", i)
+	}
+	scores, err := New(srv.URL, 5*time.Second).Rerank(context.Background(), "q", texts)
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(scores) != n {
+		t.Fatalf("got %d scores, want %d", len(scores), n)
+	}
+	for i, got := range scores {
+		if got != float64(i) {
+			t.Errorf("scores[%d] = %v, want %v — batch offset lost", i, got, float64(i))
+		}
+	}
+	if want := []int{maxBatch, maxBatch, 5}; !equalInt(batchSizes, want) {
+		t.Errorf("batch sizes = %v, want %v", batchSizes, want)
+	}
+}
+
 func TestRerankEmptyTextsSkipsTheCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("server called for an empty texts slice")
@@ -116,6 +173,18 @@ func TestRerankSurfacesHTTPError(t *testing.T) {
 }
 
 func equal(a, b []float64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalInt(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
 	}

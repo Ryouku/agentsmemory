@@ -922,6 +922,11 @@ ordering quality, never recall — search falls back to the hybrid order and log
 warning. Nothing else changes, so leaving `RERANK_URL` unset keeps the exact
 behaviour every deployment had before.
 
+`RERANK_POOL` is independent of TEI's own `--max-client-batch-size` (32 by
+default): the pool is split into batches automatically, so you can set it to
+whatever search quality needs without reconfiguring the server. Scoring each
+pair is independent, so batching cannot change a score.
+
 Run one with [TEI](https://github.com/huggingface/text-embeddings-inference):
 
 ```bash
