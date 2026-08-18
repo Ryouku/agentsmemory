@@ -34,6 +34,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/passkey"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/share"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -114,6 +115,9 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		QdrantAPIKey:     c.String("qdrant-api-key"),
 		OllamaURL:        c.String("ollama-url"),
 		OllamaEmbedModel: c.String("ollama-model"),
+		RerankURL:        c.String("rerank-url"),
+		RerankModel:      c.String("rerank-model"),
+		RerankTopK:       c.Int("rerank-top-k"),
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
@@ -158,6 +162,9 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "qdrant-api-key", Sources: cli.EnvVars("QDRANT_API_KEY"), Value: def.QdrantAPIKey, Usage: "Qdrant API key (optional)"},
 		&cli.StringFlag{Name: "ollama-url", Sources: cli.EnvVars("OLLAMA_URL"), Value: def.OllamaURL, Usage: "Ollama base URL"},
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
+		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder rerank endpoint (empty = no reranking); a bare host gets /rerank appended"},
+		&cli.StringFlag{Name: "rerank-model", Sources: cli.EnvVars("RERANK_MODEL"), Value: def.RerankModel, Usage: "rerank model name, for endpoints serving more than one"},
+		&cli.IntFlag{Name: "rerank-top-k", Sources: cli.EnvVars("RERANK_TOP_K"), Value: def.RerankTopK, Usage: "how many hybrid-ranked candidates the cross-encoder scores"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
 }
@@ -754,7 +761,19 @@ func buildServices(cfg config.Config) (*services, error) {
 	// The memory loop: Ollama embeds text, the store seam holds the vectors, and
 	// the palace service ties them to drawer metadata.
 	embedder := ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
-	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
+
+	// The cross-encoder is optional and additive: configured, it rescores the top
+	// candidates of every search; unconfigured, search is exactly the hybrid
+	// vector+BM25 fusion it has always been. Building it here (rather than inside
+	// the palace) keeps the composition root the only place that knows which
+	// rerank server is deployed.
+	var opts []palace.Option
+	if cfg.RerankURL != "" {
+		opts = append(opts, palace.WithReranker(
+			crossEncoder{rerank.New(cfg.RerankURL, cfg.RerankModel, cfg.HTTPTimeout)}, cfg.RerankTopK))
+		log.Printf("reranker: %s (top %d)", cfg.RerankURL, cfg.RerankTopK)
+	}
+	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim, opts...)
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant
 	// (resolve the destination slug, read roles) and palace (list + copy wings).
@@ -796,6 +815,25 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
 			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
 	}
+}
+
+// crossEncoder adapts the rerank client to the palace's Reranker seam. The two
+// declare their own result types on purpose — the palace names what it needs, the
+// client names what its servers return — so the translation lives here, in the
+// composition root, rather than making either package import the other.
+type crossEncoder struct{ client *rerank.Client }
+
+// Rerank forwards the call and re-labels the scores.
+func (c crossEncoder) Rerank(ctx context.Context, query string, documents []string) ([]palace.RerankScore, error) {
+	scores, err := c.client.Rerank(ctx, query, documents)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]palace.RerankScore, len(scores))
+	for i, s := range scores {
+		out[i] = palace.RerankScore{Index: s.Index, Score: s.Score}
+	}
+	return out, nil
 }
 
 // reconcileChromem fills an empty chromem index from the SQLite source of truth,

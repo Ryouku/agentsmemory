@@ -2,7 +2,9 @@ package palace
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -46,7 +48,7 @@ func (f fakeEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, er
 // newTestService builds a Service over a throwaway migrated SQLite DB (so the
 // real 00006 schema is exercised) using the SQLite store as both source of truth
 // and search index, plus the fake embedder.
-func newTestService(t *testing.T) *Service {
+func newTestService(t *testing.T, opts ...Option) *Service {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "palace_test.db")
 	gdb, err := gorm.Open(glebarez.Open(path), &gorm.Config{
@@ -66,7 +68,108 @@ func newTestService(t *testing.T) *Service {
 	if err := goose.Up(sqlDB, "migrations"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim, opts...)
+}
+
+// fakeReranker is a cross-encoder stand-in: it ranks by how many query words a
+// document literally contains, which is enough to reorder a page deterministically
+// without a model. err makes every call fail, for the degradation test.
+type fakeReranker struct {
+	err    error
+	called int
+}
+
+func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([]RerankScore, error) {
+	f.called++
+	if f.err != nil {
+		return nil, f.err
+	}
+	scores := make([]RerankScore, 0, len(docs))
+	for i, d := range docs {
+		var hits float64
+		for _, term := range strings.Fields(strings.ToLower(query)) {
+			if strings.Contains(strings.ToLower(d), term) {
+				hits++
+			}
+		}
+		scores = append(scores, RerankScore{Index: i, Score: hits})
+	}
+	sort.SliceStable(scores, func(a, b int) bool { return scores[a].Score > scores[b].Score })
+	return scores, nil
+}
+
+// TestSearchRerankerPromotesFromOutsideThePage is the point of a cross-encoder:
+// it must be able to pull a drawer the hybrid ranking put below the page INTO it.
+// Reranking after paging would make that impossible, so this pins the ordering of
+// the two steps, not just the presence of the reranker.
+func TestSearchRerankerPromotesFromOutsideThePage(t *testing.T) {
+	ctx := context.Background()
+	rr := &fakeReranker{}
+	svc := newTestService(t, WithReranker(rr, 10))
+	const team = "team-rerank"
+
+	// The fake embedder maps bytes to dimensions, so these are near-identical
+	// vectors: retrieval surfaces all of them and the fused order is essentially
+	// arbitrary — which is exactly when the cross-encoder should decide.
+	for _, content := range []string{
+		"aaa bbb ccc filler one",
+		"aaa bbb ccc filler two",
+		"aaa bbb ccc filler three",
+		"the installer pins CLAUDE_CONFIG_DIR and the registration lands in an unread file",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: content}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "installer pins claude_config_dir", Limit: 1})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if rr.called != 1 {
+		t.Fatalf("reranker called %d times, want 1", rr.called)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Drawer.Content, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("cross-encoder did not decide the page: %+v", hits)
+	}
+	if hits[0].RerankScore == 0 {
+		t.Error("RerankScore not reported on the hit")
+	}
+}
+
+// TestSearchSurvivesRerankerFailure: the cross-encoder is a refinement, so a
+// server that is down must cost ranking quality and nothing else. Recall is the
+// product; it cannot depend on an optional service.
+func TestSearchSurvivesRerankerFailure(t *testing.T) {
+	ctx := context.Background()
+	rr := &fakeReranker{err: errors.New("connection refused")}
+	svc := newTestService(t, WithReranker(rr, 10))
+	const team = "team-rerank-down"
+
+	for _, content := range []string{"alpha memory", "beta memory", "gamma memory"} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: content}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "beta memory", Limit: 3})
+	if err != nil {
+		t.Fatalf("search must not fail when the reranker is down: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("want the full hybrid page, got %d hit(s)", len(hits))
+	}
+	// The lexical half of the hybrid ranking still works, so the literal match
+	// leads — proof the results are the fused ordering rather than an empty or
+	// arbitrary one.
+	if !strings.Contains(hits[0].Drawer.Content, "beta") {
+		t.Errorf("hybrid order lost: %q leads", hits[0].Drawer.Content)
+	}
+	for _, h := range hits {
+		if h.RerankScore != 0 {
+			t.Errorf("failed rerank must leave RerankScore unset, got %v", h.RerankScore)
+		}
+	}
 }
 
 func TestServiceAddAndSearch(t *testing.T) {
@@ -236,7 +339,7 @@ func TestServiceReAddNamedSourcePurgesStaleChunks(t *testing.T) {
 	svc := newTestService(t)
 	const team = "team-1"
 
-	long := strings.Repeat("alpha ", 400)  // ~2400 chars -> several chunks
+	long := strings.Repeat("alpha ", 400)    // ~2400 chars -> several chunks
 	short := "now just a single short chunk" // 1 chunk
 
 	first := mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", SourceFile: "notes.md", Content: long})

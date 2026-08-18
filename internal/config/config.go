@@ -114,6 +114,21 @@ type Config struct {
 	// vectors, matching the frozen Python palace so data stays comparable.
 	OllamaEmbedModel string
 
+	// RerankURL is the base URL of a cross-encoder rerank service
+	// (text-embeddings-inference, llama.cpp's server, or anything speaking either
+	// dialect). Empty — the default — means no reranking: search ends at the
+	// hybrid vector+BM25 fusion, exactly as it did before. It is opt-in because
+	// the model is a second service to run, and search must work without it.
+	RerankURL string
+
+	// RerankModel names the model when the endpoint serves more than one. TEI and
+	// llama.cpp each serve exactly one, so it is usually empty.
+	RerankModel string
+
+	// RerankTopK bounds how many hybrid-ranked candidates reach the cross-encoder
+	// — the cost knob for the precision it buys. Zero uses the palace default.
+	RerankTopK int
+
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
 	HTTPTimeout time.Duration
 
@@ -190,6 +205,7 @@ func Default() Config {
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
+		RerankTopK:       50,
 		Debug:            false,
 	}
 }

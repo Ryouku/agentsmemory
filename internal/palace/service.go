@@ -32,7 +32,6 @@ const (
 	MaxSearchLimit      = 100
 	DefaultMaxDistance  = 1.5
 	DefaultDupThreshold = 0.9
-
 )
 
 // Diary defaults, mirroring the frozen Python diary tools so the journal behaves
@@ -83,6 +82,54 @@ type Embedder interface {
 	EmbedOne(ctx context.Context, input string) ([]float32, error)
 }
 
+// Reranker reorders search candidates with a cross-encoder. It is declared here,
+// at the consumer, so the palace depends on the one call it makes rather than on
+// a concrete client (internal/rerank).
+//
+// It is a REFINEMENT, never a gate: a nil reranker, an unreachable server, or an
+// empty answer leaves the hybrid order untouched. Recall must not become the
+// thing that breaks when an optional service is down.
+type Reranker interface {
+	// Rerank scores documents against query and returns them best-first, each
+	// carrying the index of the document it scored.
+	Rerank(ctx context.Context, query string, documents []string) ([]RerankScore, error)
+}
+
+// RerankScore is one candidate's cross-encoder result: its index in the slice
+// passed to Rerank, and its relevance.
+type RerankScore struct {
+	Index int
+	Score float64
+}
+
+// DefaultRerankTopK is how many hybrid-ranked candidates the cross-encoder sees.
+// It is a cost knob: a cross-encoder reads each pair in full, so this bounds the
+// per-search work regardless of how wide the retrieval pool was. Fifty is deep
+// enough that a genuinely relevant drawer ranked poorly by vector+BM25 can still
+// be rescued, and shallow enough to stay well inside a search's latency budget.
+const DefaultRerankTopK = 50
+
+// Option configures a Service at construction. Options exist so optional
+// collaborators (a cross-encoder today) can be added without changing the
+// signature every caller and test already passes.
+type Option func(*Service)
+
+// WithReranker attaches a cross-encoder over the top topK hybrid-ranked
+// candidates. A nil reranker or a topK <= 0 leaves the default (no reranking,
+// DefaultRerankTopK) in place, so a half-configured deployment degrades to plain
+// hybrid search rather than failing.
+func WithReranker(r Reranker, topK int) Option {
+	return func(s *Service) {
+		if r == nil {
+			return
+		}
+		s.reranker = r
+		if topK > 0 {
+			s.rerankTopK = topK
+		}
+	}
+}
+
 // Service is the core memory loop: it files drawers (chunk -> embed -> store) and
 // recalls them (embed query -> nearest-neighbour -> join metadata). It composes
 // the metadata Repo, an Embedder, and the vector store seam; everything is
@@ -92,6 +139,10 @@ type Service struct {
 	embed   Embedder
 	vectors store.VectorStore
 	dim     int // embedding dimension new namespaces are created with (bge-m3 = 1024)
+	// reranker is the optional cross-encoder applied to the top rerankTopK
+	// candidates of a search. nil means hybrid ranking has the final word.
+	reranker   Reranker
+	rerankTopK int
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -108,8 +159,12 @@ type Service struct {
 // NewService wires the collaborators. dim is the embedding width used to create a
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
-func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) *Service {
-	return &Service{repo: repo, embed: embed, vectors: vectors, dim: dim}
+func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int, opts ...Option) *Service {
+	s := &Service{repo: repo, embed: embed, vectors: vectors, dim: dim, rerankTopK: DefaultRerankTopK}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // AddInput is the add_drawer payload: where the memory goes (wing, room — both
@@ -480,18 +535,75 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	ranked := rankHybrid(query, docs, dists, boosts)
 
-	results := make([]SearchHit, 0, limit)
+	// Materialize the full hybrid order before paging: the cross-encoder below
+	// can promote a candidate from outside the page, which it could not do if we
+	// truncated to limit here.
+	ordered := make([]SearchHit, 0, len(ranked))
 	for _, r := range ranked {
-		if len(results) >= limit {
-			break
-		}
 		hit := survivors[r.Index]
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		results = append(results, hit)
+		ordered = append(ordered, hit)
 	}
-	return results, nil
+	ordered = s.crossEncode(ctx, query, ordered)
+
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
+	}
+	return ordered, nil
+}
+
+// crossEncode reorders the head of a hybrid-ranked page with the configured
+// cross-encoder and returns the full slice, head rescored and tail untouched.
+//
+// Only the head is sent: a cross-encoder reads every pair in full, so the cost is
+// linear in what it is given, and the candidates beyond it were already judged
+// unlikely by two independent signals. Their relative order is kept as-is behind
+// the rescored head, which is what makes this a refinement of the hybrid ranking
+// rather than a replacement for it.
+//
+// Every failure path returns the input unchanged: no reranker configured, a
+// server that is down, a response that scored nothing. Search must degrade to
+// hybrid ranking, never to an error — the memory is still there, just ordered
+// slightly less well.
+func (s *Service) crossEncode(ctx context.Context, query string, hits []SearchHit) []SearchHit {
+	if s.reranker == nil || len(hits) < 2 {
+		return hits
+	}
+	head := len(hits)
+	if s.rerankTopK > 0 && head > s.rerankTopK {
+		head = s.rerankTopK
+	}
+	docs := make([]string, head)
+	for i := range docs {
+		docs[i] = hits[i].Drawer.Content
+	}
+	scores, err := s.reranker.Rerank(ctx, query, docs)
+	if err != nil || len(scores) == 0 {
+		return hits
+	}
+
+	// Rebuild the head in the cross-encoder's order. A candidate the server did
+	// not score keeps its hybrid position after the ones it did — dropping it
+	// would let a flaky response silently shrink the page.
+	rescored := make([]SearchHit, 0, head)
+	seen := make(map[int]bool, len(scores))
+	for _, sc := range scores {
+		if sc.Index < 0 || sc.Index >= head || seen[sc.Index] {
+			continue
+		}
+		seen[sc.Index] = true
+		hit := hits[sc.Index]
+		hit.RerankScore = sc.Score
+		rescored = append(rescored, hit)
+	}
+	for i := 0; i < head; i++ {
+		if !seen[i] {
+			rescored = append(rescored, hits[i])
+		}
+	}
+	return append(rescored, hits[head:]...)
 }
 
 // DuplicateResult is the check_duplicate verdict: whether the most similar
