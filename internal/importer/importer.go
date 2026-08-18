@@ -127,9 +127,10 @@ type record struct {
 	Total int `json:"total"`
 }
 
-// progress is one streamed status line: running counts the client renders as it
-// reads the response body. Done marks the final summary line.
-type progress struct {
+// Result is the summary of one ingest: the running counts, returned to an HTTP
+// client as the response body and to the offline CLI as a value to print. Done
+// marks it final.
+type Result struct {
 	Drawers   int    `json:"drawers"`
 	Closets   int    `json:"closets"`
 	KGFacts   int    `json:"kg_facts"`
@@ -188,12 +189,28 @@ func serve(w http.ResponseWriter, r *http.Request, drawers Drawers, metering Met
 	// migration can also set it on its only request to file and finalize at once.
 	recompute := r.URL.Query().Get("recompute") == "1"
 
-	imp := &runner{drawers: drawers, teamID: t.TeamID, start: time.Now()}
-	imp.run(r.Context(), r.Body, recompute)
+	// ?as=<wing> files every record of this request into that one wing, whatever
+	// the bundle itself says. It is what makes a wing bundle portable: the export
+	// carries no wing at all (see internal/wingbundle), so the operator names the
+	// destination here. The value reaches the database as a wing label, so it is
+	// validated exactly like any agent-supplied name — a bad one is a 400, not a
+	// creatively-named wing. Omitted, the records keep whatever wing they carry,
+	// which is what the mempalace migration bundles rely on.
+	targetWing := ""
+	if raw := r.URL.Query().Get("as"); raw != "" {
+		clean, err := palace.SanitizeName(raw, "as")
+		if err != nil {
+			http.Error(w, "invalid target wing: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		targetWing = clean
+	}
+
+	res := Ingest(r.Context(), drawers, t.TeamID, targetWing, r.Body, recompute)
 
 	// The whole body is consumed, so the response is a single buffered summary.
 	w.Header().Set("Content-Type", "application/json")
-	b, err := json.Marshal(imp.p)
+	b, err := json.Marshal(res)
 	if err != nil {
 		http.Error(w, "encode summary failed", http.StatusInternalServerError)
 		return
@@ -201,16 +218,33 @@ func serve(w http.ResponseWriter, r *http.Request, drawers Drawers, metering Met
 	_, _ = w.Write(append(b, '\n'))
 }
 
-// runner carries the per-request import state: the target tenant, running
-// counters, and the buffers that batch drawers/closets/tunnels. It accumulates a
-// single progress summary (p) returned in the response after the whole body is
-// read — there is no incremental writer, because the handler does not stream.
-type runner struct {
-	drawers Drawers
-	teamID  string
-	start   time.Time
+// Ingest reads an NDJSON bundle from body and files every record under teamID,
+// returning what it filed. A non-empty targetWing relabels every record into
+// that one wing, ignoring whatever wing the bundle carried (an empty one leaves
+// each record where it says it belongs). recompute additionally rebuilds the
+// tenant's derived graph once the stream is drained.
+//
+// This is the single ingest path behind both transports — the HTTP handler above
+// and the offline `agentsmemory wing import` CLI — so a bundle lands identically
+// whether it arrives over the network or straight off the disk.
+func Ingest(ctx context.Context, drawers Drawers, teamID, targetWing string, body io.Reader, recompute bool) Result {
+	rn := &runner{drawers: drawers, teamID: teamID, targetWing: targetWing, start: time.Now()}
+	rn.run(ctx, body, recompute)
+	return rn.p
+}
 
-	p progress
+// runner carries the per-ingest state: the target tenant, the optional wing
+// every record is relabelled into, running counters, and the buffers that batch
+// drawers/closets/tunnels. It accumulates a single summary (p) returned once the
+// whole body is read — there is no incremental writer, because the handler does
+// not stream.
+type runner struct {
+	drawers    Drawers
+	teamID     string
+	targetWing string // non-empty ⇒ file everything here, whatever the bundle says
+	start      time.Time
+
+	p Result
 
 	pendingDrawers []palace.ImportDrawer
 	pendingClosets []palace.ImportCloset
@@ -257,11 +291,12 @@ func (rn *runner) dispatch(ctx context.Context, rec record) {
 		// The batched client tracks its own totals, so this is informational only.
 		rn.p.Total = rec.Total
 	case "drawer", "diary":
-		if w := rec.Wing; w != "" {
-			rn.wings[w] = struct{}{}
+		wing := rn.wingFor(rec.Wing)
+		if wing != "" {
+			rn.wings[wing] = struct{}{}
 		}
 		rn.pendingDrawers = append(rn.pendingDrawers, palace.ImportDrawer{
-			Wing: rec.Wing, Room: rec.Room, SourceFile: rec.SourceFile, ChunkIndex: rec.ChunkIndex,
+			Wing: wing, Room: rec.Room, SourceFile: rec.SourceFile, ChunkIndex: rec.ChunkIndex,
 			Content: rec.Content, Entities: rec.Entities, FiledAt: rec.FiledAt,
 			ContentDate: rec.ContentDate, Agent: rec.Agent, Topic: rec.Topic,
 		})
@@ -270,7 +305,7 @@ func (rn *runner) dispatch(ctx context.Context, rec record) {
 		}
 	case "closet":
 		rn.pendingClosets = append(rn.pendingClosets, palace.ImportCloset{
-			Wing: rec.Wing, Room: rec.Room, SourceFile: rec.SourceFile,
+			Wing: rn.wingFor(rec.Wing), Room: rec.Room, SourceFile: rec.SourceFile,
 			Document: rec.Document, Entities: rec.Entities, FiledAt: rec.FiledAt,
 		})
 		if len(rn.pendingClosets) >= batchSize {
@@ -299,6 +334,18 @@ func (rn *runner) dispatch(ctx context.Context, rec record) {
 	default:
 		rn.p.Skipped++
 	}
+}
+
+// wingFor picks the wing a record lands in: the ingest's target wing when one was
+// named, otherwise whatever the record itself carried. A wing-less bundle
+// (internal/wingbundle) supplies nothing, so without a target its records would
+// land in the empty wing — which is exactly why every caller that accepts such a
+// bundle demands a target up front rather than defaulting one.
+func (rn *runner) wingFor(recordWing string) string {
+	if rn.targetWing != "" {
+		return rn.targetWing
+	}
+	return recordWing
 }
 
 // flushDrawers embeds and stores the buffered drawers, then clears the buffer.
@@ -335,9 +382,13 @@ func (rn *runner) flushClosets(ctx context.Context) {
 func (rn *runner) applyTunnels(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, rec := range rn.pendingTunnels {
+		// Both endpoints are relabelled, not just one. A wing bundle only ever
+		// carries tunnels whose two ends are inside the exported wing, so under a
+		// target wing both sides must follow it — rewriting one end would point the
+		// tunnel at a room in a wing this import never created.
 		_, err := rn.drawers.CreateTunnel(ctx, rn.teamID, palace.TunnelInput{
-			SourceWing: rec.SourceWing, SourceRoom: rec.SourceRoom,
-			TargetWing: rec.TargetWing, TargetRoom: rec.TargetRoom, Label: rec.Label,
+			SourceWing: rn.wingFor(rec.SourceWing), SourceRoom: rec.SourceRoom,
+			TargetWing: rn.wingFor(rec.TargetWing), TargetRoom: rec.TargetRoom, Label: rec.Label,
 		}, now)
 		if err != nil {
 			rn.p.Skipped++
