@@ -114,6 +114,27 @@ type Config struct {
 	// vectors, matching the frozen Python palace so data stays comparable.
 	OllamaEmbedModel string
 
+	// RerankURL is the base URL of a HuggingFace text-embeddings-inference (TEI)
+	// server whose cross-encoder re-orders search results. EMPTY — the default —
+	// turns reranking off entirely and search behaves exactly as it did before.
+	//
+	// It is a separate endpoint from OllamaURL because the two are different jobs
+	// and, in practice, different processes: Ollama serves the bge-m3 embeddings,
+	// TEI serves the bge-reranker-v2-m3 cross-encoder. Ollama cannot do this one —
+	// it exposes only a model's embedding layer, never a classification head, so
+	// it has no rerank endpoint to point at (ollama/ollama#10467).
+	RerankURL string
+
+	// RerankPool is how many fused candidates get cross-encoded per search.
+	// Larger means the reranker can rescue a good drawer that the vector+BM25
+	// pass buried, at the cost of latency; 0 or less takes palace.DefaultRerankPool.
+	// Ignored when RerankURL is empty.
+	//
+	// There is deliberately no RERANK_MODEL: TEI's /rerank carries no model field,
+	// because the model is fixed when the container starts (--model-id). A knob the
+	// wire cannot carry would only ever mislead.
+	RerankPool int
+
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
 	HTTPTimeout time.Duration
 
@@ -189,6 +210,7 @@ func Default() Config {
 		QdrantURL:        "http://localhost:6333",
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
+		RerankPool:       50, // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		HTTPTimeout:      30 * time.Second,
 		Debug:            false,
 	}

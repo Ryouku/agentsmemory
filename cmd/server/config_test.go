@@ -156,3 +156,28 @@ func TestAgentEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// TestRerankDefaultsOff pins the switch the whole feature hangs on: no
+// RERANK_URL means no reranker, so an existing deployment that never sets it
+// keeps the vector+BM25+closet ordering it has always had.
+func TestRerankDefaultsOff(t *testing.T) {
+	cfg := resolve(t)
+	if cfg.RerankURL != "" {
+		t.Errorf("default rerank url = %q, want empty (feature off)", cfg.RerankURL)
+	}
+	if cfg.RerankPool != config.Default().RerankPool {
+		t.Errorf("default rerank pool = %d, want %d", cfg.RerankPool, config.Default().RerankPool)
+	}
+}
+
+// TestRerankFlagsResolve covers the operator-error case that would otherwise
+// 404 every rerank call in silence: a URL pasted with surrounding whitespace.
+func TestRerankFlagsResolve(t *testing.T) {
+	cfg := resolve(t, "--rerank-url", "  http://100.64.79.36:12434  ", "--rerank-pool", "80")
+	if want := "http://100.64.79.36:12434"; cfg.RerankURL != want {
+		t.Errorf("rerank url = %q, want %q (trimmed)", cfg.RerankURL, want)
+	}
+	if cfg.RerankPool != 80 {
+		t.Errorf("rerank pool = %d, want 80", cfg.RerankPool)
+	}
+}

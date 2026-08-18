@@ -8,6 +8,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -34,6 +35,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/passkey"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank/tei"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/share"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -115,6 +117,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		QdrantAPIKey:     c.String("qdrant-api-key"),
 		OllamaURL:        c.String("ollama-url"),
 		OllamaEmbedModel: c.String("ollama-model"),
+		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
+		RerankPool:       c.Int("rerank-pool"),
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
@@ -159,6 +163,8 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "qdrant-api-key", Sources: cli.EnvVars("QDRANT_API_KEY"), Value: def.QdrantAPIKey, Usage: "Qdrant API key (optional)"},
 		&cli.StringFlag{Name: "ollama-url", Sources: cli.EnvVars("OLLAMA_URL"), Value: def.OllamaURL, Usage: "Ollama base URL"},
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
+		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "TEI base URL for cross-encoder re-ranking of search results (empty disables re-ranking)"},
+		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
 }
@@ -203,8 +209,9 @@ func run(ctx context.Context, cfg config.Config) error {
 		// Make the "why is it silent?" answer obvious on boot: echo the effective
 		// wiring so a misread flag/env is visible before any request arrives.
 		log.Printf("debug mode ON — request + SQL logging enabled")
-		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s",
-			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel)
+		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s",
+			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel,
+			cmp.Or(cfg.RerankURL, "off"))
 	}
 
 	// Claim the database before opening it. Only one server may serve a given
@@ -756,6 +763,13 @@ func buildServices(cfg config.Config) (*services, error) {
 	// the palace service ties them to drawer metadata.
 	embedder := ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
+
+	// Re-ranking is opt-in wiring: with no RERANK_URL the service keeps the
+	// vector+BM25+closet fusion it has always used, so this cannot change the
+	// behaviour of a deployment that does not ask for it.
+	if cfg.RerankURL != "" {
+		drawers = drawers.WithReranker(tei.New(cfg.RerankURL, cfg.HTTPTimeout), cfg.RerankPool)
+	}
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant
 	// (resolve the destination slug, read roles) and palace (list + copy wings).

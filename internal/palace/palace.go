@@ -129,4 +129,9 @@ type SearchHit struct {
 	BM25        float64 // raw Okapi-BM25 lexical score (pre-normalization)
 	ClosetBoost float64 // closet rank boost folded into Score (0 when none)
 	Distance    float64 // raw cosine distance, lower is closer
+	// RerankScore is the cross-encoder's relevance score in (0,1) when a reranker
+	// is configured and scored this hit; 0 means it was not reranked. When it is
+	// set it — not Score — determined this hit's position; Score is still reported
+	// so the two rankings can be compared.
+	RerankScore float64
 }
