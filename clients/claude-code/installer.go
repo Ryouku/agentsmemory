@@ -73,6 +73,11 @@ const (
 	// server that demands the credential and the agent that presents it.
 	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 
+	// wingHeader names the project a registration files into. It mirrors
+	// auth.WingHeader on the server; duplicating the string keeps this installer
+	// binary independent of the server package it configures.
+	wingHeader = "X-Agentsmemory-Wing"
+
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell
 	// rc. Kept beside the config it belongs to, so deleting a sandbox deletes its
@@ -164,7 +169,12 @@ type Installer struct {
 	serverBin      string   // agentsmemory server binary the stdio bridge is spawned from (socket mode only)
 	scope          string   // Claude MCP/plugin scope (user|local|project)
 	local          bool     // target a self-hosted `agentsmemory --local` server
-	token          string   // agentsmemory workspace token (empty ⇒ prompt or skip)
+	// wing is the project this registration files memories into. It travels as a
+	// header on every MCP call, so writes from THIS project land in THIS project's
+	// wing whether or not the agent remembers to pass one. Empty keeps the old
+	// behaviour: the agent names a wing per call.
+	wing  string
+	token string // agentsmemory workspace token (empty ⇒ prompt or skip)
 	// resolvedToken is what registration actually wrote, decided once by
 	// resolveToken. summary() reads it rather than inferring from local, because
 	// a self-hosted server may or may not require a token (server --token) and the
@@ -346,6 +356,7 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		serverBin:      serverBin,
 		scope:          c.String("scope"),
 		local:          local,
+		wing:           strings.TrimSpace(c.String("wing")),
 		token:          c.String("token"),
 		copyGlobal:     c.Bool("copy"),
 		sharedAuth:     c.Bool("shared-auth"),
@@ -705,6 +716,11 @@ func (i *Installer) registerClaudeMCP(token string) error {
 	// credentials) but is a lie in the config file: it reads as auth that exists.
 	if token != "" {
 		args = append(args, "--header", "Authorization: Bearer "+token)
+	}
+	// The wing rides on the connection rather than on the agent's memory: this is
+	// what makes one palace hold many projects without them bleeding together.
+	if i.wing != "" {
+		args = append(args, "--header", wingHeader+": "+i.wing)
 	}
 	// `mcp add` is not idempotent by name, so remove any prior entry first
 	// (ignoring "not found") and then add cleanly, all in one shot.
@@ -1139,6 +1155,10 @@ func (i *Installer) summary() {
 		i.kit.memoryFile, i.commandLabel("am.md"))
 	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
 		i.commandLabel("M.md"), i.commandLabel("am.md"))
+
+	if i.wing != "" {
+		fmt.Fprintf(i.out, "  - memories from this project file into %s on their own — no wing argument needed\n", i.wing)
+	}
 
 	if i.local {
 		// The self-hosted server is the one thing that has to be running for any of

@@ -77,7 +77,7 @@ func jsonResult(v any) *mcp.CallToolResult {
 func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("add_drawer",
 		mcp.WithDescription("File a verbatim memory (drawer) into a wing/room. Content over ~800 chars is chunked into multiple drawers; re-adding the same source is idempotent."),
-		mcp.WithString("wing", mcp.Required(), mcp.Description("Project namespace the memory belongs to.")),
+		mcp.WithString("wing", mcp.Description("Project namespace the memory belongs to. Optional when this MCP was registered for a project — then it defaults to that project's wing.")),
 		mcp.WithString("room", mcp.Required(), mcp.Description("Aspect within the wing, e.g. \"backend\" or \"decisions\".")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to remember — stored exactly, never summarised.")),
 		mcp.WithString("source_file", mcp.Description("Optional provenance of the content (a path or label).")),
@@ -88,7 +88,7 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if !ok {
 			return errResult, nil
 		}
-		wing, err := req.RequireString("wing")
+		wing, err := wingFor(ctx, req.GetString("wing", ""))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

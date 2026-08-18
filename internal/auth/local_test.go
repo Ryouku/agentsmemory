@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -109,5 +110,41 @@ func TestLocalTenantToken(t *testing.T) {
 				t.Error("401 without a WWW-Authenticate header; the client is not told what to present")
 			}
 		})
+	}
+}
+
+// TestBridgeLiftsTheRegistrationWing: the wing a project's MCP registration
+// declares must reach the tools, by header or by query parameter — not every MCP
+// client can attach custom headers, and a URL always can.
+func TestBridgeLiftsTheRegistrationWing(t *testing.T) {
+	for name, build := range map[string]func() *http.Request{
+		"header": func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			r.Header.Set(WingHeader, "wing_zeus")
+			return r
+		},
+		"query parameter": func() *http.Request {
+			return httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_zeus", nil)
+		},
+		"header wins over query": func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_other", nil)
+			r.Header.Set(WingHeader, "wing_zeus")
+			return r
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := DefaultWingFrom(Bridge(context.Background(), build())); got != "wing_zeus" {
+				t.Errorf("default wing = %q, want wing_zeus", got)
+			}
+		})
+	}
+}
+
+// TestBridgeWithoutAWing keeps the old behaviour intact: a registration that
+// names no project leaves the wing to the caller, exactly as before.
+func TestBridgeWithoutAWing(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	if got := DefaultWingFrom(Bridge(context.Background(), r)); got != "" {
+		t.Errorf("default wing = %q, want empty", got)
 	}
 }

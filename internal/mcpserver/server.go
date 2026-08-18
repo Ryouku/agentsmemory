@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -129,6 +130,28 @@ func New(deps Deps) *server.MCPServer {
 	return srv
 }
 
+// wingFor resolves the wing a write belongs to: the one the caller passed, or —
+// when it passed none — the one this MCP registration was created for.
+//
+// The fallback is what keeps projects apart without depending on an agent
+// remembering a convention. A per-project registration states its wing once (see
+// auth.WingHeader) and every write from that project lands there; an agent that
+// does name a wing still wins, because an explicit argument is a decision and a
+// default is only a default.
+//
+// The error names both routes, since a caller with neither has two different
+// things it could fix.
+func wingFor(ctx context.Context, passed string) (string, error) {
+	if strings.TrimSpace(passed) == "" {
+		if def := auth.DefaultWingFrom(ctx); def != "" {
+			return palace.SanitizeName(def, "wing")
+		}
+		return "", fmt.Errorf("wing is required: pass one, or register this MCP with a default wing "+
+			"(header %s) so every write from this project files itself", auth.WingHeader)
+	}
+	return palace.SanitizeName(passed, "wing")
+}
+
 // admit resolves the tenant and meters one request against the workspace's
 // monthly cap. It returns the tenant on success, or a ready-to-return error
 // result (and ok=false) when the caller is unauthenticated, the meter fails, or
@@ -186,6 +209,11 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if local {
 			mode = "local"
 		}
+		// The wing this registration files into, if it was registered for a
+		// project. An agent that can see it does not have to guess whether its
+		// writes are landing in the right place.
+		defaultWing := auth.DefaultWingFrom(ctx)
+
 		var workspace map[string]any
 		if workspaces != nil {
 			if team, err := workspaces.TeamByID(ctx, t.TeamID); err == nil {
@@ -204,6 +232,7 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			"role":          string(t.Role),
 			"mode":          mode,
 			"workspace":     workspace,
+			"default_wing":  defaultWing,
 			"total_drawers": total,
 			"wings":         tax.Wings, // [{wing, drawers, rooms:[{wing, room, drawers}]}]
 			"usage": map[string]any{

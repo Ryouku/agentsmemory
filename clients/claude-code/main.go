@@ -105,6 +105,12 @@ func installCommand() *cli.Command {
 				Usage: "install into an isolated config at ~/.sandboxes/<name> instead of the global ~/.claude",
 			},
 			&cli.StringFlag{
+				Name: "wing",
+				Usage: "file this project's memories into this wing. It is sent as a header on every MCP call, so writes " +
+					"land in the right project even when the agent passes no wing — pair it with --scope project to keep " +
+					"the registration in this repo",
+			},
+			&cli.StringFlag{
 				Name: "claude-dir",
 				// config-dir is the name that reads right for codex; claude-dir stays
 				// the primary so existing scripts and docs keep working.
