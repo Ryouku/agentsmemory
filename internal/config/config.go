@@ -156,6 +156,13 @@ type Config struct {
 	// promotes what a human chose to keep; on a mined-transcript corpus the
 	// eval measured it demoting correct answers, and the operator is the one
 	// who knows which corpus theirs is.
+	//
+	// NOTE: 0 is a MEANINGFUL value here, not "unset", so this field's zero value
+	// silently turns the prior off. Build a Config from Default() (as
+	// configFromCmd does) rather than as a bare literal. The alternative — reading
+	// 0 as "use the default" — is the footgun RerankWeight already carries, where
+	// the one value an operator would pick to disable a feature is the one value
+	// that re-enables it.
 	ClosetBoost float64
 
 	// RerankWeight is how much of the final ordering the cross-encoder decides,

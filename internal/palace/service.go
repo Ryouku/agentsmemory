@@ -186,6 +186,17 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 // to exist — every call site that has no reranker configured simply never calls
 // this. It must be called before the service is shared across goroutines: the
 // field is read without synchronization on the search path.
+func (s *Service) WithReranker(r Reranker, pool int) *Service {
+	if pool < 1 {
+		pool = DefaultRerankPool
+	}
+	s.rerank, s.rerankPool = r, pool
+	if s.rerankWeight == 0 {
+		s.rerankWeight = DefaultRerankWeight
+	}
+	return s
+}
+
 // WithClosetBoost scales the closet curation prior (1 = full, 0 = off). Same
 // post-construction-setter contract as WithReranker: call before the service is
 // shared across goroutines.
@@ -197,17 +208,6 @@ func (s *Service) WithClosetBoost(scale float64) *Service {
 		scale = 1
 	}
 	s.closetBoostScale = scale
-	return s
-}
-
-func (s *Service) WithReranker(r Reranker, pool int) *Service {
-	if pool < 1 {
-		pool = DefaultRerankPool
-	}
-	s.rerank, s.rerankPool = r, pool
-	if s.rerankWeight == 0 {
-		s.rerankWeight = DefaultRerankWeight
-	}
 	return s
 }
 
