@@ -173,6 +173,65 @@ func vecSimFromDistance(distance float64) float64 {
 	return 0
 }
 
+// rrfK is the smoothing constant in reciprocal rank fusion, 1/(k+rank). The
+// value 60 is the one the original RRF paper used and every implementation since
+// has kept; it flattens the difference between the top few ranks so that a
+// document ranked 1st by one retriever and 5th by the other beats one ranked 2nd
+// and 2nd only slightly, which is the behaviour that makes RRF robust.
+const rrfK = 60.0
+
+// rankRRF fuses the vector and BM25 orderings by RANK rather than by score.
+//
+// It exists because our weighted fusion has a known weakness: BM25 is unbounded
+// and cosine similarity is not, so combining them means normalizing two
+// distributions that do not share a shape, and the 0.6/0.4 split that governs it
+// was inherited rather than measured. RRF sidesteps the problem entirely — it
+// never looks at a score, only at position — which is why it needs no tuning and
+// why the published comparisons keep finding it competitive with tuned weights.
+//
+// Whether that holds HERE is exactly what the eval's rrf arm is for; this
+// function is the candidate, not the decision.
+func rankRRF(query string, docs []string, distances, boosts []float64) []HybridScore {
+	n := len(docs)
+	out := make([]HybridScore, n)
+
+	// Position of each candidate in the vector ordering (closest first).
+	byVector := make([]int, n)
+	for i := range byVector {
+		byVector[i] = i
+	}
+	sort.SliceStable(byVector, func(a, b int) bool { return distances[byVector[a]] < distances[byVector[b]] })
+
+	bm25 := bm25Scores(query, docs)
+	byLexical := make([]int, n)
+	for i := range byLexical {
+		byLexical[i] = i
+	}
+	sort.SliceStable(byLexical, func(a, b int) bool { return bm25[byLexical[a]] > bm25[byLexical[b]] })
+
+	fused := make([]float64, n)
+	for rank, idx := range byVector {
+		fused[idx] += 1 / (rrfK + float64(rank+1))
+	}
+	for rank, idx := range byLexical {
+		fused[idx] += 1 / (rrfK + float64(rank+1))
+	}
+
+	for i := range out {
+		boost := 0.0
+		if boosts != nil {
+			// The closet boost is a score, not a ranking, so it cannot join the
+			// fusion as a third list. Scaling it into RRF's range keeps it the
+			// nudge it is meant to be: a full-strength closet is worth about one
+			// rank position here, not the whole ordering.
+			boost = boosts[i] / rrfK
+		}
+		out[i] = HybridScore{Index: i, Fused: fused[i] + boost, BM25: bm25[i], Boost: boost}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Fused > out[b].Fused })
+	return out
+}
+
 // HybridScore is one candidate's fused ranking: its position in the input slice
 // plus the component and combined scores, exposed so the search tool can report
 // the lexical and closet contributions alongside the final order.

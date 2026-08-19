@@ -229,3 +229,47 @@ func TestSnippetWithoutQueryTermsStillReturnsSomething(t *testing.T) {
 		t.Errorf("want a truncated head, got %q", got)
 	}
 }
+
+// TestRankRRFIgnoresScoreScale is the property RRF is chosen for: it ranks by
+// position, so a retriever whose scores are unbounded (BM25) cannot swamp one
+// whose scores are not (cosine). Multiplying every lexical score by a thousand
+// must not change the fused order.
+func TestRankRRFIgnoresScoreScale(t *testing.T) {
+	docs := []string{
+		"lru cache eviction policy explained",
+		"unrelated notes about deployment",
+		"cache eviction in the lru implementation",
+	}
+	distances := []float64{0.4, 0.2, 0.6}
+
+	got := rankRRF("lru cache eviction", docs, distances, nil)
+	order := []int{got[0].Index, got[1].Index, got[2].Index}
+
+	// Same inputs with the lexical signal inflated: the documents are unchanged,
+	// so BM25's own scale changes nothing about their ORDER, and RRF must agree.
+	inflated := make([]string, len(docs))
+	for i, d := range docs {
+		inflated[i] = strings.Repeat(d+" ", 50)
+	}
+	again := rankRRF("lru cache eviction", inflated, distances, nil)
+	if order[0] != again[0].Index {
+		t.Errorf("RRF changed its winner when only score magnitude changed: %d then %d", order[0], again[0].Index)
+	}
+}
+
+// TestRankRRFRewardsAgreement: a candidate both retrievers like should beat one
+// that only a single retriever ranks first. That is the behaviour the fusion
+// exists for, and the reason the smoothing constant flattens the very top.
+func TestRankRRFRewardsAgreement(t *testing.T) {
+	docs := []string{
+		"cache eviction policy for the lru cache", // both like it
+		"lru lru lru lru",                         // lexical only
+		"a note about something else entirely",    // vector only
+	}
+	distances := []float64{0.25, 0.9, 0.2}
+
+	got := rankRRF("lru cache eviction policy", docs, distances, nil)
+	if got[0].Index != 0 {
+		t.Errorf("agreed-on candidate ranked %d, want it first", got[0].Index)
+	}
+}

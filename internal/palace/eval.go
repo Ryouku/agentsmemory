@@ -33,6 +33,13 @@ const (
 	// ArmReranked is production: fusion, then the cross-encoder over the top K,
 	// blended at the configured weight.
 	ArmReranked EvalArm = "hybrid+closet+rerank"
+	// ArmRRF fuses the same two retrievers by RANK instead of by weighted score —
+	// the candidate for replacing an inherited 0.6/0.4 split with something that
+	// needs no tuning at all.
+	ArmRRF EvalArm = "rrf"
+	// ArmRRFReranked is RRF with the cross-encoder on top, so the fusion choice
+	// and the rerank choice can be read independently.
+	ArmRRFReranked EvalArm = "rrf+rerank"
 )
 
 // rerankSweep are the blend weights the eval tries alongside production, so how
@@ -44,12 +51,44 @@ var rerankSweep = []float64{0.25, 0.5, 0.75, 1.0}
 // rerankArm names a swept arm.
 func rerankArm(w float64) EvalArm { return EvalArm(fmt.Sprintf("rerank blend w=%.2f", w)) }
 
-// EvalCase is one labelled question: the query, and the drawer that should come
-// back for it.
+// Eval categories, borrowed from the agent-memory benchmarks (LoCoMo and its
+// descendants) because the axes they separate are the ones a single-category
+// eval silently averages over.
+//
+// The point of the split is that a system can be excellent at one and useless at
+// another: finding the note that states a fact is a different problem from
+// finding the CURRENT version of a fact that was later corrected, and both are
+// different from knowing when the palace simply does not hold the answer.
+const (
+	// CatSingle: one memory answers the question outright.
+	CatSingle = "single"
+	// CatCrossLingual: the question is in one language, the memory in another.
+	// This palace is bilingual, and the embedder's multilingual claim has never
+	// been tested on it.
+	CatCrossLingual = "crosslingual"
+	// CatTemporal: a fact was later corrected or superseded, and recall must
+	// prefer the version that is still true.
+	CatTemporal = "temporal"
+	// CatAbsent: the palace does NOT hold the answer, and the right behaviour is
+	// to return nothing. Untested until now, which means max_distance was folklore.
+	CatAbsent = "absent"
+)
+
+// EvalCase is one labelled question: the query, the drawer that should come back
+// for it, and what kind of question it is.
 type EvalCase struct {
-	Query  string
-	Expect string // drawer id
-	Wing   string // optional scope, mirroring how the query would really be run
+	Query    string
+	Expect   string // drawer id; empty for CatAbsent, where any hit is a false positive
+	Wing     string // optional scope, mirroring how the query would really be run
+	Category string // one of the Cat* values; empty is treated as CatSingle
+}
+
+// category returns the case's category, defaulting to single-hop.
+func (c EvalCase) category() string {
+	if c.Category == "" {
+		return CatSingle
+	}
+	return c.Category
 }
 
 // EvalMetrics is one arm's score over a case set.
@@ -64,6 +103,23 @@ type EvalMetrics struct {
 	Recall5  int
 	MRR      float64
 	NotFound int // the expected drawer was not in the candidate pool at all
+
+	// ByCategory holds the same counts per question kind, because an average over
+	// categories hides the failure that matters: a system can be perfect on
+	// single-hop and blind on temporal, and the mean looks fine.
+	ByCategory map[string]*CategoryMetrics
+}
+
+// CategoryMetrics is one arm's record within one category.
+type CategoryMetrics struct {
+	Cases    int
+	Recall1  int
+	Recall5  int
+	MRR      float64
+	NotFound int
+	// FalsePositives counts CatAbsent cases where something was returned anyway.
+	// It is the only metric here that a higher score makes WORSE.
+	FalsePositives int
 }
 
 // Recall1Pct / Recall5Pct render the counts as percentages of cases.
@@ -105,8 +161,9 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 	if poolSize <= 0 {
 		poolSize = 50
 	}
-	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset}
+	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
 	if s.rerank != nil {
+		arms = append(arms, ArmRRFReranked)
 		arms = append(arms, ArmReranked)
 		for _, w := range rerankSweep {
 			arms = append(arms, rerankArm(w))
@@ -220,6 +277,19 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 		case ArmHybridCloset:
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
+				ordered = append(ordered, r.Index)
+			}
+		case ArmRRF:
+			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
+				ordered = append(ordered, r.Index)
+			}
+		case ArmRRFReranked:
+			fused := rankRRF(c.Query, docs, dists, boosts)
+			hitsForRank := make([]SearchHit, len(pool))
+			for i, p := range pool {
+				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+			}
+			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, s.rerankWeight) {
 				ordered = append(ordered, r.Index)
 			}
 		default:

@@ -48,7 +48,11 @@ services:
       # edit an env file is an overlay that half-applies.
       VECTOR_BACKEND: qdrant
       QDRANT_URL: http://qdrant:6333
-      RERANK_URL: http://reranker:8080/v1/rerank
+      # BASE url, not the endpoint: the client appends /rerank itself. Pointing
+      # this at a full path yields /v1/rerank/rerank, a 404, and a search that
+      # silently falls back to the hybrid order — which is exactly how it read in
+      # an eval run before the fallback started logging why.
+      RERANK_URL: http://reranker:8080/v1
       RERANK_MODEL: bge-reranker-v2-m3
       # 20, not 50: the cross-encoder scores every pair in a full forward pass, so
       # cost is linear here. On CPU a drawer-sized pair takes ~0.2-0.5s, and 50 of
