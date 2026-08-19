@@ -36,6 +36,29 @@ type searchEventRow struct {
 // TableName pins the table name so gorm does not pluralise the struct name.
 func (searchEventRow) TableName() string { return "search_events" }
 
+// SampleSearchQueries returns a random sample of distinct query texts agents
+// actually ran against a wing. The eval replays them as CatReal cases: unlike a
+// generated question, nothing about a real query was phrased to suit any
+// ranking arm's feature, which is what makes this the arm that breaks the
+// generator's circularity. Trivial fragments are excluded — a two-word probe
+// tells the judge nothing — and the eval's own searches never appear here
+// because they run with SkipTelemetry.
+func (r *Repo) SampleSearchQueries(ctx context.Context, teamID, wing string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	q := r.db.WithContext(ctx).Model(&searchEventRow{}).
+		Where("team_id = ? AND length(query) >= 12", teamID)
+	if wing != "" {
+		q = q.Where("wing = ?", wing)
+	}
+	var queries []string
+	if err := q.Distinct("query").Order("RANDOM()").Limit(limit).Pluck("query", &queries).Error; err != nil {
+		return nil, err
+	}
+	return queries, nil
+}
+
 // WingRecall is one wing's recall record over a window: how often it was asked,
 // how often it answered, and how much it holds.
 //

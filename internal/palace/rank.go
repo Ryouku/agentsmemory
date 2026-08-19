@@ -329,6 +329,53 @@ func LexicalCoverage(query string, docs []string) float64 {
 	return float64(informative) / float64(len(terms))
 }
 
+// LexicalCoverageIDF is LexicalCoverage with each term weighted by how much it
+// discriminates, instead of counted as one vote.
+//
+// The binary count has a measured failure mode: a term appearing in N-1 of N
+// candidates counts exactly as much as a rare identifier appearing in one, so a
+// paraphrase query made of ordinary words reads as lexically informative and the
+// adaptive weight stays up precisely when BM25 is noise — the n=40 paraphrase
+// eval scored binary-coverage auto worst of every fusion arm. Here a term
+// contributes its BM25-style IDF, normalized so a df=1 term is worth 1 and a
+// term in every candidate is worth ~0; terms in no candidate still contribute 0
+// signal while diluting the denominator, which is what keeps cross-language
+// queries at weight ~0.
+func LexicalCoverageIDF(query string, docs []string) float64 {
+	terms := map[string]struct{}{}
+	for _, t := range tokenize(query) {
+		terms[t] = struct{}{}
+	}
+	if len(terms) == 0 || len(docs) == 0 {
+		return 0
+	}
+	df := make(map[string]int, len(terms))
+	for _, d := range docs {
+		seen := map[string]struct{}{}
+		for _, t := range tokenize(d) {
+			if _, ok := terms[t]; ok {
+				seen[t] = struct{}{}
+			}
+		}
+		for t := range seen {
+			df[t]++
+		}
+	}
+	n := float64(len(docs))
+	idf := func(d float64) float64 { return math.Log(1 + (n-d+0.5)/(d+0.5)) }
+	max := idf(1) // the most a usable term can discriminate: present in one doc
+	if max <= 0 { // single-doc pool: no term can discriminate between candidates
+		return 0
+	}
+	sum := 0.0
+	for t := range terms {
+		if d := df[t]; d > 0 {
+			sum += idf(float64(d)) / max
+		}
+	}
+	return sum / float64(len(terms))
+}
+
 // adaptiveBM25Weight scales the lexical half by how much lexical signal this
 // query actually has against these candidates.
 //
@@ -344,6 +391,13 @@ func adaptiveBM25Weight(query string, docs []string, base float64) float64 {
 // rankHybridAdaptive fuses with the lexical weight chosen per query.
 func rankHybridAdaptive(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
 	return rankHybridWeighted(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base))
+}
+
+// rankHybridAdaptiveIDF is rankHybridAdaptive with the IDF-weighted coverage.
+// It exists as a separate eval arm rather than a replacement: the binary
+// coverage is the shipping default until the IDF variant beats it on a table.
+func rankHybridAdaptiveIDF(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
+	return rankHybridWeighted(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs))
 }
 
 // rankFused is the shared implementation.

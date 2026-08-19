@@ -310,3 +310,34 @@ func TestAdaptiveWeightCollapsesWithoutSignal(t *testing.T) {
 		t.Errorf("adaptive weight with shared vocabulary = %.2f, want > 0", w)
 	}
 }
+
+// TestLexicalCoverageIDFDiscountsCommonTerms pins the confirmed review finding:
+// a term in N-1 of N candidates must count as ~nothing, not as one full vote —
+// the binary count read paraphrase queries as lexically informative and kept the
+// lexical weight up exactly when BM25 was noise.
+func TestLexicalCoverageIDFDiscountsCommonTerms(t *testing.T) {
+	docs := []string{
+		"deploy the batching service to the cluster",
+		"deploy notes for the batching rollout",
+		"deploy checklist for the batching gateway",
+		"unrelated drawing of a cake recipe",
+	}
+	common := LexicalCoverageIDF("deploy batching", docs) // both terms in 3 of 4
+	rare := LexicalCoverageIDF("cake", docs)              // one term in 1 of 4
+	if common >= rare {
+		t.Errorf("common-term coverage %.3f must be well below rare-term coverage %.3f", common, rare)
+	}
+	if binary := LexicalCoverage("deploy batching", docs); binary != 1.0 {
+		t.Fatalf("precondition: the binary count reads the common terms as full signal, got %.3f", binary)
+	}
+}
+
+// TestLexicalCoverageIDFCrossLanguageStaysZero: terms absent from every
+// candidate carry no weight under either variant — the cross-language behaviour
+// that motivated adaptive weighting must survive the IDF change.
+func TestLexicalCoverageIDFCrossLanguageStaysZero(t *testing.T) {
+	docs := []string{"reservation flow and payment gate", "payment provider timeout handling"}
+	if c := LexicalCoverageIDF("lietuviškas klausimas apie mokėjimus", docs); c != 0 {
+		t.Errorf("all-absent terms must yield coverage 0, got %.3f", c)
+	}
+}

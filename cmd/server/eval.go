@@ -66,7 +66,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), or absent (questions the palace should NOT answer)"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -201,6 +201,92 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
+// generateRealCases replays queries agents actually ran (from search_events)
+// as eval cases. There is no seed note to serve as gold, so the gold is a
+// judged SET: the broad candidate pool is scored by the generator model as a
+// relevance judge, and every accepted memory counts as a correct answer. Two
+// of the review's findings meet their fix here — real queries were never
+// phrased to suit any arm's feature (the generated styles all are), and a
+// multi-member gold stops a valid alternative answer being scored as an error.
+//
+// The judge is an LLM, not a human, and the pool comes from vector retrieval,
+// so a memory no arm can retrieve is invisible to these qrels. Both limits are
+// recorded in the case-file provenance rather than papered over.
+func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
+	wing := c.String("wing")
+	queries, err := svc.drawers.SampleSearchQueries(ctx, team.ID, wing, c.Int("n"))
+	if err != nil {
+		return nil, "", fmt.Errorf("sample real queries: %w", err)
+	}
+	if len(queries) == 0 {
+		return nil, "", fmt.Errorf("no recorded searches to replay in %s of workspace %q — real-query cases need search telemetry; run some sessions against this palace first, or use a generated --style",
+			corpusLabel(wing), team.Slug)
+	}
+	judge := &questionGen{
+		url:    genURL(c),
+		model:  c.String("gen-model"),
+		apiKey: strings.TrimSpace(c.String("gen-api-key")),
+		prompt: evalPromptRelevanceCheck,
+		http:   &http.Client{Timeout: 120 * time.Second},
+	}
+	fmt.Fprintf(out, "judging %d real queries with %s…\n", len(queries), judge.model)
+	var cases []palace.EvalCase
+	for i, q := range queries {
+		started := time.Now()
+		hits, err := svc.drawers.Search(ctx, team.ID, palace.SearchQuery{
+			// Ungated: the judge decides relevance, not the distance cutoff, and
+			// a relevant memory the gate would drop still belongs in the qrels.
+			// The judged pool is capped at 12 — each hit costs one judge call —
+			// which means a memory below rank 12 here is invisible to the qrels.
+			// That pooling bias is inherent to judged evals; it is recorded in
+			// the provenance line rather than pretended away.
+			Query: q, Wing: wing, Limit: 12, SkipTelemetry: true,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("pool real query %q: %w", q, err)
+		}
+		var relevant []string
+		for _, h := range hits {
+			excerpt := palace.Snippet(h.Drawer.Content, q, 900)
+			reply, jerr := judge.ask(ctx, "QUERY: "+q+"\n\nNOTE:\n"+excerpt)
+			if jerr != nil {
+				// The FIRST failure aborts, matching the generator preflight
+				// doctrine: a judge that cannot score one note is misconfigured,
+				// and every later call would fail the same way.
+				if i == 0 && len(relevant) == 0 {
+					return nil, "", fmt.Errorf("the relevance judge is not usable: %w\n\n%s", jerr, judge.hint(ctx))
+				}
+				fmt.Fprintf(out, "  [%2d/%2d] judge failed on one note, skipped it: %v\n", i+1, len(queries), jerr)
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES") {
+				relevant = append(relevant, h.Drawer.ID)
+			}
+		}
+		if len(relevant) == 0 {
+			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  no relevant memory judged for: %s\n", i+1, len(queries), time.Since(started).Seconds(), firstLineOf(q, 50))
+			continue
+		}
+		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %d relevant  %s\n", i+1, len(queries), time.Since(started).Seconds(), len(relevant), firstLineOf(q, 50))
+		cases = append(cases, palace.EvalCase{Query: q, ExpectAny: relevant, Wing: wing, Category: palace.CatReal})
+	}
+	if len(cases) == 0 {
+		return nil, "", fmt.Errorf("none of the %d replayed queries had a judged-relevant memory — either the palace genuinely cannot answer its own traffic (check the recall stats) or the judge model is refusing everything", len(queries))
+	}
+	if path := c.String("cases"); path != "" {
+		meta := caseFileMeta{
+			Generator: judge.model, Style: "real", Wing: wing,
+			Corpus: len(queries), Created: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := writeCases(path, cases, meta); err != nil {
+			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
+		} else {
+			fmt.Fprintf(out, "saved %d case(s) to %s\n", len(cases), path)
+		}
+	}
+	return cases, "replayed from telemetry", nil
+}
+
 // verifyAbsent checks a generated "absent" question against the whole corpus,
 // not just the note it was seeded from. The generator only promises the seed
 // note cannot answer it; if any other memory can, the case would score a
@@ -264,6 +350,10 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			}
 			return merged, label, nil
 		}
+	}
+
+	if c.String("style") == "real" {
+		return generateRealCases(ctx, c, svc, team, out)
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -510,6 +600,16 @@ QUESTION:`
 // answer the question perfectly, and the case would count a correct retrieval
 // as a false positive.
 const evalPromptAnswerCheck = `Does the NOTE below contain the answer to the QUESTION?
+Reply with exactly one word: YES or NO.
+
+%s`
+
+// evalPromptRelevanceCheck judges a real query against one retrieved note. Real
+// queries are often fragments rather than questions, so this asks about intent
+// ("what the searcher wanted") instead of literal answerhood.
+const evalPromptRelevanceCheck = `An engineer searched their team memory. Below is their QUERY and one NOTE the
+search returned. Is this note what they were looking for — does it contain the
+information the query is after?
 Reply with exactly one word: YES or NO.
 
 %s`

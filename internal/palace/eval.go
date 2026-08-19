@@ -73,6 +73,12 @@ var bm25Sweep = []float64{0.0, 0.2, 0.4, 0.6}
 // for every palace.
 const ArmAdaptive EvalArm = "fusion bm25=auto"
 
+// ArmAdaptiveIDF is ArmAdaptive with each query term weighted by its IDF
+// instead of counted once. The candidate to replace the binary coverage: a
+// term in N-1 candidates reads as signal to the binary count and as ~nothing
+// to this one.
+const ArmAdaptiveIDF EvalArm = "fusion bm25=auto-idf"
+
 // bm25Arm names a swept fusion arm.
 func bm25Arm(w float64) EvalArm { return EvalArm(fmt.Sprintf("fusion bm25=%.2f", w)) }
 
@@ -97,6 +103,12 @@ const (
 	// CatTemporal: a fact was later corrected or superseded, and recall must
 	// prefer the version that is still true.
 	CatTemporal = "temporal"
+	// CatReal: the query is one an agent actually ran against this palace,
+	// replayed from the search_events telemetry. The gold is not a generator's
+	// seed note but a judged set — every pooled candidate an LLM judge marked
+	// relevant — which is what breaks the circularity of generated questions:
+	// nothing about a real query was manufactured to suit any arm's feature.
+	CatReal = "real"
 	// CatAbsent: the palace does NOT hold the answer, and the right behaviour is
 	// to return nothing. Untested until now, which means max_distance was folklore.
 	CatAbsent = "absent"
@@ -105,10 +117,15 @@ const (
 // EvalCase is one labelled question: the query, the drawer that should come back
 // for it, and what kind of question it is.
 type EvalCase struct {
-	Query    string
-	Expect   string // drawer id; empty for CatAbsent, where any hit is a false positive
-	Wing     string // optional scope, mirroring how the query would really be run
-	Category string // one of the Cat* values; empty is treated as CatSingle
+	Query  string
+	Expect string // drawer id; empty for CatAbsent, where any hit is a false positive
+	// ExpectAny lists drawer ids that each count as a correct answer — the
+	// judged qrels of a CatReal case. A generated case has exactly one gold by
+	// construction; a real query can be answered by several memories, and
+	// scoring only one of them turns valid answers into retrieval errors.
+	ExpectAny []string `json:",omitempty"`
+	Wing      string   // optional scope, mirroring how the query would really be run
+	Category  string   // one of the Cat* values; empty is treated as CatSingle
 }
 
 // category returns the case's category, defaulting to single-hop.
@@ -262,7 +279,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	for _, w := range bm25Sweep {
 		arms = append(arms, bm25Arm(w))
 	}
-	arms = append(arms, ArmAdaptive)
+	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
 	// The reality check runs LAST and always: this is the arm that exercises the
 	// code agents actually call. It went missing once already — built, documented,
 	// and never appended — which an adversarial review caught and no table did.
@@ -396,12 +413,17 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// one) is penalised precisely for doing its job. In this corpus every sampled
 	// gold was a chunk of a multi-chunk memory, so the bias applied to every
 	// number measured before this.
-	goldMemory := c.Expect
-	if c.Expect != "" { // CatAbsent cases have no gold to resolve
-		switch gold, err := s.repo.Get(ctx, teamID, c.Expect); {
+	goldSet := make(map[string]bool, 1+len(c.ExpectAny))
+	for _, id := range append([]string{c.Expect}, c.ExpectAny...) {
+		if id == "" { // CatAbsent cases have no gold to resolve
+			continue
+		}
+		switch gold, err := s.repo.Get(ctx, teamID, id); {
 		case err == nil:
 			if gold.ParentID != "" {
-				goldMemory = gold.ParentID
+				goldSet[gold.ParentID] = true
+			} else {
+				goldSet[gold.ID] = true
 			}
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			// A saved case can outlive its drawer: re-mining a source purges the
@@ -411,9 +433,9 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// retrieval failure. Found by adversarial review, minutes after a
 			// full re-mine had made it live.
 			return nil, -1, 0, false, fmt.Errorf(
-				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, c.Expect)
+				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
 		default:
-			return nil, -1, 0, false, fmt.Errorf("load eval gold %s: %w", c.Expect, err)
+			return nil, -1, 0, false, fmt.Errorf("load eval gold %s: %w", id, err)
 		}
 	}
 
@@ -518,7 +540,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				pageIDs[i] = memory
 				pageOrder[i] = i
 			}
-			out[arm] = rankOf(pageIDs, pageOrder, goldMemory)
+			out[arm] = rankOf(pageIDs, pageOrder, goldSet)
 			continue
 		case ArmContextual:
 			// A separate retrieval, because the arm's whole claim is about what
@@ -561,7 +583,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range rankHybrid(c.Query, ctxDocs, ctxDists, nil) {
 				ctxOrdered = append(ctxOrdered, r.Index)
 			}
-			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, goldMemory)
+			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, goldSet)
 			continue
 		case ArmRRF:
 			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
@@ -577,6 +599,10 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 		case ArmAdaptive:
 			for _, r := range rankHybridAdaptive(c.Query, docs, dists, boosts, hybridBM25Weight) {
+				ordered = append(ordered, r.Index)
+			}
+		case ArmAdaptiveIDF:
+			for _, r := range rankHybridAdaptiveIDF(c.Query, docs, dists, boosts, hybridBM25Weight) {
 				ordered = append(ordered, r.Index)
 			}
 		default:
@@ -616,7 +642,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		for i, p := range pool {
 			poolIDs[i] = p.memory
 		}
-		out[arm] = rankOf(poolIDs, ordered, goldMemory)
+		out[arm] = rankOf(poolIDs, ordered, goldSet)
 	}
 	return out, topDistance, topRerank, rerankFailed, nil
 }
@@ -624,15 +650,20 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0
 // when it is absent — which is the signal that the memory never made the pool,
 // a retrieval miss rather than a ranking one.
-func rankOf(ids []string, ordered []int, expect string) int {
+func rankOf(ids []string, ordered []int, expect map[string]bool) int {
+	if len(expect) == 0 {
+		return 0
+	}
 	for rank, idx := range ordered {
 		if idx < 0 || idx >= len(ids) {
 			continue
 		}
 		// ids are MEMORY ids here, so several candidates can carry the same one
-		// (sibling chunks). The first position it reaches is the rank that
-		// matters: that is where the agent sees the memory.
-		if ids[idx] == expect {
+		// (sibling chunks). The first position ANY relevant memory reaches is the
+		// rank that matters: that is where the agent sees an answer. Generated
+		// cases carry a single-member set; judged real-query cases carry every
+		// memory the judge accepted.
+		if expect[ids[idx]] {
 			return rank + 1
 		}
 	}
@@ -644,6 +675,12 @@ func rankOf(ids []string, ordered []int, expect string) int {
 // command lives outside this package and must not reach into the repository.
 func (s *Service) SampleDrawers(ctx context.Context, teamID, wing string, n int) ([]Drawer, error) {
 	return s.repo.ListRandom(ctx, teamID, wing, n)
+}
+
+// SampleSearchQueries exposes the telemetry sampler to the eval command, which
+// lives outside this package and must not reach into the repository.
+func (s *Service) SampleSearchQueries(ctx context.Context, teamID, wing string, n int) ([]string, error) {
+	return s.repo.SampleSearchQueries(ctx, teamID, wing, n)
 }
 
 // withoutReranker returns a shallow copy of the service with the reranker
