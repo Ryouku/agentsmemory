@@ -28,3 +28,32 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 - **Reading recorded verdicts back for production calibration** — ADR-001 records the verdict in
   `search_events`; nothing consumes it yet. That consumption is the same loop as continuous
   evaluation above and should land with it.
+
+## Standing: the instrument is not allowed to decide the hypothesis space
+
+The eval scores ranked lists by MRR, which is IR's framing — retrieve documents, rank them, score
+the rank. That framing has already acted as a filter on what we consider worth building: an idea
+was counted DOWN in a design review for being "unmeasurable by an eval that scores ranked lists",
+which is the instrument choosing the experiments rather than the other way round.
+
+It is also why a published "raw chunked storage beats summarisation" result read as a verdict on
+consolidation when it is a recall result — and raw text is a superset of any summary of it, so a
+superset cannot lose that metric. We built our measuring stick from the same tradition whose limits
+we are trying to get past.
+
+The rule is therefore NOT "measure before you default" — that one earns its keep every week. It is:
+**when a claim does not fit the instrument, extend the instrument.** Never read "we cannot measure
+it" as "it is not worth building"; read it as a gap in the harness.
+
+Metrics the harness still cannot express, each blocking a class of idea:
+
+- **Answer-support / tokens-to-answer** — a metric a superset cannot automatically win, which is
+  the precondition for evaluating any consolidation or compression idea honestly.
+- **Findability-at-write** — whether a memory can be retrieved by the question it answers, measured
+  when it is filed rather than in an eval weeks later.
+- **Retrieval-conditioned value** — which memories actually get used, from `search_events`, so
+  consolidation can be driven by what is ASKED FOR rather than by what was written. No published
+  memory benchmark can express this: a benchmark runs once and has no usage history. We are a
+  service and do.
+- **Non-ranking outcomes generally** — abstention quality (in progress, ADR-001) and supersession
+  correctness (in progress, ADR-004) are the first two; they should not be the last.
