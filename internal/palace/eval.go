@@ -504,8 +504,8 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 
 	out := map[EvalArm]int{}
-	topRerank := 0.0
-	// Production's own top-1 score, tracked separately from the reranked arm's.
+	// The abstention gate's calibration data, taken from the production arm and
+	// nowhere else.
 	prodRerank, prodScored := 0.0, false
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
@@ -543,7 +543,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// arm always blends at a fixed weight — and a threshold calibrated on
 			// one and applied to the other is calibrated on nothing.
 			if len(page) > 0 {
-				prodRerank, prodScored = page[0].RerankScore, page[0].RerankScore != 0
+				prodRerank, prodScored = page[0].RerankScore, page[0].Reranked
 			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
@@ -646,9 +646,6 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// Scores were fetched once for this case; only the blend differs per
 			// arm, so no arm pays for inference again.
 			reranked := BlendRerank(fusedForRerank, rerankScores, weight)
-			if arm == ArmReranked && len(reranked) > 0 {
-				topRerank = reranked[0].Rerank
-			}
 			for _, r := range reranked {
 				ordered = append(ordered, r.Index)
 			}
@@ -659,13 +656,12 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 		out[arm] = rankOf(poolIDs, ordered, goldSet)
 	}
-	scored := topRerank != 0
-	if prodScored {
-		// Production scored its own top hit: prefer it, so the distributions
-		// describe the path a gate would actually guard.
-		topRerank, scored = prodRerank, true
-	}
-	return out, topDistance, topRerank, scored, rerankFailed, nil
+	// Production's score, or nothing. There is deliberately no fallback to the
+	// fixed-weight reranked arm: substituting it would refill the distribution
+	// with the very mismatch this measurement exists to avoid — that arm blends
+	// at a constant weight and can top out on a different document. A case where
+	// production returned no scored hit contributes nothing, which is honest.
+	return out, topDistance, prodRerank, prodScored, rerankFailed, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0

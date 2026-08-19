@@ -713,6 +713,8 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// Rank fusion ignores bm25Base entirely — the weight question does not
 		// arise when neither signal contributes a magnitude, only a position.
 		ranked = rankRRF(query, docs, dists, boosts)
+	case s.bm25Auto && s.bm25IDF:
+		ranked = rankHybridAdaptiveIDF(query, docs, dists, boosts, s.bm25Base)
 	case s.bm25Auto:
 		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
 	default:
@@ -736,7 +738,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		hit.RerankScore = r.Rerank
+		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
 		results = append(results, hit)
 	}
 
@@ -860,7 +862,7 @@ func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []Hybri
 	head := make([]HybridScore, pool)
 	for i := range head {
 		head[i] = ranked[i]
-		head[i].Rerank = scores[i]
+		head[i].Rerank, head[i].Reranked = scores[i], true
 		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
 	}
 	// Stable so equal blended scores keep the fused order as the tie-break,

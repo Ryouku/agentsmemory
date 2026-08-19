@@ -136,4 +136,10 @@ type SearchHit struct {
 	// a blend of both, so an agent reading results can see which signal moved a
 	// hit and by how much.
 	RerankScore float64
+	// Reranked says whether a cross-encoder actually scored this hit. It exists
+	// because RerankScore's zero is ambiguous: TEI is asked for sigmoid scores
+	// in (0,1), but llama.cpp's server returns bare logits, where zero is a
+	// perfectly ordinary value. Anything deciding whether a score is PRESENT —
+	// an abstention gate, or the eval calibrating one — must read this.
+	Reranked bool
 }

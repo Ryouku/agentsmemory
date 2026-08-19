@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -579,37 +580,99 @@ func TestWithFusionRRFChangesOrder(t *testing.T) {
 	}
 }
 
-// TestLexicalIDFIsReachableFromSearch pins that BM25_WEIGHT=auto-idf actually
-// changes what Search does. Four eval tables preferred the IDF-weighted coverage
-// before anything could select it in production — a measured arm nobody can run
-// is not a finding, and only a test that goes through Search proves the wiring
-// exists rather than the helper.
-func TestLexicalIDFIsReachableFromSearch(t *testing.T) {
+// TestLexicalIDFChangesWhatSearchReturns pins reachability the only way that
+// works: by requiring the two modes to produce DIFFERENT scores through Search.
+//
+// The previous version of this test asserted that both modes returned a result,
+// which passed while the flag was read by nothing at all — Search had no IDF
+// branch, so BM25_WEIGHT=auto-idf set a field and changed no behaviour. A test
+// that cannot fail when the feature is absent is not a test of the feature.
+//
+// The fixture is built so the two coverage measures must disagree: "deploy"
+// appears in nearly every candidate, which the binary count reads as full
+// lexical signal and the IDF weighting reads as almost none.
+func TestLexicalIDFChangesWhatSearchReturns(t *testing.T) {
+	ctx := context.Background()
 	svc := newTestService(t)
-	if svc.bm25IDF {
-		t.Fatal("the binary count must remain the default until a ranking default change is agreed")
-	}
-	if !svc.WithLexicalIDF(true).bm25IDF {
-		t.Fatal("WithLexicalIDF(true) did not select the IDF coverage")
-	}
-	if svc.WithLexicalIDF(false).bm25IDF {
-		t.Fatal("WithLexicalIDF(false) did not turn it off")
+	const team = "team-idf"
+
+	for i, content := range []string{
+		"deploy the batching service to the cluster tonight",
+		"deploy notes for the batching rollout and its owner",
+		"deploy checklist for the batching gateway and alarms",
+		"deploy runbook covering the batching queue drain",
+	} {
+		mustAdd(t, svc, team, AddInput{
+			Wing: "wing_acme", Room: "decisions",
+			SourceFile: fmt.Sprintf("note-%d.md", i),
+			Content:    content,
+		})
 	}
 
-	// Reachability, not merely storage: the search path must branch on it.
-	ctx := context.Background()
-	const team = "team-idf"
-	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
-		Content: "the retry budget is three attempts before the circuit opens"})
-	for _, idf := range []bool{false, true} {
+	scores := func(idf bool) []float64 {
 		hits, err := svc.WithLexicalIDF(idf).Search(ctx, team, SearchQuery{
-			Query: "retry budget", Wing: "wing_acme", Limit: 5, SkipTelemetry: true,
+			Query: "deploy batching", Wing: "wing_acme", Limit: 10, SkipTelemetry: true,
 		})
 		if err != nil {
 			t.Fatalf("search (idf=%v): %v", idf, err)
 		}
-		if len(hits) == 0 {
-			t.Fatalf("search (idf=%v) returned nothing", idf)
+		if len(hits) < 2 {
+			t.Fatalf("search (idf=%v) returned %d hits, need several to compare", idf, len(hits))
 		}
+		out := make([]float64, len(hits))
+		for i, h := range hits {
+			out[i] = h.Score
+		}
+		return out
+	}
+
+	binary, idf := scores(false), scores(true)
+	same := len(binary) == len(idf)
+	if same {
+		for i := range binary {
+			if binary[i] != idf[i] {
+				same = false
+				break
+			}
+		}
+	}
+	if same {
+		t.Fatalf("auto-idf changed nothing through Search: binary=%v idf=%v — the flag is set but the search path does not read it", binary, idf)
+	}
+
+	// And the default must stay binary: a ranking default changes what every
+	// existing palace returns.
+	if newTestService(t).bm25IDF {
+		t.Error("the binary count must remain the default")
+	}
+}
+
+// TestRerankPresenceSurvivesAZeroScore pins the distinction a value cannot
+// carry. TEI is asked for sigmoid scores in (0,1); llama.cpp's server returns
+// bare logits, where 0.0 is an ordinary result — so "did a cross-encoder score
+// this?" cannot be answered by comparing the score against zero. The abstention
+// gate's calibration data depends on getting this right: a case wrongly read as
+// unscored silently leaves the distribution.
+func TestRerankPresenceSurvivesAZeroScore(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-zero"
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
+		Content: "the queue drains every five minutes"})
+
+	// A reranker that scores everything exactly 0.0 — legal for a logit backend.
+	svc = svc.WithReranker(&staticReranker{scores: []float64{0}}, 10).WithRerankWeight(0.5)
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "queue drain", Wing: "wing_acme", Limit: 5, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("search returned nothing")
+	}
+	if hits[0].RerankScore != 0 {
+		t.Fatalf("fixture expects a zero score, got %v", hits[0].RerankScore)
+	}
+	if !hits[0].Reranked {
+		t.Fatal("a hit scored 0.0 by a logit backend must still report Reranked — otherwise the gate's data silently loses it")
 	}
 }

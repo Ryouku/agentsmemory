@@ -257,6 +257,10 @@ type HybridScore struct {
 	// reads as unscored. Prefer an explicit signal where the distinction
 	// matters; this is documented rather than silently relied upon.
 	Rerank float64
+	// Reranked says whether a cross-encoder scored this candidate, which the
+	// value alone cannot: zero is a legitimate logit. Callers deciding whether
+	// they HAVE a score must read this, not compare Rerank against zero.
+	Reranked bool
 
 	// Blended is the weighted combination of the normalized fused and rerank
 	// scores that actually decided this hit's position. It is what sorts the page
