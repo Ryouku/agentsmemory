@@ -209,12 +209,18 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		for _, f := range files {
 			f = strings.TrimSpace(f)
 			cases, err := readCases(f)
-			if err != nil {
-				// A missing file among several silently shrank the case set once;
-				// the label still said "from N files" and nothing was comparable.
+			switch {
+			case err == nil:
+				merged = append(merged, cases...)
+			case os.IsNotExist(err) && len(files) == 1:
+				// The generate-then-save flow: a single named file that does not
+				// exist yet is where the generated cases will land.
+			default:
+				// A CORRUPT file, or a missing one among several, silently shrank
+				// the case set once; the label still said "from N files" and no
+				// run was comparable with any other.
 				return nil, "", fmt.Errorf("cases file %s: %w", f, err)
 			}
-			merged = append(merged, cases...)
 		}
 		if len(merged) > 0 {
 			label := "from " + path
