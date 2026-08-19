@@ -578,3 +578,38 @@ func TestWithFusionRRFChangesOrder(t *testing.T) {
 		t.Fatal("WithFusion(\"linear\") must turn rank fusion off")
 	}
 }
+
+// TestLexicalIDFIsReachableFromSearch pins that BM25_WEIGHT=auto-idf actually
+// changes what Search does. Four eval tables preferred the IDF-weighted coverage
+// before anything could select it in production — a measured arm nobody can run
+// is not a finding, and only a test that goes through Search proves the wiring
+// exists rather than the helper.
+func TestLexicalIDFIsReachableFromSearch(t *testing.T) {
+	svc := newTestService(t)
+	if svc.bm25IDF {
+		t.Fatal("the binary count must remain the default until a ranking default change is agreed")
+	}
+	if !svc.WithLexicalIDF(true).bm25IDF {
+		t.Fatal("WithLexicalIDF(true) did not select the IDF coverage")
+	}
+	if svc.WithLexicalIDF(false).bm25IDF {
+		t.Fatal("WithLexicalIDF(false) did not turn it off")
+	}
+
+	// Reachability, not merely storage: the search path must branch on it.
+	ctx := context.Background()
+	const team = "team-idf"
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
+		Content: "the retry budget is three attempts before the circuit opens"})
+	for _, idf := range []bool{false, true} {
+		hits, err := svc.WithLexicalIDF(idf).Search(ctx, team, SearchQuery{
+			Query: "retry budget", Wing: "wing_acme", Limit: 5, SkipTelemetry: true,
+		})
+		if err != nil {
+			t.Fatalf("search (idf=%v): %v", idf, err)
+		}
+		if len(hits) == 0 {
+			t.Fatalf("search (idf=%v) returned nothing", idf)
+		}
+	}
+}

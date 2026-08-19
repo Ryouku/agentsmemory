@@ -135,6 +135,16 @@ type Service struct {
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
 	bm25Auto bool
 	bm25Base float64
+	// bm25IDF weights each query term by how much it discriminates instead of
+	// counting it once, when bm25Auto is on.
+	//
+	// It is reachable from configuration rather than eval-only because a measured
+	// arm nobody can run is not a finding: four tables across two unrelated
+	// corpora put it ahead of the binary count (0.377 vs 0.257, 0.370 vs 0.290,
+	// 0.246 vs 0.183, 0.726 vs 0.673), and every one of them measured a code path
+	// production could not select. The default stays binary until the maintainer
+	// of the second corpus has seen the case for moving it.
+	bm25IDF bool
 	// fusionRRF makes search fuse vector and lexical evidence by RANK
 	// (reciprocal-rank fusion) instead of by weighted score. It exists because a
 	// linear blend lets one bad signal drag a good candidate down: on a large,
@@ -243,6 +253,14 @@ func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
 	if base >= 0 && base <= 1 {
 		s.bm25Base = base
 	}
+	return s
+}
+
+// WithLexicalIDF selects the IDF-weighted coverage feature for auto weighting.
+// Same post-construction-setter contract as WithReranker: call it before the
+// service is shared across goroutines.
+func (s *Service) WithLexicalIDF(on bool) *Service {
+	s.bm25IDF = on
 	return s
 }
 

@@ -174,7 +174,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
-		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), or a fixed 0..1"},
+		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
@@ -821,12 +821,15 @@ func buildServices(cfg config.Config) (*services, error) {
 			log.Printf("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
 		}
 	}
-	if w := cfg.BM25Weight; w != "" && w != "auto" {
+	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
+		drawers = drawers.WithLexicalIDF(true)
+		log.Printf("bm25 weight: auto (IDF-weighted coverage)")
+	} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
 		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
 			drawers = drawers.WithBM25Weight(false, fixed)
 			log.Printf("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
 		} else {
-			log.Printf("bm25 weight: %q is not 'auto' or a number; keeping auto", w)
+			log.Printf("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
 		}
 	}
 	if cfg.RerankURL != "" {

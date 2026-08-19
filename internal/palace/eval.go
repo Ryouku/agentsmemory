@@ -302,7 +302,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	degradedCases := 0
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, topRerank, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, topRerank, scored, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
 		}
@@ -353,14 +353,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			if topDistance >= 0 {
 				report.AbsentDistances = append(report.AbsentDistances, topDistance)
 			}
-			if topRerank != 0 {
+			if scored {
 				report.AbsentRerank = append(report.AbsentRerank, topRerank)
 			}
 		} else {
 			if topDistance >= 0 {
 				report.GoldDistances = append(report.GoldDistances, topDistance)
 			}
-			if topRerank != 0 {
+			if scored {
 				report.GoldRerank = append(report.GoldRerank, topRerank)
 			}
 		}
@@ -386,14 +386,19 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, degraded bool, errOut error) {
+// The rerankScored return says whether a cross-encoder actually scored the top
+// candidate. It is a separate boolean rather than a test on the score, because
+// the score's zero is only "unscored" by convention: a sigmoid backend never
+// emits exactly 0, but a logit backend can, and the abstention data must not
+// quietly drop the case that lands there.
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, 0, false, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, 0, false, false, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, 0, false, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, 0, false, false, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -401,7 +406,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, 0, false, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, 0, false, false, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// The gold is a MEMORY, not a chunk of one.
@@ -432,10 +437,10 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// operator to raise --pool, misdiagnosing stale case data as a
 			// retrieval failure. Found by adversarial review, minutes after a
 			// full re-mine had made it live.
-			return nil, -1, 0, false, fmt.Errorf(
+			return nil, -1, 0, false, false, fmt.Errorf(
 				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
 		default:
-			return nil, -1, 0, false, fmt.Errorf("load eval gold %s: %w", id, err)
+			return nil, -1, 0, false, false, fmt.Errorf("load eval gold %s: %w", id, err)
 		}
 	}
 
@@ -500,6 +505,8 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 
 	out := map[EvalArm]int{}
 	topRerank := 0.0
+	// Production's own top-1 score, tracked separately from the reranked arm's.
+	prodRerank, prodScored := 0.0, false
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
 		switch arm {
@@ -530,6 +537,14 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if err != nil {
 				break // scored as a miss; the error itself surfaces via NotFound
 			}
+			// The abstention gate will run on THIS path, so its calibration data
+			// has to come from here too. The reranked arm's top-1 can be a
+			// different document — production fuses adaptively or by rank, that
+			// arm always blends at a fixed weight — and a threshold calibrated on
+			// one and applied to the other is calibrated on nothing.
+			if len(page) > 0 {
+				prodRerank, prodScored = page[0].RerankScore, page[0].RerankScore != 0
+			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
 			for i, h := range page {
@@ -550,7 +565,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if err != nil {
 				// A store failure is not "index not built", and scoring it as a
 				// miss would let a dead backend read as a bad embedding.
-				return nil, -1, 0, false, fmt.Errorf("contextual index search: %w", err)
+				return nil, -1, 0, false, false, fmt.Errorf("contextual index search: %w", err)
 			}
 			if len(ctxHits) == 0 {
 				break // index not built (or empty) for this scope: reported NotFound
@@ -561,7 +576,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, 0, false, fmt.Errorf("load contextual candidates: %w", err)
+				return nil, -1, 0, false, false, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -644,7 +659,13 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 		out[arm] = rankOf(poolIDs, ordered, goldSet)
 	}
-	return out, topDistance, topRerank, rerankFailed, nil
+	scored := topRerank != 0
+	if prodScored {
+		// Production scored its own top hit: prefer it, so the distributions
+		// describe the path a gate would actually guard.
+		topRerank, scored = prodRerank, true
+	}
+	return out, topDistance, topRerank, scored, rerankFailed, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0

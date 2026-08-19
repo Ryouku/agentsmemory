@@ -240,11 +240,22 @@ type HybridScore struct {
 	Fused float64 // 0.6*vecSim + 0.4*bm25Norm + closetBoost, higher is better
 	BM25  float64 // raw Okapi-BM25 score (pre-normalization)
 	Boost float64 // closet boost added to this candidate (0 when none)
-	// Rerank is the cross-encoder's relevance score in (0,1), set only for the
-	// candidates a configured reranker actually scored. Zero therefore means "not
-	// reranked" — either no reranker is wired, the call failed, or this candidate
-	// fell outside the pool — which is safe to read as such because a sigmoid
-	// score is never exactly zero.
+	// Rerank is the cross-encoder's raw relevance score for this candidate, set
+	// only for the ones a configured reranker actually scored.
+	//
+	// Its SCALE depends on the backend and must not be assumed. TEI is asked for
+	// sigmoid-squashed scores in (0,1); llama.cpp's server returns bare logits,
+	// which are routinely negative — a measured absent-query median came back at
+	// −3.8. Any threshold read off this number is therefore specific to one
+	// backend, model and version, and a value comparable across two deployments
+	// does not exist.
+	//
+	// Zero is used as "not scored" (no reranker wired, the call failed, or this
+	// candidate fell outside the pool). That sentinel was justified by the
+	// sigmoid range and is only ALMOST safe on a logit backend, where a genuine
+	// score can land arbitrarily close to zero — a candidate scoring exactly 0.0
+	// reads as unscored. Prefer an explicit signal where the distinction
+	// matters; this is documented rather than silently relied upon.
 	Rerank float64
 
 	// Blended is the weighted combination of the normalized fused and rerank
