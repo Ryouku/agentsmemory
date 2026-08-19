@@ -131,6 +131,10 @@ type Service struct {
 	rerank       Reranker
 	rerankPool   int
 	rerankWeight float64
+	// bm25Auto scales the lexical fusion weight per query by its measured lexical
+	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
+	bm25Auto bool
+	bm25Base float64
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -148,7 +152,14 @@ type Service struct {
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
 func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) *Service {
-	return &Service{repo: repo, embed: embed, vectors: vectors, dim: dim}
+	return &Service{
+		repo: repo, embed: embed, vectors: vectors, dim: dim,
+		// Adaptive lexical weighting is the default because it is the only
+		// configuration measured best in BOTH query regimes; a zero value here
+		// would silently make fusion vector-only, which is a measured regression
+		// on identifier queries.
+		bm25Auto: true, bm25Base: hybridBM25Weight,
+	}
 }
 
 // WithReranker attaches a cross-encoder to Search and returns s for chaining.
@@ -167,6 +178,16 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 	s.rerank, s.rerankPool = r, pool
 	if s.rerankWeight == 0 {
 		s.rerankWeight = DefaultRerankWeight
+	}
+	return s
+}
+
+// WithBM25Weight configures the lexical half of fusion: auto scales it per query,
+// otherwise base is used as a fixed weight. Out-of-range bases keep the default.
+func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
+	s.bm25Auto = auto
+	if base >= 0 && base <= 1 {
+		s.bm25Base = base
 	}
 	return s
 }
@@ -468,6 +489,10 @@ type SearchQuery struct {
 	Room        string  // optional filter
 	Limit       int     // 1..100, defaults to DefaultSearchLimit
 	MaxDistance float64 // drop hits farther than this; <=0 disables the filter
+	// SkipTelemetry keeps this search out of the recall statistics. Set by the
+	// eval, whose thousands of synthetic queries would otherwise drown the real
+	// usage signal the statistics exist to show.
+	SkipTelemetry bool
 	// Context is optional background the caller can supply to sharpen reranking —
 	// what it is working on, so an ambiguous query lands in the right sense. It
 	// feeds the cross-encoder ONLY (see rerankQuery); it deliberately does not
@@ -610,7 +635,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
-	ranked := rankHybrid(query, docs, dists, boosts)
+	var ranked []HybridScore
+	if s.bm25Auto {
+		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
+	} else {
+		ranked = rankHybridWeighted(query, docs, dists, boosts, s.bm25Base)
+	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
@@ -635,6 +665,9 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	// Record what this recall found. Best-effort by construction: measurement must
 	// never be able to fail the thing it measures.
+	if q.SkipTelemetry {
+		return results, nil
+	}
 	ev := searchEventRow{
 		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
 		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),

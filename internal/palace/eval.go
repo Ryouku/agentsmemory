@@ -44,6 +44,12 @@ const (
 	// little of its parent's context, then ranks it exactly like ArmHybridCloset —
 	// so the delta is the EMBEDDING, not the ranking.
 	ArmContextual EvalArm = "contextual chunks"
+	// ArmProduction goes through Service.Search itself — the code agents actually
+	// call — rather than this file's reconstruction of it. It exists because an
+	// eval that reimplements the pipeline can score well while production is
+	// broken, and has: a mis-set rerank URL made every real search silently fall
+	// back to hybrid while the eval's own arms looked fine.
+	ArmProduction EvalArm = "production (Search)"
 )
 
 // rerankSweep are the blend weights the eval tries alongside production, so how
@@ -122,6 +128,11 @@ type EvalMetrics struct {
 	MRR      float64
 	NotFound int // the expected drawer was not in the candidate pool at all
 
+	// Ranks are the per-case 1-based ranks (0 = miss), aligned with the case
+	// order, so intervals and paired comparisons can be computed after the fact —
+	// including by a reader of the results file, not only by this process.
+	Ranks []int
+
 	// ByCategory holds the same counts per question kind, because an average over
 	// categories hides the failure that matters: a system can be perfect on
 	// single-hop and blind on temporal, and the mean looks fine.
@@ -156,6 +167,11 @@ func pct(n, total int) float64 {
 type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
+
+	// Warnings are conditions that changed what was measured — a degraded
+	// reranker, a skipped arm. They are part of the result, because a table whose
+	// caveats live only in scrollback gets quoted without them.
+	Warnings []string
 
 	// GoldRerank and AbsentRerank are the top-1 CROSS-ENCODER scores for the two
 	// kinds of question. They exist because the distance distributions overlap —
@@ -198,6 +214,11 @@ type EvalOptions struct {
 	// (BuildContextualIndex); the arm is skipped rather than silently empty when
 	// it does not.
 	Contextual bool
+	// AllowDegraded lets the run continue without the reranked arms when the
+	// configured reranker fails its preflight probe. The default is to REFUSE:
+	// this eval has already once produced a full table of "reranked" numbers that
+	// were silently the hybrid order, and a loud stop is the only reliable cure.
+	AllowDegraded bool
 }
 
 func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int, progress Progress) (EvalReport, error) {
@@ -209,6 +230,25 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	if poolSize <= 0 {
 		poolSize = 50
 	}
+	report := EvalReport{}
+
+	// Preflight the reranker with ONE probe before scoring hundreds of cases
+	// against it. A dead reranker degrades every reranked arm to the hybrid order
+	// SILENTLY — this exact table has been published with that failure in it — so
+	// the default is to stop and say what is wrong.
+	if s.rerank != nil {
+		if _, err := s.rerank.Rerank(ctx, "preflight probe", []string{"preflight document"}); err != nil {
+			if !opts.AllowDegraded {
+				return EvalReport{}, fmt.Errorf(
+					"the configured reranker failed its preflight (%w) — every reranked arm would silently score as plain hybrid, "+
+						"which has already produced one wrong table too many. Fix it, or pass --allow-degraded to run without those arms", err)
+			}
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("reranker preflight failed (%v): reranked arms were DROPPED, not silently degraded", err))
+			s = s.withoutReranker()
+		}
+	}
+
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
 	for _, w := range bm25Sweep {
 		arms = append(arms, bm25Arm(w))
@@ -228,7 +268,6 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	for _, a := range arms {
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
 	}
-	report := EvalReport{}
 
 	for i, c := range cases {
 		started := time.Now()
@@ -260,6 +299,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			}
 
 			m.Cases++
+			m.Ranks = append(m.Ranks, ranks[a])
 			switch r := ranks[a]; {
 			case r == 0:
 				m.NotFound++
@@ -415,6 +455,27 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
+		case ArmProduction:
+			// The real path, telemetry suppressed so an eval does not pollute the
+			// palace's own recall statistics.
+			page, err := s.Search(ctx, teamID, SearchQuery{
+				Query: c.Query, Wing: c.Wing, Limit: MaxSearchLimit, SkipTelemetry: true,
+			})
+			if err != nil {
+				break // scored as a miss; the error itself surfaces via NotFound
+			}
+			pageIDs := make([]string, len(page))
+			pageOrder := make([]int, len(page))
+			for i, h := range page {
+				memory := h.Drawer.ID
+				if h.Drawer.ParentID != "" {
+					memory = h.Drawer.ParentID
+				}
+				pageIDs[i] = memory
+				pageOrder[i] = i
+			}
+			out[arm] = rankOf(pageIDs, pageOrder, goldMemory)
+			continue
 		case ArmContextual:
 			// A separate retrieval, because the arm's whole claim is about what
 			// gets RETRIEVED. Ranking is the standard fusion so the delta cannot
@@ -534,4 +595,12 @@ func rankOf(ids []string, ordered []int, expect string) int {
 // command lives outside this package and must not reach into the repository.
 func (s *Service) SampleDrawers(ctx context.Context, teamID, wing string, n int) ([]Drawer, error) {
 	return s.repo.ListRandom(ctx, teamID, wing, n)
+}
+
+// withoutReranker returns a shallow copy of the service with the reranker
+// removed, for a degraded eval run — the palace itself is untouched.
+func (s *Service) withoutReranker() *Service {
+	clone := *s
+	clone.rerank = nil
+	return &clone
 }

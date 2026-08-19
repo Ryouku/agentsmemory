@@ -122,6 +122,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		OllamaEmbedModel: c.String("ollama-model"),
 		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
 		RerankPool:       c.Int("rerank-pool"),
+		BM25Weight:       strings.TrimSpace(c.String("bm25-weight")),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
@@ -170,6 +171,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
+		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), or a fixed 0..1"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -797,6 +799,14 @@ func buildServices(cfg config.Config) (*services, error) {
 	// vector+BM25 fusion it has always been. Building it here keeps the
 	// composition root the only place that knows which rerank server is deployed.
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
+	if w := cfg.BM25Weight; w != "" && w != "auto" {
+		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
+			drawers = drawers.WithBM25Weight(false, fixed)
+			log.Printf("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
+		} else {
+			log.Printf("bm25 weight: %q is not 'auto' or a number; keeping auto", w)
+		}
+	}
 	if cfg.RerankURL != "" {
 		// A rerank call does real inference, unlike the millisecond calls
 		// HTTPTimeout was sized for, so it gets its own budget.

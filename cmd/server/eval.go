@@ -129,7 +129,63 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 	printEvalTable(out, report)
+
+	// The full result goes to disk: per-case ranks per arm, warnings, config.
+	// The printed table is a VIEW of this file, not the record — a run that only
+	// exists in scrollback cannot be compared with the next one, and comparing
+	// runs is the entire reason cases are saved.
+	if resPath := resultsPath(c.String("cases")); resPath != "" {
+		if err := writeResults(resPath, c, report, cases); err != nil {
+			fmt.Fprintf(out, "  (could not save the results file: %v)\n", err)
+		} else {
+			fmt.Fprintf(out, "full results (per-case ranks, config, warnings): %s\n", resPath)
+		}
+	}
 	return nil
+}
+
+// resultsPath derives where the results artifact lands: beside the first case
+// file, named after it.
+func resultsPath(casesFlag string) string {
+	first := strings.TrimSpace(strings.Split(casesFlag, ",")[0])
+	if first == "" {
+		return ""
+	}
+	return strings.TrimSuffix(first, ".jsonl") + ".results.json"
+}
+
+// writeResults persists the run in full.
+func writeResults(path string, c *cli.Command, report palace.EvalReport, cases []palace.EvalCase) error {
+	type armOut struct {
+		Arm      string  `json:"arm"`
+		MRR      float64 `json:"mrr"`
+		CILo     float64 `json:"ci_lo"`
+		CIHi     float64 `json:"ci_hi"`
+		Recall1  int     `json:"recall1"`
+		Recall5  int     `json:"recall5"`
+		NotFound int     `json:"not_found"`
+		Ranks    []int   `json:"ranks"`
+	}
+	arms := make([]armOut, 0, len(report.Arms))
+	for _, m := range report.Arms {
+		ci := palace.BootstrapMRR(m.Ranks)
+		arms = append(arms, armOut{Arm: string(m.Arm), MRR: m.MRR, CILo: ci.Lo, CIHi: ci.Hi,
+			Recall1: m.Recall1, Recall5: m.Recall5, NotFound: m.NotFound, Ranks: m.Ranks})
+	}
+	payload := map[string]any{
+		"created":  time.Now().UTC().Format(time.RFC3339),
+		"pool":     c.Int("pool"),
+		"wing":     c.String("wing"),
+		"cases":    len(cases),
+		"warnings": report.Warnings,
+		"arms":     arms,
+		"details":  report.Details,
+	}
+	raw, err := json.MarshalIndent(payload, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
 }
 
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
@@ -223,7 +279,11 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
-		if err := writeCases(path, cases); err != nil {
+		meta := caseFileMeta{
+			Generator: gen.model, Style: style, Wing: c.String("wing"),
+			Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := writeCases(path, cases, meta); err != nil {
 			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
 		} else {
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
@@ -415,6 +475,21 @@ func cleanQuestion(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// caseFileMeta is the provenance record written as the FIRST line of a case
+// file. Two runs of "the same" eval on different machines have already disagreed
+// for reasons that were invisible afterwards — different generator models write
+// questions of different difficulty, and nothing recorded which model wrote
+// which file. A case file that does not say how it was made cannot be compared
+// with anything.
+type caseFileMeta struct {
+	Meta      bool   `json:"meta"`
+	Generator string `json:"generator"`
+	Style     string `json:"style"`
+	Wing      string `json:"wing"`
+	Corpus    int    `json:"corpus_drawers"`
+	Created   string `json:"created"`
+}
+
 // readCases loads a JSONL case file.
 func readCases(path string) ([]palace.EvalCase, error) {
 	f, err := os.Open(path)
@@ -430,6 +505,10 @@ func readCases(path string) ([]palace.EvalCase, error) {
 		if line == "" {
 			continue
 		}
+		// A provenance line is metadata, not a case.
+		if strings.Contains(line, `"meta":true`) {
+			continue
+		}
 		var c palace.EvalCase
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
@@ -440,13 +519,17 @@ func readCases(path string) ([]palace.EvalCase, error) {
 }
 
 // writeCases saves cases as JSONL.
-func writeCases(path string, cases []palace.EvalCase) error {
+func writeCases(path string, cases []palace.EvalCase, meta caseFileMeta) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
+	meta.Meta = true
+	if err := enc.Encode(meta); err != nil {
+		return err
+	}
 	for _, c := range cases {
 		if err := enc.Encode(c); err != nil {
 			return err
@@ -457,12 +540,40 @@ func writeCases(path string, cases []palace.EvalCase) error {
 
 // printEvalTable renders the arms and the cases every arm missed.
 func printEvalTable(out io.Writer, report palace.EvalReport) {
-	fmt.Fprintf(out, "%-22s %8s %8s %8s %10s\n", "arm", "R@1", "R@5", "MRR", "not found")
-	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 60))
-	for _, m := range report.Arms {
-		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %10d\n",
-			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, m.NotFound)
+	for _, w := range report.Warnings {
+		fmt.Fprintf(out, "⚠ %s\n", w)
 	}
+
+	// The baseline every arm is compared against is the best MRR in the table;
+	// "≈ best" marks arms whose PAIRED difference from it includes zero — the
+	// data cannot tell them apart, and the table refuses to imply otherwise.
+	best := 0
+	for i, m := range report.Arms {
+		if m.MRR > report.Arms[best].MRR {
+			best = i
+		}
+	}
+
+	fmt.Fprintf(out, "%-22s %8s %8s %8s %14s %10s   %s\n", "arm", "R@1", "R@5", "MRR", "95% CI", "not found", "vs best")
+	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 92))
+	for i, m := range report.Arms {
+		ci := palace.BootstrapMRR(m.Ranks)
+		verdict := ""
+		switch {
+		case i == best:
+			verdict = "BEST"
+		case len(m.Ranks) == len(report.Arms[best].Ranks):
+			if delta := palace.PairedDelta(m.Ranks, report.Arms[best].Ranks); delta.Contains(0) {
+				verdict = "≈ best (difference within noise)"
+			} else {
+				verdict = fmt.Sprintf("worse by %.2f–%.2f", -delta.Hi, -delta.Lo)
+			}
+		}
+		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
+			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, ci, m.NotFound, verdict)
+	}
+	fmt.Fprintf(out, "n=%d — intervals are paired bootstrap; at small n most arms tie, and that IS the finding\n",
+		len(report.Arms[0].Ranks))
 
 	printPoolDiagnosis(out, report)
 	printCategories(out, report)
