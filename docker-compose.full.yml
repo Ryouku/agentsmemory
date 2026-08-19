@@ -1,0 +1,144 @@
+# agentsmemory — the full-quality overlay: Qdrant for search, a cross-encoder for
+# precision, and (optionally) Ollama in the stack so nothing has to be installed
+# on the host first.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
+#
+# ...and, if you have no Ollama on the host, add the embedder too — a third file,
+# because it does not just START Ollama, it points the server at it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml -f docker-compose.ollama.yml up -d
+#
+# WHY THIS IS AN OVERLAY AND NOT THE DEFAULT
+# The base file is deliberately one container: no second service to run, wait for,
+# or back up. That is the right default for one person on one machine, and it
+# stays the default. This file is for when recall quality matters more than
+# dependency count — a palace big enough that an in-process index costs real
+# memory, or a team sharing one index.
+#
+# SWITCHING AN EXISTING INSTALL
+# SQLite is the source of truth, so nothing is re-embedded: after the first
+# `up -d` with this overlay, replay the stored vectors into Qdrant once with
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml run --rm agentsmemory sync
+#
+# Going back is just dropping the -f docker-compose.full.yml — the chromem index
+# is still on the volume, and the server refills it from SQLite if it is not.
+#
+# WHAT THE CROSS-ENCODER BUYS
+# The embedder scores a drawer against a query it never saw; a cross-encoder reads
+# the pair together. It only runs over the top RERANK_TOP_K candidates hybrid
+# ranking already surfaced, so the cost is bounded per search rather than per
+# palace. If the reranker is down, search silently falls back to the fused
+# vector+BM25 ranking — it refines recall, it is never required for it.
+
+services:
+  agentsmemory:
+    # depends_on is start ORDER, not readiness — but both neighbours below have
+    # healthchecks, so service_healthy makes it readiness here. A cold first boot
+    # therefore no longer races Qdrant (the failure was "ensure local vector
+    # namespace: ... connection refused" recovered by a restart).
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      reranker:
+        condition: service_healthy
+    environment:
+      # These win over .env.docker: an overlay that needs the operator to also
+      # edit an env file is an overlay that half-applies.
+      VECTOR_BACKEND: qdrant
+      QDRANT_URL: http://qdrant:6333
+      # BASE url, not the endpoint: the client appends /rerank itself. Pointing
+      # this at a full path yields /v1/rerank/rerank, a 404, and a search that
+      # silently falls back to the hybrid order — which is exactly how it read in
+      # an eval run before the fallback started logging why.
+      RERANK_URL: http://reranker:8080/v1
+      RERANK_MODEL: bge-reranker-v2-m3
+      # 20, not 50: the cross-encoder scores every pair in a full forward pass, so
+      # cost is linear here. On CPU a drawer-sized pair takes ~0.2-0.5s, and 50 of
+      # them overran a 30s budget during an eval run — which degrades silently to
+      # the hybrid order, the worst possible way to lose a feature.
+      RERANK_TOP_K: "20"
+      # How much the cross-encoder decides versus the hybrid score it refines.
+      # 1.0 lets it overwrite the lexical evidence entirely, which measurably
+      # ranks worse; see `agentsmemory eval` and its weight sweep.
+      RERANK_WEIGHT: "0.5"
+      RERANK_TIMEOUT: "90s"
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.0
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      # Loopback only: this port is unauthenticated unless you set a Qdrant API
+      # key. Drop the mapping entirely if you do not want the dashboard at
+      # http://localhost:6333/dashboard — the server reaches Qdrant over the
+      # compose network either way.
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      # Qdrant's image has no curl or wget, but it does have bash — so /dev/tcp
+      # is the portable probe here. It answers as soon as the HTTP port accepts,
+      # which is exactly the readiness the server needs.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  reranker:
+    # llama.cpp's server, chosen because this is the CONTAINERISED path and it
+    # ships native arm64 and amd64 images, serving a Cohere-shaped /v1/rerank.
+    #
+    # text-embeddings-inference is the reference server and the same client
+    # speaks it (see internal/rerank). The constraint is narrower than it first
+    # looks: TEI's Docker images are amd64-only, so IN COMPOSE on Apple Silicon it
+    # would run emulated — but TEI itself runs natively there, either
+    # `brew install text-embeddings-inference` or `cargo install --path router -F
+    # metal`, and with Metal it is the faster option by a distance.
+    #
+    # So: point RERANK_URL at TEI whenever you have one — a GPU box, a Linux
+    # server, or a local Metal build — and keep this service for the case it
+    # exists to serve, which is "one machine, no GPU, nothing installed".
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    command:
+      # Q4_K_M keeps a 568M-parameter cross-encoder around 360MB of RAM and
+      # answers a 50-candidate rerank in well under a second on CPU. The model is
+      # fetched once into the volume below, not baked into the image.
+      - "-hf"
+      - "gpustack/bge-reranker-v2-m3-GGUF:Q4_K_M"
+      - "--reranking"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      # A drawer is at most ~1600 characters (see palace.ChunkSize) and the query
+      # is capped at 250, so 2048 tokens of context is enough for a query/drawer
+      # pair with room to spare.
+      - "-c"
+      - "2048"
+      # ...but context is not the binding constraint: a cross-encoder scores the
+      # pair in ONE forward pass, so the whole pair must fit in a single physical
+      # batch. llama.cpp defaults that to 512 and answers a real drawer with
+      # `input (538 tokens) is too large to process. increase the physical batch
+      # size`, which the server then degrades to the hybrid order. Both batch
+      # sizes therefore match the context window.
+      - "-b"
+      - "2048"
+      - "-ub"
+      - "2048"
+    volumes:
+      - reranker-models:/root/.cache/llama.cpp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      # Generous: the first start downloads the model. Later starts hit the cache
+      # and pass on the first probe.
+      retries: 60
+      start_period: 30s
+
+volumes:
+  qdrant-data:
+  reranker-models:

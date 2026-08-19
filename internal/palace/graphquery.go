@@ -17,7 +17,7 @@ import (
 // traverseMaxResults / traverseDefaultHops / traverseMaxHops bound a walk (frozen
 // caps at 50 results, default 2 hops, 1-10 range).
 const (
-	traverseMaxResults = 50
+	traverseMaxResults  = 50
 	traverseDefaultHops = 2
 	traverseMaxHops     = 10
 	graphTopTunnels     = 10

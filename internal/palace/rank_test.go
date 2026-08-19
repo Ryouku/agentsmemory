@@ -149,3 +149,127 @@ func TestSearchSurfacesBM25(t *testing.T) {
 		t.Fatalf("top hybrid hit should carry a positive BM25, got %.3f", hits[0].BM25)
 	}
 }
+
+// TestClosetBoostStrengthFadesWithDistance pins the fix for a real regression: a
+// flat boost let one mediocre closet outrank every other signal, and this palace's
+// eval measured recall@1 falling from 92% to 17% because of it.
+//
+// The distances are measured ones (see closetDistanceCap): a closet's own text,
+// a genuinely related question, and an unrelated one.
+func TestClosetBoostStrengthFadesWithDistance(t *testing.T) {
+	cases := []struct {
+		name     string
+		distance float64
+		wantMin  float64
+		wantMax  float64
+	}{
+		{"the closet's own text", 0.114, 0.7, 1.0},
+		{"a related question", 0.49, 0.05, 0.3},
+		{"unrelated, just inside the old cap", 0.63, 0, 0},
+		{"a cake recipe", 0.706, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := closetBoostStrength(c.distance)
+			if got < c.wantMin || got > c.wantMax {
+				t.Errorf("strength(%.3f) = %.3f, want between %.2f and %.2f", c.distance, got, c.wantMin, c.wantMax)
+			}
+		})
+	}
+}
+
+// TestClosetBoostHasNoCliff: strength must reach zero exactly at the cap, so a
+// hit either side of the boundary is not reordered by a step change.
+func TestClosetBoostHasNoCliff(t *testing.T) {
+	just := closetBoostStrength(closetDistanceCap - 0.001)
+	if just <= 0 || just > 0.01 {
+		t.Errorf("strength just inside the cap = %.4f, want a hair above zero", just)
+	}
+	if got := closetBoostStrength(closetDistanceCap); got != 0 {
+		t.Errorf("strength at the cap = %.4f, want 0", got)
+	}
+}
+
+// TestSnippetCentresOnTheQuery: the answer to a query is rarely in a memory's
+// first paragraph, which is usually its heading — so a snippet cut from the
+// front would routinely show the agent the wrong part and cost a second call.
+func TestSnippetCentresOnTheQuery(t *testing.T) {
+	content := strings.Repeat("preamble about unrelated setup. ", 20) +
+		"the installer pins CLAUDE_CONFIG_DIR and the registration lands unread. " +
+		strings.Repeat("trailing notes that do not matter. ", 20)
+
+	got := Snippet(content, "installer pins CLAUDE_CONFIG_DIR", 200)
+	if !strings.Contains(got, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("snippet missed the matching passage: %q", got)
+	}
+	if len([]rune(got)) > 210 {
+		t.Errorf("snippet is %d runes, want ~200", len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, "…") {
+		t.Error("a snippet taken from the middle must say text was removed before it")
+	}
+}
+
+// TestSnippetLeavesShortContentAlone: most memories are already short, and
+// truncating them would cost an id lookup for nothing.
+func TestSnippetLeavesShortContentAlone(t *testing.T) {
+	content := "a short memory"
+	if got := Snippet(content, "memory", 400); got != content {
+		t.Errorf("Snippet mangled short content: %q", got)
+	}
+}
+
+// TestSnippetWithoutQueryTermsStillReturnsSomething: a query whose terms appear
+// nowhere (or is all stop-length noise) must still yield a readable head rather
+// than an empty string.
+func TestSnippetWithoutQueryTermsStillReturnsSomething(t *testing.T) {
+	content := strings.Repeat("some content that shares nothing with the query. ", 20)
+	got := Snippet(content, "zzz", 100)
+	if len(got) == 0 || !strings.HasSuffix(got, "…") {
+		t.Errorf("want a truncated head, got %q", got)
+	}
+}
+
+// TestRankRRFIgnoresScoreScale is the property RRF is chosen for: it ranks by
+// position, so a retriever whose scores are unbounded (BM25) cannot swamp one
+// whose scores are not (cosine). Multiplying every lexical score by a thousand
+// must not change the fused order.
+func TestRankRRFIgnoresScoreScale(t *testing.T) {
+	docs := []string{
+		"lru cache eviction policy explained",
+		"unrelated notes about deployment",
+		"cache eviction in the lru implementation",
+	}
+	distances := []float64{0.4, 0.2, 0.6}
+
+	got := rankRRF("lru cache eviction", docs, distances, nil)
+	order := []int{got[0].Index, got[1].Index, got[2].Index}
+
+	// Same inputs with the lexical signal inflated: the documents are unchanged,
+	// so BM25's own scale changes nothing about their ORDER, and RRF must agree.
+	inflated := make([]string, len(docs))
+	for i, d := range docs {
+		inflated[i] = strings.Repeat(d+" ", 50)
+	}
+	again := rankRRF("lru cache eviction", inflated, distances, nil)
+	if order[0] != again[0].Index {
+		t.Errorf("RRF changed its winner when only score magnitude changed: %d then %d", order[0], again[0].Index)
+	}
+}
+
+// TestRankRRFRewardsAgreement: a candidate both retrievers like should beat one
+// that only a single retriever ranks first. That is the behaviour the fusion
+// exists for, and the reason the smoothing constant flattens the very top.
+func TestRankRRFRewardsAgreement(t *testing.T) {
+	docs := []string{
+		"cache eviction policy for the lru cache", // both like it
+		"lru lru lru lru",                         // lexical only
+		"a note about something else entirely",    // vector only
+	}
+	distances := []float64{0.25, 0.9, 0.2}
+
+	got := rankRRF("lru cache eviction policy", docs, distances, nil)
+	if got[0].Index != 0 {
+		t.Errorf("agreed-on candidate ranked %d, want it first", got[0].Index)
+	}
+}

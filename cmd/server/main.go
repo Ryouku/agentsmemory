@@ -20,7 +20,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
@@ -92,6 +94,7 @@ func main() {
 			stdioCommand(def),
 			syncCommand(def),
 			wingCommand(def),
+			evalCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
 			projectsCommand(def),
@@ -119,6 +122,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		OllamaEmbedModel: c.String("ollama-model"),
 		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
 		RerankPool:       c.Int("rerank-pool"),
+		RerankWeight:     c.Float("rerank-weight"),
+		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
@@ -163,8 +168,10 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "qdrant-api-key", Sources: cli.EnvVars("QDRANT_API_KEY"), Value: def.QdrantAPIKey, Usage: "Qdrant API key (optional)"},
 		&cli.StringFlag{Name: "ollama-url", Sources: cli.EnvVars("OLLAMA_URL"), Value: def.OllamaURL, Usage: "Ollama base URL"},
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
-		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "TEI base URL for cross-encoder re-ranking of search results (empty disables re-ranking)"},
+		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
+		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
+		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
 }
@@ -254,7 +261,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	// per request, turning the Bearer token into a tenant on the context the
 	// tools read — this is the only place auth touches the transport. Tools
 	// meter each call against the workspace's monthly cap via usageSvc.
-	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Local: cfg.Local})
+	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Workspaces: svc.tenants, Local: cfg.Local})
 
 	// OAuth 2.1 authorization server (stateless), validating client credentials
 	// against our own api_keys (the merged authcounterapi role). It guards /mcp
@@ -466,6 +473,11 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	local := auth.LocalTenant(t, cfg.LocalToken)
 	r.Handle("/mcp", local(mcpHandler))
 	r.Handle("/import", local(importer.Handler(svc.drawers, svc.usage)))
+	// A plain-text recall report, for things that are not MCP clients — the Stop
+	// hook prints it at the end of a session. It exists as its own endpoint
+	// because the alternative is asking a bash script to speak JSON-RPC over a
+	// streamable-HTTP transport to read six numbers.
+	r.Handle("/stats", local(recallStatsHandler(svc.drawers, t.TeamID)))
 
 	// The exposure warning is about an unauthenticated TCP port, so both escapes
 	// silence it. A socket is bound at 0600, so the operating system already
@@ -475,6 +487,15 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 	// case would train operators to ignore it.
 	switch {
 	case cfg.SocketPath != "", config.IsLoopback(cfg.Addr):
+	case publishedLoopback():
+		// Docker publishes 127.0.0.1:8080 to the host and hands the container a
+		// non-loopback bind, because a published port cannot reach a
+		// loopback-bound process. The process cannot see that boundary from
+		// inside, so the compose file states it (AGENTSMEMORY_PUBLISHED_LOOPBACK)
+		// and we trust the operator's own file over a guess we cannot make.
+		// Warning on every boot of the DEFAULT shipped path is how operators learn
+		// to scroll past warnings that matter.
+		log.Printf("--local is bound to %s inside this container; the compose file publishes it on the host loopback only.", cfg.Addr)
 	case cfg.LocalToken != "":
 		log.Printf("--local is bound to %s (beyond this machine) and is protected by --token: agents must send \"Authorization: Bearer <token>\". Anyone holding that token has full read and write access to every memory in %s.",
 			cfg.Addr, cfg.DBPath)
@@ -544,6 +565,13 @@ func agentEndpoint(addr string) string {
 	// net.ParseIP("") is nil, so the bare ":8080" form falls through to the
 	// placeholder too — it binds every interface exactly like 0.0.0.0.
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		// A container publishing to the host's loopback is the exception: the
+		// wildcard bind is then an implementation detail of the port mapping, and
+		// the URL that actually works is localhost. The operator states that in
+		// the compose file, and a hint nobody can paste is worse than none.
+		if publishedLoopback() {
+			return "http://localhost:" + port + "/mcp"
+		}
 		return "http://<this-machine-lan-ip>:" + port + "/mcp"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/mcp"
@@ -762,13 +790,24 @@ func buildServices(cfg config.Config) (*services, error) {
 	// The memory loop: Ollama embeds text, the store seam holds the vectors, and
 	// the palace service ties them to drawer metadata.
 	embedder := ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
-	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
 
-	// Re-ranking is opt-in wiring: with no RERANK_URL the service keeps the
-	// vector+BM25+closet fusion it has always used, so this cannot change the
-	// behaviour of a deployment that does not ask for it.
+	// The cross-encoder is optional and additive: configured, it rescores the top
+	// candidates of every search; unconfigured, search is exactly the hybrid
+	// vector+BM25 fusion it has always been. Building it here keeps the
+	// composition root the only place that knows which rerank server is deployed.
+	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
 	if cfg.RerankURL != "" {
-		drawers = drawers.WithReranker(tei.New(cfg.RerankURL, cfg.HTTPTimeout), cfg.RerankPool)
+		// A rerank call does real inference, unlike the millisecond calls
+		// HTTPTimeout was sized for, so it gets its own budget.
+		timeout := cfg.RerankTimeout
+		if timeout <= 0 {
+			timeout = cfg.HTTPTimeout
+		}
+		drawers = drawers.
+			WithReranker(tei.New(cfg.RerankURL, timeout), cfg.RerankPool).
+			WithRerankWeight(cfg.RerankWeight)
+		log.Printf("reranker: %s (pool %d, weight %.2f, timeout %s)",
+			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
 	}
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant
@@ -811,6 +850,113 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
 			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
 	}
+}
+
+// recallStatsHandler serves the recall report as plain text: GET /stats?hours=1.
+//
+// Text, not JSON, because its only readers are a human and a Stop hook echoing it
+// into a terminal. A report nobody can read at a glance is a report nobody reads.
+func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// minutes wins over hours: a hook that knows exactly how long this session
+		// has been running should be able to ask for exactly that window, rather
+		// than rounding a 40-minute session up to "the last hour" and reporting
+		// the previous session's work as if it were this one's.
+		window := time.Hour
+		if v := r.URL.Query().Get("hours"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				window = time.Duration(n) * time.Hour
+			}
+		}
+		if v := r.URL.Query().Get("minutes"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				window = time.Duration(n) * time.Minute
+			}
+		}
+		stats, err := drawers.RecallStats(r.Context(), teamID, window, 5)
+		if err != nil {
+			http.Error(w, "recall stats: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+		label := windowLabel(window, r.URL.Query().Get("label"))
+
+		var b strings.Builder
+		if stats.Searches == 0 && stats.Writes == 0 {
+			fmt.Fprintf(&b, "memory, %s: nothing recalled or filed\n", label)
+			_, _ = io.WriteString(w, b.String())
+			return
+		}
+		fmt.Fprintf(&b, "memory, %s: %s recalled, %d answered (%d%%), %s filed\n",
+			label, plural(stats.Searches, "search", "searches"), stats.Answered, stats.AnsweredPct(),
+			plural(stats.Writes, "memory", "memories"))
+		for _, wing := range stats.Wings {
+			if wing.Searches == 0 && wing.Drawers == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "  %-24s %d/%d answered", wing.Wing, wing.Answered, wing.Searches)
+			if wing.Searches > 0 {
+				fmt.Fprintf(&b, " (%d%%)", wing.AnsweredPct())
+			}
+			fmt.Fprintf(&b, ", %s\n", plural(wing.Drawers, "drawer", "drawers"))
+		}
+		if len(stats.Unanswered) > 0 {
+			// The most useful line in the report: each of these is a memory the
+			// team went looking for and does not have.
+			b.WriteString("  found nothing for: ")
+			b.WriteString(strings.Join(stats.Unanswered, " | "))
+			b.WriteString("\n")
+		}
+		// A trailing newline: the hook pipes this straight to a terminal, and
+		// without it the next line of output starts mid-sentence.
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		_, _ = io.WriteString(w, b.String())
+	})
+}
+
+// windowLabel names the period the report covers. A caller that knows what the
+// window MEANS (a hook that measured this session) passes its own label, because
+// "this session" tells a reader something "the last 43m" does not.
+func windowLabel(window time.Duration, custom string) string {
+	if custom = strings.TrimSpace(custom); custom != "" {
+		if len(custom) > 40 {
+			custom = custom[:40]
+		}
+		return custom
+	}
+	if window < 90*time.Minute {
+		return fmt.Sprintf("last %dm", int(window.Minutes()))
+	}
+	return fmt.Sprintf("last %dh", int(window.Hours()))
+}
+
+// plural renders a count with the right noun, because this report is read by a
+// human at the end of a session and "1 searches" is the kind of detail that makes
+// a tool feel unowned.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// publishedLoopback reports whether the operator declared that this process's
+// port is published on the host's loopback interface only — the shape every
+// container-with-published-port has, where the container's own bind address says
+// nothing about who can reach it.
+//
+// It is deliberately an assertion the operator makes (in the compose file that
+// creates the boundary), not something inferred: a process cannot see its own
+// port mapping, and guessing wrong in either direction is worse than asking.
+func publishedLoopback() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTSMEMORY_PUBLISHED_LOOPBACK"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 // reconcileChromem fills an empty chromem index from the SQLite source of truth,

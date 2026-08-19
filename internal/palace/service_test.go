@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,6 +68,104 @@ func newTestService(t *testing.T) *Service {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+}
+
+// fakeReranker is a cross-encoder stand-in: it ranks by how many query words a
+// document literally contains, which is enough to reorder a page deterministically
+// without a model. err makes every call fail, for the degradation test.
+type fakeReranker struct {
+	err    error
+	called int
+}
+
+func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([]float64, error) {
+	f.called++
+	if f.err != nil {
+		return nil, f.err
+	}
+	scores := make([]float64, len(docs))
+	for i, d := range docs {
+		for _, term := range strings.Fields(strings.ToLower(query)) {
+			if strings.Contains(strings.ToLower(d), term) {
+				scores[i]++
+			}
+		}
+	}
+	return scores, nil
+}
+
+// TestSearchRerankerPromotesFromOutsideThePage is the point of a cross-encoder:
+// it must be able to pull a drawer the hybrid ranking put below the page INTO it.
+// Reranking after paging would make that impossible, so this pins the ordering of
+// the two steps, not just the presence of the reranker.
+func TestSearchRerankerPromotesFromOutsideThePage(t *testing.T) {
+	ctx := context.Background()
+	rr := &fakeReranker{}
+	svc := newTestService(t).WithReranker(rr, 10)
+	const team = "team-rerank"
+
+	// The fake embedder maps bytes to dimensions, so these are near-identical
+	// vectors: retrieval surfaces all of them and the fused order is essentially
+	// arbitrary — which is exactly when the cross-encoder should decide.
+	for _, content := range []string{
+		"aaa bbb ccc filler one",
+		"aaa bbb ccc filler two",
+		"aaa bbb ccc filler three",
+		"the installer pins CLAUDE_CONFIG_DIR and the registration lands in an unread file",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: content}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "installer pins claude_config_dir", Limit: 1})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if rr.called != 1 {
+		t.Fatalf("reranker called %d times, want 1", rr.called)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Drawer.Content, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("cross-encoder did not decide the page: %+v", hits)
+	}
+	if hits[0].RerankScore == 0 {
+		t.Error("RerankScore not reported on the hit")
+	}
+}
+
+// TestSearchSurvivesRerankerFailure: the cross-encoder is a refinement, so a
+// server that is down must cost ranking quality and nothing else. Recall is the
+// product; it cannot depend on an optional service.
+func TestSearchSurvivesRerankerFailure(t *testing.T) {
+	ctx := context.Background()
+	rr := &fakeReranker{err: errors.New("connection refused")}
+	svc := newTestService(t).WithReranker(rr, 10)
+	const team = "team-rerank-down"
+
+	for _, content := range []string{"alpha memory", "beta memory", "gamma memory"} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: content}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "beta memory", Limit: 3})
+	if err != nil {
+		t.Fatalf("search must not fail when the reranker is down: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("want the full hybrid page, got %d hit(s)", len(hits))
+	}
+	// The lexical half of the hybrid ranking still works, so the literal match
+	// leads — proof the results are the fused ordering rather than an empty or
+	// arbitrary one.
+	if !strings.Contains(hits[0].Drawer.Content, "beta") {
+		t.Errorf("hybrid order lost: %q leads", hits[0].Drawer.Content)
+	}
+	for _, h := range hits {
+		if h.RerankScore != 0 {
+			t.Errorf("failed rerank must leave RerankScore unset, got %v", h.RerankScore)
+		}
+	}
 }
 
 func TestServiceAddAndSearch(t *testing.T) {
@@ -236,7 +335,7 @@ func TestServiceReAddNamedSourcePurgesStaleChunks(t *testing.T) {
 	svc := newTestService(t)
 	const team = "team-1"
 
-	long := strings.Repeat("alpha ", 400)  // ~2400 chars -> several chunks
+	long := strings.Repeat("alpha ", 400)    // ~2400 chars -> several chunks
 	short := "now just a single short chunk" // 1 chunk
 
 	first := mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", SourceFile: "notes.md", Content: long})
@@ -289,11 +388,151 @@ func TestServiceAddValidates(t *testing.T) {
 	}
 }
 
+// brokenEmbedder stands in for an Ollama that is not running — the single most
+// common self-hosted failure, and the one that used to lose memories.
+type brokenEmbedder struct{ fakeEmbedder }
+
+func (brokenEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:11434: connect: connection refused")
+}
+
+func (b brokenEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:11434: connect: connection refused")
+}
+
+// TestFilingSurvivesAnEmbedderOutage is the whole point of the deferred path: a
+// memory written while the embedder is down must still EXIST. Losing the text
+// because the index could not be built is the worst trade this system can make —
+// the text is the memory, the vector is only how it is found.
+func TestFilingSurvivesAnEmbedderOutage(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	svc.embed = brokenEmbedder{}
+	const team = "team-outage"
+
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "the embedder was down when this was written"})
+	if err != nil {
+		t.Fatalf("add must not fail when the embedder is down: %v", err)
+	}
+	if !res.PendingEmbedding {
+		t.Error("PendingEmbedding not reported; the caller cannot tell the memory is unsearchable")
+	}
+	if len(res.Drawers) != 1 {
+		t.Fatalf("want 1 drawer, got %d", len(res.Drawers))
+	}
+
+	diary, err := svc.WriteDiary(ctx, team, DiaryWriteInput{Agent: "tester", Entry: "journal written during the outage"})
+	if err != nil {
+		t.Fatalf("diary_write must not fail when the embedder is down: %v", err)
+	}
+	if !diary.PendingEmbedding {
+		t.Error("diary PendingEmbedding not reported")
+	}
+
+	// The rows are durable and queued — which is exactly the state the background
+	// worker drains.
+	pending, err := svc.PendingCount(ctx, team)
+	if err != nil {
+		t.Fatalf("pending count: %v", err)
+	}
+	if pending != 2 {
+		t.Fatalf("want 2 rows awaiting embedding, got %d", pending)
+	}
+	stored, err := svc.Get(ctx, team, res.Drawers[0].ID)
+	if err != nil {
+		t.Fatalf("the drawer must be readable back immediately: %v", err)
+	}
+	if stored.Content != "the embedder was down when this was written" {
+		t.Errorf("content not stored verbatim: %q", stored.Content)
+	}
+
+	// Embedder returns: the queue drains and the memories become searchable, with
+	// no re-filing by anyone.
+	svc.embed = fakeEmbedder{}
+	n, err := svc.EmbedPendingForTeam(ctx, team, 10)
+	if err != nil {
+		t.Fatalf("drain queue: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("worker embedded %d rows, want 2", n)
+	}
+	if pending, err = svc.PendingCount(ctx, team); err != nil || pending != 0 {
+		t.Fatalf("queue not drained: %d (err %v)", pending, err)
+	}
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "journal written during the outage", Limit: 5})
+	if err != nil {
+		t.Fatalf("search after recovery: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("memories written during the outage never became searchable")
+	}
+}
+
 func mustAdd(t *testing.T, svc *Service, team string, in AddInput) []Drawer {
 	t.Helper()
-	d, err := svc.Add(context.Background(), team, in)
+	res, err := svc.Add(context.Background(), team, in)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	return d
+	if res.PendingEmbedding {
+		t.Fatalf("add deferred embedding unexpectedly (is the fake embedder failing?)")
+	}
+	return res.Drawers
+}
+
+// TestRerankBlendsRatherThanOverwrites pins a measured regression. Letting the
+// cross-encoder's score decide alone throws away the lexical evidence in the
+// fused score — on this palace's eval that was MRR 1.000 → 0.686 on the queries
+// that carry an identifier, which is what a developer actually types.
+func TestRerankBlendsRatherThanOverwrites(t *testing.T) {
+	svc := newTestService(t)
+
+	// Fused ranking is confident about A (an exact lexical match); the
+	// cross-encoder mildly prefers B. A blend keeps A; a handover does not.
+	survivors := []SearchHit{
+		{Drawer: Drawer{ID: "A", Content: "exact identifier match"}},
+		{Drawer: Drawer{ID: "B", Content: "topically similar"}},
+	}
+	ranked := []HybridScore{{Index: 0, Fused: 1.0}, {Index: 1, Fused: 0.2}}
+	svc.rerank = &staticReranker{scores: []float64{1, 2}} // B scored higher
+	svc.rerankPool = 2
+
+	blended := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight)
+	if survivors[blended[0].Index].Drawer.ID != "A" {
+		t.Errorf("a mild cross-encoder preference overturned a confident fused score at w=%.2f", DefaultRerankWeight)
+	}
+
+	// w=1 is the handover, kept reachable so the eval can measure what it costs.
+	if over := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 1); survivors[over[0].Index].Drawer.ID != "B" {
+		t.Error("w=1 must hand the decision to the cross-encoder")
+	}
+	// w=0 does not consult it at all.
+	if none := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 0); survivors[none[0].Index].Drawer.ID != "A" {
+		t.Error("w=0 must leave the hybrid order alone")
+	}
+}
+
+// TestRerankKeepsTheWholePage: a partial or failed response costs precision, not
+// results.
+func TestRerankKeepsTheWholePage(t *testing.T) {
+	svc := newTestService(t)
+	survivors := []SearchHit{
+		{Drawer: Drawer{ID: "A"}}, {Drawer: Drawer{ID: "B"}}, {Drawer: Drawer{ID: "C"}},
+	}
+	ranked := []HybridScore{{Index: 0, Fused: 0.9}, {Index: 1, Fused: 0.5}, {Index: 2, Fused: 0.1}}
+
+	// Wrong count: upstream's guard rejects it and the hybrid order stands.
+	svc.rerank = &staticReranker{scores: []float64{5}}
+	svc.rerankPool = 3
+	if got := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight); len(got) != 3 {
+		t.Fatalf("page shrank to %d", len(got))
+	}
+}
+
+// staticReranker returns a fixed ordering, so blending is testable without a
+// model.
+type staticReranker struct{ scores []float64 }
+
+func (s *staticReranker) Rerank(context.Context, string, []string) ([]float64, error) {
+	return s.scores, nil
 }

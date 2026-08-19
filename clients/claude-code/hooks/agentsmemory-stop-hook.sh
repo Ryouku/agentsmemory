@@ -9,15 +9,24 @@
 # the session is persisted (or the reminder is acknowledged).
 #
 # Modes (env AGENTSMEMORY_STOP_HOOK):
-#   on   (default) — remind on every Stop, like mempalace.
-#   once           — remind only on the first Stop of a session, then stay quiet.
+#   once (default) — remind on the first Stop of a session, then stay quiet.
+#   on             — remind on every Stop, like mempalace.
 #   off            — disabled.
+#
+# It also prints a short recall report from a self-hosted server (AGENTSMEMORY_STATS=off
+# to suppress, AGENTSMEMORY_STATS_HOURS to widen the window, AGENTSMEMORY_STATS_URL
+# to point elsewhere) — see the bottom of this file for why that belongs here.
+#
+# `once` is the default because this hook exits 2, which BLOCKS the stop: on every
+# turn of a long session that is a lot of interruption for a reminder the agent
+# has already acted on. One checkpoint per session is the nudge; repeating it each
+# turn is what teaches an agent (and a human) to dismiss it unread.
 set -euo pipefail
 
 # Consume stdin so the hook is a clean filter even when nothing reads it.
 INPUT="$(cat || true)"
 
-MODE="${AGENTSMEMORY_STOP_HOOK:-on}"
+MODE="${AGENTSMEMORY_STOP_HOOK:-once}"
 [ "$MODE" = "off" ] && exit 0
 
 # Loop prevention — mirror mempalace's hook: Claude Code sets stop_hook_active=true
@@ -47,6 +56,52 @@ agentsmemory checkpoint — persist this session into team memory before stoppin
   2. am_kg_add      — new durable facts as subject -> predicate -> object triples.
   3. am_add_drawer  — notable decisions / code, verbatim, into the right wing + room.
 Use the agentsmemory MCP tools (am_ prefix). Skip only if nothing was worth
-remembering — and say so. Disable this reminder with AGENTSMEMORY_STOP_HOOK=off (or =once).
+remembering — and say so. This fires once per session; AGENTSMEMORY_STOP_HOOK=on
+reminds every turn, =off disables it.
 MSG
+
+# ...and the half a reminder cannot give you: whether the memory is actually
+# EARNING its place. A checkpoint that only ever asks for writes trains a team to
+# fill a cabinet nobody opens. These lines say how many recalls this session ran,
+# how many came back with something, and — most useful of all — what it looked for
+# and did not find.
+#
+# Self-hosted only, and deliberately silent when anything is off: no server, an
+# older server without /stats, no curl. A statistics line must never be the reason
+# a Stop hook fails.
+# The window is THIS SESSION, measured from the transcript file the event names,
+# not a fixed number of hours. A fixed window at the first Stop of a session
+# reports mostly the PREVIOUS session's work — the numbers looked plausible and
+# described the wrong thing, which is worse than no numbers.
+STATS_QUERY="hours=${AGENTSMEMORY_STATS_HOURS:-2}"
+TRANSCRIPT="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+if [ -n "${TRANSCRIPT:-}" ] && [ -f "$TRANSCRIPT" ]; then
+  # Birth time where the filesystem records it (macOS %B, APFS), modification
+  # time everywhere else — either bounds the session closely enough, and a bad
+  # value simply falls back to the fixed window below.
+  BORN="$(stat -f %B "$TRANSCRIPT" 2>/dev/null || stat -c %W "$TRANSCRIPT" 2>/dev/null || true)"
+  case "${BORN:-0}" in ''|*[!0-9]*|0) BORN="$(stat -f %m "$TRANSCRIPT" 2>/dev/null || stat -c %Y "$TRANSCRIPT" 2>/dev/null || echo 0)" ;; esac
+  NOW="$(date +%s)"
+  if [ "${BORN:-0}" -gt 0 ] && [ "$NOW" -ge "$BORN" ]; then
+    MINUTES=$(( (NOW - BORN) / 60 + 1 ))
+    [ "$MINUTES" -gt 1440 ] && MINUTES=1440
+    STATS_QUERY="minutes=${MINUTES}&label=this%20session"
+  fi
+fi
+
+STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?${STATS_QUERY}}"
+if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; then
+  # No arrays: macOS ships bash 3.2, where expanding an EMPTY array under `set -u`
+  # aborts the script ("AUTH[@]: unbound variable"). Two explicit calls are longer
+  # and cannot break the hook on the one platform most of these installs run on.
+  if [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ]; then
+    STATS="$(curl -fsS -m 3 -H "Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}" "$STATS_URL" 2>/dev/null || true)"
+  else
+    STATS="$(curl -fsS -m 3 "$STATS_URL" 2>/dev/null || true)"
+  fi
+  # $(...) strips trailing newlines, so the report needs its last one back —
+  # without it whatever the terminal prints next continues the report's last line.
+  [ -n "$STATS" ] && printf '\n%s\n' "$STATS" >&2
+fi
+
 exit 2

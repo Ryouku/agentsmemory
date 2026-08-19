@@ -17,7 +17,7 @@ func registerMine(reg *registrar, drawers *palace.Service, usageSvc *usage.Servi
 	tool := newTool("mine",
 		mcp.WithDescription("Mine a blob of text into the palace: chunk it into verbatim drawers (with extracted entities and a detected date) and build the closet index. Idempotent by source — re-mining the same source replaces it."),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to mine. Stored exactly, never summarised.")),
-		mcp.WithString("wing", mcp.Required(), mcp.Description("Project namespace the mined memory belongs to.")),
+		mcp.WithString("wing", mcp.Description("Project namespace the mined memory belongs to.")),
 		mcp.WithString("source", mcp.Required(), mcp.Description("A stable identifier for this content (a path, URL, or label). Re-mining the same source replaces its drawers and closets.")),
 		mcp.WithString("room", mcp.Description("Aspect within the wing (default \"general\").")),
 		mcp.WithString("agent", mcp.Description("Author recorded on each drawer (default \"mempalace\").")),
@@ -31,7 +31,7 @@ func registerMine(reg *registrar, drawers *palace.Service, usageSvc *usage.Servi
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		wing, err := req.RequireString("wing")
+		wing, err := wingFor(ctx, req.GetString("wing", ""))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

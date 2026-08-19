@@ -298,7 +298,10 @@ func (s *Service) purgeClosetSource(ctx context.Context, teamID, source string) 
 // boosts and search proceeds on vector+BM25 alone.
 func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32) map[string]float64 {
 	boosts := map[string]float64{}
-	hits, err := s.vectors.Search(ctx, closetNamespace(teamID), vec, len(closetRankBoosts))
+	// No filter: a closet summarises a whole source, so its boost is not scoped to
+	// the wing/room a search happens to be narrowed to — the drawers it lifts are
+	// filtered on their own way in.
+	hits, err := s.vectors.Search(ctx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
 	if err != nil || len(hits) == 0 {
 		return boosts
 	}
@@ -320,8 +323,11 @@ func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32
 			continue // a source's boost is fixed by the first position it appears at
 		}
 		seen[c.SourceFile] = struct{}{}
-		if distanceFromScore(h.Score) <= closetDistanceCap {
-			boosts[c.SourceFile] = closetRankBoosts[i]
+		// Rank decides the ceiling, proximity decides how much of it applies. A
+		// closet that is barely related contributes almost nothing instead of the
+		// same +0.40 a perfect match would.
+		if strength := closetBoostStrength(distanceFromScore(h.Score)); strength > 0 {
+			boosts[c.SourceFile] = closetRankBoosts[i] * strength
 		}
 	}
 	return boosts

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 	"github.com/google/uuid"
@@ -87,11 +88,18 @@ func (c *Client) upsertChunk(ctx context.Context, namespace string, points []sto
 // Search runs an approximate nearest-neighbour query against the namespace's
 // collection and maps Qdrant's results back onto store.Hit, restoring each
 // caller-facing ID from the payload.
-func (c *Client) Search(ctx context.Context, namespace string, vector []float32, k int) ([]store.Hit, error) {
+func (c *Client) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
 	if k <= 0 {
 		return nil, nil
 	}
 	body := map[string]any{"vector": vector, "limit": k, "with_payload": true}
+	if f := matchFilter(filter); f != nil {
+		// Qdrant applies this during the search, so `limit` counts MATCHING
+		// points. Without it the caller would have to over-fetch a pool wide
+		// enough that the survivors still fill a page — a cost that grows with the
+		// collection and is paid on every scoped query.
+		body["filter"] = f
+	}
 	var resp struct {
 		Result []struct {
 			Score   float32        `json:"score"`
@@ -109,6 +117,26 @@ func (c *Client) Search(ctx context.Context, namespace string, vector []float32,
 		hits = append(hits, store.Hit{ID: id, Score: r.Score, Payload: r.Payload})
 	}
 	return hits, nil
+}
+
+// matchFilter renders a payload filter as Qdrant's must-match clause, or nil when
+// there is nothing to filter on. Keys are sorted so the request body is stable —
+// which makes it comparable in tests and readable in a proxy log.
+func matchFilter(filter store.Filter) map[string]any {
+	if len(filter) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(filter))
+	for k := range filter {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	must := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		must = append(must, map[string]any{"key": k, "match": map[string]any{"value": filter[k]}})
+	}
+	return map[string]any{"must": must}
 }
 
 // Delete removes points by their derived UUIDs, waiting for the deletion to

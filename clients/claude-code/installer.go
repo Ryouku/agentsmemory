@@ -15,6 +15,13 @@ import (
 // hookAsset is the embedded Stop-hook path inside the binary's embed FS.
 const hookAsset = "hooks/agentsmemory-stop-hook.sh"
 
+// verifyHookAsset is the embedded SessionStart hook: it verifies this project's
+// code anchors before the session starts using its memories.
+const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
+
+// sessionEndHookAsset is the embedded SessionEnd hook: the closing recall report.
+const sessionEndHookAsset = "hooks/agentsmemory-session-end-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -23,6 +30,14 @@ const (
 	// directory is ours and has nothing to do with pi. Claude and codex register
 	// the hook by absolute path, so where it lives is ours to choose.
 	hookFile = "agentsmemory-stop-hook.sh"
+
+	// verifyHookFile is where the SessionStart hook lands, beside the Stop hook
+	// and for the same reason: flat in the config dir, so the registered command
+	// is a stable path a user can read in settings.json.
+	verifyHookFile = "agentsmemory-verify-hook.sh"
+
+	// sessionEndHookFile is where the SessionEnd hook lands.
+	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
 
 	// legacyHookRel is where installs before that change put the hook. It is
 	// removed on the next install (along with its now-stale Stop entry) so the
@@ -72,6 +87,11 @@ const (
 	// the first source behind --token), so exporting it once configures both the
 	// server that demands the credential and the agent that presents it.
 	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+
+	// wingHeader names the project a registration files into. It mirrors
+	// auth.WingHeader on the server; duplicating the string keeps this installer
+	// binary independent of the server package it configures.
+	wingHeader = "X-Agentsmemory-Wing"
 
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell
@@ -164,7 +184,12 @@ type Installer struct {
 	serverBin      string   // agentsmemory server binary the stdio bridge is spawned from (socket mode only)
 	scope          string   // Claude MCP/plugin scope (user|local|project)
 	local          bool     // target a self-hosted `agentsmemory --local` server
-	token          string   // agentsmemory workspace token (empty ⇒ prompt or skip)
+	// wing is the project this registration files memories into. It travels as a
+	// header on every MCP call, so writes from THIS project land in THIS project's
+	// wing whether or not the agent remembers to pass one. Empty keeps the old
+	// behaviour: the agent names a wing per call.
+	wing  string
+	token string // agentsmemory workspace token (empty ⇒ prompt or skip)
 	// resolvedToken is what registration actually wrote, decided once by
 	// resolveToken. summary() reads it rather than inferring from local, because
 	// a self-hosted server may or may not require a token (server --token) and the
@@ -346,6 +371,7 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		serverBin:      serverBin,
 		scope:          c.String("scope"),
 		local:          local,
+		wing:           strings.TrimSpace(c.String("wing")),
 		token:          c.String("token"),
 		copyGlobal:     c.Bool("copy"),
 		sharedAuth:     c.Bool("shared-auth"),
@@ -505,6 +531,29 @@ func (i *Installer) writeAssets() error {
 		return err
 	}
 	i.ok("hook %s", filepath.Base(i.hookPath()))
+
+	// The SessionStart companion. Claude runs SessionStart hooks; codex does not,
+	// so it ships only where it can run — writing a script the agent will never
+	// call would just be litter in someone's config dir.
+	if i.kit.name == "claude" {
+		verifyHook, err := i.source().ReadFile(verifyHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.verifyHookPath(), verifyHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.verifyHookPath()))
+
+		endHook, err := i.source().ReadFile(sessionEndHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.sessionEndHookPath(), endHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
+	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
 	i.clearLegacyHook()
@@ -549,6 +598,14 @@ func (i *Installer) notePiLegacyHook() {
 
 // hookPath is the absolute install path of the Stop hook under the target dir.
 func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFile) }
+
+// verifyHookPath is where the SessionStart hook is installed.
+func (i *Installer) verifyHookPath() string { return filepath.Join(i.targetDir, verifyHookFile) }
+
+// sessionEndHookPath is where the SessionEnd hook is installed.
+func (i *Installer) sessionEndHookPath() string {
+	return filepath.Join(i.targetDir, sessionEndHookFile)
+}
 
 // legacyHookPath is where earlier installs wrote the hook, under hooks/.
 func (i *Installer) legacyHookPath() string { return filepath.Join(i.targetDir, legacyHookRel) }
@@ -614,7 +671,7 @@ func (i *Installer) registerStopHook() error {
 		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
 		return nil
 	}
-	changed, err := ensureStopHook(hooksFile, hookCmd, foreignHookPredicate(hookCmd))
+	changed, err := ensureHook(hooksFile, "Stop", hookCmd, foreignHookPredicate(hookCmd))
 	if err != nil {
 		return err
 	}
@@ -622,6 +679,45 @@ func (i *Installer) registerStopHook() error {
 		i.ok("registered Stop hook in %s", i.kit.hooksFile)
 	} else {
 		i.ok("Stop hook already registered")
+	}
+	return i.registerVerifyHook()
+}
+
+// registerVerifyHook adds the SessionStart hook that verifies this project's code
+// anchors. Claude only: it is the agent with a SessionStart event.
+//
+// It is registered even though it does nothing until a memory carries an anchor —
+// the alternative is asking people to install a second thing later, at the exact
+// moment they are least likely to.
+func (i *Installer) registerVerifyHook() error {
+	if i.kit.name != "claude" || i.kit.hooksFile == "" {
+		return nil
+	}
+	hookCmd := "bash " + i.verifyHookPath()
+	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register SessionStart hook in %s: %q\n", hooksFile, hookCmd)
+		return nil
+	}
+	changed, err := ensureHook(hooksFile, "SessionStart", hookCmd, foreignHookPredicate(hookCmd))
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered SessionStart hook (verifies memories against your code)")
+	} else {
+		i.ok("SessionStart hook already registered")
+	}
+
+	endCmd := "bash " + i.sessionEndHookPath()
+	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
+	if err != nil {
+		return err
+	}
+	if endChanged {
+		i.ok("registered SessionEnd hook (reports what recall did this session)")
+	} else {
+		i.ok("SessionEnd hook already registered")
 	}
 	return nil
 }
@@ -705,6 +801,11 @@ func (i *Installer) registerClaudeMCP(token string) error {
 	// credentials) but is a lie in the config file: it reads as auth that exists.
 	if token != "" {
 		args = append(args, "--header", "Authorization: Bearer "+token)
+	}
+	// The wing rides on the connection rather than on the agent's memory: this is
+	// what makes one palace hold many projects without them bleeding together.
+	if i.wing != "" {
+		args = append(args, "--header", wingHeader+": "+i.wing)
 	}
 	// `mcp add` is not idempotent by name, so remove any prior entry first
 	// (ignoring "not found") and then add cleanly, all in one shot.
@@ -947,18 +1048,40 @@ func (i *Installer) addStdioMCP(name, bin string, argv ...string) error {
 	return i.agent(false, append([]string{"mcp", "add", "--transport", "stdio", "--scope", i.scope, name, "--", bin}, argv...)...)
 }
 
-// agent runs the resolved agent CLI with its config-dir env var (CLAUDE_CONFIG_DIR
-// or CODEX_HOME) pinned to the target dir, so MCP/plugin registration lands in the
-// config we are installing into (a sandbox or the global dir) rather than wherever
-// the process happens to point. When ignoreErr is true a failure is swallowed —
-// used for the pre-emptive `mcp remove` and `marketplace add` that legitimately
-// fail when nothing exists.
+// agent runs the resolved agent CLI, pinning its config-dir env var
+// (CLAUDE_CONFIG_DIR / CODEX_HOME / PI_CODING_AGENT_DIR) to the target dir when —
+// and only when — that dir is NOT where the agent already looks by default. See
+// pinConfigDir for why the distinction is load-bearing. When ignoreErr is true a
+// failure is swallowed — used for the pre-emptive `mcp remove` and
+// `marketplace add` that legitimately fail when nothing exists.
 func (i *Installer) agent(ignoreErr bool, args ...string) error {
-	env := []string{i.kit.configEnv + "=" + i.targetDir}
+	var env []string
+	if i.pinConfigDir() {
+		env = []string{i.kit.configEnv + "=" + i.targetDir}
+	}
 	if err := i.runner.run(i.agentBin, args, env); err != nil && !ignoreErr {
 		return err
 	}
 	return nil
+}
+
+// pinConfigDir reports whether the agent CLI must be told where its config lives.
+//
+// A sandbox (or an explicit --config-dir) is not a place the agent looks on its
+// own, so registration there only lands correctly with the env var set — and
+// `aiagentmemory run <name>` exports the same variable at launch, so what the
+// install wrote is what the launch reads.
+//
+// The GLOBAL install is the opposite case, and pinning it is actively wrong for
+// Claude: CLAUDE_CONFIG_DIR=~/.claude moves the MCP registry from ~/.claude.json
+// to ~/.claude/.claude.json, and a later plain `claude` — with no such variable
+// exported — reads ~/.claude.json and finds no agentsmemory server. The install
+// reports success, the agent has no am_* tools, and the memory protocol then runs
+// its whole "tools are absent" ceremony against a server that is running fine.
+// Leaving the environment alone lets the agent resolve its own default, which is
+// exactly what a global install means.
+func (i *Installer) pinConfigDir() bool {
+	return i.targetDir != i.kit.globalConfigDir(homeDir())
 }
 
 // promptInstallMode asks, interactively, whether to install globally or into an
@@ -1117,6 +1240,10 @@ func (i *Installer) summary() {
 		i.kit.memoryFile, i.commandLabel("am.md"))
 	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
 		i.commandLabel("M.md"), i.commandLabel("am.md"))
+
+	if i.wing != "" {
+		fmt.Fprintf(i.out, "  - memories from this project file into %s on their own — no wing argument needed\n", i.wing)
+	}
 
 	if i.local {
 		// The self-hosted server is the one thing that has to be running for any of

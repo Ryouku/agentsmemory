@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
@@ -77,18 +78,23 @@ func jsonResult(v any) *mcp.CallToolResult {
 func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("add_drawer",
 		mcp.WithDescription("File a verbatim memory (drawer) into a wing/room. Content over ~800 chars is chunked into multiple drawers; re-adding the same source is idempotent."),
-		mcp.WithString("wing", mcp.Required(), mcp.Description("Project namespace the memory belongs to.")),
+		mcp.WithString("wing", mcp.Description("Project namespace the memory belongs to. Optional when this MCP was registered for a project — then it defaults to that project's wing.")),
 		mcp.WithString("room", mcp.Required(), mcp.Description("Aspect within the wing, e.g. \"backend\" or \"decisions\".")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to remember — stored exactly, never summarised.")),
 		mcp.WithString("source_file", mcp.Description("Optional provenance of the content (a path or label).")),
 		mcp.WithString("content_date", mcp.Description("Optional date the memory is about (e.g. 2026-06-26).")),
+		mcp.WithArray("code_anchors", mcp.Description(
+			"Optional: pin this memory to the code it is about, as [{\"path\":\"internal/x/y.go\",\"snippet\":\"<verbatim lines>\",\"repo\":\"<optional label>\"}]. "+
+				"Paste the exact code, NOT a line number — line numbers move on every edit above them. When the snippet later "+
+				"disappears from the file, search marks this memory STALE instead of letting the next session act on a fact "+
+				"that stopped being true. Anchor whenever a memory explains a specific piece of code.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
 		}
-		wing, err := req.RequireString("wing")
+		wing, err := wingFor(ctx, req.GetString("wing", ""))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -110,13 +116,67 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		views := make([]drawerView, len(created))
-		for i, d := range created {
+		views := make([]drawerView, len(created.Drawers))
+		for i, d := range created.Drawers {
 			views[i] = toView(d)
 		}
-		return jsonResult(map[string]any{"ok": true, "chunks": len(created), "drawers": views}), nil
+		out := map[string]any{"ok": true, "chunks": len(created.Drawers), "drawers": views}
+
+		// Anchors pin the FIRST chunk: it is the parent handle for a multi-chunk
+		// write, and the one search returns as the memory's identity.
+		if anchors := parseAnchors(req.GetArguments()["code_anchors"]); len(anchors) > 0 && len(created.Drawers) > 0 {
+			n, err := drawers.AddAnchors(ctx, t.TeamID, created.Drawers[0].ID, anchors)
+			if err != nil {
+				// The memory is already filed; an anchor failure must not present
+				// as a failed write, so it is reported beside the success.
+				out["anchor_error"] = err.Error()
+			} else {
+				out["code_anchors"] = n
+			}
+		}
+		if created.PendingEmbedding {
+			// Say it in a field the caller can branch on AND in prose it will read
+			// out loud. A memory that is stored but not yet searchable looks
+			// identical to a healthy one from here, and the operator is the only
+			// one who can fix what caused it.
+			out["pending_embedding"] = true
+			out["warning"] = pendingEmbeddingWarning
+		}
+		return jsonResult(out), nil
 	})
 }
+
+// parseAnchors reads the code_anchors argument: a list of {path, snippet, repo}
+// objects. It is tolerant by design — an unparseable entry is skipped rather than
+// failing the write, because the memory itself is worth more than its anchor.
+func parseAnchors(raw any) []palace.AnchorInput {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]palace.AnchorInput, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := m["path"].(string)
+		snippet, _ := m["snippet"].(string)
+		repo, _ := m["repo"].(string)
+		if strings.TrimSpace(path) == "" || strings.TrimSpace(snippet) == "" {
+			continue
+		}
+		out = append(out, palace.AnchorInput{Repo: repo, Path: path, Snippet: snippet})
+	}
+	return out
+}
+
+// pendingEmbeddingWarning is the one sentence a caller must pass on when a write
+// was stored without its vector: the memory is safe, it is simply not findable
+// yet, and something outside this server has to be fixed for that to change.
+const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder could not be reached, " +
+	"so this memory is queued for background indexing. It will become searchable once the embedder is " +
+	"running again (check the Ollama server the agentsmemory server points at). Tell the user."
 
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
@@ -241,7 +301,28 @@ type searchHitView struct {
 	BM25        float64 `json:"bm25_score"`   // raw lexical BM25 component, for transparency
 	ClosetBoost float64 `json:"closet_boost"` // closet rank boost folded into score, for transparency
 	Distance    float64 `json:"distance"`     // raw cosine distance in [0,2], lower is closer
-	RerankScore float64 `json:"rerank_score"` // cross-encoder relevance when a reranker is configured; 0 = not reranked
+	// RerankScore is the cross-encoder's relevance for this hit, present only when
+	// a reranker is configured (omitted otherwise so an unconfigured deployment's
+	// results are byte-identical to before). It is reported rather than folded
+	// into score because the two are not on the same scale — an agent reading the
+	// page should be able to see which signal moved a hit.
+	RerankScore float64 `json:"rerank_score,omitempty"`
+	// Truncated says the content above is a snippet around the match, not the
+	// whole memory — fetch it with am_get_drawer when the snippet is not enough.
+	Truncated  bool `json:"content_truncated,omitempty"`
+	FullLength int  `json:"content_length,omitempty"`
+	// Anchors are the code this memory was written about, with the verdict of the
+	// last verification pass. Stale is the summary an agent should branch on.
+	Anchors []anchorView `json:"code_anchors,omitempty"`
+	Stale   bool         `json:"stale,omitempty"`
+}
+
+// anchorView is one code anchor as search reports it.
+type anchorView struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"` // unchecked | verified | drifted | missing
+	Line      int    `json:"line,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 // registerSearch: hybrid recall over a team's drawers — vector candidates
@@ -254,6 +335,10 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
+		mcp.WithNumber("snippet_chars", mcp.Description(
+			"How much of each hit's text to return, as a window centred on the match (default 400). "+
+				"Recall is paid for in your context window: a page of full-length memories costs several thousand tokens, "+
+				"and most of it is text you did not need. Pass 0 for whole memories, or fetch any single one in full with am_get_drawer.")),
 		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -276,11 +361,48 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
 		views := make([]searchHitView, len(hits))
+		ids := make([]string, len(hits))
 		for i, h := range hits {
 			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
+			ids[i] = h.Drawer.ID
+			if snippetChars > 0 {
+				// The window is centred on the query's own terms, so what comes
+				// back is the part that matched rather than the memory's heading.
+				if snippet := palace.Snippet(h.Drawer.Content, query, snippetChars); snippet != h.Drawer.Content {
+					views[i].Content = snippet
+					views[i].Truncated = true
+					views[i].FullLength = len([]rune(h.Drawer.Content))
+				}
+			}
 		}
-		return jsonResult(map[string]any{"hits": views, "count": len(views)}), nil
+		// Staleness travels WITH the memory. A recalled sentence about code that
+		// has since changed is the one failure mode a confident agent cannot catch
+		// on its own — it reads as knowledge either way.
+		stale := 0
+		if anchors, err := drawers.AnchorsForDrawers(ctx, t.TeamID, ids); err == nil {
+			for i := range views {
+				for _, a := range anchors[ids[i]] {
+					views[i].Anchors = append(views[i].Anchors, anchorView{
+						Path: a.Path, Status: a.Status, Line: a.Line, CheckedAt: a.CheckedAt,
+					})
+					if a.Stale() {
+						views[i].Stale = true
+					}
+				}
+				if views[i].Stale {
+					stale++
+				}
+			}
+		}
+		out := map[string]any{"hits": views, "count": len(views)}
+		if stale > 0 {
+			out["stale_hits"] = stale
+			out["warning"] = "some hits are marked STALE: the code they were written about has changed since. " +
+				"Re-read that code before acting on the memory, and re-file the memory if it is now wrong."
+		}
+		return jsonResult(out), nil
 	})
 }
 

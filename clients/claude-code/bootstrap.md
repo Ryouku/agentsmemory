@@ -96,6 +96,37 @@ UX/UI is held to the same bar as correctness: a feature that works but looks
 templated, breaks on mobile, drops focus states, or fights your framework's idioms
 is **not done**.
 
+## Step 0c — Know which wing you are in (one line, every session)
+
+A palace holds every project you work on. **Wings are the per-project partition**,
+and nothing derives one for you — so decide the wing before your first `am_*`
+write, and pass it on every write and on scoped recall. Without this, one
+project's decisions surface while you are working in another, and the memory that
+was supposed to ground you starts misleading you instead.
+
+Resolve it in this order, first hit wins:
+
+1. `$AGENTSMEMORY_WING`, if the launcher exported one.
+2. `wing=` in the nearest `.aiagentmemory` / `.aiagentmemory.local`, walking up
+   from the working directory (the same file `aiagentmemory load` reads).
+3. `wing_<repo>` from the git remote — `basename` of `git remote get-url origin`,
+   minus `.git`.
+4. `wing_<dir>` from the working directory's basename, when there is no remote.
+
+Normalize to lowercase, with `-`/`_` kept and anything else replaced by `_`. Emit
+`wing: wing_<name> ✓` so the choice is visible, and use that wing for
+`am_add_drawer`, `am_mine`, and the `wing` argument of `am_diary_write`.
+
+Two wings are deliberately different axes, and mixing them is the mistake to
+avoid: **`wing_<project>` is what a memory is about; `wing_<agent-name>` is who
+wrote it.** A diary entry may live in either — journal it in the project's wing
+when the work was project-specific, which is almost always. Cross-project threads
+are what `am_create_tunnel` is for.
+
+A wing that does not exist yet is not an error: it is created by the first write
+to it. On a fresh install every wing is missing, which is exactly when a "wrong
+palace" alarm would be wrong.
+
 ## Step 1 — Load memory (specs, code, why) — hard gate, do not skip
 
 All three sources are **MUST**, not "run if convenient." Fire the independent
@@ -120,8 +151,12 @@ calls in parallel where you can; each answers a different question.
     catalogue of every available tool. It is the server telling you how to use
     it, so it comes before you use it. Emit `skillset loaded ✓`.
   - **Then wake up** — call `am_status` to load the palace overview + AAAK spec.
-    It grounds you in identity and palace shape before task-specific recall. Emit
-    `palace woken ✓`.
+    It grounds you in identity and palace shape before task-specific recall: the
+    `workspace` block and `mode` (`local` = a server on this machine, `hosted` =
+    the SaaS) say WHICH palace answered, which is the only check that catches a
+    registration pointing at someone else's memory. A wing you expected but do
+    not see means nobody has written it yet — not that you are in the wrong
+    palace. Emit `palace woken ✓`.
   - **Then search** — call `am_search(<task>)` to recall past decisions,
     learnings, and rationale. This is the **only** source of cross-session *why*;
     don't reconstruct from code what memory already explains. Emit
@@ -225,7 +260,8 @@ Write back what this session produced so the next one starts ahead:
   stable `agent_name` so the diary threads across sessions.
 - **`am_kg_add`** — new durable facts as subject → predicate → object triples.
 - **`am_add_drawer`** — notable decisions or code, verbatim, in the right wing and
-  room.
+  room. The wing is the one you resolved in Step 0c; the room is the aspect
+  (`decisions`, `incidents`, `backend`, …).
 - **`am_create_tunnel`** — when this work connects to another project/domain, weave
   a cross-wing tunnel (check `am_find_tunnels` / `am_follow_tunnels` first so you
   reinforce, not duplicate).

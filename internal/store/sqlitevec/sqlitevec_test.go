@@ -39,6 +39,37 @@ func newTestStore(t *testing.T) *Store {
 	return New(gdb)
 }
 
+// TestSearchFilterNarrowsToPayload holds the brute-force backend to the same
+// contract as the index drivers: a filtered search returns only matching points,
+// and a point missing the filtered key never matches.
+func TestSearchFilterNarrowsToPayload(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const ns = "team1"
+
+	points := []store.Point{
+		{ID: "a", Vector: []float32{1, 0, 0}, Payload: map[string]any{"wing": "wing_one"}},
+		{ID: "b", Vector: []float32{0.9, 0.1, 0}, Payload: map[string]any{"wing": "wing_two"}},
+		{ID: "c", Vector: []float32{0.8, 0.2, 0}}, // no payload at all
+	}
+	if err := s.Upsert(ctx, ns, points); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	hits, err := s.Search(ctx, ns, []float32{1, 0, 0}, 5, store.Filter{"wing": "wing_two"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "b" {
+		t.Fatalf("want only b, got %d hit(s)", len(hits))
+	}
+
+	// A nil filter is unscoped, so every point comes back.
+	if hits, err = s.Search(ctx, ns, []float32{1, 0, 0}, 5, nil); err != nil || len(hits) != 3 {
+		t.Fatalf("unfiltered search: %d hit(s), err %v", len(hits), err)
+	}
+}
+
 func TestUpsertSearchRanking(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -53,7 +84,7 @@ func TestUpsertSearchRanking(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	hits, err := s.Search(ctx, ns, []float32{1, 0, 0}, 2)
+	hits, err := s.Search(ctx, ns, []float32{1, 0, 0}, 2, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -92,7 +123,7 @@ func TestUpsertReplacesByID(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("want 1 point after replace, got %d", len(all))
 	}
-	hits, err := s.Search(ctx, ns, []float32{0, 0, 1}, 1)
+	hits, err := s.Search(ctx, ns, []float32{0, 0, 1}, 1, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -143,7 +174,7 @@ func TestNamespaceIsolation(t *testing.T) {
 		t.Fatalf("team1 should hold exactly its own point, got %d", len(one))
 	}
 	// Same ID in team2 must be a distinct row, not an overwrite of team1's.
-	hits, err := s.Search(ctx, "team1", []float32{1, 0, 0}, 5)
+	hits, err := s.Search(ctx, "team1", []float32{1, 0, 0}, 5, nil)
 	if err != nil {
 		t.Fatalf("search team1: %v", err)
 	}

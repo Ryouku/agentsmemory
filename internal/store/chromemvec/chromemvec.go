@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 
@@ -33,6 +35,19 @@ var _ store.VectorStore = (*Index)(nil)
 // map[string]any, so the whole payload travels as one JSON string and is decoded
 // back on Search — the driver round-trips it verbatim, as the seam promises.
 const payloadKey = "_payload"
+
+// schemaVersion identifies the metadata layout this driver writes. Bumping it
+// makes New discard an index written by an older layout, which is safe precisely
+// because this index is derived: the vectors are durable in SQLite and the boot
+// reconcile replays them without re-embedding.
+//
+// v2 added the flat filter keys below; a v1 directory has payloads only, so a
+// filtered search against it would match nothing and silently return an empty
+// page — worse than the rebuild it now triggers instead.
+const schemaVersion = "2"
+
+// schemaFile records schemaVersion inside the index directory.
+const schemaFile = ".schema"
 
 // errPrecomputed rejects any attempt by chromem to embed text itself. Every
 // vector reaching this index was produced by our Ollama embedder and is already
@@ -65,11 +80,43 @@ type Index struct {
 // float32 vectors. A personal palace is small enough that the space is not worth
 // the CPU.
 func New(dir string) (*Index, error) {
+	if err := ensureSchema(dir); err != nil {
+		return nil, err
+	}
 	db, err := chromem.NewPersistentDB(dir, false)
 	if err != nil {
 		return nil, fmt.Errorf("open chromem db at %q: %w", dir, err)
 	}
 	return &Index{db: db}, nil
+}
+
+// ensureSchema discards an index directory written by an older metadata layout
+// and stamps the current one, so what is on disk always matches what this driver
+// expects to read. Discarding is the right move rather than migrating in place:
+// the index holds nothing the SQLite source of truth does not, so a rebuild costs
+// a replay of stored vectors and no embedding at all — while a stale layout costs
+// silently wrong search results.
+func ensureSchema(dir string) error {
+	stamp := filepath.Join(dir, schemaFile)
+	switch current, err := os.ReadFile(stamp); {
+	case err == nil && string(current) == schemaVersion:
+		return nil // already the layout we write
+	case err != nil && !os.IsNotExist(err):
+		return fmt.Errorf("read chromem schema stamp %q: %w", stamp, err)
+	}
+	// Either no stamp (a pre-v2 directory, or a fresh one) or a different
+	// version: start clean. RemoveAll on a missing directory is a no-op, so the
+	// fresh-install path costs one syscall and no special case.
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("discard stale chromem index at %q: %w", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create chromem index dir %q: %w", dir, err)
+	}
+	if err := os.WriteFile(stamp, []byte(schemaVersion), 0o644); err != nil {
+		return fmt.Errorf("write chromem schema stamp %q: %w", stamp, err)
+	}
+	return nil
 }
 
 // collection returns the namespace's collection, creating it on first use.
@@ -111,9 +158,21 @@ func (i *Index) Upsert(ctx context.Context, namespace string, points []store.Poi
 		if err != nil {
 			return fmt.Errorf("encode payload of %q: %w", p.ID, err)
 		}
+		// The payload travels twice, for two different jobs: once as JSON so it
+		// round-trips verbatim (values are map[string]any, chromem metadata is
+		// map[string]string), and once flattened into string keys so chromem's
+		// `where` can filter on them server-side. Only string values flatten —
+		// anything else has no meaningful equality match here, and the blob still
+		// carries it.
+		meta := map[string]string{payloadKey: string(payload)}
+		for k, v := range p.Payload {
+			if str, ok := v.(string); ok && k != payloadKey {
+				meta[k] = str
+			}
+		}
 		docs = append(docs, chromem.Document{
 			ID:        p.ID,
-			Metadata:  map[string]string{payloadKey: string(payload)},
+			Metadata:  meta,
 			Embedding: p.Vector,
 			// Content stays empty on purpose: the drawer text lives in SQLite,
 			// and a second copy here would double the index's memory for no
@@ -131,7 +190,7 @@ func (i *Index) Upsert(ctx context.Context, namespace string, points []store.Poi
 }
 
 // Search returns up to k nearest neighbours by cosine similarity, closest first.
-func (i *Index) Search(ctx context.Context, namespace string, vector []float32, k int) ([]store.Hit, error) {
+func (i *Index) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
 	if k <= 0 {
 		return nil, nil
 	}
@@ -150,7 +209,10 @@ func (i *Index) Search(ctx context.Context, namespace string, vector []float32, 
 	if k > n {
 		k = n
 	}
-	res, err := col.QueryEmbedding(ctx, vector, k, nil, nil)
+	// chromem compares k against the collection's TOTAL size, not the filtered
+	// subset, so the clamp above is still the right one — a filter simply yields
+	// fewer than k hits, which the seam already allows.
+	res, err := col.QueryEmbedding(ctx, vector, k, filter, nil)
 	if err != nil {
 		return nil, fmt.Errorf("chromem search %q: %w", namespace, err)
 	}

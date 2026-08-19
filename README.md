@@ -497,6 +497,43 @@ process binds `:8080` (a published port cannot reach a loopback-bound process),
 so it logs the non-loopback warning on boot; there, the published interface is
 the boundary, and the warning is expected.
 
+### Docker Compose (the full-quality stack)
+
+When recall quality matters more than dependency count, a second overlay swaps
+the in-process index for Qdrant and adds a cross-encoder in front of the results:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
+
+# switching an existing install: replay the stored vectors into Qdrant once.
+# Nothing is re-embedded — SQLite is the source of truth.
+docker compose -f docker-compose.yml -f docker-compose.full.yml run --rm agentsmemory sync
+```
+
+That is three services: the server, **Qdrant** as the search index, and a
+**cross-encoder** (`bge-reranker-v2-m3`, served by llama.cpp) that rescores the
+top 50 candidates of every search before the page is cut. The embedder scores a
+drawer against a query it never saw; the cross-encoder reads the pair together,
+which is the sharper judgement — and it only runs over what hybrid ranking
+already surfaced, so the cost is bounded per search rather than per palace. If it
+is down, search falls back to the fused vector+BM25 order instead of failing.
+
+If you have no Ollama at all, a third file adds it — and, unlike a profile,
+points the server at it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.full.yml \
+               -f docker-compose.ollama.yml up -d
+```
+
+It pulls the embedding model on first boot and reports healthy only once that
+model exists, so `up -d` really is the whole setup and nothing starts before it
+can embed. On macOS and Windows prefer a host install where you have one: a
+containerised Ollama cannot reach Metal and runs on CPU.
+
+Going back is dropping the second `-f` — the chromem index is still on the
+volume, and the server refills it from SQLite if it is not.
+
 **On Linux**, an override removes the Ollama friction entirely:
 
 ```bash

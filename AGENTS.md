@@ -28,21 +28,30 @@ write a line of code, confirm the `am_*` MCP tools are actually reachable:
    call. Do not conclude the tools are missing because the first call errored on
    its arguments.
    Likewise, a server that answers is not the right server: a workspace token
-   from another project still returns OK. Only step 4's wing check proves
+   from another project still returns OK. Only step 4's workspace check proves
    you're home.
 3. **Probe, don't assume.** Call `am_skillset` and then `am_status`. A non-error
    return from both means the tools are present and the workspace token is valid
    — for *some* workspace. That is not enough.
-4. **Verify the workspace identity.** `am_status` must list this repo's wing,
-   **`wing_agentmemories`**. If it doesn't, the MCP is scoped to the *wrong*
-   workspace — the usual cause is a global registration carrying another
-   project's token, which answers every probe happily. That is worse than a
-   connection error: you'd recall another project's decisions as if they were
-   this team's, and every write would land in the wrong palace. Treat a missing
-   `wing_agentmemories` exactly like an absent connection — stop and run the
-   absent path. Do not start the task, and do not write anything to the
-   wrong-scoped palace (no diary, no KG, no drawers — that's poisoning another
-   project).
+4. **Verify the workspace identity.** `am_status` names the workspace it is
+   scoped to: `mode` (`local` for a self-hosted server, `hosted` for the SaaS)
+   and a `workspace` block carrying its `slug` and `name`. **That** is what
+   proves you are home — a global registration carrying another project's token
+   answers every probe happily, and only the workspace it names tells you whose
+   palace you just opened. Working on your own machine expects
+   `mode: "local"`; a hosted session expects your team's workspace slug.
+
+   A workspace you do not recognise is worse than a connection error: you would
+   recall another project's decisions as if they were this team's, and every
+   write would land in the wrong palace. Stop, run the absent path, and write
+   nothing (no diary, no KG, no drawers — that's poisoning another project).
+
+   **A missing `wing_agentmemories` is NOT a wrong workspace.** A wing comes into
+   existence when something is first written to it, so on a fresh install the
+   wing this protocol tells you to create is necessarily absent — the very first
+   session in any repo would otherwise trip a gate that can only be satisfied by
+   violating it. Read an empty or missing wing as "first session here; my writes
+   will create it", say so in one line, and get on with the work.
 5. **Likewise for skills.** A skill missing from your harness's *local* list is
    usually **centralised**, not absent — `am_list_skills` is the catalogue,
    `am_load_skill(<name>)` fetches the body. Check it before you decide the team
@@ -54,9 +63,9 @@ with the work.
 
 **Absent or wrong workspace** — no `am_*` names in the tool list at all,
 `am_skillset` / `am_status` fail with a transport, auth, or connection error,
-or `am_status` returns a wing list without `wing_agentmemories` — → stop and
-run *[When the tools are absent](#when-the-tools-are-absent)*. Do not start the
-task.
+or `am_status` names a workspace that is not yours — → stop and run
+*[When the tools are absent](#when-the-tools-are-absent)*. Do not start the
+task. (An unfamiliar *wing* is not this case; an unfamiliar *workspace* is.)
 
 ---
 
@@ -169,8 +178,9 @@ Normal operation. Recall before you act, persist before you stop.
 **Recall, in this order:**
 
 1. `am_skillset` — the server's own wake-up playbook and live tool catalogue.
-2. `am_status` — team, palace shape, quota. This repo's wing is
-   **`wing_agentmemories`**.
+2. `am_status` — workspace identity (`mode` + `workspace`), palace shape, quota.
+   This repo's wing is **`wing_agentmemories`**; if it is not in the list yet,
+   this is the first session here and your first write creates it.
 3. `am_search(<task>)` — past decisions and rationale. This is the *only* source
    of cross-session *why*; don't reconstruct from code what memory explains.
 4. `am_list_skills` → `am_load_skill(<name>)` — the team's centralised

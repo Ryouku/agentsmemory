@@ -641,7 +641,8 @@ so re-running it without `--` args clears any previously recorded agent flags.
 
 On each turn end the hook reminds Claude to persist the session into team memory
 (`am_diary_write`, `am_kg_add`, `am_add_drawer`). Control it with
-`AGENTSMEMORY_STOP_HOOK`: `on` (default), `once` (first Stop only), or `off`.
+`AGENTSMEMORY_STOP_HOOK`: `once` (default — first Stop of a session only), `on`
+(every Stop), or `off`.
 
 ## Build from source
 

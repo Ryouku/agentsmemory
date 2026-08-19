@@ -28,11 +28,17 @@ services:
     # --addr :8080 binds every interface INSIDE the container, which is required
     # for a published port to reach it — the loopback default local mode uses on
     # a host would make the container unreachable. The boundary here is the ports
-    # entry below, which publishes to the host's loopback only. The server logs a
-    # non-loopback warning on boot because it cannot see that; in this file it is
-    # expected, not a misconfiguration. (Setting AGENTSMEMORY_LOCAL_TOKEN in
-    # .env.docker replaces that warning with a line confirming the token gate.)
+    # entry below, which publishes to the host's loopback only, and the process is
+    # told so by the environment block underneath. (Setting AGENTSMEMORY_LOCAL_TOKEN
+    # in .env.docker adds a line confirming the token gate.)
     command: ["serve", "--local", "--addr", ":8080", "--db", "/data/agentsmemory.db"]
+    environment:
+      # The ports entry below IS the boundary, and the process cannot see it from
+      # inside the container. Saying so here turns the boot-time exposure warning
+      # into one accurate line — a warning that fires on every boot of the default
+      # path is a warning operators learn to ignore. Remove this if you ever widen
+      # the publish beyond 127.0.0.1, so the real warning comes back.
+      AGENTSMEMORY_PUBLISHED_LOOPBACK: "1"
     ports:
       # 127.0.0.1: is load-bearing. /mcp is UNAUTHENTICATED in local mode, so
       # publishing as "8080:8080" would hand every device on your network full
@@ -59,33 +65,18 @@ services:
       # Docker Desktop already provides the name.
       - "host.docker.internal:host-gateway"
 
-  # Want Qdrant instead? It is the right call once the palace is large enough
-  # that an in-process index costs real memory, or when several machines must
-  # share one index. Uncomment this service and the qdrant-data volume, add
-  # `depends_on: [qdrant]` to the service above, then set VECTOR_BACKEND=qdrant
-  # and QDRANT_URL=http://qdrant:6333 in .env.docker.
+  # Want Qdrant, and a cross-encoder in front of the results? That is the right
+  # call once the palace is large enough that an in-process index costs real
+  # memory, when several machines share one index, or when recall precision is
+  # worth a couple of extra containers. It ships as an overlay rather than a
+  # commented-out block here, so it is one flag and not a diff:
   #
-  # depends_on is start ORDER, not readiness: on a cold first boot the server can
-  # win the race and exit with "ensure local vector namespace: ... connection
-  # refused". That is what restart: unless-stopped above is for — it comes up on
-  # the retry, and a single-user stack does not need a healthcheck.
+  #   docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
   #
-  # Vectors already written stay safe either way: SQLite is the source of truth,
-  # so after switching run `docker compose run --rm agentsmemory sync` to replay
-  # them into Qdrant without re-embedding.
-  #
-  # qdrant:
-  #   image: qdrant/qdrant:v1.15.0
-  #   restart: unless-stopped
-  #   volumes:
-  #     - qdrant-data:/qdrant/storage
-  #   ports:
-  #     # Loopback-only as well: this port is unauthenticated unless you set a
-  #     # Qdrant API key. Drop it entirely if you do not want the web UI at
-  #     # http://localhost:6333/dashboard — the server reaches Qdrant over the
-  #     # compose network either way.
-  #     - "127.0.0.1:6333:6333"
+  # Switching is safe in both directions: SQLite is the source of truth, so
+  # `docker compose ... run --rm agentsmemory sync` replays the stored vectors
+  # into Qdrant without re-embedding, and dropping the overlay falls back to the
+  # chromem index still sitting on the volume.
 
 volumes:
   agentsmemory-data:
-  # qdrant-data:

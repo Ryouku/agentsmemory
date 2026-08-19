@@ -26,7 +26,7 @@ const (
 // block. It returns true if it wrote a change, false if the block was already
 // present and current.
 //
-// This mirrors ensureStopHook's contract for the hooks JSON: an append/merge that
+// This mirrors ensureHook's contract for the hooks JSON: an append/merge that
 // is safe to re-run and never clobbers a user's hand-written file. We use a
 // managed marker block (rather than the whole file) because the memory file is
 // the user's own — a global install must add our section, not overwrite their
@@ -60,7 +60,7 @@ func ensureManagedBlock(path, body string) (bool, error) {
 	case beginIdx >= 0 || endIdx >= 0:
 		// Exactly one marker, or an END before a BEGIN: the block is corrupt or was
 		// hand-edited. Refuse to guess where our region is — overwriting the wrong
-		// span would be worse than failing loudly (same stance as ensureStopHook on
+		// span would be worse than failing loudly (same stance as ensureHook on
 		// malformed JSON).
 		return false, fmt.Errorf("unbalanced agentsmemory markers in %s: edit or remove the block manually, then re-run", path)
 	case existing == "":
@@ -87,7 +87,7 @@ func ensureManagedBlock(path, body string) (bool, error) {
 	}
 
 	// Back up the original bytes before modifying an existing file, mirroring
-	// ensureStopHook. Nanosecond precision avoids clobbering an earlier backup on a
+	// ensureHook. Nanosecond precision avoids clobbering an earlier backup on a
 	// same-second re-run. A fresh/empty file has nothing worth backing up.
 	if len(raw) > 0 {
 		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
