@@ -193,6 +193,12 @@ Two rules follow, and both are enforced mechanically rather than trusted:
   program reads no such variable. On its first run it found a shipped compose
   file advertising a rerank pool of 20 that the server had never read.
 
+- **A setting is wired only when both halves exist.** `TestEveryConfigFieldIsPopulatedAndRead`
+  fails when a `config.Config` field is never assigned from the command line (a
+  setting an operator cannot set) or never read by anything (a setting that
+  changes nothing when they do). `TestEveryFlagIsRead` fails when a flag is
+  declared and never consulted — `--help` is documentation like any other.
+
 The same principle covers the gates already in the tree: `internal/doclint`
 (a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`
 (an eval arm that no code path registers appears in no table, silently), and
