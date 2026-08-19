@@ -501,13 +501,28 @@ func (r *Repo) ListRandom(ctx context.Context, teamID, wing string, limit int) (
 	if wing != "" {
 		q = q.Where("wing = ?", wing)
 	}
+	// Over-fetch, then keep at most one drawer per source file. A mined session
+	// arrives as many parts sharing one source, and two eval cases seeded from
+	// the same session are not independent observations — the bootstrap treats
+	// them as if they were, which narrows every interval it prints. Drawers with
+	// no source (hand-filed) are each their own cluster.
 	var rows []drawerRow
-	if err := q.Order("RANDOM()").Limit(limit).Find(&rows).Error; err != nil {
+	if err := q.Order("RANDOM()").Limit(limit * 5).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := make([]Drawer, 0, len(rows))
+	seen := make(map[string]bool, limit)
+	out := make([]Drawer, 0, limit)
 	for _, row := range rows {
+		if row.SourceFile != "" {
+			if seen[row.SourceFile] {
+				continue
+			}
+			seen[row.SourceFile] = true
+		}
 		out = append(out, fromRow(row))
+		if len(out) == limit {
+			break
+		}
 	}
 	return out, nil
 }

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // Retrieval evaluation: does recall actually return the memory that answers the
@@ -401,7 +403,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if gold.ParentID != "" {
 				goldMemory = gold.ParentID
 			}
-		case errors.Is(err, ErrNotFound):
+		case errors.Is(err, gorm.ErrRecordNotFound):
 			// A saved case can outlive its drawer: re-mining a source purges the
 			// old ids and mints new ones. Swallowing that scored the dead case as
 			// an all-arm retrieval miss — and the pool diagnosis then told the

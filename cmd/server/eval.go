@@ -201,6 +201,41 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
+// verifyAbsent checks a generated "absent" question against the whole corpus,
+// not just the note it was seeded from. The generator only promises the seed
+// note cannot answer it; if any other memory can, the case would score a
+// correct retrieval as a false positive, and every gate calibrated on such
+// cases would be calibrated on invalid labels. Returns the id of a drawer that
+// answers the question, or "" when the top hits all fail the answer check.
+func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question string, gen *questionGen) (string, error) {
+	// No distance gate: absence must be checked broadly. A hit the production
+	// gate would drop can still prove the knowledge exists in the palace.
+	hits, err := svc.drawers.Search(ctx, teamID, palace.SearchQuery{
+		Query: question, Wing: wing, Limit: 3, SkipTelemetry: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	checker := &questionGen{
+		url: gen.url, model: gen.model, apiKey: gen.apiKey,
+		prompt: evalPromptAnswerCheck, http: gen.http,
+	}
+	for _, h := range hits {
+		// The query-centred snippet, not the head of the note: the answer to the
+		// question sits near the query terms, and the head of a long mined part
+		// is usually about something else entirely.
+		excerpt := palace.Snippet(h.Drawer.Content, question, 900)
+		reply, err := checker.ask(ctx, "QUESTION: "+question+"\n\nNOTE:\n"+excerpt)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES") {
+			return h.Drawer.ID, nil
+		}
+	}
+	return "", nil
+}
+
 func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
 	path := c.String("cases")
 	if path != "" {
@@ -309,6 +344,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			// There is no gold for a question the palace should not answer; what
 			// gets measured is whether it returns something confident anyway.
 			expect = ""
+			// The seed note not answering it is not enough — verify the rest of
+			// the corpus cannot either, or drop the case.
+			if answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen); verr != nil {
+				fmt.Fprintf(out, "  [%2d/%2d] kept UNVERIFIED (absence check failed: %v)\n", i+1, len(drawers), verr)
+			} else if answeredBy != "" {
+				fmt.Fprintf(out, "  [%2d/%2d] rejected: memory %s answers it, so it is not absent\n", i+1, len(drawers), answeredBy)
+				continue
+			}
 		}
 		cases = append(cases, palace.EvalCase{Query: q, Expect: expect, Wing: c.String("wing"), Category: category})
 	}
@@ -461,6 +504,16 @@ NOTE:
 
 QUESTION:`
 
+// evalPromptAnswerCheck asks whether a note answers a question. It exists
+// because "absent" used to mean absent from the one sampled note, while the
+// evaluator scored it as absent from the whole palace — another memory could
+// answer the question perfectly, and the case would count a correct retrieval
+// as a false positive.
+const evalPromptAnswerCheck = `Does the NOTE below contain the answer to the QUESTION?
+Reply with exactly one word: YES or NO.
+
+%s`
+
 const evalPromptLiteral = `You are writing an evaluation question for a memory search system.
 
 Below is a note an engineer wrote. Write ONE search query that should find this
@@ -603,9 +656,11 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		fmt.Fprintf(out, "⚠ %s\n", w)
 	}
 
-	// The baseline every arm is compared against is the best MRR in the table;
-	// "≈ best" marks arms whose PAIRED difference from it includes zero — the
-	// data cannot tell them apart, and the table refuses to imply otherwise.
+	// The baseline every arm is compared against is the best MRR in the table.
+	// A PAIRED difference that includes zero is reported as INCONCLUSIVE, not as
+	// equivalence: the winner was itself picked from this data (winner's curse),
+	// and a CI spanning zero means the data cannot rule out a difference — it
+	// never means one was ruled out. The table says exactly that and no more.
 	best := 0
 	for i, m := range report.Arms {
 		if m.MRR > report.Arms[best].MRR {
@@ -625,7 +680,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			verdict = "BEST"
 		case len(m.Ranks) == len(report.Arms[best].Ranks):
 			if delta := palace.PairedDelta(m.Ranks, report.Arms[best].Ranks); delta.Contains(0) {
-				verdict = "≈ best (difference within noise)"
+				verdict = "inconclusive vs best (CI spans zero)"
 			} else {
 				verdict = fmt.Sprintf("worse by %.2f–%.2f", -delta.Hi, -delta.Lo)
 			}
@@ -633,7 +688,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
 			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, ci, m.NotFound, verdict)
 	}
-	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap); at small n most arms tie, and that IS the finding\n",
+	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap). The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner; 'inconclusive' means exactly that, never equivalence\n",
 		len(report.Arms[0].Ranks))
 
 	printPoolDiagnosis(out, report)
