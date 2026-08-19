@@ -126,6 +126,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		RerankPool:       c.Int("rerank-pool"),
 		BM25Weight:       strings.TrimSpace(c.String("bm25-weight")),
 		EmbedBackend:     strings.TrimSpace(c.String("embed-backend")),
+		SearchScope:      strings.TrimSpace(c.String("search-scope")),
 		EmbedURL:         strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:      c.Float("closet-boost"),
 		Fusion:           strings.TrimSpace(c.String("fusion")),
@@ -179,6 +180,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
 		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1"},
 		&cli.StringFlag{Name: "embed-backend", Sources: cli.EnvVars("EMBED_BACKEND"), Value: def.EmbedBackend, Usage: "what embeds text: ollama (default) or tei (text-embeddings-inference — the only path to bge-m3's sparse and multi-vector output)"},
+		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
@@ -274,7 +276,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	// per request, turning the Bearer token into a tenant on the context the
 	// tools read — this is the only place auth touches the transport. Tools
 	// meter each call against the workspace's monthly cap via usageSvc.
-	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Workspaces: svc.tenants, Local: cfg.Local})
+	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Workspaces: svc.tenants, Local: cfg.Local, ScopeSearchToWing: !strings.EqualFold(strings.TrimSpace(cfg.SearchScope), "workspace")})
 
 	// OAuth 2.1 authorization server (stateless), validating client credentials
 	// against our own api_keys (the merged authcounterapi role). It guards /mcp

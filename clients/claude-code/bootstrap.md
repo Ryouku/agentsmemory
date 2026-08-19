@@ -99,19 +99,33 @@ is **not done**.
 ## Step 0c — Know which wing you are in (one line, every session)
 
 A palace holds every project you work on. **Wings are the per-project partition**,
-and nothing derives one for you — so decide the wing before your first `am_*`
-write, and pass it on every write and on scoped recall. Without this, one
-project's decisions surface while you are working in another, and the memory that
-was supposed to ground you starts misleading you instead.
+so decide the wing before your first `am_*` write, and pass it on every write.
+Without this, one project's decisions surface while you are working in another,
+and the memory that was supposed to ground you starts misleading you instead.
 
 Resolve it in this order, first hit wins:
 
+0. **What the server says.** `am_status` reports the wing this MCP registration
+   was created for. It wins over everything below, because it is the wing the
+   server itself uses for a write that names none — a derived wing that
+   disagrees with it does not move where your memories land, it only makes your
+   report of them wrong. Two live sessions resolved `wing_db-cluster` and
+   `wing_ptx-monorepo` from their git remotes while the registration said
+   `wing_playtrix`, where 1,964 drawers already were and the six-drawer wings
+   were not.
 1. `$AGENTSMEMORY_WING`, if the launcher exported one.
 2. `wing=` in the nearest `.aiagentmemory` / `.aiagentmemory.local`, walking up
    from the working directory (the same file `aiagentmemory load` reads).
 3. `wing_<repo>` from the git remote — `basename` of `git remote get-url origin`,
    minus `.git`.
 4. `wing_<dir>` from the working directory's basename, when there is no remote.
+
+Rungs 1-4 are what a registration WITHOUT a wing falls back to, and most are.
+When a lower rung disagrees with rung 0, say so in one line rather than silently
+picking one: it means the repository this session is in and the registration it
+speaks through describe different projects, and only a human knows which is
+right. Do not scatter memories across both while waiting for the answer — file
+to rung 0 and flag it.
 
 Normalize to lowercase, with `-`/`_` kept and anything else replaced by `_`. Emit
 `wing: wing_<name> ✓` so the choice is visible, and use that wing for

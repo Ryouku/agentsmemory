@@ -16,13 +16,13 @@ import (
 // server. Every handler shares the admit() preamble (auth + monthly metering) and
 // is scoped to the resolved tenant's TeamID, so a token can only ever touch its
 // own workspace's memories.
-func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	registerAddDrawer(reg, drawers, usageSvc)
 	registerGetDrawer(reg, drawers, usageSvc)
 	registerUpdateDrawer(reg, drawers, usageSvc)
 	registerDeleteDrawer(reg, drawers, usageSvc)
 	registerListDrawers(reg, drawers, usageSvc)
-	registerSearch(reg, drawers, usageSvc)
+	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
 	registerListWings(reg, drawers, usageSvc)
 	registerListRooms(reg, drawers, usageSvc)
@@ -327,12 +327,12 @@ type anchorView struct {
 
 // registerSearch: hybrid recall over a team's drawers — vector candidates
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
-func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max results, 1-100 (default 5).")),
-		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
+		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for, so one project's memories do not answer another's; pass a wing explicitly to look elsewhere, or run the server with SEARCH_SCOPE=workspace to search everything by default.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
 		mcp.WithNumber("snippet_chars", mcp.Description(
@@ -350,9 +350,13 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		hits, err := drawers.Search(ctx, t.TeamID, palace.SearchQuery{
 			Query:       query,
-			Wing:        req.GetString("wing", ""),
+			Wing:        wing,
 			Room:        req.GetString("room", ""),
 			Limit:       req.GetInt("limit", palace.DefaultSearchLimit),
 			MaxDistance: req.GetFloat("max_distance", palace.DefaultMaxDistance),
