@@ -1,0 +1,195 @@
+# ADR-004: Justify the knowledge graph on supersession, not on recall
+
+**Status:** Proposed
+**Date:** 2026-08-19
+**Owner:** Zy (with Mindaugas as upstream maintainer)
+**Spec:** None — no spec stage; grounded in eval measurements and cited research.
+**Cross-references:** `internal/palace/kg.go` (validity windows), `internal/palace/eval.go:105` (`CatTemporal`), `internal/palace/eval.go:562` (`ArmProduction`), `internal/palace/eval.go:772` (`OlderNeighbor`), `internal/palace/evalstats.go` (intervals), `cmd/server/eval.go:209` (`generateTemporalCases`), `cmd/server/eval.go:1006` (`printPoolDiagnosis`), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/BACKLOG.md`
+
+## Context
+
+The palace holds ~65 triples against ~5,020 drawers. The graph is built, its five tools are wired, and `kg-extract` exists to fill it from mined prose. What is missing is a reason to spend the days that filling it would cost — and the obvious reason, "it will improve recall", survives contact with neither our architecture nor our sample size.
+
+Architecture first: **nothing in the retrieval path reads the graph.** The KG types are referenced only by `internal/palace/kg.go`, `kgextract.go`, `internal/mcpserver/kg.go`, the importer/exporter and the CLI inspector. `Service.Search` goes embed → vector search → fusion → closet boost → rerank and never touches a triple. Populating the graph therefore cannot move MRR by a single position. A recall gain would have to come from wiring that does not exist yet, built in advance on the strength of published numbers.
+
+Those numbers are small. HippoRAG 2 reports +1.4 F1 on single-hop; mem0's graph variant about 2%. Our paired-bootstrap intervals at n=40 are far wider than that, so an effect of that size is unresolvable here — we would build the wiring, run the eval, read a difference indistinguishable from noise, and call it whatever we already believed. That is the `max_distance` failure ADR-001 exists to correct, in a new costume: a plausible number, inherited from someone else's corpus, never measured on ours.
+
+The job the graph is actually shaped for is **supersession**. `KGInvalidate` ends a fact by setting `valid_to` without deleting the row, so the graph is the only store here that can say "this was true and is not any more". Drawers carry a `content_date` and no way to be wrong: a memory and its correction sit side by side, both retrievable, both looking equally true.
+
+Our headline metric cannot see that at all. MRR scores where the *right* drawer landed. It never asks whether that drawer is still true, and it says nothing about where the superseded version landed — a run that puts the correction at rank 1 and the stale version at rank 2 scores identically to a run where the stale version is not in the page, and those are different products, because the agent reads the whole page rather than glancing at it. `docs/adr/BACKLOG.md` records the general form of this: when a claim does not fit the instrument, extend the instrument.
+
+The intuitive fix is already ruled out by someone who tried it. The Supersede benchmark (arXiv 2606.27472) found that retrieving MORE documents did not help — 28% → 28%, over 25 questions. An independent review re-checked that citation and it holds; the n stays visible here because 25 questions rule out a large effect and nothing finer. A bigger page does not rescue a system that cannot tell current from stale; it puts the stale memory in front of the agent more often, not less.
+
+So the question this ADR settles is not "should we have a knowledge graph" — we have one. It is "what measurement would tell us the graph is worth feeding", and the answer has to be written down before the number is known.
+
+## Existing Primitives Audit
+
+- **`palace.CatTemporal`** (`internal/palace/eval.go:105`) — the eval already separates "a fact was later corrected" from single-hop. Reused unchanged as the population under test; what changes is what gets measured on it.
+- **`Service.OlderNeighbor`** (`internal/palace/eval.go:772`) — already arranges the adversarial pair: the semantically nearest, strictly older, different-source drawer, wing-scoped. Reshaped rather than replaced — it gains a distance ceiling and a verification step, because "nearest older neighbour" is not the same claim as "the superseded version of this fact".
+- **`generateTemporalCases`** (`cmd/server/eval.go:209`) — finds the pair before spending a generation call, and already prints both dates so a human can sanity-check the labelling. Reused; extended to keep sampling until the case floor is met and to record its own yield.
+- **`verifyAbsent` / `evalPromptAnswerCheck`** (`cmd/server/eval.go:390`) — the precedent for having a model verify a generated case before it counts. Reused in shape, not in guarantees: it checks the top 3 hits only, and when the judge itself errors it prints `kept UNVERIFIED` and keeps the case (`cmd/server/eval.go:539`). That is defensible where a label only shifts a distribution. It is not defensible here, because the verified count is what the gate's floor is checked against — so pair verification drops the pair on a judge error and counts it as a rejection.
+- **`EvalReport.PoolRanks`** — the "was it even reachable" discipline, recorded once per CASE from the dense channel's own ordering rather than per arm. Reused as the vacuity rule and, deliberately, at the same granularity: a distractor outside that pool cannot mislead any arm that re-orders it, so a pair carrying one measures nothing. The first draft read each arm's rank of 0 as the same fact, which is wrong for two of them — see Corrections after review.
+- **`printPoolDiagnosis`** (`cmd/server/eval.go:1006`) — the precedent for refusing to average arms whose misses mean different things: it already excludes `ArmContextual` from the pool diagnosis because that arm retrieves from its own capped index, and folding it in once steered an operator toward the wrong knob. Reused as the rule for which arms the gate may read.
+- **`PairedDelta` / `BootstrapMRR`** (`internal/palace/evalstats.go`) — the paired bootstrap. `PairedDelta` is reused unchanged for the MRR non-inferiority check, which is what it is for: every arm answers the same cases, so the per-case difference cancels the question's difficulty. `BootstrapMRR` is NOT reused for the supersession rate — a proportion resampled by percentile prints a zero-width interval at 0 and at 1, which are the values this gate is most likely to meet.
+- **`KGAdd` / `KGInvalidate` / `KGQuery`** with `valid_from`/`valid_to` (`internal/palace/kg.go`) — the supersession primitive itself. Untouched here: it is the thing being judged, not the thing being built.
+
+## Decision
+
+Harden the supersession measurement first and make it the knowledge graph's acceptance criterion. Nothing about the graph is populated, wired or changed until that measurement exists and has spoken. Five parts, and everything the verdict turns on — the bar, the arm it is read from, the interval rule, the case floor and the non-inferiority margin — is written down before any of the numbers are known.
+
+**A distractor-aware metric, with its population stated per arm.** A temporal case grows a `Distractor` — the superseded drawer `OlderNeighbor` already finds and then throws away — and every arm records where that drawer landed as well as where the gold landed. That is three quantities, not one, because the first draft collapsed them into a single rank and got the vacuity rule wrong:
+
+- **Pool presence is a property of the CASE, not of an arm — but only of the arms that share the pool.** The distractor's position in the dense-ordered shared pool is recorded once per case, exactly as `PoolRanks` records the gold's. A distractor that never enters that pool is **vacuous** for every arm that re-orders it: none of them could have been misled by a candidate they never saw. Those cases leave the pool-scoped rates and the case floor, and two such arms may rank a distractor differently but cannot disagree about whether it was retrievable.
+
+  The exclusion stops there, and this is the same conflation one level down. `ArmProduction` nominates its own candidates — `Search` fetches `limit * hybridCandidateMultiplier`, raised to `rerankPool` when a reranker is configured, so 50 at the defaults (`internal/palace/service.go:649`) — and `ArmContextual` retrieves from its own capped index. A case that is vacuous at `--pool 20` (the size `docs/adr/BACKLOG.md` records for this corpus) can be one where production put the stale drawer on the page. Dropping it from production's row would hide exactly the failure that row exists to show, so the page-scoped and own-index rows are computed over ALL verified pairs and print their own denominator beside the pool-scoped one. Vacuity is a fact about a pool, and the gate's `--pool` therefore rides in the gate's printed provenance: the same case file yields a different floor count at 20 and at 50.
+- **A rank inside an arm's ordering does not mean the same thing for every arm.** Most arms re-order the one shared pool, so a rank of 0 there does mean "outside the pool". `ArmProduction` does not: it calls `Search` with `Limit: DefaultSearchLimit` (5) and the production distance gate, and is scored over the page that comes back (`internal/palace/eval.go:562`), so its 0 collapses three different facts — below the page, cut by `MaxDistance`, or never in the pool. `ArmContextual` retrieves from its own namespace entirely, so its 0 means "outside its own capped index". Each arm therefore carries a scope — pool, page or own-index — the report prints it, and the gate reads pool-scoped arms only. The repo already draws this line once, in `printPoolDiagnosis` (`cmd/server/eval.go:1006`); this ADR's first draft did not draw it at all.
+- **Whether the correction was reachable at all is its own outcome.** A case where the stale drawer is retrieved and the gold is not is the worst result available — the agent reads the superseded version and never meets the correction — and the obvious test, "distractor ranked above gold", scores it as a *success*, because the miss sentinel is 0 and 0 sorts below every real rank. It gets its own count, `CurrentUnreachable`, and counts as a failure in the headline rate. It is not a corner case: the eval's own ceiling line puts the gold inside the candidate pool for 98% of cases but inside a five-result page for 92%, so on the same corpus a page-scoped arm carries roughly four times as many unreachable-correction cases as a pool-scoped one — another reason their rates are not one measurement.
+
+The gate metric is **stale-above-current**: the share of verified, non-vacuous pairs where the superseded drawer is retrieved and its correction is either behind it or missing. The broader **stale-in-page** — the superseded drawer at rank 5 or better — is reported beside it and deliberately not gated on: out-ranking the stale version is what a ranking system can be asked to do, while removing it from the page is page composition — a different fix, already deferred from ADR-001 as contradiction reporting.
+
+**Honest pairs.** The nearest-older-different-source rule can return a drawer that is merely the least distant thing that happens to be older, which is topic drift wearing a supersession label. Pairs therefore gain a distance ceiling and a generator-judged check that the older drawer records an earlier state of the *same* fact — the discipline `verifyAbsent` already applies to absent cases, with one deliberate divergence: `verifyAbsent` keeps a case when the judge itself errors, and a pair whose judge errored is dropped and counted as a rejection, because here the verified count is the quantity the gate's floor is checked against. The verification record travels with the case file and is read back whole: `readCases` today skips the provenance line and lets `encoding/json` drop any field it does not recognise, which would let an unhardened file pass the gate as a hardened one.
+
+**Its own line in the report, never the average.** Temporal cases leave the headline arm table and get a supersession table of their own. Averaging them in is exactly how this failure disappears: a dozen temporal cases against forty single-hop ones lets a system that always prefers the stale version still show a healthy headline.
+
+**A gate whose arm and whose interval are both fixed in advance.** `eval --supersession-gate` reads **one arm, named by identity before any number is known** — the pool-scoped reconstruction of production ranking, today `ArmReranked` (`hybrid+closet+rerank`), held in a constant that must be changed in the same commit that changes production ranking. The first draft gated the *best-performing* arm, the lowest stale-above rate anywhere in the table. A minimum over a dozen arms is biased low by construction, and this repo's own eval already prints the warning under its MRR table: "The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner". Gating on it would have let the graph be refused by whichever arm got lucky.
+
+The interval is a **Wilson score interval**, not the percentile bootstrap the MRR table uses. Stale-above is a binomial proportion, and `BootstrapMRR`'s percentile method degenerates exactly where the decision is most consequential: with zero stale cases every resample is zero, so the interval prints `[0.00–0.00]` and eight pairs would declare the graph unnecessary with no uncertainty at all. Wilson on 0 of 8 is `[0.00–0.32]`, which straddles the bar — the truth. The comparison is against a fixed bar of **0.20**:
+
+- **justified** — the interval's lower bound clears the bar: the ordering production actually ships prefers a stale memory on more than one recall in five, and no cheaper ranking fix closed it. Populating and wiring the graph is authorised, as its own ADR.
+- **not justified** — the interval's upper bound is below the bar: ranking already prefers corrections often enough that a graph read on every query does not pay. `am_kg_invalidate` stays a write-path nicety and `kg-extract` stays unrun at scale.
+- **unresolved** — the interval straddles the bar, *or* the two defensible treatments of an unreachable correction disagree. The rate is computed twice — once counting unreachable-correction cases as failures, once over the cases where that arm retrieved the correction at all — and when those land on different verdicts the command prints both and resolves nothing. This third value is the point of the design, as `unknown` is in ADR-001: the honest answer to "we cannot tell yet" is more cases, not a decision.
+
+Below **30 verified, non-vacuous pairs** the gate refuses to print a verdict at all and names the cause. The first draft justified that floor by claiming every interval straddles the bar below it. That is false, and switching to Wilson makes it obvious: 8 stale cases in 20 gives `[0.22–0.61]` and would read `justified` on twenty pairs. The real reason to hold the floor is that a verdict that size turns on a single label — at n=20 one case is worth 5 points and flips 7/20 (unresolved) to 8/20 (justified) — and our pairs come from a generator and a judge whose own accuracy nobody has measured. At n=30 a case is worth 3.3 points, `not justified` needs at most 1 stale case in 30 and `justified` at least 11. That is still one case from each boundary, so the command prints how many case-flips the verdict sits from the nearest boundary beside the verdict itself, rather than letting a one-label margin read as a decision.
+
+Why 0.20, and why here: it is a cost judgement recorded before the number is known, not a derived optimum. Feeding the graph means running `kg-extract` across ~5,020 drawers, wiring a graph read into the hot recall path, and keeping the graph fresh as memories are filed. For that to pay, the failure it fixes has to be one an agent meets regularly; below one stale answer in five recalls of a corrected fact, a cheaper intervention or none at all is the better trade. The number lives in this ADR and in a constant whose doc comment cites it, so that it cannot be moved after the measurement.
+
+**The cheap fix is the null, and it has to earn the right to be one.** The eval gains a recency arm — the production fused ordering with a `content_date` preference, its band swept the way `bm25Sweep` and `rerankSweep` already are rather than picked by hand. An acceptance criterion that never asks "is a graph the cheapest thing that closes this gap" is not a criterion. The arm is eval-only and changes no production ranking. But a sweep is a set of bands and the veto takes the best of them, so two conditions attach before any band may stand for "the cheap fix already closed it":
+
+- **Selection-aware interval.** The band's Wilson interval is computed at a family-wise level, α/k over the k pre-registered bands, so taking a minimum over the sweep cannot manufacture a verdict. The correction is not prohibitive: with four bands, 0 stale cases in 30 gives `[0.00–0.17]` and still clears the bar. It bites on a band that only just cleared, which is the band most likely to have cleared by luck.
+- **Non-inferiority on the non-temporal population.** The band's paired-bootstrap MRR delta against the gated arm, over the headline cases, must have a lower bound above **−0.05**. Without this a recency prior could win the supersession metric by ordering the palace by date, destroy ordinary recall, and veto the graph while being unshippable.
+
+That margin is set by the instrument, not by the loss we would accept: at n=40 the paired interval is not much narrower than the 0.05 MRR gaps this repo has already mistaken for signal, so a band losing less than 0.05 counts as free when it may not be. The gate prints the measured delta beside the verdict so the cost is read rather than assumed, and a band whose non-inferiority interval is too wide to decide is reported as *unresolved on cost* and does not veto. If a date preference closes the gap on those terms, the graph is not what supersession needed, and the follow-on decision is about ranking.
+
+**If the corpus cannot supply the floor**, the finding is that supersession is unmeasurable here and the graph stays unjustified. The response is more dated corrections in the palace — never a smaller floor, a looser pair rule, or a bar lowered until the gate fires. Moving the bar to reach a verdict would reproduce precisely the unfalsifiability this ADR exists to prevent.
+
+## Corrections after review
+
+An independent read-only review of this ADR — before a line of code was written — found four claims that do not survive contact with `internal/palace/eval.go` and `evalstats.go`. They are recorded here rather than edited away, because a rationale that quietly changes is exactly the failure this ADR exists to prevent. The experiment survived all four: the pairs, the arms and the tasks are the same work — what changed is how their output is read, and one place where nothing was read at all.
+
+- **"A distractor rank of 0 means the stale drawer was outside the pool, so the pair is vacuous."** True for the arms that re-order the shared pool, false for the two that do not: `ArmProduction` is scored over the ≤5-result page `Search` returns after the distance gate, and `ArmContextual` retrieves from its own index. Replaced by a case-level pool-presence record for vacuity plus a per-arm scope, with the gate reading pool-scoped arms only. The replacement had to be scoped twice, because the same conflation reappears one level down: the vacuity exclusion applies to pool-scoped rates alone, since production nominates its own 50 candidates and a pair vacuous at `--pool 20` can be one where production put the stale drawer on the page.
+- **"The gate judges the best-performing arm — the one least fooled."** A minimum over a dozen arms is biased low by construction, and a recency arm could have won that minimum by wrecking ordinary recall — vetoing the graph while being unshippable. Replaced by an arm pre-registered by identity, a family-wise interval for the swept recency bands, and a non-inferiority condition on the non-temporal cases before any band may veto.
+- **"Reuse the paired bootstrap for the interval on the rate; the pairing argument is identical."** It is not. A rate is a binomial proportion, and the percentile bootstrap collapses to zero width at 0 and at 1 — the values most likely to appear here. Replaced by Wilson; the paired bootstrap keeps the MRR deltas, which is the job it was written for.
+- **"Below 30 pairs every interval straddles the bar."** False — 8 of 20 reads `justified` under Wilson. The floor stands, but on the honest reason: verdict stability against a single mislabelled pair. The command now prints how far the verdict sits from flipping.
+
+A fifth gap was structural rather than a wrong claim: nothing said what happens when the stale drawer is retrieved and its correction is not. The naive comparison scored that as a success. It is now `CurrentUnreachable`, counted as a failure and reported on its own.
+
+## Alternatives Considered
+
+- **Populate the graph now and measure afterwards:** the default path, and the one we were on. Rejected on architecture rather than taste — no retrieval code path reads a triple, so population alone cannot move any number in the eval, and "measure afterwards" means building the wiring first and then reading a difference we have no power to resolve.
+- **Justify the graph on the published recall gains** (HippoRAG 2 +1.4 F1 single-hop, mem0's graph variant ~2%): the normal industry argument. Rejected because both effects sit inside our paired-bootstrap interval at n=40; adopting them is deciding on someone else's corpus and calling it evidence.
+- **Retrieve a bigger page so the correction comes along too:** the one-line fix. Rejected on the Supersede benchmark's own result (28% → 28% with more documents, n=25) and on the mechanism — a bigger page makes the stale memory more likely to be read, not less.
+- **Consolidate superseded memories into one current summary:** the tidy answer. Rejected on two measurements — a controlled factorial found raw chunked storage matched or beat LLM fact-extraction and LLM episode-summarisation (77.9 vs 72.2 vs 70.1), and LongMemEval's summary-as-key ablation costs 0.134 Recall@5 against raw-value indexing (its concatenated variant, which keeps the raw text, reports +9.4% instead). Both are recall results, and `docs/adr/BACKLOG.md` records why that framing flatters raw text — noted so the rejection is read for what it is.
+- **Score supersession with the MRR we already compute on `CatTemporal`:** free, today. Rejected because MRR moves only with the gold's rank: a run with the stale version at rank 2 under its correction and a run without it in the page at all score identically.
+- **Gate on stale-in-page instead of stale-above-current:** the stricter-sounding bar. Rejected as the gate and kept as a reported number — presence in the page is fixed by filtering or contradiction reporting, which ADR-001 deferred, while preference is what "recall must prefer the correction" actually claims.
+- **A model judge over the whole returned page** ("is this page still true?"): the most faithful metric. Rejected for now because cost scales with arms × cases, and it answers a broader question than the one blocking this decision.
+- **A recency prior in ranking instead of a graph:** the cheapest candidate. Not rejected — promoted to the null hypothesis, measured as an eval arm, and the graph is justified only if the gap survives it.
+- **Gate the least-stale arm in the table** (the first draft's rule): reads as conservative, since the graph must beat the best ranking we have. Rejected as winner's curse — the minimum of a dozen noisy rates is biased low, the bias grows with the arm count, and the sweep exists precisely to add arms. `printEvalTable` already warns about this in the MRR table; the gate now names its arm by identity instead.
+- **Gate `ArmProduction`, the path agents actually call:** the most faithful arm, and the one this repo added specifically to catch "the eval looks fine while production is broken". Rejected as the *gated* arm because its rank of 0 conflates below-the-page, cut-by-`MaxDistance` and outside-the-pool, and its five-result page makes its unreachable-correction population roughly four times the pool arms'. It is reported in the supersession table with its scope named, so the real path stays visible without being compared against numbers it does not share a denominator with.
+- **Keep the percentile bootstrap for the rate** (`BootstrapMRR`, already written and already trusted here): free and consistent with the MRR table. Rejected on degeneracy — 0 of 30 resamples to `[0.00–0.00]`, a zero-width interval announcing certainty at the one value where the gate is most likely to land and least entitled to it.
+- **Clopper–Pearson exact intervals instead of Wilson:** guaranteed coverage rather than approximate. Rejected as the default and kept as a noted alternative: at n=30 it moves the `justified` edge by exactly one case (11/30 gives `[0.199–0.561]` against Wilson's `[0.219–0.545]`), so it only ever makes the gate stricter, and its conservatism buys coverage the three-valued outcome already provides differently.
+- **Hold out a split of the pairs to select the recency band honestly:** the textbook answer to selection. Rejected at this n — 30 pairs split two ways leaves neither half able to resolve anything — and replaced by the family-wise correction, which costs no cases.
+
+## Component / Boundary Impact
+
+| Component | Change | One reason to change? |
+|---|---|---|
+| `internal/palace` (`eval.go`, `evalstats.go`) | records distractor ranks and pool presence, labels each arm's scope, computes the supersession rates and their Wilson intervals, adds one eval-only arm | yes — it already owns measurement of ranking |
+| `cmd/server/eval.go` | pair verification, yield accounting, the supersession table, the gate mode | yes — it already owns case generation and the report |
+| `internal/palace/kg.go` | none | the graph is judged here, not changed |
+| `internal/palace/service.go`, `rank.go` | none | production ranking is untouched by this ADR |
+
+No new component, no module moves. This repo has no `docs/architecture.md`; this ADR moves no boundary.
+
+## Wiring & Contract Changes
+
+| Surface | Change | Producer | Consumer(s) |
+|---------|--------|----------|-------------|
+| `palace.EvalCase.Distractor` | new optional field: the superseded drawer id of a temporal pair | `generateTemporalCases` | `Evaluate`, gate |
+| `palace.EvalCaseResult.DistractorPoolRank` | new per-CASE rank of the distractor in the dense-ordered shared pool — 0 = outside it = vacuous — mirroring `EvalReport.PoolRanks` for the gold | `Evaluate` | report, gate |
+| `palace.EvalCaseResult.DistractorRanks` | new per-arm rank map for the distractor; 0 means "absent from that arm's ordering", which is a different fact per scope | `Evaluate` | report, gate |
+| `palace.EvalMetrics.Supersession` | new per-arm `Scope` (pool / page / own-index) with `StaleAbove` / `StaleAboveReachable` / `StaleInPage` / `CurrentUnreachable` / `Vacuous` counts | `Evaluate` | report, gate |
+| eval case file (JSONL) + `caseFileMeta` | additive fields: `distractor`; meta `pair_candidates`, `verified_pairs`, `judge`. `readCases` returns every meta record in a merged set and rejects unknown fields instead of dropping them | `cmd/server/eval.go` | later runs, gate |
+| `agentsmemory eval --verify-pairs` | new flag, default on for `--style temporal` | operator | generation |
+| `agentsmemory eval --supersession-gate` | new mode printing the three-valued verdict, the gated arm's identity, both rate treatments, and the verdict's distance from flipping | operator | operator |
+| eval arm `fusion+recency eps=<w>` | new eval-only swept arm; may veto only at a family-wise interval and only when non-inferior on the non-temporal cases | `Evaluate` | report, gate |
+
+No MCP surface change. No migrations. Production ranking unchanged.
+
+## Inter-task Contracts
+
+| Contract | Producing task | Consuming task(s) | Breaking? |
+|----------|----------------|-------------------|-----------|
+| `EvalCase.Distractor` | T1 | T2 | No — additive field; older case files parse with an empty distractor |
+| `palace.SupersessionMetrics` | T1 | T3, T5 | No — new type |
+| `EvalCaseResult.DistractorPoolRank` | T1 | T5 | No — new field; vacuity is case-level, so the gate's floor counts against it |
+| `verified-pair meta` | T2 | T5 | No — additive case-file meta, plus a `readCases` that returns it |
+| `palace.ArmRecency` | T4 | T5 | No — new eval arm |
+| `palace.SupersessionVerdict` | T5 | operator (not a task) | No — new mode |
+
+## Implementation
+
+Five tasks — see [`ADR-004-supersession-not-recall/tasks/README.md`](ADR-004-supersession-not-recall/tasks/README.md).
+
+T1 leads because every later task reads the distractor's rank. T5 is last and is deliberately capable of returning `not justified`: that outcome is a result, not a failure, and it is far cheaper than populating a graph nobody can show a use for.
+
+## Consequences
+
+- **Positive:** the graph gets either a falsifiable reason to be fed or a written reason not to be. Both beat the current position — a half-empty graph and an intuition.
+- **Positive:** supersession failures become visible per arm instead of being averaged into a healthy-looking headline, and the bar, the arm it is read from and the interval rule are all fixed before the number is known, so the measurement is allowed to embarrass the plan.
+- **Negative:** the headline MRR changes when temporal cases stop being averaged into it — a moved number with no ranking change behind it, which reads as a regression unless the report says so. The excluded count prints beside the headline for exactly that reason.
+- **Negative:** pair verification adds a generator round trip per candidate pair and rejects some, so temporal generation gets slower and yields fewer cases than today. That is the price of pairs that measure what they claim.
+- **Negative:** the whole ADR can end at `unresolved` — 30 verified, non-vacuous pairs may not exist in this corpus. Five tasks to learn we cannot answer the question yet is still cheaper than weeks of graph work on the same evidence.
+- **Negative:** the gate needs a run in which the reranked arms actually ran, because the pre-registered arm is one of them. On an `--allow-degraded` run it refuses rather than falling back to the nearest available arm — a fallback chosen at read time is the selection this ADR just removed.
+- **Negative:** at the floor the verdict still turns on one label: 10/30 and 11/30 are different answers. The command prints that distance rather than hiding it, but the only real fix is more verified pairs.
+- **Neutral:** production ranking, the MCP surface and the graph's own code are untouched; every non-temporal arm scores exactly as it does today.
+
+## Out of Scope
+
+- Populating the knowledge graph at corpus scale with `kg-extract` (deferred: docs/adr/BACKLOG.md — this ADR is the gate that decides whether it happens)
+- Wiring a graph read into `Service.Search`, such as demoting drawers whose fact has been ended (deferred: docs/adr/BACKLOG.md — reachable only through a `justified` verdict)
+- Contradiction reporting in search results, "it was X, it is now Y" (deferred: docs/adr/BACKLOG.md — already deferred from ADR-001; it is page composition, and this ADR gates on preference)
+- Multi-hop and graph-traversal recall gains (deferred: docs/adr/BACKLOG.md — unresolvable at our n; revisit if the corpus and case set grow enough to separate a ~2% effect)
+- Entity-resolution and triple quality of what `kg-extract` produces (deferred: docs/adr/BACKLOG.md — a population concern, and population is gated here)
+- Changing production ranking on the strength of the recency arm (permanent: this ADR measures; a ranking change is its own decision, with its own cost on the non-temporal cases)
+- Re-deciding abstention or answerability (permanent: ADR-001 owns that calibration, and forking it here would leave two thresholds nobody can re-derive)
+- Any change to `kg_add` / `kg_invalidate` / `kg_query` behaviour (permanent: the write path is what is being judged, and changing it mid-measurement invalidates the measurement)
+- Comparing two arms' stale-above rates against each other, which needs a paired binomial over discordant pairs (McNemar) rather than two independent intervals (deferred: docs/adr/BACKLOG.md — the gate asks a one-sample question, each arm against a fixed bar)
+- Measuring the pair judge's own agreement with a human label (deferred: docs/adr/BACKLOG.md — the floor of 30 assumes a label quality nobody has measured, which is the assumption most likely to be wrong)
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| The corpus cannot supply 30 verified, non-vacuous pairs | High | High | The gate refuses a verdict and names the count; the declared response is more dated corrections in the corpus, never a lower floor |
+| The bar is moved after the number is seen | Med | High | 0.20 is written here and lives in a constant whose doc comment cites this ADR; moving it is an amendment, visible in review |
+| The pair judge accepts drift — "older and related" read as "the superseded version" | Med | Med | Verification mirrors `verifyAbsent`'s shape but drops the pair when the judge errors instead of keeping it; the judge model and the accept/reject counts ride in the case-file meta, so a run's pairs can be audited by hand |
+| Vacuous pairs counted, hiding a gap no arm could have shown | Med | Med | A distractor outside the shared pool is labelled and excluded from the pool-scoped rates and the floor, and reported as its own count (the `PoolRanks` precedent) |
+| Vacuity excluded on behalf of an arm that never used that pool | Med | High | Only pool-scoped rates drop vacuous cases; production and the contextual arm nominate their own candidates, so their rows keep every verified pair and print their own denominator, and the run's `--pool` prints with the verdict |
+| Headline MRR moves and is read as a ranking regression | High | Low | The excluded-case count prints beside the headline; no ranking code changes and every arm's per-case ranks stay identical |
+| The recency arm closes the gap and is shipped as production ranking without measuring its cost elsewhere | Med | Med | The arm is eval-only, and a production recency prior is explicitly out of scope |
+| Generated temporal questions are too easy, because the question describes the newer note | Med | Med | `evalPromptTemporal` already forbids dates in the question; T2's distance ceiling keeps the distractor semantically close, which is what makes a case hard |
+| Five tasks spent to reach `unresolved` | Med | Low | The harness keeps the measurement for the next corpus, and the alternative was spending far more on the same evidence |
+| A minimum taken over the arm table manufactures a verdict | Med | High | The gated arm is pre-registered by identity, the recency sweep is judged at a family-wise level, and a band may veto only when non-inferior on the non-temporal cases |
+| A case whose correction was never retrieved scores as a success | Med | High | `CurrentUnreachable` is counted as a stale-above failure and reported on its own; both treatments print, and a disagreement between them returns `unresolved` |
+| Two arms' rates are compared across different populations | Med | Med | Each arm carries its scope; the gate reads pool-scoped arms only, and page-scoped rows print with the scope named beside them |
+| Wilson's normal approximation is optimistic at n=30 | Med | Low | The floor holds at 30, the verdict prints its distance from flipping, and Clopper–Pearson — one case stricter at that n — is the documented fallback if a verdict is ever contested |
+| The gate reads a case file whose verification record was silently dropped | Med | High | `readCases` returns every meta record and refuses unknown fields; the gate refuses when any file contributing temporal cases carries no verification record |
+
+## Rollback
+
+No persistent state, no contract, no production behaviour: reverting the commits restores today's report exactly, since no arm's per-case ranks ever depended on any of this. Case files written under this ADR carry additive fields and stay readable by the old reader; case files written before it parse with an empty distractor, which the gate labels unhardened and refuses — deliberately, because a threshold-shaped decision from unverified pairs is the thing being avoided. The strict reader is one-directional on purpose: a file this binary does not fully understand is an error rather than a silent partial read, so reverting the writer while keeping the reader fails loudly instead of scoring an unhardened set.
+
+## Follow-ups
+
+- [ ] Record the gate's first verdict, its case count and its interval in `docs/adr/BACKLOG.md` whichever way it lands — a `not justified` that goes unwritten will be re-litigated within a month.
+- [ ] Re-derive the −0.05 MRR non-inferiority margin once the non-temporal case set can resolve less than that; today it is set by the instrument's resolution rather than by the recall loss we would actually accept, and it is the weakest number in this ADR.
