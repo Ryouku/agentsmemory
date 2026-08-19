@@ -43,6 +43,19 @@ func TestDocumentedEnvVarsAreRead(t *testing.T) {
 			documented[v] = append(documented[v], rel)
 		}
 	}
+	// Compose files are the strongest promise of all: an operator does not merely
+	// read them, the stack RUNS with those values, so a variable set there and
+	// read nowhere means the deployment is configured by a line that does
+	// nothing. RERANK_TOP_K sat in docker-compose.full.yml claiming a rerank pool
+	// of 20 that the server never read — the .env example happened to carry it
+	// too, which is the only reason the first version of this check saw it.
+	composeFiles, _ := filepath.Glob(filepath.Join(root, "docker-compose*.yml"))
+	for _, path := range composeFiles {
+		rel, _ := filepath.Rel(root, path)
+		for _, v := range composeEnvVarsIn(t, path) {
+			documented[v] = append(documented[v], rel)
+		}
+	}
 	// Go comments count too: teiembed's promise lived in a package comment, not
 	// in an env file, which is precisely why nobody noticed.
 	for _, path := range goFilesUnder(t, root) {
@@ -112,6 +125,49 @@ func envVarsIn(t *testing.T, path string) []string {
 	for _, line := range strings.Split(string(src), "\n") {
 		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
 		key, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if key = strings.TrimSpace(key); envVarPattern.MatchString(key) && isProjectEnvVar(key) {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// composeEnvVarsIn reads the `KEY: value` entries of an `environment:` block.
+// Compose also supports the `- KEY=value` list form; both are matched, because
+// which one a file uses is a style choice and the promise is identical.
+func composeEnvVarsIn(t *testing.T, path string) []string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	inEnv := false
+	for _, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasSuffix(trimmed, "environment:") {
+			inEnv = true
+			continue
+		}
+		// Any non-indented key ends the block; so does a sibling key at the same
+		// depth as `environment:` itself.
+		if inEnv && trimmed != "" && !strings.HasPrefix(line, " ") {
+			inEnv = false
+		}
+		if !inEnv || trimmed == "" {
+			continue
+		}
+		entry := strings.TrimPrefix(trimmed, "- ")
+		key, _, ok := strings.Cut(entry, ":")
+		if !ok {
+			key, _, ok = strings.Cut(entry, "=")
+		}
 		if !ok {
 			continue
 		}
