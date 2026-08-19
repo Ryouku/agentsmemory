@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"gorm.io/gorm"
 	"log"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
@@ -12,6 +11,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
 	"github.com/urfave/cli/v3"
+	"gorm.io/gorm"
 )
 
 // syncCommand replays the SQLite source of truth into the Qdrant search index: for

@@ -67,6 +67,23 @@ func TestRenderSplitsMarathonSessions(t *testing.T) {
 	}
 }
 
+// TestShortSessionIDTolerAtesShortNames: the session id is a FILENAME under the
+// transcripts root, so nothing guarantees it is a UUID. Abbreviating it for a
+// progress line must not be able to end a mining run.
+func TestShortSessionIDToleratesShortNames(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"abc", "abc"},
+		{"01234567", "01234567"},
+		{"0123456789abcdef", "01234567"},
+		{"ąčęėįšųū-session", "ąčęėįšųū"}, // runes, not bytes: a byte slice would split one
+	} {
+		if got := shortSessionID(tc.in); got != tc.want {
+			t.Errorf("shortSessionID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestWingForSessionSurvivesDeletedProjects: an old project's directory may be
 // gone; its sessions still deserve their own wing rather than one shared pile.
 func TestWingForSessionSurvivesDeletedProjects(t *testing.T) {
