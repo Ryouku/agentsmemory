@@ -160,6 +160,11 @@ type Service struct {
 	// it over the mined gold. The operator knows which palace theirs is.
 	closetBoostScale float64
 
+	// mineLocks serializes concurrent mines of the same (team, source) within this
+	// process, so two re-mines cannot interleave their purge-then-write and leave
+	// both content versions behind. It is the in-process analogue of the frozen
+	// miner's per-source mine_lock. Note: it does NOT coordinate across horizontally
+	// scaled instances — a cross-instance guard would need a DB advisory lock.
 	mineLocks *keyedMutex
 	// graphLocks serializes a team's recompute_graph the same way: a recompute
 	// replaces hallways and delete-and-rebuilds entity tunnels, so two concurrent
