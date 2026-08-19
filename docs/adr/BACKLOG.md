@@ -89,3 +89,53 @@ replace a number somebody typed once with an operating point somebody measured.
 Note the coupling before changing either: when the candidate pool exceeds the rerank pool, fusion
 decides which candidates the cross-encoder ever sees. Growing one without the other silently hands
 more of the decision to the weaker signal.
+
+## The product is a runtime quality control plane, not an eval score
+
+Forty generated cases are a release guardrail. They caught real wiring defects this week — a dead
+eval arm, chunk-level gold, a production arm measuring a limit nobody uses — and they cannot
+establish production quality, because the thing that degrades in production is not the ranking
+function. It is everything around it as the index, the traffic, the tenants and the models change.
+
+What `search_events` records today: wing, room, query, candidate count, hit count, top score,
+whether a reranker was configured, and a timestamp. That answers almost none of the questions a
+running memory service has to answer:
+
+- is the index fresh and complete, and what fraction is pending embedding?
+- is candidate recall degrading as the corpus grows? (measurable without labels — see below)
+- which stages actually ran, which failed OPEN, which were bypassed?
+- what are the embed / vector-search / rerank / total latencies, per stage?
+- are the score, margin and no-answer distributions drifting?
+- which tenant, backend, ranking profile, index size and model version produced this behaviour?
+
+Three primitives unlock all of it, in dependency order.
+
+**1. Profile identity on every event.** A `profile_id` covering candidate-pool configuration,
+fusion mode, lexical normaliser and weight, closet scale, rerank model/backend/blend, and index
+version. Without it no drift signal is interpretable and no calibration can state what it is valid
+for — an abstention threshold should say "valid for profile X", never "valid for TEI".
+
+**2. Stage outcomes, so failing open is visible.** Every stage records ran / bypassed / failed-open
+with its latency. Reranking currently falls back to the fused order on error and says so only in a
+log line — the exact defect class that shipped an inert reranker in a release and printed a full
+table of "reranked" numbers that were the hybrid order.
+
+**3. Implicit relevance feedback — the one that scales.** Return a `search_id` with every recall
+and accept it on `am_get_drawer`. Then an agent fetching a memory in full after a search is a
+click; an immediate reformulation is a miss; abandonment is a miss. Web search has run on this
+signal for twenty-five years. No agent-memory benchmark can produce it, because a benchmark has no
+users — and it is the only source of relevance judgement that grows with usage instead of with our
+labelling budget. It also measures the thing that actually matters: whether agents keep using
+recall because it earns its place in their context.
+
+Pool-recall degradation is measurable without labels too. If the cross-encoder frequently promotes
+a candidate from deep in the fused order, the pool boundary is binding and should grow; if it never
+promotes below rank ten, the pool is oversized and is being paid for in latency. That is a
+self-tuning signal for the candidate pool, from production traffic, with no gold anywhere.
+
+The loop the product actually needs is serve → observe → detect drift → shadow alternatives →
+canary → promote or roll back. Offline eval sits inside that loop; it does not own it.
+
+And "every capability exercised" should not mean equal traffic — `am_status` should outrank
+`am_delete_wing` by orders of magnitude. It should mean every enabled component proves it ran,
+exposes its cost and its effect, and can be turned off when it adds neither.
