@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,10 +110,21 @@ func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
 
 	// Read each file once: several memories usually pin the same file, and a
 	// re-read per anchor turns a fast check into a slow one on a large palace.
+	here := currentRepoLabel(root)
 	files := map[string]*sourceFile{}
 	var verdicts []verdict
-	var drifted, missing, verified int
+	var drifted, missing, verified, elsewhere int
 	for _, a := range anchors {
+		// An anchor labelled with another repository cannot be checked from
+		// here, and calling it MISSING is not a small inaccuracy: the honest
+		// response to "the file is gone" is to delete the memory, so a check
+		// that cannot see a file destroys the memory pinned to it. A session
+		// did exactly that — deleted three chunks whose file lives in a sibling
+		// repository — before this existed. Unknown is not absent.
+		if a.Repo != "" && here != "" && !strings.EqualFold(a.Repo, here) {
+			elsewhere++
+			continue
+		}
 		src, ok := files[a.Path]
 		if !ok {
 			src = readSource(filepath.Join(root, a.Path))
@@ -135,17 +147,20 @@ func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
 		verdicts = append(verdicts, v)
 	}
 
+	if elsewhere > 0 {
+		fmt.Fprintf(out, "  %d anchor(s) belong to another repository and were not checked from here (this tree is %q)\n", elsewhere, here)
+	}
 	if c.Bool("dry-run") {
-		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing (dry run — nothing recorded)\n",
-			len(anchors), wingLabel(wing), verified, drifted, missing)
+		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing, %d elsewhere (dry run — nothing recorded)\n",
+			len(anchors), wingLabel(wing), verified, drifted, missing, elsewhere)
 		return nil
 	}
 	marked, err := markAnchors(ctx, cli, verdicts)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing — %d verdict(s) recorded\n",
-		len(anchors), wingLabel(wing), verified, drifted, missing, marked)
+	fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing, %d elsewhere — %d verdict(s) recorded\n",
+		len(anchors), wingLabel(wing), verified, drifted, missing, elsewhere, marked)
 	if drifted+missing > 0 {
 		fmt.Fprintf(out, "Search now flags those memories as STALE. Re-read the code and re-file whichever are wrong.\n")
 	}
@@ -297,6 +312,23 @@ func resolveProjectWing(dir string) string {
 	}
 	shared, local, _ := findProjectConfig(dir)
 	return firstNonEmpty(local.wing, shared.wing)
+}
+
+// currentRepoLabel names the repository the working tree belongs to, using the
+// same rule anchors are labelled with: the git remote's basename, or the
+// directory name when there is no remote. An empty result means "unknown", and
+// an unknown repository checks every anchor rather than skipping them — a
+// verifier that silently checked nothing would be worse than one that
+// occasionally checks too much.
+func currentRepoLabel(root string) string {
+	if out, err := exec.Command("git", "-C", root, "remote", "get-url", "origin").Output(); err == nil {
+		url := strings.TrimSpace(string(out))
+		url = strings.TrimSuffix(url, ".git")
+		if i := strings.LastIndexAny(url, "/:"); i >= 0 && i+1 < len(url) {
+			return url[i+1:]
+		}
+	}
+	return filepath.Base(root)
 }
 
 // wingLabel renders the scope for the report, or nothing when unscoped.

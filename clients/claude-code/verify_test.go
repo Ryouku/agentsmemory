@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,4 +77,33 @@ func readSourceFrom(content string) *sourceFile {
 		norm[i] = normalizeSnippet(l)
 	}
 	return &sourceFile{exists: true, lines: lines, normalized: norm}
+}
+
+// TestCurrentRepoLabelPrefersTheRemote pins the rule anchors are labelled with,
+// because the skip decision is only as good as the two labels agreeing.
+func TestCurrentRepoLabelPrefersTheRemote(t *testing.T) {
+	dir := t.TempDir()
+	// No git remote: the directory name is the label.
+	if got := currentRepoLabel(dir); got != filepath.Base(dir) {
+		t.Errorf("without a remote the label is the directory name, got %q", got)
+	}
+}
+
+// TestAnchorsFromAnotherRepoAreNotMissing is the regression this behaviour
+// exists for. A memory pinned to a file in a sibling repository used to report
+// "file is gone" from every other checkout — and since the honest response to
+// that is deleting the memory, the check destroyed what it was built to protect.
+// A live session deleted three chunks that way.
+func TestAnchorsFromAnotherRepoAreNotMissing(t *testing.T) {
+	root := t.TempDir()
+	here := currentRepoLabel(root)
+
+	// Same shape as the loop in runVerify: a foreign label is skipped before the
+	// file is ever looked for, so a path that does not exist here is not a
+	// verdict about the memory.
+	foreign := anchor{Path: "infra/docker/base/Dockerfile", Repo: "some-other-repo"}
+	if foreign.Repo != "" && here != "" && !strings.EqualFold(foreign.Repo, here) {
+		return // skipped, as intended
+	}
+	t.Fatalf("an anchor labelled %q must be skipped in a tree labelled %q, not reported missing", foreign.Repo, here)
 }

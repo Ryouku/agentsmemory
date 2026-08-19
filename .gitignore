@@ -7,6 +7,8 @@
 # index that way before internal/repohygiene started failing on them.
 /claude-code
 /clients/claude-code/claude-code
+# local cross-builds of the CLI (dist/aiagentmemory)
+/dist/
 
 # Agent tool runtime state: session ids and absolute paths, regenerated on use.
 /.pi/
