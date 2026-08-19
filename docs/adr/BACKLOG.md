@@ -57,3 +57,35 @@ Metrics the harness still cannot express, each blocking a class of idea:
   service and do.
 - **Non-ranking outcomes generally** — abstention quality (in progress, ADR-001) and supersession
   correctness (in progress, ADR-004) are the first two; they should not be the last.
+
+## Candidate pool should be a measured ceiling, not a constant
+
+`DefaultRerankPool = 50`, `DefaultSearchLimit = 5`, `MaxSearchLimit = 100` and
+`hybridCandidateMultiplier = 3` are the same numbers on a 5,000-drawer palace and on one
+orders of magnitude larger. The retrieval reach they buy is not the same:
+
+- large corpus, `--pool 50`: 3 of 30 answers outside the pool (~10% unreachable)
+- large corpus, `--pool 128`: 1 of 30 (~3%)
+- our corpus (45x smaller), `--pool 20`: 1 of 40 (~2.5%)
+
+A small palace reaches ~97% of its answers with a pool of 20; the large one needs ~128 for the
+same reach. One constant is wrong for one of them by roughly a factor of six.
+
+Three quantities are currently conflated under one idea of a "limit", and they scale differently:
+
+- **candidate pool** — bounds what is reachable at all; should scale with corpus.
+- **rerank pool** — bounded by cross-encoder inference cost, which is linear in pool size, NOT by
+  corpus. Scaling it with the corpus makes latency scale with the corpus, which is the thing a
+  vector index exists to avoid.
+- **page returned to the agent** — bounded by the consumer's context budget. Should NOT scale with
+  corpus at all: more results from a bigger palace is more to be wrong about.
+
+The proposal is deliberately not `pool = f(N)`, which would be a new inherited constant with an
+exponent bolted on. It is a **target retrieval ceiling** — declare that some share of answers must
+be in the pool, and let the pool be whatever achieves it on this corpus, measured by the retrieval
+ceiling the eval now reports. Same cure as `max_distance`, the BM25 normaliser and `rerankWeight`:
+replace a number somebody typed once with an operating point somebody measured.
+
+Note the coupling before changing either: when the candidate pool exceeds the rerank pool, fusion
+decides which candidates the cross-encoder ever sees. Growing one without the other silently hands
+more of the decision to the weaker signal.
