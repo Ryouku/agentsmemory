@@ -207,9 +207,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		var merged []palace.EvalCase
 		files := strings.Split(path, ",")
 		for _, f := range files {
-			if cases, err := readCases(strings.TrimSpace(f)); err == nil {
-				merged = append(merged, cases...)
+			f = strings.TrimSpace(f)
+			cases, err := readCases(f)
+			if err != nil {
+				// A missing file among several silently shrank the case set once;
+				// the label still said "from N files" and nothing was comparable.
+				return nil, "", fmt.Errorf("cases file %s: %w", f, err)
 			}
+			merged = append(merged, cases...)
 		}
 		if len(merged) > 0 {
 			label := "from " + path
@@ -608,6 +613,8 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		ci := palace.BootstrapMRR(m.Ranks)
 		verdict := ""
 		switch {
+		case len(m.Ranks) == 0:
+			verdict = "no scoreable cases"
 		case i == best:
 			verdict = "BEST"
 		case len(m.Ranks) == len(report.Arms[best].Ranks):
@@ -620,7 +627,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
 			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, ci, m.NotFound, verdict)
 	}
-	fmt.Fprintf(out, "n=%d — intervals are paired bootstrap; at small n most arms tie, and that IS the finding\n",
+	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap); at small n most arms tie, and that IS the finding\n",
 		len(report.Arms[0].Ranks))
 
 	printPoolDiagnosis(out, report)
@@ -669,11 +676,22 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 // a large corpus the second becomes the common one while the score alone still
 // just says "worse".
 func printPoolDiagnosis(out io.Writer, report palace.EvalReport) {
-	worst := 0
+	worst, contextualExtra := 0, 0
 	for _, m := range report.Arms {
+		// The contextual arm retrieves from its own CAPPED index, so its misses
+		// mean "outside the experiment's sample", not "outside the shared pool" —
+		// folding them in once steered an operator toward raising --pool when the
+		// binding knob was --contextual-limit.
+		if m.Arm == palace.ArmContextual {
+			contextualExtra = m.NotFound
+			continue
+		}
 		if m.NotFound > worst {
 			worst = m.NotFound
 		}
+	}
+	if contextualExtra > worst {
+		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", contextualExtra-worst)
 	}
 	if worst == 0 {
 		return
@@ -695,8 +713,21 @@ func printCategories(out io.Writer, report palace.EvalReport) {
 	if len(report.Arms) == 0 {
 		return
 	}
-	// The production arm is the last one that is not a swept variant.
+	// Break out the arm an operator will actually run: production first, then the
+	// configured blend, then the plain fusion — never a sweep extreme, which is
+	// what "last in the list" silently was once the sweeps existed.
 	best := report.Arms[len(report.Arms)-1]
+	for _, want := range []palace.EvalArm{palace.ArmProduction, palace.ArmReranked, palace.ArmHybridCloset} {
+		for _, m := range report.Arms {
+			if m.Arm == want && len(m.ByCategory) > 0 {
+				best = m
+				break
+			}
+		}
+		if best.Arm == want {
+			break
+		}
+	}
 	if len(best.ByCategory) <= 1 {
 		return // nothing to break out
 	}

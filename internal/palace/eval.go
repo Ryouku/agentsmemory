@@ -2,8 +2,10 @@ package palace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -146,9 +148,6 @@ type CategoryMetrics struct {
 	Recall5  int
 	MRR      float64
 	NotFound int
-	// FalsePositives counts CatAbsent cases where something was returned anyway.
-	// It is the only metric here that a higher score makes WORSE.
-	FalsePositives int
 }
 
 // Recall1Pct / Recall5Pct render the counts as percentages of cases.
@@ -237,7 +236,15 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	// SILENTLY — this exact table has been published with that failure in it — so
 	// the default is to stop and say what is wrong.
 	if s.rerank != nil {
-		if _, err := s.rerank.Rerank(ctx, "preflight probe", []string{"preflight document"}); err != nil {
+		// The probe mirrors a real call — pool-sized batch, chunk-sized documents —
+		// because a token-sized probe has already passed while every real call
+		// failed on the batch and sequence limits it never touched.
+		probeDocs := make([]string, s.rerankPool)
+		probeText := strings.Repeat("preflight document text sized like a real drawer chunk. ", 30)
+		for i := range probeDocs {
+			probeDocs[i] = probeText
+		}
+		if _, err := s.rerank.Rerank(ctx, "preflight probe", probeDocs); err != nil {
 			if !opts.AllowDegraded {
 				return EvalReport{}, fmt.Errorf(
 					"the configured reranker failed its preflight (%w) — every reranked arm would silently score as plain hybrid, "+
@@ -254,6 +261,10 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		arms = append(arms, bm25Arm(w))
 	}
 	arms = append(arms, ArmAdaptive)
+	// The reality check runs LAST and always: this is the arm that exercises the
+	// code agents actually call. It went missing once already — built, documented,
+	// and never appended — which an adversarial review caught and no table did.
+	arms = append(arms, ArmProduction)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -269,11 +280,15 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
 	}
 
+	degradedCases := 0
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, topRerank, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, topRerank, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
+		}
+		if degraded {
+			degradedCases++
 		}
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
@@ -289,12 +304,10 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			}
 			cm.Cases++
 
-			// An absent case has no gold to rank: what is measured is whether the
-			// system returned something confident anyway.
+			// An absent case has no gold to rank; its distance evidence is taken
+			// once per CASE below, not here — appending inside this loop copied it
+			// once per arm and silently weighted the separation medians.
 			if cat == CatAbsent {
-				if topDistance >= 0 {
-					report.AbsentDistances = append(report.AbsentDistances, topDistance)
-				}
 				continue
 			}
 
@@ -318,6 +331,9 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			}
 		}
 		if cat == CatAbsent {
+			if topDistance >= 0 {
+				report.AbsentDistances = append(report.AbsentDistances, topDistance)
+			}
 			if topRerank != 0 {
 				report.AbsentRerank = append(report.AbsentRerank, topRerank)
 			}
@@ -329,6 +345,10 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 				report.GoldRerank = append(report.GoldRerank, topRerank)
 			}
 		}
+	}
+	if degradedCases > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"the reranker failed mid-run on %d of %d case(s): reranked arms scored the HYBRID order there — treat their numbers as a floor, not a measurement", degradedCases, len(cases)))
 	}
 	for _, a := range arms {
 		m := byArm[a]
@@ -347,14 +367,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, float64, float64, error) {
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, 0, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, 0, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -362,7 +382,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, 0, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// The gold is a MEMORY, not a chunk of one.
@@ -375,8 +395,24 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// gold was a chunk of a multi-chunk memory, so the bias applied to every
 	// number measured before this.
 	goldMemory := c.Expect
-	if gold, err := s.repo.Get(ctx, teamID, c.Expect); err == nil && gold.ParentID != "" {
-		goldMemory = gold.ParentID
+	if c.Expect != "" { // CatAbsent cases have no gold to resolve
+		switch gold, err := s.repo.Get(ctx, teamID, c.Expect); {
+		case err == nil:
+			if gold.ParentID != "" {
+				goldMemory = gold.ParentID
+			}
+		case errors.Is(err, ErrNotFound):
+			// A saved case can outlive its drawer: re-mining a source purges the
+			// old ids and mints new ones. Swallowing that scored the dead case as
+			// an all-arm retrieval miss — and the pool diagnosis then told the
+			// operator to raise --pool, misdiagnosing stale case data as a
+			// retrieval failure. Found by adversarial review, minutes after a
+			// full re-mine had made it live.
+			return nil, -1, 0, false, fmt.Errorf(
+				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, c.Expect)
+		default:
+			return nil, -1, 0, false, fmt.Errorf("load eval gold %s: %w", c.Expect, err)
+		}
 	}
 
 	// One candidate list, ordered by vector distance — the input every arm
@@ -431,8 +467,11 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		hitsForRerank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
 	}
 	var rerankScores []float64
+	rerankFailed := false
 	if s.rerank != nil {
-		rerankScores = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedForRerank)
+		if rerankScores = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedForRerank); rerankScores == nil {
+			rerankFailed = true
+		}
 	}
 
 	out := map[EvalArm]int{}
@@ -459,7 +498,10 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// The real path, telemetry suppressed so an eval does not pollute the
 			// palace's own recall statistics.
 			page, err := s.Search(ctx, teamID, SearchQuery{
-				Query: c.Query, Wing: c.Wing, Limit: MaxSearchLimit, SkipTelemetry: true,
+				Query: c.Query, Wing: c.Wing, Limit: MaxSearchLimit,
+				// Production callers pass the default distance gate; omitting it
+				// here would measure a search nobody actually runs.
+				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
 			})
 			if err != nil {
 				break // scored as a miss; the error itself surfaces via NotFound
@@ -481,8 +523,13 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// gets RETRIEVED. Ranking is the standard fusion so the delta cannot
 			// be attributed to anything else.
 			ctxHits, err := s.vectors.Search(ctx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
-			if err != nil || len(ctxHits) == 0 {
-				break // index not built for this team; the arm reports NotFound
+			if err != nil {
+				// A store failure is not "index not built", and scoring it as a
+				// miss would let a dead backend read as a bad embedding.
+				return nil, -1, 0, false, fmt.Errorf("contextual index search: %w", err)
+			}
+			if len(ctxHits) == 0 {
+				break // index not built (or empty) for this scope: reported NotFound
 			}
 			ctxIDs := make([]string, len(ctxHits))
 			for i, h := range ctxHits {
@@ -490,7 +537,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, 0, fmt.Errorf("load contextual candidates: %w", err)
+				return nil, -1, 0, false, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -569,7 +616,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 		out[arm] = rankOf(poolIDs, ordered, goldMemory)
 	}
-	return out, topDistance, topRerank, nil
+	return out, topDistance, topRerank, rerankFailed, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0

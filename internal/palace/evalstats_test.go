@@ -1,6 +1,9 @@
 package palace
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestBootstrapSeparatesSignalFromNoise: a large real difference must exclude
 // zero, and pure noise must not — otherwise the intervals are decoration.
@@ -35,5 +38,23 @@ func TestBootstrapIsReproducible(t *testing.T) {
 	}
 	if first.Lo >= first.Hi {
 		t.Errorf("degenerate interval %v for varied ranks", first)
+	}
+}
+
+// TestEvaluateFailsLoudOnStaleGold pins the adversarial-review finding: a case
+// whose drawer was purged by a re-mine must stop the run and say why, not score
+// as an all-arm retrieval miss that the pool diagnosis then misattributes.
+func TestEvaluateFailsLoudOnStaleGold(t *testing.T) {
+	svc := newTestService(t)
+	const team = "team-stale"
+	mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", Content: "a real memory so the corpus is not empty"})
+
+	_, err := svc.Evaluate(t.Context(), team,
+		[]EvalCase{{Query: "anything", Expect: "purged-drawer-id-that-no-longer-exists"}}, 10, nil)
+	if err == nil {
+		t.Fatal("a stale gold id must fail the run, not silently score as a miss")
+	}
+	if !strings.Contains(err.Error(), "no longer exists") {
+		t.Errorf("the error must name the cause: %v", err)
 	}
 }

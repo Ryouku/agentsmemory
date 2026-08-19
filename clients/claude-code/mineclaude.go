@@ -15,11 +15,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,10 +50,13 @@ type transcriptLine struct {
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
-	Cwd         string `json:"cwd"`
-	GitBranch   string `json:"gitBranch"`
-	Timestamp   string `json:"timestamp"`
-	Message     struct {
+	// IsCompactSummary marks the harness's own compaction of earlier
+	// conversation: machine-written recap, not speech, and mostly duplicate.
+	IsCompactSummary bool   `json:"isCompactSummary"`
+	Cwd              string `json:"cwd"`
+	GitBranch        string `json:"gitBranch"`
+	Timestamp        string `json:"timestamp"`
+	Message          struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -70,6 +75,7 @@ type sessionDoc struct {
 	Started   string // first timestamp seen
 	Turns     []string
 	TurnChars int
+	BadLines  int // lines that failed to parse and were skipped, not swallowed
 }
 
 // extractSession reads one transcript and keeps only the conversation.
@@ -82,13 +88,26 @@ type sessionDoc struct {
 //   - everything that is not a user or assistant line at all.
 func extractSession(r io.Reader) sessionDoc {
 	doc := sessionDoc{}
-	dec := json.NewDecoder(r)
+	// Line-based, not stream-decoded: json.Decoder stops at the first malformed
+	// line, and a truncated session filed as if complete is corpus that lies. A
+	// bad line is SKIPPED and counted; only the reader ending ends the file.
+	br := bufio.NewReaderSize(r, 1<<20)
 	for {
-		var line transcriptLine
-		if err := dec.Decode(&line); err != nil {
-			break // EOF or a malformed line ends the file either way
+		raw, err := br.ReadBytes('\n')
+		if len(raw) == 0 && err != nil {
+			break
 		}
-		if line.IsSidechain || line.IsMeta {
+		var line transcriptLine
+		if jerr := json.Unmarshal(raw, &line); jerr != nil {
+			if len(strings.TrimSpace(string(raw))) > 0 {
+				doc.BadLines++
+			}
+			if err != nil {
+				break
+			}
+			continue
+		}
+		if line.IsSidechain || line.IsMeta || line.IsCompactSummary {
 			continue
 		}
 		if line.Type != "user" && line.Type != "assistant" {
@@ -178,14 +197,18 @@ func (d sessionDoc) render(project, sessionID string) []minePart {
 	var parts []minePart
 	var b strings.Builder
 	b.WriteString(header)
+	// Every part carries an explicit #pN, including the first: mixed naming meant
+	// a session crossing the one-part boundary changed its own source id.
+	//
+	// KNOWN LIMIT: if an extraction-rule change ever makes a session render FEWER
+	// parts than a previous run, the surplus #pN documents persist (the server
+	// purges per exact source). Transcripts themselves only append, so this
+	// arises only when the miner's rules change — re-mine into a fresh --room
+	// after such a change.
 	flush := func() {
 		if b.Len() > len(header) {
-			suffix := ""
-			if len(parts) > 0 {
-				suffix = fmt.Sprintf("#p%d", len(parts)+1)
-			}
 			parts = append(parts, minePart{
-				Source:  fmt.Sprintf("claude-session/%s/%s%s", project, sessionID, suffix),
+				Source:  fmt.Sprintf("claude-session/%s/%s#p%d", project, sessionID, len(parts)+1),
 				Content: b.String(),
 			})
 		}
@@ -303,8 +326,12 @@ func runMineClaude(ctx context.Context, c *cli.Command, out io.Writer) error {
 					return fmt.Errorf("mine %s: %w", part.Source, err)
 				}
 			}
-			fmt.Fprintf(out, "  mined %-46s → %-24s %3d turn(s), %d part(s)\n",
-				project+"/"+sessionID[:8], wing, len(doc.Turns), len(docs))
+			note := ""
+			if doc.BadLines > 0 {
+				note = fmt.Sprintf("  (%d unparseable line(s) skipped)", doc.BadLines)
+			}
+			fmt.Fprintf(out, "  mined %-46s → %-24s %3d turn(s), %d part(s)%s\n",
+				project+"/"+sessionID[:8], wing, len(doc.Turns), len(docs), note)
 		}
 		mined++
 		parts += len(docs)
@@ -391,8 +418,19 @@ func wingForSession(cwd, project string) string {
 		if w := registeredWingFor(cwd); w != "" {
 			return w
 		}
-		if w := resolveProjectWing(cwd); w != "" {
+		// The project-config files, but NOT $AGENTSMEMORY_WING: a process-wide
+		// variable meant for one launched session would file EVERY project's
+		// history into a single wing — the exact mixing the miner exists to avoid.
+		shared, local, _ := findProjectConfig(cwd)
+		if w := firstNonEmpty(local.wing, shared.wing); w != "" {
 			return w
+		}
+		// The protocol's git-remote rung: the remote basename names the project
+		// more stably than whatever the directory happens to be called.
+		if out, err := exec.Command("git", "-C", cwd, "remote", "get-url", "origin").Output(); err == nil {
+			if base := strings.TrimSuffix(filepath.Base(strings.TrimSpace(string(out))), ".git"); base != "" && base != "." {
+				return "wing_" + sanitizeWingName(base)
+			}
 		}
 		return "wing_" + sanitizeWingName(filepath.Base(cwd))
 	}
