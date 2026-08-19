@@ -75,6 +75,10 @@ type Deps struct {
 	Skillset *skillset.Service // the global wakeup playbook am_skillset serves
 	Usage    *usage.Service
 	Drawers  *palace.Service
+	// Local is set by the self-hosted single-workspace server. It widens the tool
+	// surface to operations that are only safe when the agent, the operator and the
+	// workspace are one person on one machine — see registerAdmin.
+	Local bool
 }
 
 // New builds the MCP server and registers all tools. Registration funnels through
@@ -102,8 +106,8 @@ func New(deps Deps) *server.MCPServer {
 	registerGraph(reg, deps.Drawers, deps.Usage)
 	// The temporal knowledge graph: kg_add/invalidate/query/stats/timeline.
 	registerKG(reg, deps.Drawers, deps.Usage)
-	// Palace maintenance: merge_wing, memories_filed_away.
-	registerAdmin(reg, deps.Drawers, deps.Usage)
+	// Palace maintenance: merge_wing, memories_filed_away, and delete_wing when local.
+	registerAdmin(reg, deps.Drawers, deps.Usage, deps.Local)
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)
