@@ -107,6 +107,23 @@ type Config struct {
 	// QdrantAPIKey is an optional Qdrant API key; empty for unauthenticated dev.
 	QdrantAPIKey string
 
+	// EmbedBackend selects what embeds text: "ollama" (the default) or "tei" (a
+	// HuggingFace text-embeddings-inference server at EmbedURL).
+	//
+	// It exists because Ollama's embedding API returns DENSE vectors only. bge-m3
+	// natively produces three representations — dense, learned sparse, and a
+	// ColBERT-style multi-vector — and two of them are unreachable through
+	// Ollama, so a whole class of retrieval work cannot even be measured while it
+	// is the only backend. TEI is also what already serves our cross-encoder, so
+	// choosing it removes a service rather than adding one.
+	EmbedBackend string
+
+	// EmbedURL is the embedding server's base URL when EmbedBackend is "tei".
+	// Empty falls back to OllamaURL's host with TEI's usual port left to the
+	// operator, because there is no sane universal default for a service the
+	// operator chose to run.
+	EmbedURL string
+
 	// OllamaURL is the base URL of the Ollama server used for embeddings.
 	OllamaURL string
 
@@ -262,6 +279,7 @@ func Default() Config {
 		DBPath:           "agentsmemory.db",
 		VectorBackend:    VectorBackendSQLite,
 		QdrantURL:        "http://localhost:6333",
+		EmbedBackend:     "ollama",
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,

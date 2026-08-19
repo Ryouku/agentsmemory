@@ -30,6 +30,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/dataexport"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embed/ollama"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/embed/teiembed"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embedworker"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/importer"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
@@ -124,6 +125,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
 		RerankPool:       c.Int("rerank-pool"),
 		BM25Weight:       strings.TrimSpace(c.String("bm25-weight")),
+		EmbedBackend:     strings.TrimSpace(c.String("embed-backend")),
+		EmbedURL:         strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:      c.Float("closet-boost"),
 		Fusion:           strings.TrimSpace(c.String("fusion")),
 		RerankWeight:     c.Float("rerank-weight"),
@@ -175,6 +178,8 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
 		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1"},
+		&cli.StringFlag{Name: "embed-backend", Sources: cli.EnvVars("EMBED_BACKEND"), Value: def.EmbedBackend, Usage: "what embeds text: ollama (default) or tei (text-embeddings-inference — the only path to bge-m3's sparse and multi-vector output)"},
+		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
@@ -797,7 +802,7 @@ func buildServices(cfg config.Config) (*services, error) {
 
 	// The memory loop: Ollama embeds text, the store seam holds the vectors, and
 	// the palace service ties them to drawer metadata.
-	embedder := ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
+	embedder := buildEmbedder(cfg)
 
 	// The cross-encoder is optional and additive: configured, it rescores the top
 	// candidates of every search; unconfigured, search is exactly the hybrid
@@ -862,6 +867,31 @@ func buildServices(cfg config.Config) (*services, error) {
 // also serves search or whether an index is layered on via store.Hybrid — either
 // an embedded chromem directory or a Qdrant service. This switch is the single
 // swap point for the search backend.
+// buildEmbedder picks what turns text into vectors. Ollama stays the default so
+// every existing deployment is unaffected; EMBED_BACKEND=tei selects the
+// text-embeddings-inference client instead.
+//
+// This selector existed as a sentence in teiembed's package comment for a while
+// before it existed as code: the client was written, unit-tested and given a
+// live test, and nothing ever read the variable it documented. A backend nobody
+// can select is not a backend, which is the same defect the eval's production
+// arm and the IDF coverage each shipped with — worth naming here because it is
+// evidently this codebase's favourite way to be wrong.
+func buildEmbedder(cfg config.Config) palace.Embedder {
+	if !strings.EqualFold(strings.TrimSpace(cfg.EmbedBackend), "tei") {
+		return ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
+	}
+	url := strings.TrimSpace(cfg.EmbedURL)
+	if url == "" {
+		// No silent fallback to Ollama: an operator who asked for TEI and gets
+		// Ollama has a palace embedded by a model they did not choose, and
+		// vectors from two models in one index are not comparable.
+		log.Fatalf("EMBED_BACKEND=tei needs EMBED_URL (the text-embeddings-inference base URL)")
+	}
+	log.Printf("embeddings: text-embeddings-inference at %s", url)
+	return teiembed.New(url, cfg.HTTPTimeout)
+}
+
 func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error) {
 	sot := sqlitevec.New(gdb)
 	switch cfg.VectorBackend {
