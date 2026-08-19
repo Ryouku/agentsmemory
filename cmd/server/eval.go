@@ -51,7 +51,7 @@ func evalCommand(def config.Config) *cli.Command {
 			"  hybrid+closet+rerank   + the cross-encoder (only when RERANK_URL is set)\n\n" +
 			"Read the DELTAS, not the absolute numbers: questions generated from a drawer\n" +
 			"share vocabulary with it, which flatters every arm equally.\n\n" +
-			"  agentsmemory eval --wing wing_zeus --n 40 --cases /data/eval.jsonl\n" +
+			"  agentsmemory eval --wing wing_acme --n 40 --cases /data/eval.jsonl\n" +
 			"  agentsmemory eval --cases /data/eval.jsonl        # re-run the same questions",
 		Flags: append(serveFlags(def),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
@@ -90,7 +90,13 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 
 	fmt.Fprintf(out, "\n%d case(s) %s, style %s, pool %d, corpus %s\n\n",
 		len(cases), from, c.String("style"), c.Int("pool"), corpusLabel(c.String("wing")))
-	report, err := svc.drawers.Evaluate(ctx, t.TeamID, cases, c.Int("pool"))
+	// Every arm runs per case, and a reranked arm is real inference, so a case can
+	// take seconds. Report each one as it lands: silence for minutes reads as a
+	// hang, and the first version of this command was exactly that.
+	report, err := svc.drawers.Evaluate(ctx, t.TeamID, cases, c.Int("pool"),
+		func(done, total int, query string, elapsed time.Duration) {
+			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
+		})
 	if err != nil {
 		return err
 	}
@@ -136,18 +142,23 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 		verbose: out,
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
+	genStart := time.Now()
 	var cases []palace.EvalCase
 	for i, d := range drawers {
+		started := time.Now()
 		q, err := gen.ask(ctx, d.Content)
 		if err != nil {
-			fmt.Fprintf(out, "  drawer %d: %v\n", i+1, err)
+			fmt.Fprintf(out, "  [%2d/%2d] failed: %v\n", i+1, len(drawers), err)
 			continue
 		}
 		if q == "" {
+			fmt.Fprintf(out, "  [%2d/%2d] empty answer, skipped\n", i+1, len(drawers))
 			continue
 		}
+		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62))
 		cases = append(cases, palace.EvalCase{Query: q, Expect: d.ID, Wing: c.String("wing")})
 	}
+	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
 		if err := writeCases(path, cases); err != nil {
 			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)

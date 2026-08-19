@@ -14,17 +14,17 @@ func TestRecallStatsSeparatesAnsweredFromAsked(t *testing.T) {
 	svc := newTestService(t)
 	const team = "team-stats"
 
-	mustAdd(t, svc, team, AddInput{Wing: "wing_zeus", Room: "decisions", Content: "zeus uses two-tier planning for its scheduler"})
-	mustAdd(t, svc, team, AddInput{Wing: "wing_wcag", Room: "decisions", Content: "wcag stores scan results per audit run"})
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "the scheduler plans in two tiers so a long job cannot starve a short one"})
+	mustAdd(t, svc, team, AddInput{Wing: "wing_beta", Room: "decisions", Content: "scan results are stored per audit run, not per page"})
 
 	// One answered search per wing, plus one that finds nothing.
-	if _, err := svc.Search(ctx, team, SearchQuery{Query: "two-tier planning", Wing: "wing_zeus"}); err != nil {
+	if _, err := svc.Search(ctx, team, SearchQuery{Query: "two-tier planning", Wing: "wing_acme"}); err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if _, err := svc.Search(ctx, team, SearchQuery{Query: "scan results per audit run", Wing: "wing_wcag"}); err != nil {
+	if _, err := svc.Search(ctx, team, SearchQuery{Query: "scan results per audit run", Wing: "wing_beta"}); err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if _, err := svc.Search(ctx, team, SearchQuery{Query: "kubernetes ingress annotations", Wing: "wing_zeus", MaxDistance: 0.01}); err != nil {
+	if _, err := svc.Search(ctx, team, SearchQuery{Query: "kubernetes ingress annotations", Wing: "wing_acme", MaxDistance: 0.01}); err != nil {
 		t.Fatalf("search: %v", err)
 	}
 
@@ -49,15 +49,15 @@ func TestRecallStatsSeparatesAnsweredFromAsked(t *testing.T) {
 	for _, w := range stats.Wings {
 		byWing[w.Wing] = w
 	}
-	zeus, ok := byWing["wing_zeus"]
+	acme, ok := byWing["wing_acme"]
 	if !ok {
-		t.Fatalf("wing_zeus missing from %v", stats.Wings)
+		t.Fatalf("wing_acme missing from %v", stats.Wings)
 	}
-	if zeus.Searches != 2 || zeus.Answered != 1 || zeus.Drawers != 1 {
-		t.Errorf("wing_zeus = %+v; want 2 searches, 1 answered, 1 drawer", zeus)
+	if acme.Searches != 2 || acme.Answered != 1 || acme.Drawers != 1 {
+		t.Errorf("wing_acme = %+v; want 2 searches, 1 answered, 1 drawer", acme)
 	}
-	if zeus.AnsweredPct() != 50 {
-		t.Errorf("wing_zeus answered pct = %d, want 50", zeus.AnsweredPct())
+	if acme.AnsweredPct() != 50 {
+		t.Errorf("wing_acme answered pct = %d, want 50", acme.AnsweredPct())
 	}
 
 	// The unanswered query is the actionable output: it names a memory the team

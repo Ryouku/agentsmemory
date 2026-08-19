@@ -120,21 +120,21 @@ func TestBridgeLiftsTheRegistrationWing(t *testing.T) {
 	for name, build := range map[string]func() *http.Request{
 		"header": func() *http.Request {
 			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			r.Header.Set(WingHeader, "wing_zeus")
+			r.Header.Set(WingHeader, "wing_acme")
 			return r
 		},
 		"query parameter": func() *http.Request {
-			return httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_zeus", nil)
+			return httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_acme", nil)
 		},
 		"header wins over query": func() *http.Request {
 			r := httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_other", nil)
-			r.Header.Set(WingHeader, "wing_zeus")
+			r.Header.Set(WingHeader, "wing_acme")
 			return r
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := DefaultWingFrom(Bridge(context.Background(), build())); got != "wing_zeus" {
-				t.Errorf("default wing = %q, want wing_zeus", got)
+			if got := DefaultWingFrom(Bridge(context.Background(), build())); got != "wing_acme" {
+				t.Errorf("default wing = %q, want wing_acme", got)
 			}
 		})
 	}

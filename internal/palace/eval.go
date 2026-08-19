@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Retrieval evaluation: does recall actually return the memory that answers the
@@ -95,7 +96,12 @@ type EvalCaseResult struct {
 // Evaluate scores every arm over the cases. poolSize is how many neighbours the
 // vector search fetches per query; it bounds every arm equally, so a memory
 // outside the pool is unreachable for all of them (counted as NotFound).
-func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int) (EvalReport, error) {
+// Progress reports how far a run has got. An eval that prints nothing for
+// several minutes is indistinguishable from one that has hung — which is exactly
+// how the first one read — so Evaluate reports each case as it lands.
+type Progress func(done, total int, query string, elapsed time.Duration)
+
+func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int, progress Progress) (EvalReport, error) {
 	if poolSize <= 0 {
 		poolSize = 50
 	}
@@ -112,10 +118,14 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 	}
 	report := EvalReport{}
 
-	for _, c := range cases {
+	for i, c := range cases {
+		started := time.Now()
 		ranks, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
+		}
+		if progress != nil {
+			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
 		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Ranks: ranks})
 		for _, a := range arms {

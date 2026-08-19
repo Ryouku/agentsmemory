@@ -236,12 +236,12 @@ func TestResolveLaunchWingPrecedence(t *testing.T) {
 // out again: teammates share a wing, so unlike the sandbox name it belongs in the
 // file everyone clones.
 func TestProjectConfigWingRoundTrip(t *testing.T) {
-	out := renderProjectConfig(projectConfig{agent: "claude", wing: "wing_zeus"})
-	if !strings.Contains(string(out), "wing=wing_zeus") {
+	out := renderProjectConfig(projectConfig{agent: "claude", wing: "wing_acme"})
+	if !strings.Contains(string(out), "wing=wing_acme") {
 		t.Fatalf("rendered config missing the wing:\n%s", out)
 	}
-	if got := parseProjectConfig(out); got.wing != "wing_zeus" {
-		t.Errorf("round-tripped wing = %q, want wing_zeus", got.wing)
+	if got := parseProjectConfig(out); got.wing != "wing_acme" {
+		t.Errorf("round-tripped wing = %q, want wing_acme", got.wing)
 	}
 }
 
