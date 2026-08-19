@@ -57,7 +57,9 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
 			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
-			&cli.StringFlag{Name: "gen-model", Value: "qwen2.5-coder:7b", Usage: "Ollama model that writes the questions"},
+			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions — any model your generator endpoint serves"},
+			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "generator endpoint (default: the configured Ollama). A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
+			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for the generator endpoint, when it needs one"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
@@ -176,12 +178,25 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	case "absent":
 		prompt, category = evalPromptAbsent, palace.CatAbsent
 	}
+	genURL := c.String("gen-url")
+	if strings.TrimSpace(genURL) == "" {
+		genURL = cfg2URL(c.String("ollama-url"))
+	}
 	gen := &questionGen{
-		url:     cfg2URL(c.String("ollama-url")),
+		url:     genURL,
 		model:   c.String("gen-model"),
+		apiKey:  c.String("gen-api-key"),
 		prompt:  prompt,
 		http:    &http.Client{Timeout: 120 * time.Second},
 		verbose: out,
+	}
+
+	// Ask for ONE question before asking for thirty. A missing model, a wrong URL
+	// or a bad key fails identically on every case, and printing that failure n
+	// times is thirty lines that say one thing — while the run still takes as long
+	// as a working one.
+	if _, err := gen.ask(ctx, drawers[0].Content); err != nil {
+		return nil, "", fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
 	genStart := time.Now()
@@ -221,9 +236,48 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 type questionGen struct {
 	url     string
 	model   string
+	apiKey  string
 	prompt  string
 	http    *http.Client
 	verbose io.Writer
+}
+
+// openAIShaped reports whether the endpoint should be called as an
+// OpenAI-compatible chat API rather than Ollama's own. The /v1 convention is what
+// every hosted provider and every local shim agrees on, so it is the honest
+// discriminator — and it means a cloud model needs no new flag beyond its URL.
+func (g *questionGen) openAIShaped() bool { return strings.Contains(g.url, "/v1") }
+
+// hint turns a generator failure into something actionable: which models the
+// endpoint actually serves, when it can be asked.
+func (g *questionGen) hint(ctx context.Context) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  endpoint: %s\n  model:    %s\n", g.url, g.model)
+	if g.openAIShaped() {
+		b.WriteString("  Set EVAL_GEN_MODEL to a model this endpoint serves, and EVAL_GEN_API_KEY if it needs a key.\n")
+		return b.String()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(g.url, "/")+"/api/tags", nil)
+	if err == nil {
+		if resp, err := g.http.Do(req); err == nil {
+			defer resp.Body.Close()
+			var tags struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&tags) == nil && len(tags.Models) > 0 {
+				names := make([]string, 0, len(tags.Models))
+				for _, m := range tags.Models {
+					names = append(names, m.Name)
+				}
+				fmt.Fprintf(&b, "  this endpoint serves: %s\n", strings.Join(names, ", "))
+			}
+		}
+	}
+	b.WriteString("  Set EVAL_GEN_MODEL to one of those, pull the one you want (ollama pull <model>),\n")
+	b.WriteString("  or point EVAL_GEN_URL at another endpoint — a URL containing /v1 is called as an OpenAI-compatible API.\n")
+	return b.String()
 }
 
 // Two prompts, because there are two regimes and they rank differently.
@@ -529,6 +583,33 @@ func printSeparation(out io.Writer, report palace.EvalReport) {
 		return
 	}
 	fmt.Fprintf(out, "  distributions OVERLAP — no max_distance separates them; a confidence gate needs a different signal\n")
+	printRerankSeparation(out, report)
+}
+
+// printRerankSeparation asks the same question of the cross-encoder's score.
+//
+// Cosine distance answers "how similar", which is not the question — a note about
+// the same system in the same vocabulary is similar to a question it cannot
+// answer, which is exactly why the distributions overlap. A cross-encoder score
+// answers "does this document answer this query", which IS the question, so it is
+// the natural candidate for the gate that decides when to say nothing.
+func printRerankSeparation(out io.Writer, report palace.EvalReport) {
+	if len(report.GoldRerank) == 0 || len(report.AbsentRerank) == 0 {
+		return
+	}
+	gold := append([]float64(nil), report.GoldRerank...)
+	absent := append([]float64(nil), report.AbsentRerank...)
+	sort.Float64s(gold)
+	sort.Float64s(absent)
+	fmt.Fprintf(out, "top-1 rerank score: answerable %.3f–%.3f (median %.3f) | unanswerable %.3f–%.3f (median %.3f)\n",
+		gold[0], gold[len(gold)-1], median(gold), absent[0], absent[len(absent)-1], median(absent))
+	if absent[len(absent)-1] < gold[0] {
+		fmt.Fprintf(out, "  CLEAN SEPARATION — a cross-encoder threshold between %.3f and %.3f answers only what the palace holds\n",
+			absent[len(absent)-1], gold[0])
+		return
+	}
+	fmt.Fprintf(out, "  overlapping too — but compare the medians: %.3f against %.3f is the size of the signal available\n",
+		median(gold), median(absent))
 }
 
 // median of a sorted slice.

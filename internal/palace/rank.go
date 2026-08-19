@@ -263,6 +263,32 @@ type HybridScore struct {
 // tie-breaker when two candidates fuse equal. docs, distances and (when non-nil)
 // boosts must be the same length.
 func rankHybrid(query string, docs []string, distances, boosts []float64) []HybridScore {
+	return rankHybridWeighted(query, docs, distances, boosts, hybridBM25Weight)
+}
+
+// rankHybridWeighted is rankHybrid with the lexical weight named, so how much
+// BM25 should count can be MEASURED rather than inherited.
+//
+// The 0.6/0.4 split came from the frozen Python and was never tested on a real
+// corpus. It should not be assumed to travel: BM25 helps when a query repeats the
+// vocabulary of the memory it wants, and hurts when it does not — a paraphrase, a
+// different language, or simply a large corpus where many memories share the
+// query's words without answering it. A weight that is right for one palace can
+// be actively wrong for another, which is an argument for a knob and an eval, not
+// for a better constant.
+func rankHybridWeighted(query string, docs []string, distances, boosts []float64, bm25Weight float64) []HybridScore {
+	if bm25Weight < 0 {
+		bm25Weight = 0
+	}
+	if bm25Weight > 1 {
+		bm25Weight = 1
+	}
+	vectorWeight := 1 - bm25Weight
+	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight)
+}
+
+// rankFused is the shared implementation.
+func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64) []HybridScore {
 	raw := bm25Scores(query, docs)
 	var maxBM25 float64
 	for _, s := range raw {
@@ -281,7 +307,7 @@ func rankHybrid(query string, docs []string, distances, boosts []float64) []Hybr
 		if boosts != nil {
 			boost = boosts[i]
 		}
-		fused := hybridVectorWeight*vecSimFromDistance(distances[i]) + hybridBM25Weight*norm + boost
+		fused := vectorWeight*vecSimFromDistance(distances[i]) + bm25Weight*norm + boost
 		out[i] = HybridScore{Index: i, Fused: fused, BM25: raw[i], Boost: boost}
 	}
 	// Stable so equal-fused candidates keep their incoming (vector) order.

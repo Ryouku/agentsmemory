@@ -52,6 +52,15 @@ const (
 // overwrites the fused order completely.
 var rerankSweep = []float64{0.25, 0.5, 0.75, 1.0}
 
+// bm25Sweep is how much the LEXICAL half counts. 0.0 is vector-only, 0.4 is the
+// inherited default. It is swept because a real corpus has already shown the
+// default can be worse than not fusing at all: BM25 rewards shared vocabulary,
+// and in a large palace many memories share a query's words without answering it.
+var bm25Sweep = []float64{0.0, 0.2, 0.4, 0.6}
+
+// bm25Arm names a swept fusion arm.
+func bm25Arm(w float64) EvalArm { return EvalArm(fmt.Sprintf("fusion bm25=%.2f", w)) }
+
 // rerankArm names a swept arm.
 func rerankArm(w float64) EvalArm { return EvalArm(fmt.Sprintf("rerank blend w=%.2f", w)) }
 
@@ -143,6 +152,14 @@ type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
 
+	// GoldRerank and AbsentRerank are the top-1 CROSS-ENCODER scores for the two
+	// kinds of question. They exist because the distance distributions overlap —
+	// so cosine cannot answer "do I know this?" — and a cross-encoder score is
+	// the one number in the pipeline that was trained on exactly that question
+	// rather than on similarity.
+	GoldRerank   []float64
+	AbsentRerank []float64
+
 	// GoldDistances and AbsentDistances are the top-1 cosine distances for
 	// answerable and unanswerable questions. They exist because max_distance —
 	// the gate that decides when the palace should admit it knows nothing — was
@@ -188,6 +205,9 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		poolSize = 50
 	}
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
+	for _, w := range bm25Sweep {
+		arms = append(arms, bm25Arm(w))
+	}
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -206,7 +226,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, topRerank, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
 		}
@@ -251,8 +271,17 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 				}
 			}
 		}
-		if cat != CatAbsent && topDistance >= 0 {
-			report.GoldDistances = append(report.GoldDistances, topDistance)
+		if cat == CatAbsent {
+			if topRerank != 0 {
+				report.AbsentRerank = append(report.AbsentRerank, topRerank)
+			}
+		} else {
+			if topDistance >= 0 {
+				report.GoldDistances = append(report.GoldDistances, topDistance)
+			}
+			if topRerank != 0 {
+				report.GoldRerank = append(report.GoldRerank, topRerank)
+			}
 		}
 	}
 	for _, a := range arms {
@@ -272,14 +301,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, float64, error) {
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, float64, float64, error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, 0, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, 0, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -287,7 +316,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, 0, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// One candidate list, ordered by vector distance — the input every arm
@@ -328,6 +357,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 
 	out := map[EvalArm]int{}
+	topRerank := 0.0
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
 		switch arm {
@@ -360,7 +390,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, fmt.Errorf("load contextual candidates: %w", err)
+				return nil, -1, 0, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -394,6 +424,21 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				ordered = append(ordered, r.Index)
 			}
 		default:
+			// A swept fusion arm: same pipeline, different lexical weight.
+			if isBM25Arm := func() bool {
+				for _, w := range bm25Sweep {
+					if arm == bm25Arm(w) {
+						for _, r := range rankHybridWeighted(c.Query, docs, dists, boosts, w) {
+							ordered = append(ordered, r.Index)
+						}
+						return true
+					}
+				}
+				return false
+			}(); isBM25Arm {
+				break
+			}
+
 			// Every reranked arm shares one path; only the blend weight differs.
 			weight := s.rerankWeight
 			for _, w := range rerankSweep {
@@ -419,7 +464,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 		out[arm] = rankOf(poolIDs, ordered, c.Expect)
 	}
-	return out, topDistance, nil
+	return out, topDistance, topRerank, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0
