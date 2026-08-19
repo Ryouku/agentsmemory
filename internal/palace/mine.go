@@ -323,8 +323,11 @@ func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32
 			continue // a source's boost is fixed by the first position it appears at
 		}
 		seen[c.SourceFile] = struct{}{}
-		if distanceFromScore(h.Score) <= closetDistanceCap {
-			boosts[c.SourceFile] = closetRankBoosts[i]
+		// Rank decides the ceiling, proximity decides how much of it applies. A
+		// closet that is barely related contributes almost nothing instead of the
+		// same +0.40 a perfect match would.
+		if strength := closetBoostStrength(distanceFromScore(h.Score)); strength > 0 {
+			boosts[c.SourceFile] = closetRankBoosts[i] * strength
 		}
 	}
 	return boosts

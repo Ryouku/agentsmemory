@@ -149,3 +149,43 @@ func TestSearchSurfacesBM25(t *testing.T) {
 		t.Fatalf("top hybrid hit should carry a positive BM25, got %.3f", hits[0].BM25)
 	}
 }
+
+// TestClosetBoostStrengthFadesWithDistance pins the fix for a real regression: a
+// flat boost let one mediocre closet outrank every other signal, and this palace's
+// eval measured recall@1 falling from 92% to 17% because of it.
+//
+// The distances are measured ones (see closetDistanceCap): a closet's own text,
+// a genuinely related question, and an unrelated one.
+func TestClosetBoostStrengthFadesWithDistance(t *testing.T) {
+	cases := []struct {
+		name     string
+		distance float64
+		wantMin  float64
+		wantMax  float64
+	}{
+		{"the closet's own text", 0.114, 0.7, 1.0},
+		{"a related question", 0.49, 0.05, 0.3},
+		{"unrelated, just inside the old cap", 0.63, 0, 0},
+		{"a cake recipe", 0.706, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := closetBoostStrength(c.distance)
+			if got < c.wantMin || got > c.wantMax {
+				t.Errorf("strength(%.3f) = %.3f, want between %.2f and %.2f", c.distance, got, c.wantMin, c.wantMax)
+			}
+		})
+	}
+}
+
+// TestClosetBoostHasNoCliff: strength must reach zero exactly at the cap, so a
+// hit either side of the boundary is not reordered by a step change.
+func TestClosetBoostHasNoCliff(t *testing.T) {
+	just := closetBoostStrength(closetDistanceCap - 0.001)
+	if just <= 0 || just > 0.01 {
+		t.Errorf("strength just inside the cap = %.4f, want a hair above zero", just)
+	}
+	if got := closetBoostStrength(closetDistanceCap); got != 0 {
+		t.Errorf("strength at the cap = %.4f, want 0", got)
+	}
+}

@@ -29,16 +29,50 @@ const (
 	// wider than the page or BM25 cannot promote a lexical match the page missed.
 	hybridCandidateMultiplier = 3
 	// closetDistanceCap is the farthest a closet hit may be (cosine distance) and
-	// still lend its source a boost (frozen CLOSET_DISTANCE_CAP).
-	closetDistanceCap = 1.5
+	// still lend its source a boost.
+	//
+	// The frozen Python used 1.5, and porting that number verbatim was a mistake
+	// this palace's own eval caught: with bge-m3, UNRELATED text sits at distance
+	// 0.60-0.71, so a 1.5 cap admits everything. Measured against a real closet:
+	//
+	//   0.114  the closet's own text
+	//   0.49   a genuinely related question
+	//   0.63   an unrelated technical question
+	//   0.71   "how do I bake a cake"
+	//
+	// A cap that a cake recipe clears is not a cap. 0.6 is set just below where
+	// unrelated content lands, and closetBoostStrength below fades the boost to
+	// zero as a hit approaches it, so there is no cliff at the boundary.
+	closetDistanceCap = 0.6
 )
 
 // closetRankBoosts is the diminishing boost a closet hit adds to its source's
 // drawers by closet rank: the best-matching closet lifts its source most, the
 // fifth barely (frozen CLOSET_RANK_BOOSTS). Closets are a ranking SIGNAL, never a
 // gate — they only raise scores, never filter — so the boost is added to the
-// fused score and the cap above bounds how far a closet may be to count.
+// fused score, scaled by closetBoostStrength.
+//
+// The scaling is not cosmetic. A flat +0.40 on a fused score that lives in [0,1]
+// outranks every other signal combined, so a single mediocre closet match
+// promotes its whole source above genuinely better answers. On this palace, with
+// exactly one closet filed, that alone dropped recall@1 from 92% to 17%.
 var closetRankBoosts = []float64{0.40, 0.25, 0.15, 0.08, 0.04}
+
+// closetBoostStrength scales a closet's boost by how close it actually is: full
+// strength at distance 0, fading linearly to nothing at closetDistanceCap.
+//
+// Rank alone is the wrong scale on its own — "best closet of the five returned"
+// says nothing about whether any of them are relevant, and with one closet in the
+// palace the best is also the worst.
+func closetBoostStrength(distance float64) float64 {
+	if distance >= closetDistanceCap {
+		return 0
+	}
+	if distance < 0 {
+		return 1
+	}
+	return (closetDistanceCap - distance) / closetDistanceCap
+}
 
 // tokenRE matches the frozen _TOKEN_RE: runs of two or more word characters.
 // \w is widened to the Unicode letter/number/underscore classes so non-ASCII
