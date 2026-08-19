@@ -483,3 +483,73 @@ func mustAdd(t *testing.T, svc *Service, team string, in AddInput) []Drawer {
 	}
 	return res.Drawers
 }
+
+// TestCrossEncodeBlendsRatherThanOverwrites pins the fix for a measured
+// regression. Handing the cross-encoder the whole decision throws away the
+// lexical evidence in the fused score — on this palace's eval that cost MRR
+// 1.000 → 0.684 in the regime where a developer searches with the identifier they
+// remember. A blend keeps both opinions.
+func TestCrossEncodeBlendsRatherThanOverwrites(t *testing.T) {
+	svc := newTestService(t)
+
+	// The fused ranking is confident about hit A (an exact lexical match); the
+	// cross-encoder mildly prefers B. A blend must keep A on top; a handover must
+	// not.
+	hits := []SearchHit{
+		{Drawer: Drawer{ID: "A", Content: "exact identifier match"}, Score: 1.0},
+		{Drawer: Drawer{ID: "B", Content: "topically similar"}, Score: 0.2},
+	}
+	flip := &staticReranker{scores: []RerankScore{{Index: 1, Score: 2}, {Index: 0, Score: 1}}}
+
+	svc.reranker = flip
+	blended := svc.crossEncodeWith(context.Background(), "q", hits, DefaultRerankWeight)
+	if blended[0].Drawer.ID != "A" {
+		t.Errorf("blend at w=%.2f let a mild cross-encoder preference overturn a confident fused score: %s leads",
+			DefaultRerankWeight, blended[0].Drawer.ID)
+	}
+
+	// w=1 is the old behaviour, kept reachable so the eval can measure it.
+	overwritten := svc.crossEncodeWith(context.Background(), "q", hits, 1)
+	if overwritten[0].Drawer.ID != "B" {
+		t.Errorf("w=1 must hand the decision to the cross-encoder, got %s", overwritten[0].Drawer.ID)
+	}
+
+	// w=0 means the cross-encoder is not consulted at all.
+	if untouched := svc.crossEncodeWith(context.Background(), "q", hits, 0); untouched[0].Drawer.ID != "A" {
+		t.Errorf("w=0 must leave the hybrid order alone, got %s", untouched[0].Drawer.ID)
+	}
+}
+
+// TestCrossEncodeKeepsUnscoredCandidates: a server that scores only part of the
+// page must cost precision, not evict results.
+func TestCrossEncodeKeepsUnscoredCandidates(t *testing.T) {
+	svc := newTestService(t)
+	hits := []SearchHit{
+		{Drawer: Drawer{ID: "A"}, Score: 0.9},
+		{Drawer: Drawer{ID: "B"}, Score: 0.5},
+		{Drawer: Drawer{ID: "C"}, Score: 0.1},
+	}
+	svc.reranker = &staticReranker{scores: []RerankScore{{Index: 2, Score: 5}}} // only C scored
+
+	got := svc.crossEncodeWith(context.Background(), "q", hits, DefaultRerankWeight)
+	if len(got) != 3 {
+		t.Fatalf("page shrank to %d hits", len(got))
+	}
+	seen := map[string]bool{}
+	for _, h := range got {
+		seen[h.Drawer.ID] = true
+	}
+	for _, id := range []string{"A", "B", "C"} {
+		if !seen[id] {
+			t.Errorf("hit %s was dropped", id)
+		}
+	}
+}
+
+// staticReranker returns a fixed ordering, so blending is testable without a
+// model.
+type staticReranker struct{ scores []RerankScore }
+
+func (s *staticReranker) Rerank(context.Context, string, []string) ([]RerankScore, error) {
+	return s.scores, nil
+}

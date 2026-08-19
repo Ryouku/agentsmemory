@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,6 +111,18 @@ type RerankScore struct {
 // be rescued, and shallow enough to stay well inside a search's latency budget.
 const DefaultRerankTopK = 50
 
+// DefaultRerankWeight is how much of the final ordering the cross-encoder decides,
+// with the rest left to the hybrid score it is refining.
+//
+// It is a BLEND rather than a handover for a measured reason. Handing the
+// cross-encoder the whole decision — which this code did first — throws away the
+// lexical half that knows an exact identifier match when it sees one. On this
+// palace's eval that cost MRR 1.000 → 0.684 in the regime where a developer
+// searches with the symbol they remember: the cross-encoder understands the
+// question better and the fused score knows the vocabulary, and neither alone
+// beats the two together.
+const DefaultRerankWeight = 0.5
+
 // Option configures a Service at construction. Options exist so optional
 // collaborators (a cross-encoder today) can be added without changing the
 // signature every caller and test already passes.
@@ -131,6 +144,17 @@ func WithReranker(r Reranker, topK int) Option {
 	}
 }
 
+// WithRerankWeight sets how much the cross-encoder's opinion counts against the
+// hybrid score it is refining: 1 hands it the whole decision, 0 ignores it.
+// Out-of-range values leave DefaultRerankWeight in place.
+func WithRerankWeight(w float64) Option {
+	return func(s *Service) {
+		if w >= 0 && w <= 1 {
+			s.rerankWeight = w
+		}
+	}
+}
+
 // Service is the core memory loop: it files drawers (chunk -> embed -> store) and
 // recalls them (embed query -> nearest-neighbour -> join metadata). It composes
 // the metadata Repo, an Embedder, and the vector store seam; everything is
@@ -142,8 +166,9 @@ type Service struct {
 	dim     int // embedding dimension new namespaces are created with (bge-m3 = 1024)
 	// reranker is the optional cross-encoder applied to the top rerankTopK
 	// candidates of a search. nil means hybrid ranking has the final word.
-	reranker   Reranker
-	rerankTopK int
+	reranker     Reranker
+	rerankTopK   int
+	rerankWeight float64
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -161,7 +186,8 @@ type Service struct {
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
 func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int, opts ...Option) *Service {
-	s := &Service{repo: repo, embed: embed, vectors: vectors, dim: dim, rerankTopK: DefaultRerankTopK}
+	s := &Service{repo: repo, embed: embed, vectors: vectors, dim: dim,
+		rerankTopK: DefaultRerankTopK, rerankWeight: DefaultRerankWeight}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -593,7 +619,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.ClosetBoost = r.Boost
 		ordered = append(ordered, hit)
 	}
-	ordered = s.crossEncode(ctx, query, ordered)
+	ordered = s.crossEncodeWith(ctx, query, ordered, s.rerankWeight)
 
 	if len(ordered) > limit {
 		ordered = ordered[:limit]
@@ -640,8 +666,8 @@ func boolToInt(b bool) int {
 // server that is down, a response that scored nothing. Search must degrade to
 // hybrid ranking, never to an error — the memory is still there, just ordered
 // slightly less well.
-func (s *Service) crossEncode(ctx context.Context, query string, hits []SearchHit) []SearchHit {
-	if s.reranker == nil || len(hits) < 2 {
+func (s *Service) crossEncodeWith(ctx context.Context, query string, hits []SearchHit, weight float64) []SearchHit {
+	if s.reranker == nil || len(hits) < 2 || weight <= 0 {
 		return hits
 	}
 	head := len(hits)
@@ -665,26 +691,94 @@ func (s *Service) crossEncode(ctx context.Context, query string, hits []SearchHi
 		return hits
 	}
 
-	// Rebuild the head in the cross-encoder's order. A candidate the server did
-	// not score keeps its hybrid position after the ones it did — dropping it
-	// would let a flaky response silently shrink the page.
-	rescored := make([]SearchHit, 0, head)
-	seen := make(map[int]bool, len(scores))
+	// BLEND the two opinions rather than letting one overwrite the other. The
+	// cross-encoder reads the query and the drawer together, which the embedder
+	// never did; the fused score carries the lexical evidence, which the
+	// cross-encoder's logit does not distinguish. Both are min-max normalized
+	// within this page first, because a raw logit (roughly -11..+6 here) and a
+	// fused score in [0,1] are not comparable numbers.
+	byIndex := make(map[int]float64, len(scores))
 	for _, sc := range scores {
-		if sc.Index < 0 || sc.Index >= head || seen[sc.Index] {
-			continue
+		if sc.Index >= 0 && sc.Index < head {
+			byIndex[sc.Index] = sc.Score
 		}
-		seen[sc.Index] = true
-		hit := hits[sc.Index]
-		hit.RerankScore = sc.Score
-		rescored = append(rescored, hit)
 	}
+	if len(byIndex) == 0 {
+		return hits
+	}
+	rerankNorm := normalizeByIndex(byIndex)
+	fused := make(map[int]float64, head)
 	for i := 0; i < head; i++ {
-		if !seen[i] {
-			rescored = append(rescored, hits[i])
+		fused[i] = hits[i].Score
+	}
+	fusedNorm := normalizeByIndex(fused)
+
+	type blended struct {
+		hit   SearchHit
+		score float64
+		order int // original position, the tie-break that keeps sorting stable
+	}
+	out := make([]blended, 0, head)
+	for i := 0; i < head; i++ {
+		hit := hits[i]
+		r, scored := rerankNorm[i]
+		if scored {
+			hit.RerankScore = byIndex[i]
 		}
+		// A candidate the server did not score keeps its hybrid standing rather
+		// than being pushed to the bottom: a flaky response should cost precision,
+		// not evict results.
+		score := fusedNorm[i]
+		if scored {
+			score = weight*r + (1-weight)*fusedNorm[i]
+		}
+		out = append(out, blended{hit: hit, score: score, order: i})
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].score != out[b].score {
+			return out[a].score > out[b].score
+		}
+		return out[a].order < out[b].order
+	})
+
+	rescored := make([]SearchHit, 0, len(hits))
+	for _, b := range out {
+		rescored = append(rescored, b.hit)
 	}
 	return append(rescored, hits[head:]...)
+}
+
+// normalizeByIndex min-max scales a set of scores into [0,1], keyed by the same
+// indices. An all-equal set maps to 1 everywhere: nothing to choose between, so
+// nothing should be reordered by this term.
+func normalizeByIndex(in map[int]float64) map[int]float64 {
+	out := make(map[int]float64, len(in))
+	if len(in) == 0 {
+		return out
+	}
+	first := true
+	var min, max float64
+	for _, v := range in {
+		if first {
+			min, max, first = v, v, false
+			continue
+		}
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	span := max - min
+	for i, v := range in {
+		if span == 0 {
+			out[i] = 1
+			continue
+		}
+		out[i] = (v - min) / span
+	}
+	return out
 }
 
 // DuplicateResult is the check_duplicate verdict: whether the most similar

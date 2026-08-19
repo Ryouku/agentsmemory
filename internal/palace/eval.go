@@ -29,9 +29,19 @@ const (
 	ArmHybrid EvalArm = "hybrid"
 	// ArmHybridCloset adds the closet boost.
 	ArmHybridCloset EvalArm = "hybrid+closet"
-	// ArmReranked is production: fusion, then the cross-encoder over the top K.
+	// ArmReranked is production: fusion, then the cross-encoder over the top K,
+	// blended at the configured weight.
 	ArmReranked EvalArm = "hybrid+closet+rerank"
 )
+
+// rerankSweep are the blend weights the eval tries alongside production, so how
+// much the cross-encoder should decide is answered by measurement rather than by
+// whoever last had an opinion. 1.0 is the old behaviour: the cross-encoder
+// overwrites the fused order completely.
+var rerankSweep = []float64{0.25, 0.5, 0.75, 1.0}
+
+// rerankArm names a swept arm.
+func rerankArm(w float64) EvalArm { return EvalArm(fmt.Sprintf("rerank blend w=%.2f", w)) }
 
 // EvalCase is one labelled question: the query, and the drawer that should come
 // back for it.
@@ -92,6 +102,9 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset}
 	if s.reranker != nil {
 		arms = append(arms, ArmReranked)
+		for _, w := range rerankSweep {
+			arms = append(arms, rerankArm(w))
+		}
 	}
 	byArm := map[EvalArm]*EvalMetrics{}
 	for _, a := range arms {
@@ -199,12 +212,25 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
-		case ArmReranked:
+		default:
+			// Every reranked arm shares one path; only the blend weight differs.
+			weight := s.rerankWeight
+			for _, w := range rerankSweep {
+				if arm == rerankArm(w) {
+					weight = w
+				}
+			}
+			// The cross-encoder refines the fused order, so it must be handed the
+			// fused SCORES too — reranking a list whose scores were dropped would
+			// blend against zeroes and silently become the old overwrite.
 			hitsForRank := make([]SearchHit, 0, len(pool))
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
-				hitsForRank = append(hitsForRank, SearchHit{Drawer: Drawer{ID: pool[r.Index].id, Content: pool[r.Index].content}})
+				hitsForRank = append(hitsForRank, SearchHit{
+					Drawer: Drawer{ID: pool[r.Index].id, Content: pool[r.Index].content},
+					Score:  r.Fused,
+				})
 			}
-			for _, h := range s.crossEncode(ctx, c.Query, hitsForRank) {
+			for _, h := range s.crossEncodeWith(ctx, c.Query, hitsForRank, weight) {
 				for i, p := range pool {
 					if p.id == h.Drawer.ID {
 						ordered = append(ordered, i)
