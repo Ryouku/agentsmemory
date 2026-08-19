@@ -914,6 +914,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap). The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner; 'inconclusive' means exactly that, never equivalence\n",
 		len(report.Arms[0].Ranks))
 
+	printRetrievalCeiling(out, report)
 	printPoolDiagnosis(out, report)
 	printCategories(out, report)
 	printSeparation(out, report)
@@ -949,6 +950,49 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			fmt.Fprintf(out, "  - %s\n", q)
 		}
 	}
+}
+
+// printRetrievalCeiling reports where the gold sits in the RETRIEVAL channel's
+// own ordering, before any arm re-orders it.
+//
+// It exists to stop a whole class of misreading. Every arm in the table
+// re-orders one shared pool that only the dense channel nominates — BM25 can
+// promote a candidate but never introduce one, because there is no independent
+// lexical retrieval here. So the arms differ in ORDERING and cannot differ in
+// what was retrievable, and this line is the ceiling all of them play under.
+// It is also the number to look at before believing that a published
+// "hybrid improves recall" result applies: those widen the candidate pool,
+// which this architecture does not do.
+func printRetrievalCeiling(out io.Writer, report palace.EvalReport) {
+	ranks := report.PoolRanks
+	if len(ranks) == 0 {
+		return
+	}
+	within := func(k int) int {
+		n := 0
+		for _, r := range ranks {
+			if r > 0 && r <= k {
+				n++
+			}
+		}
+		return n
+	}
+	pct := func(n int) float64 { return 100 * float64(n) / float64(len(ranks)) }
+	missing := 0
+	for _, r := range ranks {
+		if r == 0 { // never surfaced by the retrieval channel
+			missing++
+		}
+	}
+
+	fmt.Fprintf(out, "\nretrieval ceiling — where the answer sits by VECTOR DISTANCE alone, before any arm re-orders:\n")
+	fmt.Fprintf(out, "  in pool: %.0f%%   top-1 %.0f%%   top-5 %.0f%%   top-10 %.0f%%   top-20 %.0f%%   top-50 %.0f%%\n",
+		pct(len(ranks)-missing), pct(within(1)), pct(within(5)), pct(within(10)), pct(within(20)), pct(within(50)))
+	if missing > 0 {
+		fmt.Fprintf(out, "  %d of %d answer(s) were never retrieved at all — no ranking change can reach those; they need a wider pool, a different embedding, or a lexical channel that can NOMINATE candidates rather than only reorder them\n",
+			missing, len(ranks))
+	}
+	fmt.Fprintf(out, "  every arm above re-orders this same pool, so arm-vs-arm differences are ordering results, never retrieval ones\n")
 }
 
 // printPoolDiagnosis separates the two failures a single score hides.

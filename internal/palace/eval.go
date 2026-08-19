@@ -191,6 +191,21 @@ type EvalReport struct {
 	// caveats live only in scrollback gets quoted without them.
 	Warnings []string
 
+	// PoolRanks is, per answerable case, the position of the gold memory in the
+	// pool ORDERED BY VECTOR DISTANCE — the retrieval channel itself, before any
+	// fusion, boost or cross-encoder touches it. Zero means the dense channel
+	// never surfaced the answer at all.
+	//
+	// It is the ceiling every other number in the table sits under. Each arm here
+	// re-orders one shared pool that only the dense channel nominates: BM25 can
+	// move a candidate up, never bring one in, because there is no independent
+	// lexical retrieval. So a gold that is not in this pool is unreachable for
+	// every arm, and an arm's loss against another arm is a REORDERING result,
+	// not a retrieval one. Published "hybrid improves recall" findings are about
+	// widening the pool, which our architecture cannot do — reporting this makes
+	// the difference visible instead of leaving it to be assumed either way.
+	PoolRanks []int
+
 	// GoldRerank and AbsentRerank are the top-1 CROSS-ENCODER scores for the two
 	// kinds of question. They exist because the distance distributions overlap —
 	// so cosine cannot answer "do I know this?" — and a cross-encoder score is
@@ -302,7 +317,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	degradedCases := 0
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, topRerank, scored, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, topRerank, scored, poolRank, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
 		}
@@ -349,6 +364,9 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 				}
 			}
 		}
+		if cat != CatAbsent {
+			report.PoolRanks = append(report.PoolRanks, poolRank)
+		}
 		if cat == CatAbsent {
 			if topDistance >= 0 {
 				report.AbsentDistances = append(report.AbsentDistances, topDistance)
@@ -391,14 +409,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 // the score's zero is only "unscored" by convention: a sigmoid backend never
 // emits exactly 0, but a logit backend can, and the abstention data must not
 // quietly drop the case that lands there.
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored, degraded bool, errOut error) {
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored bool, poolRankOut int, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, 0, false, false, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, 0, false, 0, false, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, 0, false, false, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, 0, false, 0, false, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -406,7 +424,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, 0, false, false, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, 0, false, 0, false, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// The gold is a MEMORY, not a chunk of one.
@@ -437,10 +455,10 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// operator to raise --pool, misdiagnosing stale case data as a
 			// retrieval failure. Found by adversarial review, minutes after a
 			// full re-mine had made it live.
-			return nil, -1, 0, false, false, fmt.Errorf(
+			return nil, -1, 0, false, 0, false, fmt.Errorf(
 				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
 		default:
-			return nil, -1, 0, false, false, fmt.Errorf("load eval gold %s: %w", id, err)
+			return nil, -1, 0, false, 0, false, fmt.Errorf("load eval gold %s: %w", id, err)
 		}
 	}
 
@@ -507,6 +525,22 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// The abstention gate's calibration data, taken from the production arm and
 	// nowhere else.
 	prodRerank, prodScored := 0.0, false
+
+	// Where the gold sits in the RETRIEVAL channel's own ordering, before any
+	// arm re-orders it. This is the ceiling every arm plays under.
+	poolRank := 0
+	{
+		byDistance := make([]int, len(pool))
+		for i := range byDistance {
+			byDistance[i] = i
+		}
+		sort.SliceStable(byDistance, func(a, b int) bool { return pool[byDistance[a]].distance < pool[byDistance[b]].distance })
+		poolIDs := make([]string, len(pool))
+		for i, p := range pool {
+			poolIDs[i] = p.memory
+		}
+		poolRank = rankOf(poolIDs, byDistance, goldSet)
+	}
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
 		switch arm {
@@ -529,7 +563,15 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// The real path, telemetry suppressed so an eval does not pollute the
 			// palace's own recall statistics.
 			page, err := s.Search(ctx, teamID, SearchQuery{
-				Query: c.Query, Wing: c.Wing, Limit: MaxSearchLimit,
+				// The limit REAL callers use, not the maximum. At the default
+				// the candidate pool is max(limit*3, rerankPool) = 50 and the
+				// cross-encoder scores all 50, so fusion contributes the blend
+				// term and cannot evict anything; at limit=100 the pool is 300
+				// and 250 candidates never reach the cross-encoder. Those are
+				// two different architectures, and the arm that exists to catch
+				// "the eval looks fine while production is broken" was measuring
+				// the one nobody runs.
+				Query: c.Query, Wing: c.Wing, Limit: DefaultSearchLimit,
 				// Production callers pass the default distance gate; omitting it
 				// here would measure a search nobody actually runs.
 				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
@@ -565,7 +607,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if err != nil {
 				// A store failure is not "index not built", and scoring it as a
 				// miss would let a dead backend read as a bad embedding.
-				return nil, -1, 0, false, false, fmt.Errorf("contextual index search: %w", err)
+				return nil, -1, 0, false, 0, false, fmt.Errorf("contextual index search: %w", err)
 			}
 			if len(ctxHits) == 0 {
 				break // index not built (or empty) for this scope: reported NotFound
@@ -576,7 +618,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, 0, false, false, fmt.Errorf("load contextual candidates: %w", err)
+				return nil, -1, 0, false, 0, false, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -661,7 +703,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// with the very mismatch this measurement exists to avoid — that arm blends
 	// at a constant weight and can top out on a different document. A case where
 	// production returned no scored hit contributes nothing, which is honest.
-	return out, topDistance, prodRerank, prodScored, rerankFailed, nil
+	return out, topDistance, prodRerank, prodScored, poolRank, rerankFailed, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0
