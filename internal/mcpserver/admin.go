@@ -131,7 +131,8 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 			"writes":       stats.Writes,
 			"wings":        wings,
 			"unanswered":   stats.Unanswered,
-			"hint":         "answered_pct climbing over weeks means the palace is learning the questions this team actually asks; a wing with drawers and no searches is written-to and never read.",
+			"suggestions":  stats.Suggestions,
+			"hint":         "answered_pct climbing over weeks means the palace is learning the questions this team actually asks; a wing with drawers and no searches is written-to and never read. suggestions collapses the unanswered queries into a to-write list: each entry is one memory this team looked for and does not have, with how many times it was asked and which wing to file it in.",
 		}), nil
 	})
 }

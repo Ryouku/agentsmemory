@@ -99,9 +99,28 @@ if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; 
   else
     STATS="$(curl -fsS -m 3 "$STATS_URL" 2>/dev/null || true)"
   fi
+  # The server marks grouped write-me suggestions with a stable "  write: "
+  # prefix (palace.RecallStats.SuggestionLines — that prefix is a contract with
+  # this grep). They are split out of the report here and re-rendered below as
+  # their own section, because a suggestion buried in a statistics table is a
+  # statistic, while the same line under a "memories to write" heading is a task.
+  # No arrays (bash 3.2), and every pipeline ends in `|| true`: grep exits 1 on
+  # no match and `head` can SIGPIPE its producer — neither may kill the hook
+  # under set -euo pipefail.
+  REPORT="$(printf '%s\n' "$STATS" | grep -v '^  write: ' || true)"
+  TODO="$(printf '%s\n' "$STATS" | grep '^  write: ' | head -n 3 | sed 's/^  write: /  /' || true)"
   # $(...) strips trailing newlines, so the report needs its last one back —
   # without it whatever the terminal prints next continues the report's last line.
-  [ -n "$STATS" ] && printf '\n%s\n' "$STATS" >&2
+  [ -n "$REPORT" ] && printf '\n%s\n' "$REPORT" >&2
+  # memories to write — the recall flywheel's actionable half. Each line is a
+  # cluster of this session's searches that found NOTHING, already collapsed
+  # across paraphrasings and counted server-side; the wing in brackets says
+  # where the memory belongs. Silent when there is nothing to say, capped at
+  # three lines so the nudge stays a nudge — answering them is exactly the
+  # am_add_drawer step the checkpoint above asks for.
+  if [ -n "$TODO" ]; then
+    printf '\nmemories to write — searched, found nothing (am_add_drawer each into its wing):\n%s\n' "$TODO" >&2
+  fi
 fi
 
 exit 2

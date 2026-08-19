@@ -347,6 +347,45 @@ func (r *Repo) List(ctx context.Context, teamID, wing, room string, limit, offse
 	return out, nil
 }
 
+// DatedDrawers returns a random sample of drawers carrying a non-empty
+// content_date, optionally narrowed to a wing, at most one per source file. It
+// exists for the temporal eval: "the newer version of a corrected fact" is only
+// well-defined for drawers whose own chronology is known, and filtering in SQL
+// beats paging the whole corpus through the client to discard the undated
+// majority. Random rather than newest-first for the same reason ListRandom is
+// (the questions must not all be about last week), one-per-source for the same
+// reason too (parts of one mined session are correlated observations);
+// reproducibility comes from the saved case file, not a seed.
+func (r *Repo) DatedDrawers(ctx context.Context, teamID, wing string, limit int) ([]Drawer, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).
+		Where("team_id = ? AND content_date IS NOT NULL AND content_date <> ''", teamID)
+	if wing != "" {
+		q = q.Where("wing = ?", wing)
+	}
+	var rows []drawerRow
+	if err := q.Order("RANDOM()").Limit(limit * 5).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, limit)
+	out := make([]Drawer, 0, limit)
+	for _, row := range rows {
+		if row.SourceFile != "" {
+			if seen[row.SourceFile] {
+				continue
+			}
+			seen[row.SourceFile] = true
+		}
+		out = append(out, fromRow(row))
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // Wings aggregates a team's drawers by wing — the list_wings backend. The
 // GROUP BY rides idx_drawers_team_wing, keeping it cheap as the palace grows.
 func (r *Repo) Wings(ctx context.Context, teamID string) ([]WingStat, error) {

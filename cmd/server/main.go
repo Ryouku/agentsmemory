@@ -95,6 +95,7 @@ func main() {
 			syncCommand(def),
 			wingCommand(def),
 			evalCommand(def),
+			kgExtractCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
 			projectsCommand(def),
@@ -124,6 +125,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		RerankPool:       c.Int("rerank-pool"),
 		BM25Weight:       strings.TrimSpace(c.String("bm25-weight")),
 		ClosetBoost:      c.Float("closet-boost"),
+		Fusion:           strings.TrimSpace(c.String("fusion")),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
@@ -174,6 +176,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
 		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), or a fixed 0..1"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -805,6 +808,19 @@ func buildServices(cfg config.Config) (*services, error) {
 		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
 		log.Printf("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
 	}
+	// An unrecognized value is reported rather than silently ignored, the same way
+	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
+	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
+	// served the linear blend instead, they would read the eval's rrf column and
+	// their production ordering as the same configuration when they are not.
+	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
+		if strings.EqualFold(f, "rrf") {
+			drawers = drawers.WithFusion("rrf")
+			log.Printf("fusion: reciprocal-rank (bm25 weight does not apply)")
+		} else {
+			log.Printf("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
+		}
+	}
 	if w := cfg.BM25Weight; w != "" && w != "auto" {
 		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
 			drawers = drawers.WithBM25Weight(false, fixed)
@@ -966,6 +982,13 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 			// team went looking for and does not have.
 			b.WriteString("  found nothing for: ")
 			b.WriteString(strings.Join(stats.Unanswered, " | "))
+			b.WriteString("\n")
+		}
+		// The same gaps, deduplicated and counted — what to DO about them. The
+		// "  write: " prefix is a grep contract with the Stop hook; see
+		// RecallStats.SuggestionLines.
+		for _, line := range stats.SuggestionLines(3) {
+			b.WriteString(line)
 			b.WriteString("\n")
 		}
 		// A trailing newline: the hook pipes this straight to a terminal, and
