@@ -50,7 +50,16 @@ services:
       QDRANT_URL: http://qdrant:6333
       RERANK_URL: http://reranker:8080/v1/rerank
       RERANK_MODEL: bge-reranker-v2-m3
-      RERANK_TOP_K: "50"
+      # 20, not 50: the cross-encoder scores every pair in a full forward pass, so
+      # cost is linear here. On CPU a drawer-sized pair takes ~0.2-0.5s, and 50 of
+      # them overran a 30s budget during an eval run — which degrades silently to
+      # the hybrid order, the worst possible way to lose a feature.
+      RERANK_TOP_K: "20"
+      # How much the cross-encoder decides versus the hybrid score it refines.
+      # 1.0 lets it overwrite the lexical evidence entirely, which measurably
+      # ranks worse; see `agentsmemory eval` and its weight sweep.
+      RERANK_WEIGHT: "0.5"
+      RERANK_TIMEOUT: "90s"
 
   qdrant:
     image: qdrant/qdrant:v1.15.0

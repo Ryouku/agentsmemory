@@ -127,7 +127,24 @@ type Config struct {
 
 	// RerankTopK bounds how many hybrid-ranked candidates reach the cross-encoder
 	// — the cost knob for the precision it buys. Zero uses the palace default.
+	//
+	// It is small on purpose. A cross-encoder scores each pair in a full forward
+	// pass, so cost is linear in this number, and on CPU a drawer-sized pair runs
+	// ~0.2-0.5s: 50 candidates can exceed a 30-second budget, which was observed
+	// as silent fallbacks to the hybrid order during an eval run.
 	RerankTopK int
+
+	// RerankWeight is how much of the final ordering the cross-encoder decides,
+	// with the rest left to the hybrid score it refines. 1 hands it the whole
+	// decision — which measurably loses the lexical evidence — and 0 disables it.
+	RerankWeight float64
+
+	// RerankTimeout bounds a single rerank call. It is separate from HTTPTimeout
+	// because the other outbound calls (embed, Qdrant) answer in milliseconds
+	// while this one is doing real inference, and giving them one shared budget
+	// means either cutting the cross-encoder off or waiting far too long on a
+	// dead vector store.
+	RerankTimeout time.Duration
 
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
 	HTTPTimeout time.Duration
@@ -205,7 +222,9 @@ func Default() Config {
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
-		RerankTopK:       50,
+		RerankTopK:       20,
+		RerankWeight:     0.5,
+		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}
 }

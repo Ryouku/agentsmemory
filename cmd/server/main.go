@@ -121,6 +121,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		RerankURL:        c.String("rerank-url"),
 		RerankModel:      c.String("rerank-model"),
 		RerankTopK:       c.Int("rerank-top-k"),
+		RerankWeight:     c.Float("rerank-weight"),
+		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
@@ -167,7 +169,9 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder rerank endpoint (empty = no reranking); a bare host gets /rerank appended"},
 		&cli.StringFlag{Name: "rerank-model", Sources: cli.EnvVars("RERANK_MODEL"), Value: def.RerankModel, Usage: "rerank model name, for endpoints serving more than one"},
-		&cli.IntFlag{Name: "rerank-top-k", Sources: cli.EnvVars("RERANK_TOP_K"), Value: def.RerankTopK, Usage: "how many hybrid-ranked candidates the cross-encoder scores"},
+		&cli.IntFlag{Name: "rerank-top-k", Sources: cli.EnvVars("RERANK_TOP_K"), Value: def.RerankTopK, Usage: "how many hybrid-ranked candidates the cross-encoder scores (cost is linear in this)"},
+		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
+		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for one rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
 }
@@ -793,9 +797,14 @@ func buildServices(cfg config.Config) (*services, error) {
 	// rerank server is deployed.
 	var opts []palace.Option
 	if cfg.RerankURL != "" {
-		opts = append(opts, palace.WithReranker(
-			crossEncoder{rerank.New(cfg.RerankURL, cfg.RerankModel, cfg.HTTPTimeout)}, cfg.RerankTopK))
-		log.Printf("reranker: %s (top %d)", cfg.RerankURL, cfg.RerankTopK)
+		timeout := cfg.RerankTimeout
+		if timeout <= 0 {
+			timeout = cfg.HTTPTimeout
+		}
+		opts = append(opts,
+			palace.WithReranker(crossEncoder{rerank.New(cfg.RerankURL, cfg.RerankModel, timeout)}, cfg.RerankTopK),
+			palace.WithRerankWeight(cfg.RerankWeight))
+		log.Printf("reranker: %s (top %d, weight %.2f, timeout %s)", cfg.RerankURL, cfg.RerankTopK, cfg.RerankWeight, timeout)
 	}
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim, opts...)
 
