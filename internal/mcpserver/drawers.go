@@ -307,6 +307,10 @@ type searchHitView struct {
 	// into score because the two are not on the same scale — an agent reading the
 	// page should be able to see which signal moved a hit.
 	RerankScore float64 `json:"rerank_score,omitempty"`
+	// Truncated says the content above is a snippet around the match, not the
+	// whole memory — fetch it with am_get_drawer when the snippet is not enough.
+	Truncated  bool `json:"content_truncated,omitempty"`
+	FullLength int  `json:"content_length,omitempty"`
 	// Anchors are the code this memory was written about, with the verdict of the
 	// last verification pass. Stale is the summary an agent should branch on.
 	Anchors []anchorView `json:"code_anchors,omitempty"`
@@ -331,6 +335,10 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
+		mcp.WithNumber("snippet_chars", mcp.Description(
+			"How much of each hit's text to return, as a window centred on the match (default 400). "+
+				"Recall is paid for in your context window: a page of full-length memories costs several thousand tokens, "+
+				"and most of it is text you did not need. Pass 0 for whole memories, or fetch any single one in full with am_get_drawer.")),
 		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -353,11 +361,21 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
 			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
 			ids[i] = h.Drawer.ID
+			if snippetChars > 0 {
+				// The window is centred on the query's own terms, so what comes
+				// back is the part that matched rather than the memory's heading.
+				if snippet := palace.Snippet(h.Drawer.Content, query, snippetChars); snippet != h.Drawer.Content {
+					views[i].Content = snippet
+					views[i].Truncated = true
+					views[i].FullLength = len([]rune(h.Drawer.Content))
+				}
+			}
 		}
 		// Staleness travels WITH the memory. A recalled sentence about code that
 		// has since changed is the one failure mode a confident agent cannot catch

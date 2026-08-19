@@ -229,3 +229,73 @@ func rankHybrid(query string, docs []string, distances, boosts []float64) []Hybr
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Fused > out[b].Fused })
 	return out
 }
+
+// DefaultSnippetChars is how much of a hit's content search returns by default.
+//
+// Recall is paid for in an agent's context window, and the price decides whether
+// it gets called twice. A 5-hit page of full 1600-character drawers is ~2,500
+// tokens; the same page as snippets is a few hundred, and the agent can pull any
+// one of them in full by id. What it must never do is return so little that the
+// agent cannot tell whether the memory is the one it wanted — so the window is
+// centred on the query's own terms rather than cut from the front.
+const DefaultSnippetChars = 400
+
+// Snippet returns the window of content most relevant to query, with an ellipsis
+// where text was removed. It returns content unchanged when it already fits.
+//
+// The window is chosen by term density, not position: the first paragraph of a
+// memory is usually its heading, and the sentence that answers the query is
+// usually not there.
+func Snippet(content, query string, maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = DefaultSnippetChars
+	}
+	runes := []rune(content)
+	if len(runes) <= maxChars {
+		return content
+	}
+
+	terms := tokenize(query)
+	if len(terms) == 0 {
+		return string(runes[:maxChars]) + "…"
+	}
+	lower := []rune(strings.ToLower(content))
+
+	// Score each candidate window by how many query terms start inside it. A
+	// coarse stride keeps this linear-ish on long content while still landing
+	// within a sentence of the best match.
+	const stride = 40
+	best, bestScore := 0, -1
+	for start := 0; start+maxChars <= len(runes) || start == 0; start += stride {
+		end := start + maxChars
+		if end > len(runes) {
+			end = len(runes)
+		}
+		window := string(lower[start:end])
+		score := 0
+		for _, t := range terms {
+			if strings.Contains(window, t) {
+				score++
+			}
+		}
+		if score > bestScore {
+			best, bestScore = start, score
+		}
+		if end == len(runes) {
+			break
+		}
+	}
+
+	end := best + maxChars
+	if end > len(runes) {
+		end = len(runes)
+	}
+	out := string(runes[best:end])
+	if best > 0 {
+		out = "…" + out
+	}
+	if end < len(runes) {
+		out += "…"
+	}
+	return out
+}

@@ -189,3 +189,43 @@ func TestClosetBoostHasNoCliff(t *testing.T) {
 		t.Errorf("strength at the cap = %.4f, want 0", got)
 	}
 }
+
+// TestSnippetCentresOnTheQuery: the answer to a query is rarely in a memory's
+// first paragraph, which is usually its heading — so a snippet cut from the
+// front would routinely show the agent the wrong part and cost a second call.
+func TestSnippetCentresOnTheQuery(t *testing.T) {
+	content := strings.Repeat("preamble about unrelated setup. ", 20) +
+		"the installer pins CLAUDE_CONFIG_DIR and the registration lands unread. " +
+		strings.Repeat("trailing notes that do not matter. ", 20)
+
+	got := Snippet(content, "installer pins CLAUDE_CONFIG_DIR", 200)
+	if !strings.Contains(got, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("snippet missed the matching passage: %q", got)
+	}
+	if len([]rune(got)) > 210 {
+		t.Errorf("snippet is %d runes, want ~200", len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, "…") {
+		t.Error("a snippet taken from the middle must say text was removed before it")
+	}
+}
+
+// TestSnippetLeavesShortContentAlone: most memories are already short, and
+// truncating them would cost an id lookup for nothing.
+func TestSnippetLeavesShortContentAlone(t *testing.T) {
+	content := "a short memory"
+	if got := Snippet(content, "memory", 400); got != content {
+		t.Errorf("Snippet mangled short content: %q", got)
+	}
+}
+
+// TestSnippetWithoutQueryTermsStillReturnsSomething: a query whose terms appear
+// nowhere (or is all stop-length noise) must still yield a readable head rather
+// than an empty string.
+func TestSnippetWithoutQueryTermsStillReturnsSomething(t *testing.T) {
+	content := strings.Repeat("some content that shares nothing with the query. ", 20)
+	got := Snippet(content, "zzz", 100)
+	if len(got) == 0 || !strings.HasSuffix(got, "…") {
+		t.Errorf("want a truncated head, got %q", got)
+	}
+}

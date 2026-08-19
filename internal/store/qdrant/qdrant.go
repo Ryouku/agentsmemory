@@ -59,16 +59,48 @@ func (c *Client) EnsureCollection(ctx context.Context, teamID string, dim int) e
 	name := CollectionName(teamID)
 
 	// A HEAD-equivalent GET tells us whether the collection already exists.
-	if exists, err := c.collectionExists(ctx, name); err != nil {
+	exists, err := c.collectionExists(ctx, name)
+	if err != nil {
 		return err
-	} else if exists {
-		return nil
 	}
+	if !exists {
+		body := map[string]any{
+			"vectors": map[string]any{"size": dim, "distance": "Cosine"},
+		}
+		if err := c.do(ctx, http.MethodPut, "/collections/"+name, body, nil); err != nil {
+			return err
+		}
+	}
+	// Indexes are ensured even on an existing collection, so a palace created
+	// before this existed gets them on the next boot rather than staying slow
+	// forever with nothing to indicate why.
+	return c.ensurePayloadIndexes(ctx, name)
+}
 
-	body := map[string]any{
-		"vectors": map[string]any{"size": dim, "distance": "Cosine"},
+// filterKeys are the payload fields searches filter on. They mirror the payload
+// written at upsert time (internal/palace writes {wing, room}).
+var filterKeys = []string{"wing", "room"}
+
+// ensurePayloadIndexes creates a keyword index for each filterable payload key.
+//
+// Without one, Qdrant can still answer a filtered search — by scanning. The
+// filter is applied to points as they are visited rather than used to narrow
+// what gets visited, so the cost grows with the COLLECTION rather than with the
+// matching subset. That is invisible on a small palace and is exactly the shape
+// of problem that only shows up once someone depends on it: per-project wings
+// mean every search is filtered, so this is the difference between a filter that
+// helps and one that quietly costs.
+//
+// Creating an index that already exists is a no-op for Qdrant, so this runs on
+// every boot without a guard.
+func (c *Client) ensurePayloadIndexes(ctx context.Context, collection string) error {
+	for _, key := range filterKeys {
+		body := map[string]any{"field_name": key, "field_schema": "keyword"}
+		if err := c.do(ctx, http.MethodPut, "/collections/"+collection+"/index?wait=true", body, nil); err != nil {
+			return fmt.Errorf("ensure payload index %q on %s: %w", key, collection, err)
+		}
 	}
-	return c.do(ctx, http.MethodPut, "/collections/"+name, body, nil)
+	return nil
 }
 
 // DeleteCollection drops a team's collection entirely — points and config. A
