@@ -9,7 +9,13 @@
 // text is still there and still true, just attached to the wrong thing. Only
 // `go doc` or a human notices, and a human noticing is not a gate.
 //
-// The same sweep then found five more: an eval type wearing Evaluate's
+// It then recurred in a position the first version of this check could not
+// see: a new STRUCT FIELD landed between an existing field's comment and its
+// declaration. Same defect, one nesting level down — which is why this walks
+// struct and interface bodies too, and why fields are checked whether they are
+// exported or not.
+//
+// The first sweep found five more: an eval type wearing Evaluate's
 // documentation (leaving Evaluate undocumented), a renamed function still
 // carrying its old name's comment describing behaviour it no longer has, and
 // three tests whose comments had drifted onto their neighbours.
@@ -68,13 +74,28 @@ func TestDocCommentsMatchTheirDeclaration(t *testing.T) {
 			return nil
 		}
 		declared := declaredNames(file)
-		for _, decl := range file.Decls {
-			name, doc, pos := declInfo(decl)
-			if name == "" || doc == nil || !ast.IsExported(name) {
+		for _, d := range documented(file) {
+			if d.name == "" || d.doc == nil {
 				continue
 			}
-			first := firstWord(doc)
-			if first == "" || first == name || first == "Deprecated:" {
+			// Struct fields are checked whether exported or not: an unexported
+			// field wearing its neighbour's comment misleads the next reader of
+			// this package exactly as much, and this package is where the
+			// reasoning lives.
+			if !d.field && !ast.IsExported(d.name) {
+				continue
+			}
+			first := firstWord(d.doc)
+			if first == "" || first == d.name || first == "Deprecated:" {
+				continue
+			}
+			// A comment opening with a PREFIX of the name is describing the same
+			// thing, not a different one: "OpenCollective wiring (used when …)"
+			// heads a group whose only member is OpenCollectiveProjectURL. Every
+			// real drift found so far fails this test — Evaluate is no prefix of
+			// Progress, ImportClosets none of AbsorbClosets — so the exemption
+			// costs no detection.
+			if strings.HasPrefix(d.name, first) {
 				continue
 			}
 			if !declared[first] && !looksLikeIdentifier(first) {
@@ -84,9 +105,9 @@ func TestDocCommentsMatchTheirDeclaration(t *testing.T) {
 			if relErr != nil {
 				rel = path
 			}
-			problems = append(problems, rel+":"+itoa(fset.Position(pos).Line)+
-				": the doc comment on "+name+" opens with "+first+
-				" — it documents another declaration, so `go doc "+name+"` prints the wrong text")
+			problems = append(problems, rel+":"+itoa(fset.Position(d.pos).Line)+
+				": the doc comment on "+d.name+" opens with "+first+
+				" — it documents something else, so a reader of "+d.name+" gets the wrong text")
 		}
 		return nil
 	})
@@ -99,6 +120,52 @@ func TestDocCommentsMatchTheirDeclaration(t *testing.T) {
 	if len(problems) > 0 {
 		t.Log("fix: give each declaration its own comment, or move the drifted one back to what it describes (`go doc <name>` shows what a reader gets)")
 	}
+}
+
+// documentedDecl is one thing that can carry a doc comment: a top-level
+// declaration, or a field inside a struct or interface. Fields matter as much as
+// declarations here — the second recurrence of this defect put a new struct
+// field between an existing field's comment and its declaration, a position a
+// declaration-only check cannot see.
+type documentedDecl struct {
+	name  string
+	doc   *ast.CommentGroup
+	pos   token.Pos
+	field bool
+}
+
+// documented lists everything in a file that carries a doc comment, descending
+// into struct and interface bodies.
+func documented(file *ast.File) []documentedDecl {
+	var out []documentedDecl
+	for _, decl := range file.Decls {
+		name, doc, pos := declInfo(decl)
+		if name != "" {
+			out = append(out, documentedDecl{name: name, doc: doc, pos: pos})
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		var fields *ast.FieldList
+		switch t := n.(type) {
+		case *ast.StructType:
+			fields = t.Fields
+		case *ast.InterfaceType:
+			fields = t.Methods
+		default:
+			return true
+		}
+		if fields == nil {
+			return true
+		}
+		for _, f := range fields.List {
+			if f.Doc == nil || len(f.Names) == 0 {
+				continue
+			}
+			out = append(out, documentedDecl{name: f.Names[0].Name, doc: f.Doc, pos: f.Pos(), field: true})
+		}
+		return true
+	})
+	return out
 }
 
 // declInfo returns the name, doc comment and position of a declaration, or an
@@ -129,6 +196,23 @@ func declInfo(decl ast.Decl) (string, *ast.CommentGroup, token.Pos) {
 // documenting that one, not the declaration it sits on.
 func declaredNames(file *ast.File) map[string]bool {
 	names := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch t := n.(type) {
+		case *ast.StructType:
+			for _, f := range t.Fields.List {
+				for _, fn := range f.Names {
+					names[fn.Name] = true
+				}
+			}
+		case *ast.InterfaceType:
+			for _, m := range t.Methods.List {
+				for _, mn := range m.Names {
+					names[mn.Name] = true
+				}
+			}
+		}
+		return true
+	})
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
