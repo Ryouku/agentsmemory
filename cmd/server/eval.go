@@ -52,14 +52,16 @@ func evalCommand(def config.Config) *cli.Command {
 			"Read the DELTAS, not the absolute numbers: questions generated from a drawer\n" +
 			"share vocabulary with it, which flatters every arm equally.\n\n" +
 			"  agentsmemory eval --wing wing_acme --n 40 --cases /data/eval.jsonl\n" +
-			"  agentsmemory eval --cases /data/eval.jsonl        # re-run the same questions",
+			"  agentsmemory eval --cases /data/eval.jsonl        # re-run the same questions\n" +
+			"  agentsmemory eval --project acme --wing wing_acme # a multi-tenant database",
 		Flags: append(serveFlags(def),
+			projectFlag(),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
 			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
-			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions — any model your generator endpoint serves"},
-			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "generator endpoint (default: the configured Ollama). A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
-			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for the generator endpoint, when it needs one"},
+			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions (must be GENERATIVE — an embedder like bge-m3 cannot answer /api/generate)"},
+			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
+			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted providers, ignored by a local one"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
@@ -79,12 +81,20 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	if err != nil {
 		return err
 	}
-	t, err := svc.tenants.EnsureLocalWorkspace(ctx)
+	// Named like every other database-level subcommand (wing, inspect, share,
+	// plan) rather than resolved through EnsureLocalWorkspace: that helper's
+	// refusal to touch a workspace it did not provision guards an UNAUTHENTICATED
+	// /mcp, and applying it here made eval the one command that could not measure
+	// a multi-tenant palace at all — a database holding any workspace not slugged
+	// "local" (the seeded demo team is enough) failed before reading a drawer.
+	// Possessing the file is the authorization here, exactly as it already is for
+	// `wing export` and `inspect`.
+	team, err := resolveProject(ctx, svc, c.String("project"))
 	if err != nil {
-		return fmt.Errorf("resolve the local workspace (eval runs against --local): %w", err)
+		return err
 	}
 
-	cases, from, err := loadOrGenerateCases(ctx, c, svc, t, out)
+	cases, from, err := loadOrGenerateCases(ctx, c, svc, team, out)
 	if err != nil {
 		return err
 	}
@@ -98,7 +108,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
 	if c.Bool("drop-contextual") {
-		n, err := svc.drawers.DropContextualIndex(ctx, t.TeamID, c.Int("contextual-limit"))
+		n, err := svc.drawers.DropContextualIndex(ctx, team.ID, c.Int("contextual-limit"))
 		if err != nil {
 			return err
 		}
@@ -113,14 +123,14 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		fmt.Fprintf(out, "building the contextual index — one embedding pass over up to %d chunk(s), written beside the real vectors; `eval --drop-contextual` gives the space back\n",
 			c.Int("contextual-limit"))
 		started := time.Now()
-		n, err := svc.drawers.BuildContextualIndex(ctx, t.TeamID, 32, c.Int("contextual-limit"))
+		n, err := svc.drawers.BuildContextualIndex(ctx, team.ID, 32, c.Int("contextual-limit"))
 		if err != nil {
 			return fmt.Errorf("build contextual index: %w", err)
 		}
 		fmt.Fprintf(out, "  embedded %d chunk(s) with context in %s\n", n, time.Since(started).Round(time.Second))
 	}
 
-	report, err := svc.drawers.EvaluateWith(ctx, t.TeamID, cases, c.Int("pool"),
+	report, err := svc.drawers.EvaluateWith(ctx, team.ID, cases, c.Int("pool"),
 		palace.EvalOptions{Contextual: c.Bool("contextual")},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
@@ -191,7 +201,7 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
-func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t tenant.Tenant, out io.Writer) ([]palace.EvalCase, string, error) {
+func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
 	path := c.String("cases")
 	if path != "" {
 		var merged []palace.EvalCase
@@ -216,12 +226,17 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	//
 	// Reproducibility comes from the saved case file rather than from a seed: the
 	// questions are what a re-run must hold constant, and they are on disk.
-	drawers, err := svc.drawers.SampleDrawers(ctx, t.TeamID, c.String("wing"), c.Int("n"))
+	drawers, err := svc.drawers.SampleDrawers(ctx, team.ID, c.String("wing"), c.Int("n"))
 	if err != nil {
 		return nil, "", fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
-		return nil, "", nil
+		// Named distinctly rather than folded into runEval's "no eval cases": an
+		// empty corpus and a broken generator are different faults with different
+		// fixes, and reporting them with one sentence sent the reader to inspect a
+		// wing that was never the problem.
+		return nil, "", fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
+			corpusLabel(c.String("wing")), team.Slug)
 	}
 
 	prompt, style := evalPromptParaphrase, c.String("style")
@@ -234,14 +249,10 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	case "absent":
 		prompt, category = evalPromptAbsent, palace.CatAbsent
 	}
-	genURL := c.String("gen-url")
-	if strings.TrimSpace(genURL) == "" {
-		genURL = cfg2URL(c.String("ollama-url"))
-	}
 	gen := &questionGen{
-		url:     genURL,
+		url:     genURL(c),
 		model:   c.String("gen-model"),
-		apiKey:  c.String("gen-api-key"),
+		apiKey:  strings.TrimSpace(c.String("gen-api-key")),
 		prompt:  prompt,
 		http:    &http.Client{Timeout: 120 * time.Second},
 		verbose: out,
@@ -261,6 +272,19 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 		started := time.Now()
 		q, err := gen.ask(ctx, d.Content)
 		if err != nil {
+			// The FIRST failure aborts. A generator that cannot answer the first
+			// drawer is misconfigured rather than unlucky — a missing model, a wrong
+			// --ollama-url, a stopped daemon — and every remaining drawer would fail
+			// the same way, so continuing buys nothing and costs one round trip each.
+			// It also buries the cause: the loop used to end with "no eval cases: the
+			// wing has no drawers", blaming a corpus that was never the problem.
+			// Later failures still skip, because by then the generator has proven it
+			// works and the fault is that drawer's.
+			if i == 0 {
+				return nil, "", fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
+					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
+					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
+			}
 			fmt.Fprintf(out, "  [%2d/%2d] failed: %v\n", i+1, len(drawers), err)
 			continue
 		}
@@ -292,12 +316,33 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	return cases, "generated", nil
 }
 
-// questionGen asks a local model for a question a given memory answers.
+// genURL is where the question generator runs. It defaults to the embedder's
+// Ollama so a single-machine setup configures nothing, and is separable because
+// the two jobs have different shapes: embedding is a small, constant, local cost
+// that belongs next to the data, while generating eval questions is a one-off
+// burst of LLM work an operator may want to send to a bigger hosted model without
+// moving their vectors off the box.
+func genURL(c *cli.Command) string {
+	if u := strings.TrimSpace(c.String("gen-url")); u != "" {
+		return u
+	}
+	return cfg2URL(c.String("ollama-url"))
+}
+
+// questionGen asks a model for a question a given memory answers.
+//
+// The wire format is Ollama's own POST /api/generate ({model, prompt, stream,
+// options} in, {response} out), so --gen-url accepts a local Ollama, a remote
+// one, or hosted Ollama with a bearer token. It is NOT OpenAI-shaped: an
+// OpenAI/Anthropic-compatible endpoint speaks /v1/chat/completions and would need
+// a different request and reply, which is deliberately out of scope here — the
+// generator is scaffolding for producing eval questions, not a model gateway.
 type questionGen struct {
-	url     string
-	model   string
-	apiKey  string
-	prompt  string
+	url    string
+	model  string
+	apiKey string // sent as Authorization: Bearer when set; hosted providers need it
+	prompt string
+
 	http    *http.Client
 	verbose io.Writer
 }
@@ -446,6 +491,9 @@ func (g *questionGen) ask(ctx context.Context, content string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if g.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	}
 	resp, err := g.http.Do(req)
 	if err != nil {
 		return "", err

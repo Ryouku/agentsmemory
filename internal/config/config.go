@@ -240,7 +240,7 @@ func Default() Config {
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
 		BM25Weight:       "auto",
-		RerankPool:       50, // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		RerankTimeout:    90 * time.Second,
 		Debug:            false,

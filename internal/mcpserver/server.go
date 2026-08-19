@@ -93,7 +93,9 @@ type Deps struct {
 	// Local is true when this process serves the single self-hosted workspace
 	// (server --local). am_status reports it as the session's mode, which is what
 	// lets an agent tell "my own machine" from "the hosted server" without
-	// inspecting its own config — the check a protocol gate actually needs.
+	// inspecting its own config — the check a protocol gate actually needs. It also
+	// widens the tool surface to operations that are only safe when the agent, the
+	// operator and the workspace are one person on one machine — see registerAdmin.
 	Local bool
 }
 
@@ -122,8 +124,8 @@ func New(deps Deps) *server.MCPServer {
 	registerGraph(reg, deps.Drawers, deps.Usage)
 	// The temporal knowledge graph: kg_add/invalidate/query/stats/timeline.
 	registerKG(reg, deps.Drawers, deps.Usage)
-	// Palace maintenance: merge_wing, memories_filed_away.
-	registerAdmin(reg, deps.Drawers, deps.Usage)
+	// Palace maintenance: merge_wing, memories_filed_away, and delete_wing when local.
+	registerAdmin(reg, deps.Drawers, deps.Usage, deps.Local)
 	// Recall measurement: how well the memory answers, per wing.
 	registerRecallStats(reg, deps.Drawers, deps.Usage)
 	// Staleness: pin memories to code, and record what verification found.
