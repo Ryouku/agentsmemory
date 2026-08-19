@@ -40,6 +40,10 @@ const (
 	// ArmRRFReranked is RRF with the cross-encoder on top, so the fusion choice
 	// and the rerank choice can be read independently.
 	ArmRRFReranked EvalArm = "rrf+rerank"
+	// ArmContextual retrieves from an index built with each chunk carrying a
+	// little of its parent's context, then ranks it exactly like ArmHybridCloset —
+	// so the delta is the EMBEDDING, not the ranking.
+	ArmContextual EvalArm = "contextual chunks"
 )
 
 // rerankSweep are the blend weights the eval tries alongside production, so how
@@ -138,6 +142,14 @@ func pct(n, total int) float64 {
 type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
+
+	// GoldDistances and AbsentDistances are the top-1 cosine distances for
+	// answerable and unanswerable questions. They exist because max_distance —
+	// the gate that decides when the palace should admit it knows nothing — was
+	// inherited folklore, and the only way to set it honestly is to look at where
+	// the two distributions actually sit.
+	GoldDistances   []float64
+	AbsentDistances []float64
 }
 
 // EvalCaseResult is where each arm put the expected drawer for one query. Rank 0
@@ -157,11 +169,27 @@ type EvalCaseResult struct {
 // how the first one read — so Evaluate reports each case as it lands.
 type Progress func(done, total int, query string, elapsed time.Duration)
 
+// EvalOptions turn on arms that need something built first.
+type EvalOptions struct {
+	// Contextual adds the contextual-chunk arm. The index must already exist
+	// (BuildContextualIndex); the arm is skipped rather than silently empty when
+	// it does not.
+	Contextual bool
+}
+
 func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int, progress Progress) (EvalReport, error) {
+	return s.EvaluateWith(ctx, teamID, cases, poolSize, EvalOptions{}, progress)
+}
+
+// EvaluateWith is Evaluate with the optional arms.
+func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalCase, poolSize int, opts EvalOptions, progress Progress) (EvalReport, error) {
 	if poolSize <= 0 {
 		poolSize = 50
 	}
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
+	if opts.Contextual {
+		arms = append(arms, ArmContextual)
+	}
 	if s.rerank != nil {
 		arms = append(arms, ArmRRFReranked)
 		arms = append(arms, ArmReranked)
@@ -171,13 +199,13 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 	}
 	byArm := map[EvalArm]*EvalMetrics{}
 	for _, a := range arms {
-		byArm[a] = &EvalMetrics{Arm: a}
+		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
 	}
 	report := EvalReport{}
 
 	for i, c := range cases {
 		started := time.Now()
-		ranks, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
 		}
@@ -185,27 +213,56 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
 		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Ranks: ranks})
+		cat := c.category()
 		for _, a := range arms {
 			m := byArm[a]
+			cm := m.ByCategory[cat]
+			if cm == nil {
+				cm = &CategoryMetrics{}
+				m.ByCategory[cat] = cm
+			}
+			cm.Cases++
+
+			// An absent case has no gold to rank: what is measured is whether the
+			// system returned something confident anyway.
+			if cat == CatAbsent {
+				if topDistance >= 0 {
+					report.AbsentDistances = append(report.AbsentDistances, topDistance)
+				}
+				continue
+			}
+
 			m.Cases++
 			switch r := ranks[a]; {
 			case r == 0:
 				m.NotFound++
+				cm.NotFound++
 			default:
 				m.MRR += 1 / float64(r)
+				cm.MRR += 1 / float64(r)
 				if r == 1 {
 					m.Recall1++
+					cm.Recall1++
 				}
 				if r <= 5 {
 					m.Recall5++
+					cm.Recall5++
 				}
 			}
+		}
+		if cat != CatAbsent && topDistance >= 0 {
+			report.GoldDistances = append(report.GoldDistances, topDistance)
 		}
 	}
 	for _, a := range arms {
 		m := byArm[a]
 		if m.Cases > 0 {
 			m.MRR /= float64(m.Cases)
+		}
+		for _, cm := range m.ByCategory {
+			if cm.Cases > 0 {
+				cm.MRR /= float64(cm.Cases)
+			}
 		}
 		report.Arms = append(report.Arms, *m)
 	}
@@ -214,14 +271,14 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, error) {
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, float64, error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -229,7 +286,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// One candidate list, ordered by vector distance — the input every arm
@@ -260,6 +317,15 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		boosts[i] = closetBoosts[p.source]
 	}
 
+	// The nearest candidate's distance, whatever the arm: it is what a
+	// max_distance gate would see, and the absent-case measurement needs it.
+	topDistance := -1.0
+	for _, p := range pool {
+		if topDistance < 0 || p.distance < topDistance {
+			topDistance = p.distance
+		}
+	}
+
 	out := map[EvalArm]int{}
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
@@ -279,6 +345,40 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
+		case ArmContextual:
+			// A separate retrieval, because the arm's whole claim is about what
+			// gets RETRIEVED. Ranking is the standard fusion so the delta cannot
+			// be attributed to anything else.
+			ctxHits, err := s.vectors.Search(ctx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
+			if err != nil || len(ctxHits) == 0 {
+				break // index not built for this team; the arm reports NotFound
+			}
+			ctxIDs := make([]string, len(ctxHits))
+			for i, h := range ctxHits {
+				ctxIDs[i] = h.ID
+			}
+			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
+			if err != nil {
+				return nil, -1, fmt.Errorf("load contextual candidates: %w", err)
+			}
+			var ctxDocs []string
+			var ctxDists []float64
+			var ctxOrderIDs []string
+			for _, h := range ctxHits {
+				d, ok := ctxRows[h.ID]
+				if !ok {
+					continue
+				}
+				ctxDocs = append(ctxDocs, d.Content)
+				ctxDists = append(ctxDists, distanceFromScore(h.Score))
+				ctxOrderIDs = append(ctxOrderIDs, d.ID)
+			}
+			var ctxOrdered []int
+			for _, r := range rankHybrid(c.Query, ctxDocs, ctxDists, nil) {
+				ctxOrdered = append(ctxOrdered, r.Index)
+			}
+			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, c.Expect)
+			continue
 		case ArmRRF:
 			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
@@ -318,7 +418,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 		out[arm] = rankOf(poolIDs, ordered, c.Expect)
 	}
-	return out, nil
+	return out, topDistance, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0

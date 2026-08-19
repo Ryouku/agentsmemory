@@ -29,6 +29,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,7 +61,8 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "gen-model", Value: "qwen2.5-coder:7b", Usage: "Ollama model that writes the questions"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.IntFlag{Name: "seed", Value: 1, Usage: "sampling seed, so a re-run picks the same drawers"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary — the hard case) or literal (keeps identifiers, like a real developer search)"},
+			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace (costs one embedding pass over the corpus)"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), or absent (questions the palace should NOT answer)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -93,7 +95,21 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	// Every arm runs per case, and a reranked arm is real inference, so a case can
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
-	report, err := svc.drawers.Evaluate(ctx, t.TeamID, cases, c.Int("pool"),
+	if c.Bool("contextual") {
+		// Built here rather than lazily inside the arm: it is an embedding pass
+		// over the whole corpus and the operator should see it happen, and pay
+		// for it once rather than per case.
+		fmt.Fprintf(out, "building the contextual index (one embedding pass over the corpus)…\n")
+		started := time.Now()
+		n, err := svc.drawers.BuildContextualIndex(ctx, t.TeamID, 32)
+		if err != nil {
+			return fmt.Errorf("build contextual index: %w", err)
+		}
+		fmt.Fprintf(out, "  embedded %d chunk(s) with context in %s\n", n, time.Since(started).Round(time.Second))
+	}
+
+	report, err := svc.drawers.EvaluateWith(ctx, t.TeamID, cases, c.Int("pool"),
+		palace.EvalOptions{Contextual: c.Bool("contextual")},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
 		})
@@ -131,8 +147,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 	}
 
 	prompt, style := evalPromptParaphrase, c.String("style")
-	if style == "literal" {
+	category := palace.CatSingle
+	switch style {
+	case "literal":
 		prompt = evalPromptLiteral
+	case "crosslingual":
+		prompt, category = evalPromptCrossLingual, palace.CatCrossLingual
+	case "absent":
+		prompt, category = evalPromptAbsent, palace.CatAbsent
 	}
 	gen := &questionGen{
 		url:     cfg2URL(c.String("ollama-url")),
@@ -156,7 +178,13 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 			continue
 		}
 		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62))
-		cases = append(cases, palace.EvalCase{Query: q, Expect: d.ID, Wing: c.String("wing")})
+		expect := d.ID
+		if category == palace.CatAbsent {
+			// There is no gold for a question the palace should not answer; what
+			// gets measured is whether it returns something confident anyway.
+			expect = ""
+		}
+		cases = append(cases, palace.EvalCase{Query: q, Expect: expect, Wing: c.String("wing"), Category: category})
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
@@ -197,6 +225,45 @@ Rules:
 - Paraphrase. Do NOT reuse the note's distinctive nouns, identifiers, file names,
   flags, or error strings.
 - Ask about the situation or the decision, not about the wording.
+- One line, under 20 words, no quotes, no preamble.
+
+NOTE:
+%s
+
+QUESTION:`
+
+// evalPromptCrossLingual tests the claim nobody has checked on this palace: that
+// a multilingual embedder actually bridges the two languages the memories are
+// written in. A bilingual team asks in whichever language it is thinking in, and
+// the memory it needs is often in the other one.
+const evalPromptCrossLingual = `You are writing an evaluation question for a memory search system.
+
+Below is a note an engineer wrote. Write ONE question that this note answers — but
+write it in the OTHER language: if the note is mostly English, ask in Lithuanian;
+if it is mostly Lithuanian, ask in English.
+
+Rules:
+- Do not translate the note's distinctive identifiers, file names or flags — keep
+  those as they are, and put the rest of the question in the other language.
+- One line, under 20 words, no quotes, no preamble.
+
+NOTE:
+%s
+
+QUESTION:`
+
+// evalPromptAbsent generates questions the palace should NOT answer. Recall has
+// only ever been measured on questions with an answer, which means the gate that
+// decides "we do not know this" has never been measured at all.
+const evalPromptAbsent = `You are writing a NEGATIVE evaluation question for a memory search system.
+
+Below is a note an engineer wrote. Write ONE question about the same general area
+of work that this note does NOT answer and could not answer — a neighbouring
+topic, not this one.
+
+Rules:
+- Plausible for this team to ask, but genuinely unanswered by the note.
+- Do not reuse the note's distinctive identifiers.
 - One line, under 20 words, no quotes, no preamble.
 
 NOTE:
@@ -323,6 +390,9 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, m.NotFound)
 	}
 
+	printCategories(out, report)
+	printSeparation(out, report)
+
 	// Questions no arm could answer are usually a bad question rather than bad
 	// ranking — the generator drifted off the note. Printing them keeps the table
 	// honest, because they drag every arm down equally.
@@ -349,6 +419,75 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			fmt.Fprintf(out, "  - %s\n", q)
 		}
 	}
+}
+
+// printCategories breaks the leading arm out by question kind. An average over
+// categories hides the failure that matters: a system can be perfect on
+// single-hop questions and blind on the ones that need the CURRENT version of a
+// corrected fact, and the mean looks fine.
+func printCategories(out io.Writer, report palace.EvalReport) {
+	if len(report.Arms) == 0 {
+		return
+	}
+	// The production arm is the last one that is not a swept variant.
+	best := report.Arms[len(report.Arms)-1]
+	if len(best.ByCategory) <= 1 {
+		return // nothing to break out
+	}
+	fmt.Fprintf(out, "\n%s, by question kind\n", best.Arm)
+	fmt.Fprintf(out, "%-16s %6s %8s %8s\n", "category", "cases", "R@1", "MRR")
+	cats := make([]string, 0, len(best.ByCategory))
+	for cat := range best.ByCategory {
+		cats = append(cats, cat)
+	}
+	sort.Strings(cats)
+	for _, cat := range cats {
+		m := best.ByCategory[cat]
+		if cat == palace.CatAbsent {
+			fmt.Fprintf(out, "%-16s %6d %8s %8s   (scored by the separation below)\n", cat, m.Cases, "—", "—")
+			continue
+		}
+		r1 := 0.0
+		if m.Cases > 0 {
+			r1 = float64(m.Recall1) / float64(m.Cases) * 100
+		}
+		fmt.Fprintf(out, "%-16s %6d %7.0f%% %8.3f\n", cat, m.Cases, r1, m.MRR)
+	}
+}
+
+// printSeparation reports where answerable and unanswerable questions land in
+// distance, which is the only honest basis for setting max_distance — the gate
+// that decides when the palace should say it does not know. Overlapping
+// distributions mean no threshold can separate them, and that is worth knowing
+// before tuning a number.
+func printSeparation(out io.Writer, report palace.EvalReport) {
+	if len(report.AbsentDistances) == 0 || len(report.GoldDistances) == 0 {
+		return
+	}
+	gold := append([]float64(nil), report.GoldDistances...)
+	absent := append([]float64(nil), report.AbsentDistances...)
+	sort.Float64s(gold)
+	sort.Float64s(absent)
+	fmt.Fprintf(out, "\ntop-1 distance: answerable %.3f–%.3f (median %.3f) | unanswerable %.3f–%.3f (median %.3f)\n",
+		gold[0], gold[len(gold)-1], median(gold), absent[0], absent[len(absent)-1], median(absent))
+	if gold[len(gold)-1] < absent[0] {
+		fmt.Fprintf(out, "  clean separation — max_distance between %.3f and %.3f would answer only what it can\n",
+			gold[len(gold)-1], absent[0])
+		return
+	}
+	fmt.Fprintf(out, "  distributions OVERLAP — no max_distance separates them; a confidence gate needs a different signal\n")
+}
+
+// median of a sorted slice.
+func median(sorted []float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
 // corpusLabel names the scope for the header line.
