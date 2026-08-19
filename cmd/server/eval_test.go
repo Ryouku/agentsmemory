@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
@@ -49,5 +51,86 @@ func TestEvalNamesItsWorkspace(t *testing.T) {
 func TestEvalDefaultsToTheLocalWorkspace(t *testing.T) {
 	if got := evalProject(t); got != tenant.LocalSlug {
 		t.Errorf("default project = %q, want %q", got, tenant.LocalSlug)
+	}
+}
+
+// evalGen parses args through the real eval flag set and reports where the
+// question generator would point, plus the model it would ask for.
+func evalGen(t *testing.T, args ...string) (url, model string) {
+	t.Helper()
+	cmd := evalCommand(config.Default())
+	cmd.Action = func(_ context.Context, c *cli.Command) error {
+		url, model = genURL(c), c.String("gen-model")
+		return nil
+	}
+	if err := cmd.Run(context.Background(), append([]string{"eval"}, args...)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return url, model
+}
+
+// TestEvalGeneratorFollowsTheEmbedderByDefault pins the single-machine path: one
+// Ollama, nothing to configure. --gen-url exists to SEPARATE the two, so leaving
+// it unset must not require setting it.
+func TestEvalGeneratorFollowsTheEmbedderByDefault(t *testing.T) {
+	url, model := evalGen(t, "--ollama-url", "http://box:11434")
+	if url != "http://box:11434" {
+		t.Errorf("gen url = %q, want it to follow --ollama-url", url)
+	}
+	if model != "qwen2.5-coder:7b" {
+		t.Errorf("gen model = %q, want the documented default", model)
+	}
+}
+
+// TestEvalGeneratorCanLeaveTheEmbedderBehind is the point of --gen-url: sending a
+// one-off burst of question generation to a bigger or hosted model must not drag
+// the embedder along with it, because the vectors stay where the data is.
+func TestEvalGeneratorCanLeaveTheEmbedderBehind(t *testing.T) {
+	url, model := evalGen(t,
+		"--ollama-url", "http://localhost:11434",
+		"--gen-url", "https://ollama.com",
+		"--gen-model", "qwen3-coder:480b-cloud",
+	)
+	if url != "https://ollama.com" {
+		t.Errorf("gen url = %q, want the override to win over --ollama-url", url)
+	}
+	if model != "qwen3-coder:480b-cloud" {
+		t.Errorf("gen model = %q, want the override", model)
+	}
+}
+
+// TestEvalGeneratorSendsItsBearerToken covers the reason --gen-api-key exists:
+// hosted Ollama rejects an unauthenticated call, and a local one ignores the
+// header, so sending it whenever it is set is both necessary and harmless.
+func TestEvalGeneratorSendsItsBearerToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"response":"why did the deploy fail?"}`))
+	}))
+	defer srv.Close()
+
+	gen := &questionGen{
+		url:    srv.URL,
+		model:  "m",
+		apiKey: "secret-token",
+		prompt: "%s",
+		http:   srv.Client(),
+	}
+	if _, err := gen.ask(context.Background(), "a note"); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	if gotAuth != "Bearer secret-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer secret-token")
+	}
+
+	// And absent when unset: a local Ollama needs no credential, and inventing an
+	// empty Bearer header is the kind of thing a strict proxy rejects.
+	gen.apiKey = ""
+	if _, err := gen.ask(context.Background(), "a note"); err != nil {
+		t.Fatalf("ask without key: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q with no key set, want it absent", gotAuth)
 	}
 }
