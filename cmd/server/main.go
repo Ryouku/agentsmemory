@@ -92,6 +92,7 @@ func main() {
 			mcpCommand(def),
 			stdioCommand(def),
 			syncCommand(def),
+			evalCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
 			projectsCommand(def),
