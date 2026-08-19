@@ -95,6 +95,7 @@ func main() {
 			syncCommand(def),
 			wingCommand(def),
 			evalCommand(def),
+			kgExtractCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
 			projectsCommand(def),
