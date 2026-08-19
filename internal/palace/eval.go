@@ -218,9 +218,6 @@ type EvalCaseResult struct {
 	Ranks    map[EvalArm]int
 }
 
-// Evaluate scores every arm over the cases. poolSize is how many neighbours the
-// vector search fetches per query; it bounds every arm equally, so a memory
-// outside the pool is unreachable for all of them (counted as NotFound).
 // Progress reports how far a run has got. An eval that prints nothing for
 // several minutes is indistinguishable from one that has hung — which is exactly
 // how the first one read — so Evaluate reports each case as it lands.
@@ -239,6 +236,9 @@ type EvalOptions struct {
 	AllowDegraded bool
 }
 
+// Evaluate scores every arm over the cases. poolSize is how many neighbours the
+// vector search fetches per query; it bounds every arm equally, so a memory
+// outside the pool is unreachable for all of them (counted as NotFound).
 func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int, progress Progress) (EvalReport, error) {
 	return s.EvaluateWith(ctx, teamID, cases, poolSize, EvalOptions{}, progress)
 }

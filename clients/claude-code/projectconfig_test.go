@@ -192,10 +192,6 @@ func TestResolveLaunchAgentAndArgs(t *testing.T) {
 	}
 }
 
-// TestFindProjectConfig checks the upward walk that lets `load` run from any
-// directory inside a project: the nearest level holding either file wins, and
-// both files are read from that same level so a personal override can never be
-// paired with a shared file from a different directory.
 // TestResolveLaunchWingPrecedence pins the wing ladder: the shell's variable
 // beats the personal file, which beats the committed one. An unresolved wing must
 // stay EMPTY rather than being invented here — the memory protocol derives one
@@ -245,6 +241,10 @@ func TestProjectConfigWingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFindProjectConfig checks the upward walk that lets `load` run from any
+// directory inside a project: the nearest level holding either file wins, and
+// both files are read from that same level so a personal override can never be
+// paired with a shared file from a different directory.
 func TestFindProjectConfig(t *testing.T) {
 	root := t.TempDir()
 	deep := filepath.Join(root, "internal", "web")

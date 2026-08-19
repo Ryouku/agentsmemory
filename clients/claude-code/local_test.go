@@ -79,7 +79,7 @@ func TestLocalInstallClaudeRegistersWithoutHeader(t *testing.T) {
 	}
 }
 
-// TestLocalInstallNeverPromptsWithHostedTokenInEnv pins the one inheritance that
+// TestLocalInstallPrefersLocalTokenEnv pins the one inheritance that
 // must still be ignored. --token's env sources are AGENTSMEMORY_LOCAL_TOKEN then
 // AGENTSMEMORY_TOKEN, so a developer holding a HOSTED workspace key in their
 // shell must not have it written into a self-hosted config: the local variable is

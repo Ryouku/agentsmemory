@@ -67,7 +67,7 @@ func TestRenderSplitsMarathonSessions(t *testing.T) {
 	}
 }
 
-// TestShortSessionIDTolerAtesShortNames: the session id is a FILENAME under the
+// TestShortSessionIDToleratesShortNames: the session id is a FILENAME under the
 // transcripts root, so nothing guarantees it is a UUID. Abbreviating it for a
 // progress line must not be able to end a mining run.
 func TestShortSessionIDToleratesShortNames(t *testing.T) {

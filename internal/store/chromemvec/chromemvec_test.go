@@ -21,10 +21,6 @@ func newTestIndex(t *testing.T) *Index {
 	return idx
 }
 
-// TestSearchFilterNarrowsToPayload proves the wing/room scope is answered by the
-// index rather than by the caller: the nearest vector is in the wrong wing, and a
-// filtered search must skip past it instead of returning it for the caller to
-// discard.
 // TestOpenDiscardsAnOlderIndexLayout covers the upgrade path for an install that
 // already has an index on disk: a directory written before the flat filter keys
 // existed must be thrown away and rebuilt, not read. Reading it would silently
@@ -72,6 +68,10 @@ func TestOpenDiscardsAnOlderIndexLayout(t *testing.T) {
 	}
 }
 
+// TestSearchFilterNarrowsToPayload proves the wing/room scope is answered by the
+// index rather than by the caller: the nearest vector is in the wrong wing, and a
+// filtered search must skip past it instead of returning it for the caller to
+// discard.
 func TestSearchFilterNarrowsToPayload(t *testing.T) {
 	idx := newTestIndex(t)
 	ctx := context.Background()

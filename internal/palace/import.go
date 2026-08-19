@@ -119,11 +119,6 @@ func importClosetID(teamID, wing, room, source, document string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// ImportClosets files a batch of verbatim closets under the target tenant. It
-// embeds each closet document with this server's model and reuses storeClosets
-// (vectors into the per-team closet namespace, then rows) — the same persistence
-// tail the miner ends in. Blank documents/locations are skipped; the count is how
-// many were filed.
 // AbsorbClosets is the closet twin of AbsorbDrawers: it writes closet rows only
 // (embedded_at NULL) for the background worker to embed later. Same idempotency
 // and skip rules.
