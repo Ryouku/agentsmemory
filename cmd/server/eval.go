@@ -53,8 +53,10 @@ func evalCommand(def config.Config) *cli.Command {
 			"Read the DELTAS, not the absolute numbers: questions generated from a drawer\n" +
 			"share vocabulary with it, which flatters every arm equally.\n\n" +
 			"  agentsmemory eval --wing wing_acme --n 40 --cases /data/eval.jsonl\n" +
-			"  agentsmemory eval --cases /data/eval.jsonl        # re-run the same questions",
+			"  agentsmemory eval --cases /data/eval.jsonl        # re-run the same questions\n" +
+			"  agentsmemory eval --project acme --wing wing_acme # a multi-tenant database",
 		Flags: append(serveFlags(def),
+			projectFlag(),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
 			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there"},
@@ -77,12 +79,20 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	if err != nil {
 		return err
 	}
-	t, err := svc.tenants.EnsureLocalWorkspace(ctx)
+	// Named like every other database-level subcommand (wing, inspect, share,
+	// plan) rather than resolved through EnsureLocalWorkspace: that helper's
+	// refusal to touch a workspace it did not provision guards an UNAUTHENTICATED
+	// /mcp, and applying it here made eval the one command that could not measure
+	// a multi-tenant palace at all — a database holding any workspace not slugged
+	// "local" (the seeded demo team is enough) failed before reading a drawer.
+	// Possessing the file is the authorization here, exactly as it already is for
+	// `wing export` and `inspect`.
+	team, err := resolveProject(ctx, svc, c.String("project"))
 	if err != nil {
-		return fmt.Errorf("resolve the local workspace (eval runs against --local): %w", err)
+		return err
 	}
 
-	cases, from, err := loadOrGenerateCases(ctx, c, svc, t, out)
+	cases, from, err := loadOrGenerateCases(ctx, c, svc, team, out)
 	if err != nil {
 		return err
 	}
@@ -101,14 +111,14 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		// for it once rather than per case.
 		fmt.Fprintf(out, "building the contextual index (one embedding pass over the corpus)…\n")
 		started := time.Now()
-		n, err := svc.drawers.BuildContextualIndex(ctx, t.TeamID, 32)
+		n, err := svc.drawers.BuildContextualIndex(ctx, team.ID, 32)
 		if err != nil {
 			return fmt.Errorf("build contextual index: %w", err)
 		}
 		fmt.Fprintf(out, "  embedded %d chunk(s) with context in %s\n", n, time.Since(started).Round(time.Second))
 	}
 
-	report, err := svc.drawers.EvaluateWith(ctx, t.TeamID, cases, c.Int("pool"),
+	report, err := svc.drawers.EvaluateWith(ctx, team.ID, cases, c.Int("pool"),
 		palace.EvalOptions{Contextual: c.Bool("contextual")},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
@@ -123,7 +133,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
-func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t tenant.Tenant, out io.Writer) ([]palace.EvalCase, string, error) {
+func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
 	path := c.String("cases")
 	if path != "" {
 		if cases, err := readCases(path); err == nil && len(cases) > 0 {
@@ -131,7 +141,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t t
 		}
 	}
 
-	drawers, err := svc.drawers.List(ctx, t.TeamID, c.String("wing"), "", 1000, 0)
+	drawers, err := svc.drawers.List(ctx, team.ID, c.String("wing"), "", 1000, 0)
 	if err != nil {
 		return nil, "", fmt.Errorf("list drawers: %w", err)
 	}
