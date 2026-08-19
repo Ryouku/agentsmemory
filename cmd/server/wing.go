@@ -1,7 +1,7 @@
-// wing.go implements `agentsmemory wing export` and `agentsmemory wing import`:
-// moving one wing of a palace in and out of a portable file.
+// wing.go implements `agentsmemory wing export`, `wing import` and `wing delete`:
+// moving one wing of a palace in and out of a portable file, and removing one.
 //
-// Both talk to the SQLite database directly rather than to a running server,
+// They all talk to the SQLite database directly rather than to a running server,
 // which is what makes them the answer for `--local`. A self-hosted install has
 // no dashboard to click and often no token to present, but it always has the
 // database file — so possessing that file IS the authorization, exactly as it
@@ -9,11 +9,14 @@
 // server that is currently running: SQLite in WAL mode admits a second reader,
 // and an import writes rows the running server picks up.
 //
-// The pair is deliberately asymmetric about wings. Export takes `--wing` and
-// produces a file that names no wing at all; import takes `--as` and decides
+// Export and import are deliberately asymmetric about wings. Export takes `--wing`
+// and produces a file that names no wing at all; import takes `--as` and decides
 // where that file lands. That is the whole feature: a bundle is contents, not a
 // place, so the same file can be restored beside its original, renamed on the
 // way into a fresh palace, or forked into several wings.
+//
+// Delete is the pair's counterweight, and export is its undo: a bundle written
+// before a delete is the only way back, which is why the command says so.
 package main
 
 import (
@@ -37,16 +40,17 @@ import (
 // coupling a compile error rather than a runtime surprise if either side moves.
 var _ wingbundle.Source = (*palace.Repo)(nil)
 
-// wingCommand groups the two halves of wing transfer under one verb, so
-// `agentsmemory wing --help` reads as a single feature rather than two unrelated
-// commands that happen to share a file format.
+// wingCommand groups whole-wing operations under one verb, so
+// `agentsmemory wing --help` reads as a single feature rather than unrelated
+// commands that happen to share a subject.
 func wingCommand(def config.Config) *cli.Command {
 	return &cli.Command{
 		Name:  "wing",
-		Usage: "Move one wing in or out of a portable bundle file",
+		Usage: "Move one wing in or out of a portable bundle file, or delete one",
 		Commands: []*cli.Command{
 			wingExportCommand(def),
 			wingImportCommand(def),
+			wingDeleteCommand(def),
 		},
 	}
 }
@@ -97,6 +101,68 @@ func wingImportCommand(def config.Config) *cli.Command {
 			return importWing(ctx, configFromCmd(c, def), c.String("project"), c.String("file"), c.String("as"))
 		},
 	}
+}
+
+// wingDeleteCommand permanently removes one wing.
+func wingDeleteCommand(def config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "delete",
+		Usage: "Permanently delete one wing: its drawers, closets, hallways and tunnels",
+		Description: "--confirm must repeat the wing name. Nothing about a delete is recoverable and its\n" +
+			"size is unbounded, so a delete that is one typo away from emptying the wrong wing\n" +
+			"has to be spelled out twice. Run `agentsmemory wing export` first if the memories\n" +
+			"might be wanted back — a bundle is the only way to restore them.",
+		Flags: append(dataFlags(def),
+			projectFlag(),
+			&cli.StringFlag{Name: "wing", Required: true, Usage: "wing to delete"},
+			&cli.StringFlag{Name: "confirm", Required: true, Usage: "repeat the wing name to confirm the delete"},
+		),
+		Action: func(ctx context.Context, c *cli.Command) error {
+			return deleteWing(ctx, configFromCmd(c, def), c.String("project"), c.String("wing"), c.String("confirm"))
+		},
+	}
+}
+
+// deleteWing resolves the workspace and purges the wing, reporting what went.
+func deleteWing(ctx context.Context, cfg config.Config, slug, wing, confirm string) error {
+	svc, err := buildServices(cfg)
+	if err != nil {
+		return err
+	}
+	team, err := resolveProject(ctx, svc, slug)
+	if err != nil {
+		return err
+	}
+
+	res, err := svc.drawers.DeleteWing(ctx, team.ID, wing, confirm)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("deleted wing %q from %q: %d drawers, %d closets, %d hallways, %d tunnels\n",
+		res.Wing, team.Slug, res.Drawers, res.Closets, res.Hallways, res.Tunnels)
+	if res.Drawers == 0 && res.Closets == 0 {
+		// A wing is born on first write and dies with its last drawer, so naming one
+		// that never existed deletes nothing and looks identical to success.
+		fmt.Printf("note: wing %q held nothing — check the name against `agentsmemory inspect`.\n", res.Wing)
+	}
+	// Say the quiet part out loud, as export does: these tunnels reached wings that
+	// still exist, and their disappearance would otherwise look like a second bug.
+	if res.Tunnels > 0 {
+		fmt.Printf("note: %d tunnel(s) went with it — a tunnel connects two wings and cannot outlive either one.\n", res.Tunnels)
+	}
+	// SQLite is always the source of truth, so the rows and their vectors are gone
+	// no matter which backend this command opened. A separate search index (chromem,
+	// qdrant) is only purged when this command is pointed at it too — and --local
+	// serves chromem while this command defaults to sqlite, so the mismatch is the
+	// normal case rather than an exotic one. The leftovers are inert (a hit whose
+	// drawer is gone is skipped), but silence here reads as a half-finished delete.
+	if res.Drawers > 0 || res.Closets > 0 {
+		fmt.Printf("note: purged the source of truth via --vector-backend %q. A server running another\n"+
+			"index (--local serves chromem) keeps inert leftovers there until it is restarted or re-synced;\n"+
+			"searches skip them, because the drawers they point at are gone.\n", cfg.VectorBackend)
+	}
+	return nil
 }
 
 // exportWing resolves the workspace, streams the wing to dest, and reports what
