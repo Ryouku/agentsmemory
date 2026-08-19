@@ -410,6 +410,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, m.NotFound)
 	}
 
+	printPoolDiagnosis(out, report)
 	printCategories(out, report)
 	printSeparation(out, report)
 
@@ -444,6 +445,33 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 			fmt.Fprintf(out, "  - %s\n", q)
 		}
 	}
+}
+
+// printPoolDiagnosis separates the two failures a single score hides.
+//
+// A memory can be missed because ranking put it below the page (a RANKING
+// failure, which reranking and fusion address) or because it never entered the
+// candidate pool at all (a RETRIEVAL failure, which no amount of reranking can
+// fix — the answer was never on the table). They call for opposite work, and on
+// a large corpus the second becomes the common one while the score alone still
+// just says "worse".
+func printPoolDiagnosis(out io.Writer, report palace.EvalReport) {
+	worst := 0
+	for _, m := range report.Arms {
+		if m.NotFound > worst {
+			worst = m.NotFound
+		}
+	}
+	if worst == 0 {
+		return
+	}
+	cases := 0
+	if len(report.Arms) > 0 {
+		cases = report.Arms[0].Cases
+	}
+	fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
+	fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
+	fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
 }
 
 // printCategories breaks the leading arm out by question kind. An average over
