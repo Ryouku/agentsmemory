@@ -969,6 +969,13 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 			b.WriteString(strings.Join(stats.Unanswered, " | "))
 			b.WriteString("\n")
 		}
+		// The same gaps, deduplicated and counted — what to DO about them. The
+		// "  write: " prefix is a grep contract with the Stop hook; see
+		// RecallStats.SuggestionLines.
+		for _, line := range stats.SuggestionLines(3) {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
 		// A trailing newline: the hook pipes this straight to a terminal, and
 		// without it the next line of output starts mid-sentence.
 		if !strings.HasSuffix(b.String(), "\n") {
