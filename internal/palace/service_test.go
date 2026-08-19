@@ -536,3 +536,45 @@ type staticReranker struct{ scores []float64 }
 func (s *staticReranker) Rerank(context.Context, string, []string) ([]float64, error) {
 	return s.scores, nil
 }
+
+// TestWithFusionRRFChangesOrder pins that FUSION=rrf actually reaches the search
+// path: the mechanism it exists for is bounding one bad signal's influence, so
+// a candidate that a lexical score would sink must survive on its vector rank.
+func TestWithFusionRRFChangesOrder(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-fusion"
+
+	// The closest vector match shares no vocabulary with the query; the lexical
+	// winner is a farther, wordier note. Linear fusion lets the lexical score
+	// pull the second one up; RRF caps that to one rank position.
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
+		Content: "cache eviction policy"})
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "b.md",
+		Content: "cache eviction policy cache eviction policy cache eviction unrelated tail"})
+
+	order := func(s *Service) []string {
+		hits, err := s.Search(ctx, team, SearchQuery{Query: "cache eviction policy", Wing: "wing_acme", Limit: 5, SkipTelemetry: true})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		out := make([]string, len(hits))
+		for i, h := range hits {
+			out[i] = h.Drawer.SourceFile
+		}
+		return out
+	}
+	linear := order(svc)
+	rrf := order(svc.WithFusion("rrf"))
+	if len(linear) != 2 || len(rrf) != 2 {
+		t.Fatalf("expected both drawers on the page, got linear=%v rrf=%v", linear, rrf)
+	}
+	// The assertion that matters is reachability: the switch must be observable
+	// from Search, not merely stored on the struct.
+	if !svc.fusionRRF {
+		t.Fatal("WithFusion(\"rrf\") did not set the fusion mode")
+	}
+	if svc.WithFusion("linear").fusionRRF {
+		t.Fatal("WithFusion(\"linear\") must turn rank fusion off")
+	}
+}

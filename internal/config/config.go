@@ -151,6 +151,18 @@ type Config struct {
 	// of the query, not of the corpus.
 	BM25Weight string
 
+	// Fusion selects how vector and lexical evidence combine: "linear" (the
+	// default weighted blend, tuned by BM25Weight) or "rrf" (reciprocal-rank
+	// fusion, which bounds either signal's influence to a rank position).
+	//
+	// It matters most where lexical evidence is unreliable. On a large diverse
+	// palace the eval measured BM25 fusion BELOW vector alone, and because the
+	// cross-encoder's pool is taken off the fused head, the damage compounded:
+	// the reranker never saw what fusion buried. RRF was the best arm there.
+	// Run `agentsmemory eval` on your own corpus before switching — that is what
+	// the rrf arm in its table is for.
+	Fusion string
+
 	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
 	// keeps the full boost, 0 disables it. On a curated palace the boost
 	// promotes what a human chose to keep; on a mined-transcript corpus the
@@ -250,6 +262,7 @@ func Default() Config {
 		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		ClosetBoost:      1,
+		Fusion:           "linear",
 		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}
