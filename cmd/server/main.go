@@ -808,9 +808,18 @@ func buildServices(cfg config.Config) (*services, error) {
 		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
 		log.Printf("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
 	}
-	if strings.EqualFold(cfg.Fusion, "rrf") {
-		drawers = drawers.WithFusion("rrf")
-		log.Printf("fusion: reciprocal-rank (bm25 weight does not apply)")
+	// An unrecognized value is reported rather than silently ignored, the same way
+	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
+	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
+	// served the linear blend instead, they would read the eval's rrf column and
+	// their production ordering as the same configuration when they are not.
+	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
+		if strings.EqualFold(f, "rrf") {
+			drawers = drawers.WithFusion("rrf")
+			log.Printf("fusion: reciprocal-rank (bm25 weight does not apply)")
+		} else {
+			log.Printf("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
+		}
 	}
 	if w := cfg.BM25Weight; w != "" && w != "auto" {
 		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
