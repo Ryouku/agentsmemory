@@ -20,8 +20,10 @@
 //   - llama.cpp's server answers POST /v1/rerank (Cohere-shaped) with
 //     {results: [{index, relevance_score}]}.
 //
-// Both are accepted, so the same configuration works whether the operator runs
-// TEI on an x86 server or llama.cpp on an arm64 laptop.
+// Both are accepted, so one configuration covers every way these models actually
+// get served: TEI on a GPU box or a Linux server, TEI built natively on Apple
+// Silicon (Homebrew or `cargo install -F metal`), or llama.cpp in a container
+// where nothing else is installed.
 package rerank
 
 import (

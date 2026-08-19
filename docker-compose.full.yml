@@ -83,12 +83,19 @@ services:
       start_period: 10s
 
   reranker:
-    # llama.cpp's server, which ships native arm64 AND amd64 images and serves a
-    # Cohere-shaped /v1/rerank. text-embeddings-inference is the better-known
-    # option and speaks the same client (see internal/rerank), but it publishes
-    # amd64 only — on Apple Silicon it would run under emulation, which is slower
-    # than the CPU inference it is meant to accelerate. Point RERANK_URL at TEI
-    # instead if you deploy on x86 and prefer it.
+    # llama.cpp's server, chosen because this is the CONTAINERISED path and it
+    # ships native arm64 and amd64 images, serving a Cohere-shaped /v1/rerank.
+    #
+    # text-embeddings-inference is the reference server and the same client
+    # speaks it (see internal/rerank). The constraint is narrower than it first
+    # looks: TEI's Docker images are amd64-only, so IN COMPOSE on Apple Silicon it
+    # would run emulated — but TEI itself runs natively there, either
+    # `brew install text-embeddings-inference` or `cargo install --path router -F
+    # metal`, and with Metal it is the faster option by a distance.
+    #
+    # So: point RERANK_URL at TEI whenever you have one — a GPU box, a Linux
+    # server, or a local Metal build — and keep this service for the case it
+    # exists to serve, which is "one machine, no GPU, nothing installed".
     image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
     command:
