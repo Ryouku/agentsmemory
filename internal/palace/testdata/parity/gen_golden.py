@@ -32,7 +32,7 @@ import types
 from pathlib import Path
 
 # Frozen mempalace package — the reference implementation we are porting from.
-FROZEN = Path("/Users/mind/.claude/mempalace-frozen/mempalace")
+FROZEN = Path("~/.claude/mempalace-frozen/mempalace")
 HERE = Path(__file__).resolve().parent
 
 

@@ -2,6 +2,14 @@
 /agentsmemory
 /server
 *.exe
+# `go build ./clients/claude-code` names its output after the package directory,
+# which is neither of the two above — two 26 MB Mach-O binaries reached the
+# index that way before internal/repohygiene started failing on them.
+/claude-code
+/clients/claude-code/claude-code
+
+# Agent tool runtime state: session ids and absolute paths, regenerated on use.
+/.pi/
 
 # Local SQLite databases and WAL/shm sidecars
 *.db
