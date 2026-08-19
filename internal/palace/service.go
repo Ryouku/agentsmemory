@@ -140,6 +140,15 @@ type Service struct {
 	// both content versions behind. It is the in-process analogue of the frozen
 	// miner's per-source mine_lock. Note: it does NOT coordinate across horizontally
 	// scaled instances — a cross-instance guard would need a DB advisory lock.
+	// closetBoostScale scales every closet rank boost: 1 is the full curation
+	// prior, 0 turns closets into a pure ranking no-op. It exists because the
+	// prior's worth depends on what the palace holds: on a curated palace the
+	// boost promotes the memories a human chose to keep; on a corpus dominated
+	// by mined transcripts the eval measured the same boost DEMOTING correct
+	// answers (~0.10 MRR at n=40) — the closets cover the curated 2% and lift
+	// it over the mined gold. The operator knows which palace theirs is.
+	closetBoostScale float64
+
 	mineLocks *keyedMutex
 	// graphLocks serializes a team's recompute_graph the same way: a recompute
 	// replaces hallways and delete-and-rebuilds entity tunnels, so two concurrent
@@ -164,6 +173,7 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// a real hazard — the copy must SHARE these locks, it guards the same
 		// palace.
 		mineLocks: &keyedMutex{}, graphLocks: &keyedMutex{},
+		closetBoostScale: 1,
 	}
 }
 
@@ -176,6 +186,20 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 // to exist — every call site that has no reranker configured simply never calls
 // this. It must be called before the service is shared across goroutines: the
 // field is read without synchronization on the search path.
+// WithClosetBoost scales the closet curation prior (1 = full, 0 = off). Same
+// post-construction-setter contract as WithReranker: call before the service is
+// shared across goroutines.
+func (s *Service) WithClosetBoost(scale float64) *Service {
+	if scale < 0 {
+		scale = 0
+	}
+	if scale > 1 {
+		scale = 1
+	}
+	s.closetBoostScale = scale
+	return s
+}
+
 func (s *Service) WithReranker(r Reranker, pool int) *Service {
 	if pool < 1 {
 		pool = DefaultRerankPool

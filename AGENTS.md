@@ -171,6 +171,36 @@ Only then may you start the task, and only in a degraded mode you keep visible:
 
 ---
 
+## Exception — read-only review
+
+The gate above exists to protect WORK: an agent changing this repo without
+memory re-derives settled decisions, drifts from house style, and persists
+nothing. A reviewer does none of those things — and an independent review is
+sometimes valuable precisely BECAUSE the reviewer shares none of our context or
+lineage. The gate must not structurally exclude every second opinion: it has
+already forced one different-lineage reviewer to be run in a stripped worktree
+just to get an unbiased read.
+
+An agent dispatched **solely to review** — read the code, judge it, report —
+may proceed without the `am_*` tools, without the six questions, under all of
+these conditions:
+
+- **Read-only, absolutely.** No edits, no commits, no files written into the
+  repo, no writes to any palace. The moment the task becomes "now fix it", the
+  exception ends and the gate above applies in full.
+- **Say so in the report.** One line up front: the review was done without team
+  memory, so it may contradict decisions the palace records; findings are
+  judgements about the code as it stands, not about the history that shaped it.
+- **The dispatcher owns reconciliation.** Whoever commissioned the review and
+  HAS palace access checks the findings against recorded decisions before
+  acting on them — a finding that "X is wrong" may be a decision the team
+  already made with reasons the reviewer could not see.
+
+This is an exception for reviewing, not a loophole for working: "I'll just
+review it and also quickly fix what I find" is the gate's case, not this one.
+
+---
+
 ## When the tools are present
 
 Normal operation. Recall before you act, persist before you stop.

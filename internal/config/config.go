@@ -151,6 +151,13 @@ type Config struct {
 	// of the query, not of the corpus.
 	BM25Weight string
 
+	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
+	// keeps the full boost, 0 disables it. On a curated palace the boost
+	// promotes what a human chose to keep; on a mined-transcript corpus the
+	// eval measured it demoting correct answers, and the operator is the one
+	// who knows which corpus theirs is.
+	ClosetBoost float64
+
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
 	// with the rest left to the hybrid score it refines. 1 hands it the whole
 	// decision, which measurably loses the lexical evidence a query carries when
@@ -242,6 +249,7 @@ func Default() Config {
 		BM25Weight:       "auto",
 		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		ClosetBoost:      1,
 		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}
