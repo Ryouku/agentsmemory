@@ -319,7 +319,7 @@ func runMineClaude(ctx context.Context, c *cli.Command, out io.Writer) error {
 		docs := doc.render(project, sessionID)
 		if c.Bool("dry-run") {
 			fmt.Fprintf(out, "  would mine %-46s → %-24s %3d turn(s), %5.1fKB in %d part(s)\n",
-				project+"/"+sessionID[:8], wing, len(doc.Turns), float64(doc.TurnChars)/1000, len(docs))
+				project+"/"+shortSessionID(sessionID), wing, len(doc.Turns), float64(doc.TurnChars)/1000, len(docs))
 		} else {
 			for _, part := range docs {
 				if err := mineOne(ctx, client, wing, c.String("room"), part); err != nil {
@@ -331,7 +331,7 @@ func runMineClaude(ctx context.Context, c *cli.Command, out io.Writer) error {
 				note = fmt.Sprintf("  (%d unparseable line(s) skipped)", doc.BadLines)
 			}
 			fmt.Fprintf(out, "  mined %-46s → %-24s %3d turn(s), %d part(s)%s\n",
-				project+"/"+sessionID[:8], wing, len(doc.Turns), len(docs), note)
+				project+"/"+shortSessionID(sessionID), wing, len(doc.Turns), len(docs), note)
 		}
 		mined++
 		parts += len(docs)
@@ -401,6 +401,17 @@ func loadSession(path string) (sessionDoc, string, string, error) {
 		return doc, project, sessionID, fmt.Errorf("no conversation extracted")
 	}
 	return doc, project, sessionID, nil
+}
+
+// shortSessionID abbreviates a session id for the progress line. The id comes
+// from a FILENAME under the transcripts root, not from Claude Code, so it is not
+// guaranteed to be a UUID — a stray short *.jsonl there would otherwise panic a
+// whole mining run on a cosmetic slice.
+func shortSessionID(id string) string {
+	if r := []rune(id); len(r) > 8 {
+		return string(r[:8])
+	}
+	return id
 }
 
 // wingForSession resolves where a session's memories belong, most authoritative
