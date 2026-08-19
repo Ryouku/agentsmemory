@@ -66,7 +66,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), temporal (asks for the current state of a fact an older memory still contradicts), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -201,6 +201,99 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
+// generateTemporalCases builds the CatTemporal case set. Each case pairs a dated
+// drawer with its nearest semantic neighbour whose content date is strictly
+// older (OlderNeighbor): the newer drawer is the expected answer, and the older
+// one needs no field of its own — it stays in the corpus as the distractor that
+// ranking must put below the correction. Pair discovery runs BEFORE question
+// generation so no LLM round trip is spent on a drawer with nothing to supersede.
+func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
+	wing := c.String("wing")
+	drawers, err := svc.drawers.DatedDrawers(ctx, team.ID, wing, c.Int("n"))
+	if err != nil {
+		return nil, "", fmt.Errorf("list dated drawers: %w", err)
+	}
+	if len(drawers) == 0 {
+		// The corpus may well have drawers — just none whose chronology is known,
+		// and without a date "was later corrected" cannot be labelled. Name that
+		// distinctly so the reader fixes the dates, not the wing.
+		return nil, "", fmt.Errorf("no drawers with a content date in %s of workspace %q — temporal cases need dated memories (a date in the source name, frontmatter, or first lines), so file some or widen --wing",
+			corpusLabel(wing), team.Slug)
+	}
+
+	gen := &questionGen{
+		url:     genURL(c),
+		model:   c.String("gen-model"),
+		apiKey:  strings.TrimSpace(c.String("gen-api-key")),
+		prompt:  evalPromptTemporal,
+		http:    &http.Client{Timeout: 120 * time.Second},
+		verbose: out,
+	}
+	fmt.Fprintf(out, "generating temporal questions with %s (%d dated drawers)…\n", gen.model, len(drawers))
+	genStart := time.Now()
+	var cases []palace.EvalCase
+	// One successful generation proves the generator is configured; until then a
+	// failure means misconfiguration, mirroring the first-drawer abort of the
+	// main loop. It cannot key off the loop index here, because pair discovery
+	// may legitimately skip any number of drawers before the first ask happens.
+	proven := false
+	for i, d := range drawers {
+		started := time.Now()
+		older, ok, err := svc.drawers.OlderNeighbor(ctx, team.ID, d, c.Int("pool"))
+		if err != nil {
+			// Pair discovery uses the embedder and the vector store — the same
+			// dependencies the eval itself cannot run without — so a failure here
+			// is a broken setup, not this drawer's fault. Abort rather than skip.
+			return nil, "", fmt.Errorf("find older neighbour: %w", err)
+		}
+		if !ok {
+			fmt.Fprintf(out, "  [%2d/%2d] skipped: no dated older neighbour for %q (%s) — nothing in the corpus it supersedes\n",
+				i+1, len(drawers), firstLineOf(d.Content, 40), d.ContentDate)
+			continue
+		}
+		q, err := gen.ask(ctx, d.Content)
+		if err != nil {
+			if !proven {
+				return nil, "", fmt.Errorf("question generator failed on the first pair, so it is misconfigured rather than unlucky: %w\n"+
+					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
+					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
+			}
+			fmt.Fprintf(out, "  [%2d/%2d] failed: %v\n", i+1, len(drawers), err)
+			continue
+		}
+		if q == "" {
+			fmt.Fprintf(out, "  [%2d/%2d] empty answer, skipped\n", i+1, len(drawers))
+			continue
+		}
+		proven = true
+		// The pair's dates ride the progress line so an operator can sanity-check
+		// the labelling as it happens — a "supersedes" whose dates look wrong is a
+		// bad pair, and this line is the only place it is visible.
+		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s  (%s supersedes %s)\n",
+			i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62), d.ContentDate, older.ContentDate)
+		cases = append(cases, palace.EvalCase{Query: q, Expect: d.ID, Wing: wing, Category: palace.CatTemporal})
+	}
+	if len(cases) == 0 {
+		// Distinct from the generic "no eval cases": every sampled drawer was
+		// dated, yet none had a dated older neighbour — the corpus has chronology
+		// but no supersession to measure, which no --wing change will fix.
+		return nil, "", fmt.Errorf("sampled %d dated drawer(s) but none has a dated older semantic neighbour — temporal cases need at least two dated memories about the same fact; file corrections with dates, or run another --style", len(drawers))
+	}
+	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
+	if path := c.String("cases"); path != "" {
+		meta := caseFileMeta{
+			Generator: gen.model, Style: "temporal", Wing: wing,
+			Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := writeCases(path, cases, meta); err != nil {
+			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
+		} else {
+			fmt.Fprintf(out, "saved %d case(s) to %s\n", len(cases), path)
+		}
+	}
+	return cases, "generated", nil
+}
+
 // generateRealCases replays queries agents actually ran (from search_events)
 // as eval cases. There is no seed note to serve as gold, so the gold is a
 // judged SET: the broad candidate pool is scored by the generator model as a
@@ -354,6 +447,12 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 
 	if c.String("style") == "real" {
 		return generateRealCases(ctx, c, svc, team, out)
+	}
+	// Temporal cases are shaped differently — a pair is discovered before a
+	// question is written — so the style gets its own generation loop instead of
+	// growing this one a second set of skip reasons.
+	if c.String("style") == "temporal" {
+		return generateTemporalCases(ctx, c, svc, team, out)
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -613,6 +712,30 @@ information the query is after?
 Reply with exactly one word: YES or NO.
 
 %s`
+
+// evalPromptTemporal generates questions for facts that were later corrected.
+// The note the generator sees is the NEWER half of a discovered pair; the older
+// version stays in the corpus as a distractor. The question must ask for the
+// fact's current state WITHOUT carrying a date — the eval measures whether
+// ranking prefers the newer memory on its own, and a date in the question would
+// hand it the answer.
+const evalPromptTemporal = `You are writing an evaluation question for a memory search system.
+
+Below is a note an engineer wrote. It records the current state of a fact that
+changed at some point. Write ONE question asking what the current state of that
+fact is — the kind a colleague would type into a search box, wanting today's
+answer rather than the history.
+
+Rules:
+- Ask about the fact's current state, value, or status — not about when or why
+  it changed.
+- Do NOT include any date, year, or month in the question.
+- One line, under 20 words, no quotes, no preamble.
+
+NOTE:
+%s
+
+QUESTION:`
 
 const evalPromptLiteral = `You are writing an evaluation question for a memory search system.
 
@@ -996,8 +1119,10 @@ func firstLineOf(s string, max int) string {
 	if i := strings.Index(s, "\n"); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > max {
-		s = s[:max]
+	// Truncate by runes, not bytes: half this palace's content is Lithuanian,
+	// and a byte cut can split a multibyte rune into mojibake mid-progress-line.
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max])
 	}
 	return s
 }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -97,6 +99,24 @@ type RecallStats struct {
 	// the actionable half of the report: each one names a memory the team looked
 	// for and does not have.
 	Unanswered []string
+	// Suggestions are the unanswered queries turned into a to-write list: near-
+	// duplicate phrasings collapsed into one entry each, counted, wing-tagged, and
+	// ranked. Where Unanswered says what was asked, Suggestions says what to DO —
+	// five phrasings of the same missing memory read as one suggestion asked five
+	// times, not as five separate gaps.
+	Suggestions []MemorySuggestion
+}
+
+// MemorySuggestion is one memory the team should write: a cluster of recent
+// searches that all came back empty, collapsed across paraphrasings. It carries
+// the wing the searches were scoped to because "write this memory" is only
+// actionable when it also says WHERE — the same ask against two wings is two
+// different gaps.
+type MemorySuggestion struct {
+	Query     string // the most recent phrasing of the ask, verbatim
+	Times     int    // how many unanswered searches collapsed into this one
+	Wing      string // wing the searches were scoped to ("(unscoped)" when none)
+	LastAsked string // RFC3339 time of the most recent ask
 }
 
 // AnsweredPct is the share of all searches in the window that returned something.
@@ -223,19 +243,218 @@ func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Dur
 	// down and the first lines should be where the work happened.
 	sortWings(out.Wings)
 
+	// One fetch feeds both views of the same events: the raw Unanswered list is
+	// the first unansweredLimit rows, and the grouped Suggestions are built over
+	// the whole batch. The scan limit is deliberately wider than the display limit
+	// — a suggestion's count is only honest if the paraphrases beyond the first
+	// page are counted too.
 	var unanswered []searchEventRow
 	if err := s.repo.db.WithContext(ctx).
 		Model(&searchEventRow{}).
 		Where("team_id = ? AND created_at >= ? AND hits = 0 AND query <> ''", teamID, cutoff).
 		Order("created_at DESC").
-		Limit(unansweredLimit).
+		Limit(max(unansweredLimit, suggestionScanLimit)).
 		Find(&unanswered).Error; err != nil {
 		return RecallStats{}, fmt.Errorf("list unanswered searches: %w", err)
 	}
-	for _, u := range unanswered {
+	for i, u := range unanswered {
+		if i >= unansweredLimit {
+			break
+		}
 		out.Unanswered = append(out.Unanswered, strings.TrimSpace(u.Query))
 	}
+	out.Suggestions = groupSuggestions(unanswered)
 	return out, nil
+}
+
+// suggestionScanLimit bounds how many unanswered events feed the grouping. It
+// exists so a runaway session cannot make the stats endpoint scan an unbounded
+// table; 200 covers any realistic session while keeping the query fast enough
+// for the Stop hook's 1-2s budget.
+const suggestionScanLimit = 200
+
+// maxSuggestions caps the grouped list. The hook shows three; ten leaves room
+// for other readers (the MCP tool, a human curling /stats) without turning the
+// payload into a second unanswered dump.
+const maxSuggestions = 10
+
+// groupSuggestions collapses unanswered search events (newest first) into
+// deduplicated, counted, ranked write-me suggestions.
+//
+// The near-duplicate rule is ONE deliberately simple check: two queries in the
+// same wing collapse when their significant-token sets overlap by more than 60%
+// of the smaller set. Containment-on-the-smaller-set was chosen over a token
+// prefix rule and over symmetric Jaccard: a prefix rule breaks the moment a
+// paraphrase reorders words ("annotations for kubernetes ingress" vs
+// "kubernetes ingress annotations"), and Jaccard punishes elaboration — "how do
+// kubernetes ingress annotations work" is the same ask as "kubernetes ingress
+// annotations", but the extra glue drags a symmetric ratio below any sane
+// threshold. Containment collapses a query and its longer restatement while
+// distinct topics, which share few tokens, stay apart. No LLM is involved: this
+// runs on the Stop-hook stats path, where determinism and a millisecond budget
+// matter more than clustering finesse.
+//
+// The newest occurrence supplies the representative Query and LastAsked — the
+// most recent phrasing is the freshest statement of what is actually wanted.
+func groupSuggestions(events []searchEventRow) []MemorySuggestion {
+	type group struct {
+		s      MemorySuggestion
+		tokens map[string]bool
+		norm   string
+	}
+	var groups []*group
+	for _, e := range events {
+		q := strings.TrimSpace(e.Query)
+		if q == "" {
+			continue
+		}
+		wing := e.Wing
+		if wing == "" {
+			// Mirror the wing table's naming so the suggestion and the per-wing
+			// rows describe the same place. "(unscoped)" is itself actionable: it
+			// says the searches never named a wing, so the writer must pick one.
+			wing = "(unscoped)"
+		}
+		tokens, norm := significantTokens(q), strings.ToLower(q)
+		merged := false
+		for _, g := range groups {
+			if g.s.Wing == wing && sameAsk(tokens, g.tokens, norm, g.norm) {
+				g.s.Times++
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			groups = append(groups, &group{
+				s:      MemorySuggestion{Query: q, Times: 1, Wing: wing, LastAsked: e.CreatedAt},
+				tokens: tokens,
+				norm:   norm,
+			})
+		}
+	}
+	out := make([]MemorySuggestion, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, g.s)
+	}
+	sortSuggestions(out)
+	if len(out) > maxSuggestions {
+		out = out[:maxSuggestions]
+	}
+	return out
+}
+
+// sameAsk is the collapse rule described on groupSuggestions. Queries whose
+// significant tokens all fell to the stopword filter cannot be compared by
+// overlap (the ratio would divide by zero), so they collapse only on exact
+// normalized equality — safer to show two suggestions than to merge two
+// different asks.
+func sameAsk(a, b map[string]bool, normA, normB string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return normA == normB
+	}
+	// A one-token query is 100% contained in every group that happens to share
+	// that token, which would fold a bare "kubernetes" into whichever kubernetes
+	// topic was seen first and inflate its count with a different ask. Where
+	// containment cannot discriminate, demand the sets match exactly.
+	if len(a) == 1 || len(b) == 1 {
+		return len(a) == len(b) && sharedTokens(a, b) == len(a)
+	}
+	smaller := len(a)
+	if len(b) < smaller {
+		smaller = len(b)
+	}
+	return float64(sharedTokens(a, b))/float64(smaller) > 0.6
+}
+
+// sharedTokens counts the tokens two sets have in common.
+func sharedTokens(a, b map[string]bool) int {
+	shared := 0
+	for t := range a {
+		if b[t] {
+			shared++
+		}
+	}
+	return shared
+}
+
+// stopTokens are the glue words that appear in almost any phrasing of a question
+// and carry no topic. The list is deliberately tiny: every word added here makes
+// two DIFFERENT asks look more alike, and a false merge hides a gap the team
+// should see.
+var stopTokens = map[string]bool{
+	"a": true, "an": true, "the": true, "to": true, "of": true, "in": true,
+	"on": true, "at": true, "for": true, "and": true, "or": true, "is": true,
+	"are": true, "was": true, "do": true, "does": true, "did": true, "how": true,
+	"what": true, "why": true, "where": true, "when": true, "which": true,
+	"with": true, "about": true, "this": true, "that": true, "it": true,
+	"its": true, "can": true, "should": true,
+}
+
+// significantTokens lowercases a query, splits on anything that is not a letter
+// or digit, and drops the glue. Single-rune tokens go too — they are almost
+// always leftovers of the split, not topics.
+func significantTokens(q string) map[string]bool {
+	tokens := map[string]bool{}
+	for _, t := range strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		// Rune count, not byte length: a single CJK character or a Lithuanian
+		// "ą" is a whole word, and dropping it by byte length would silently
+		// empty the token set of a non-ASCII query.
+		if utf8.RuneCountInString(t) < 2 || stopTokens[t] {
+			continue
+		}
+		tokens[t] = true
+	}
+	return tokens
+}
+
+// sortSuggestions ranks the to-write list: most-asked first, then most recent.
+// Count leads because a memory five people (or five phrasings) went looking for
+// is worth writing before one asked once; recency breaks ties because RFC3339
+// strings in one timezone compare correctly as text, and the newest gap is the
+// one still on someone's mind. The query string is the final, stable tiebreak.
+func sortSuggestions(ss []MemorySuggestion) {
+	for i := 1; i < len(ss); i++ {
+		for j := i; j > 0 && lessSuggestion(ss[j], ss[j-1]); j-- {
+			ss[j], ss[j-1] = ss[j-1], ss[j]
+		}
+	}
+}
+
+func lessSuggestion(a, b MemorySuggestion) bool {
+	if a.Times != b.Times {
+		return a.Times > b.Times
+	}
+	if a.LastAsked != b.LastAsked {
+		return a.LastAsked > b.LastAsked
+	}
+	return a.Query < b.Query
+}
+
+// SuggestionLines renders the top suggestions in the plain-text report's
+// transport format, one line per suggestion:
+//
+//	write: 3x kubernetes ingress annotations [wing_acme]
+//
+// The "  write: " prefix is a contract with the Stop hook
+// (clients/claude-code/hooks/agentsmemory-stop-hook.sh): the hook greps these
+// lines out of the /stats body and re-renders them as its "memories to write"
+// section, so the prefix must stay grep-stable. A human curling /stats reads
+// the same lines unassisted. Nil when there is nothing to suggest — the report
+// stays silent when it has nothing to say.
+func (r RecallStats) SuggestionLines(max int) []string {
+	if max <= 0 {
+		max = 3
+	}
+	var lines []string
+	for i, s := range r.Suggestions {
+		if i >= max {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("  write: %dx %s [%s]", s.Times, s.Query, s.Wing))
+	}
+	return lines
 }
 
 // sortWings orders wings by searches, then drawers, then name — descending on the

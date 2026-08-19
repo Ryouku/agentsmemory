@@ -683,6 +683,88 @@ func (s *Service) SampleSearchQueries(ctx context.Context, teamID, wing string, 
 	return s.repo.SampleSearchQueries(ctx, teamID, wing, n)
 }
 
+// DatedDrawers lists a team's drawers that carry a content date, optionally
+// scoped to a wing — the population the temporal eval samples from, since a
+// "later corrected" fact needs a chronology to be later than.
+func (s *Service) DatedDrawers(ctx context.Context, teamID, wing string, limit int) ([]Drawer, error) {
+	return s.repo.DatedDrawers(ctx, teamID, wing, limit)
+}
+
+// OlderNeighbor finds the distractor half of a temporal eval pair: the drawer
+// semantically closest to d whose content date is non-empty and strictly older.
+// Such a neighbour is the corpus's own record of the superseded version of d's
+// fact, so a question about the fact's CURRENT state is answered correctly only
+// when ranking puts d above it — which is exactly what CatTemporal measures.
+//
+// Hits from d's own source are skipped: chunks of one source are the same
+// session split for embedding, not a fact that was later corrected, and pairing
+// them would test chunk ordering rather than temporal preference. The skip
+// requires a non-empty source, because a source-less drawer is a standalone
+// memory (see Add) and two of them sharing "" proves nothing about their origin.
+//
+// Dates are normalized through findDate before comparing: Add stores
+// content_date as the caller sent it, so a hand-filed drawer can carry
+// "26 June 2026" — comparing that lexicographically against "2026-08-01" would
+// order by spelling, not chronology. A date that does not normalize disqualifies
+// the candidate; on the target it disqualifies the pair (ok=false), because the
+// question "what is newer" cannot be answered about an unparseable date.
+// ok=false means the corpus holds no such neighbour — the caller skips the
+// drawer rather than fabricating a pair.
+func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, poolSize int) (Drawer, bool, error) {
+	if d.ContentDate == "" {
+		// "Older than nothing" has no answer; the caller sampled the wrong
+		// population (DatedDrawers is the right one), so say so rather than
+		// silently returning no pair.
+		return Drawer{}, false, fmt.Errorf("older neighbour of drawer %s: it has no content date, so \"older\" is undefined — sample dated drawers only", d.ID)
+	}
+	dDate := findDate(d.ContentDate)
+	if dDate == "" {
+		return Drawer{}, false, nil
+	}
+	if poolSize <= 0 {
+		poolSize = 50
+	}
+	vec, err := s.embed.EmbedOne(ctx, d.Content)
+	if err != nil {
+		return Drawer{}, false, fmt.Errorf("embed drawer for temporal pairing: %w", err)
+	}
+	// The same retrieval seam evalCase uses, scoped to the drawer's own wing: a
+	// superseded fact and its correction belong to one project, and a cross-wing
+	// "pair" would be two projects coincidentally near in embedding space.
+	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: d.Wing}))
+	if err != nil {
+		return Drawer{}, false, fmt.Errorf("temporal pair search: %w", err)
+	}
+	ids := make([]string, len(hits))
+	for i, h := range hits {
+		ids[i] = h.ID
+	}
+	rows, err := s.repo.GetMany(ctx, teamID, ids)
+	if err != nil {
+		return Drawer{}, false, fmt.Errorf("load temporal pair candidates: %w", err)
+	}
+	// Hits arrive best-first, so the first survivor of the filters is the
+	// closest eligible neighbour.
+	for _, h := range hits {
+		cand, ok := rows[h.ID]
+		if !ok {
+			continue // orphan vector (row deleted) — skip, as search does
+		}
+		if cand.ID == d.ID {
+			continue
+		}
+		if d.SourceFile != "" && cand.SourceFile == d.SourceFile {
+			continue
+		}
+		candDate := findDate(cand.ContentDate)
+		if candDate == "" || candDate >= dDate {
+			continue
+		}
+		return cand, true, nil
+	}
+	return Drawer{}, false, nil
+}
+
 // withoutReranker returns a shallow copy of the service with the reranker
 // removed, for a degraded eval run — the palace itself is untouched.
 func (s *Service) withoutReranker() *Service {

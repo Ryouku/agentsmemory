@@ -135,11 +135,22 @@ type Service struct {
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
 	bm25Auto bool
 	bm25Base float64
-	// mineLocks serializes concurrent mines of the same (team, source) within this
-	// process, so two re-mines cannot interleave their purge-then-write and leave
-	// both content versions behind. It is the in-process analogue of the frozen
-	// miner's per-source mine_lock. Note: it does NOT coordinate across horizontally
-	// scaled instances — a cross-instance guard would need a DB advisory lock.
+	// fusionRRF makes search fuse vector and lexical evidence by RANK
+	// (reciprocal-rank fusion) instead of by weighted score. It exists because a
+	// linear blend lets one bad signal drag a good candidate down: on a large,
+	// diverse corpus BM25 measured WORSE than vector alone (MRR 0.178 vs 0.335),
+	// and the linear fusion carried that damage into the page — and worse, into
+	// the cross-encoder's pool, which is taken off the fused head, so the one
+	// component that did work never saw the candidates fusion had buried. RRF
+	// bounds any single signal's influence to a rank position, and on that same
+	// corpus rrf+rerank was the best arm of seventeen.
+	//
+	// Off by default: the linear blend is best on the corpora we have measured
+	// where lexical evidence helps, and a ranking default changes what every
+	// existing palace returns. FUSION=rrf turns it on for the corpora where the
+	// eval says it should be.
+	fusionRRF bool
+
 	// closetBoostScale scales every closet rank boost: 1 is the full curation
 	// prior, 0 turns closets into a pure ranking no-op. It exists because the
 	// prior's worth depends on what the palace holds: on a curated palace the
@@ -194,6 +205,14 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 	if s.rerankWeight == 0 {
 		s.rerankWeight = DefaultRerankWeight
 	}
+	return s
+}
+
+// WithFusion selects how vector and lexical evidence combine: "rrf" for
+// reciprocal-rank fusion, anything else for the weighted-score blend. Same
+// post-construction-setter contract as WithReranker.
+func (s *Service) WithFusion(mode string) *Service {
+	s.fusionRRF = strings.EqualFold(strings.TrimSpace(mode), "rrf")
 	return s
 }
 
@@ -665,9 +684,14 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
 	var ranked []HybridScore
-	if s.bm25Auto {
+	switch {
+	case s.fusionRRF:
+		// Rank fusion ignores bm25Base entirely — the weight question does not
+		// arise when neither signal contributes a magnitude, only a position.
+		ranked = rankRRF(query, docs, dists, boosts)
+	case s.bm25Auto:
 		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
-	} else {
+	default:
 		ranked = rankHybridWeighted(query, docs, dists, boosts, s.bm25Base)
 	}
 
