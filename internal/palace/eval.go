@@ -736,6 +736,109 @@ func (s *Service) SampleDrawers(ctx context.Context, teamID, wing string, n int)
 	return s.repo.ListRandom(ctx, teamID, wing, n)
 }
 
+// CandidateUnion returns the union of what several rankers would surface for one
+// query: the top perArm of the vector order, the fused order, the rank-fused
+// order, and the cross-encoder order when one is configured.
+//
+// It exists because judging only what PRODUCTION returns bakes the current
+// ranker's blind spots into the labels. A document today's ranking never
+// surfaces can never be marked relevant, so a better ranker that does surface it
+// earns no credit — the evidence is structurally incapable of selecting an
+// improvement over the ranker that generated it, and more traffic only produces
+// more of the same bias. Pooling the candidates of competing systems and judging
+// the union blind is the standard answer (it is how TREC has built qrels for
+// thirty years), and it is the difference between a case set that can rank our
+// arms and one that can only confirm them.
+//
+// The returned drawers carry no indication of which ranker proposed them: the
+// judge must not be able to infer an arm from the order, so the union is sorted
+// by id rather than by anybody's score.
+func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string, perArm, poolSize int) ([]Drawer, error) {
+	if perArm <= 0 {
+		perArm = 5
+	}
+	if poolSize <= 0 {
+		poolSize = DefaultRerankPool
+	}
+	vec, err := s.embed.EmbedOne(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("embed query for pooling: %w", err)
+	}
+	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: wing}))
+	if err != nil {
+		return nil, fmt.Errorf("pool vector search: %w", err)
+	}
+	ids := make([]string, len(hits))
+	for i, h := range hits {
+		ids[i] = h.ID
+	}
+	rows, err := s.repo.GetMany(ctx, teamID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load pooled candidates: %w", err)
+	}
+
+	drawers := make([]Drawer, 0, len(hits))
+	docs := make([]string, 0, len(hits))
+	dists := make([]float64, 0, len(hits))
+	for _, h := range hits {
+		d, ok := rows[h.ID]
+		if !ok {
+			continue // orphan vector, as search skips
+		}
+		drawers = append(drawers, d)
+		docs = append(docs, d.Content)
+		dists = append(dists, distanceFromScore(h.Score))
+	}
+	if len(drawers) == 0 {
+		return nil, nil
+	}
+
+	picked := map[int]bool{}
+	take := func(order []int) {
+		for i, idx := range order {
+			if i >= perArm {
+				return
+			}
+			picked[idx] = true
+		}
+	}
+	// Vector order is the retrieval channel's own opinion.
+	byVector := make([]int, len(drawers))
+	for i := range byVector {
+		byVector[i] = i
+	}
+	sort.SliceStable(byVector, func(a, b int) bool { return dists[byVector[a]] < dists[byVector[b]] })
+	take(byVector)
+
+	indexes := func(rs []HybridScore) []int {
+		out := make([]int, len(rs))
+		for i, r := range rs {
+			out[i] = r.Index
+		}
+		return out
+	}
+	take(indexes(rankHybrid(query, docs, dists, nil)))
+	take(indexes(rankRRF(query, docs, dists, nil)))
+	if s.rerank != nil {
+		fused := rankHybrid(query, docs, dists, nil)
+		hitsForRerank := make([]SearchHit, len(drawers))
+		for i, d := range drawers {
+			hitsForRerank[i] = SearchHit{Drawer: d, Distance: dists[i]}
+		}
+		if scores := s.RerankScoresFor(ctx, query, hitsForRerank, fused); scores != nil {
+			take(indexes(BlendRerank(fused, scores, DefaultRerankWeight)))
+		}
+	}
+
+	out := make([]Drawer, 0, len(picked))
+	for idx := range picked {
+		out = append(out, drawers[idx])
+	}
+	// Sorted by id: any score order would leak which ranker liked what.
+	sort.Slice(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	return out, nil
+}
+
 // SampleSearchQueries exposes the telemetry sampler to the eval command, which
 // lives outside this package and must not reach into the repository.
 func (s *Service) SampleSearchQueries(ctx context.Context, teamID, wing string, n int) ([]string, error) {

@@ -326,21 +326,22 @@ func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team 
 	var cases []palace.EvalCase
 	for i, q := range queries {
 		started := time.Now()
-		hits, err := svc.drawers.Search(ctx, team.ID, palace.SearchQuery{
-			// Ungated: the judge decides relevance, not the distance cutoff, and
-			// a relevant memory the gate would drop still belongs in the qrels.
-			// The judged pool is capped at 12 — each hit costs one judge call —
-			// which means a memory below rank 12 here is invisible to the qrels.
-			// That pooling bias is inherent to judged evals; it is recorded in
-			// the provenance line rather than pretended away.
-			Query: q, Wing: wing, Limit: 12, SkipTelemetry: true,
-		})
+		// The judged set is the UNION of what several rankers would surface, not
+		// what production returns. Judging production's own page would bake the
+		// current ranker's blind spots into the labels: a memory it never
+		// surfaces could never be marked relevant, so a better ranker that does
+		// surface it would earn nothing, and the case set could only ever
+		// confirm the ranker that produced it. Pooling competing systems and
+		// judging the union blind is how relevance judgments have been built
+		// since TREC, and it is what lets these cases SELECT a ranker rather
+		// than ratify one.
+		hits, err := svc.drawers.CandidateUnion(ctx, team.ID, q, wing, 5, 50)
 		if err != nil {
 			return nil, "", fmt.Errorf("pool real query %q: %w", q, err)
 		}
 		var relevant []string
 		for _, h := range hits {
-			excerpt := palace.Snippet(h.Drawer.Content, q, 900)
+			excerpt := palace.Snippet(h.Content, q, 900)
 			reply, jerr := judge.ask(ctx, "QUERY: "+q+"\n\nNOTE:\n"+excerpt)
 			if jerr != nil {
 				// The FIRST failure aborts, matching the generator preflight
@@ -353,7 +354,7 @@ func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team 
 				continue
 			}
 			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES") {
-				relevant = append(relevant, h.Drawer.ID)
+				relevant = append(relevant, h.ID)
 			}
 		}
 		if len(relevant) == 0 {
