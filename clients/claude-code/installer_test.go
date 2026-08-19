@@ -745,3 +745,71 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestWingReachesEveryClientOrSaysWhyNot pins the parity --wing promises. It is
+// a promise about the CONNECTION — every call carries the wing, so a write lands
+// in the right project even when the agent names none — and a promise silently
+// unkept is worse than one refused: the memories still land, just in the wrong
+// wing. Claude carries it as a `mcp add --header`, pi as an env var its bridge
+// turns back into a header, and the two that cannot carry it must say so.
+func TestWingReachesEveryClientOrSaysWhyNot(t *testing.T) {
+	const wing = "wing_acme"
+
+	t.Run("claude sends the header", func(t *testing.T) {
+		inst, rr, _ := newTestInstallerFor(t, claudeKit, false)
+		inst.wing = wing
+		if err := inst.registerAgentsMemoryMCP(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		var sawHeader bool
+		for _, call := range rr.calls {
+			for i, a := range call.args {
+				if a == "--header" && i+1 < len(call.args) && strings.Contains(call.args[i+1], wingHeader+": "+wing) {
+					sawHeader = true
+				}
+			}
+		}
+		if !sawHeader {
+			t.Fatalf("claude registration must pass %s; calls were %+v", wingHeader, rr.calls)
+		}
+	})
+
+	t.Run("pi persists it for its bridge", func(t *testing.T) {
+		inst, _, dir := newTestInstallerFor(t, piKit, false)
+		inst.wing = wing
+		if err := inst.registerAgentsMemoryMCP(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		env, err := os.ReadFile(inst.tokenPath())
+		if err != nil {
+			t.Fatalf("read pi env: %v", err)
+		}
+		if !strings.Contains(string(env), wingEnvVar+"="+wing) {
+			t.Fatalf("pi env must carry %s; got %q", wingEnvVar, env)
+		}
+		// The extension is what turns that variable into a header, so the asset
+		// installed beside it must actually read one and send the other.
+		ext, err := os.ReadFile(filepath.Join(dir, piExtensionAsset))
+		if err != nil {
+			t.Fatalf("read pi extension: %v", err)
+		}
+		for _, want := range []string{wingEnvVar, strings.ToLower(wingHeader)} {
+			if !strings.Contains(string(ext), want) {
+				t.Errorf("pi bridge must reference %q to keep the wing promise", want)
+			}
+		}
+	})
+
+	t.Run("codex says it cannot", func(t *testing.T) {
+		inst, _, _ := newTestInstallerFor(t, codexKit, false)
+		out := &bytes.Buffer{}
+		inst.out = out
+		inst.wing = wing
+		if err := inst.registerAgentsMemoryMCP(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if !strings.Contains(out.String(), "cannot ride this connection") {
+			t.Fatalf("codex install must warn that the wing is dropped; got %q", out.String())
+		}
+	})
+}
