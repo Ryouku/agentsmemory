@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -48,7 +47,7 @@ func (f fakeEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, er
 // newTestService builds a Service over a throwaway migrated SQLite DB (so the
 // real 00006 schema is exercised) using the SQLite store as both source of truth
 // and search index, plus the fake embedder.
-func newTestService(t *testing.T, opts ...Option) *Service {
+func newTestService(t *testing.T) *Service {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "palace_test.db")
 	gdb, err := gorm.Open(glebarez.Open(path), &gorm.Config{
@@ -68,7 +67,7 @@ func newTestService(t *testing.T, opts ...Option) *Service {
 	if err := goose.Up(sqlDB, "migrations"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim, opts...)
+	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
 }
 
 // fakeReranker is a cross-encoder stand-in: it ranks by how many query words a
@@ -79,22 +78,19 @@ type fakeReranker struct {
 	called int
 }
 
-func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([]RerankScore, error) {
+func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([]float64, error) {
 	f.called++
 	if f.err != nil {
 		return nil, f.err
 	}
-	scores := make([]RerankScore, 0, len(docs))
+	scores := make([]float64, len(docs))
 	for i, d := range docs {
-		var hits float64
 		for _, term := range strings.Fields(strings.ToLower(query)) {
 			if strings.Contains(strings.ToLower(d), term) {
-				hits++
+				scores[i]++
 			}
 		}
-		scores = append(scores, RerankScore{Index: i, Score: hits})
 	}
-	sort.SliceStable(scores, func(a, b int) bool { return scores[a].Score > scores[b].Score })
 	return scores, nil
 }
 
@@ -105,7 +101,7 @@ func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([
 func TestSearchRerankerPromotesFromOutsideThePage(t *testing.T) {
 	ctx := context.Background()
 	rr := &fakeReranker{}
-	svc := newTestService(t, WithReranker(rr, 10))
+	svc := newTestService(t).WithReranker(rr, 10)
 	const team = "team-rerank"
 
 	// The fake embedder maps bytes to dimensions, so these are near-identical
@@ -143,7 +139,7 @@ func TestSearchRerankerPromotesFromOutsideThePage(t *testing.T) {
 func TestSearchSurvivesRerankerFailure(t *testing.T) {
 	ctx := context.Background()
 	rr := &fakeReranker{err: errors.New("connection refused")}
-	svc := newTestService(t, WithReranker(rr, 10))
+	svc := newTestService(t).WithReranker(rr, 10)
 	const team = "team-rerank-down"
 
 	for _, content := range []string{"alpha memory", "beta memory", "gamma memory"} {
@@ -484,72 +480,59 @@ func mustAdd(t *testing.T, svc *Service, team string, in AddInput) []Drawer {
 	return res.Drawers
 }
 
-// TestCrossEncodeBlendsRatherThanOverwrites pins the fix for a measured
-// regression. Handing the cross-encoder the whole decision throws away the
-// lexical evidence in the fused score — on this palace's eval that cost MRR
-// 1.000 → 0.684 in the regime where a developer searches with the identifier they
-// remember. A blend keeps both opinions.
-func TestCrossEncodeBlendsRatherThanOverwrites(t *testing.T) {
+// TestRerankBlendsRatherThanOverwrites pins a measured regression. Letting the
+// cross-encoder's score decide alone throws away the lexical evidence in the
+// fused score — on this palace's eval that was MRR 1.000 → 0.686 on the queries
+// that carry an identifier, which is what a developer actually types.
+func TestRerankBlendsRatherThanOverwrites(t *testing.T) {
 	svc := newTestService(t)
 
-	// The fused ranking is confident about hit A (an exact lexical match); the
-	// cross-encoder mildly prefers B. A blend must keep A on top; a handover must
-	// not.
-	hits := []SearchHit{
-		{Drawer: Drawer{ID: "A", Content: "exact identifier match"}, Score: 1.0},
-		{Drawer: Drawer{ID: "B", Content: "topically similar"}, Score: 0.2},
+	// Fused ranking is confident about A (an exact lexical match); the
+	// cross-encoder mildly prefers B. A blend keeps A; a handover does not.
+	survivors := []SearchHit{
+		{Drawer: Drawer{ID: "A", Content: "exact identifier match"}},
+		{Drawer: Drawer{ID: "B", Content: "topically similar"}},
 	}
-	flip := &staticReranker{scores: []RerankScore{{Index: 1, Score: 2}, {Index: 0, Score: 1}}}
+	ranked := []HybridScore{{Index: 0, Fused: 1.0}, {Index: 1, Fused: 0.2}}
+	svc.rerank = &staticReranker{scores: []float64{1, 2}} // B scored higher
+	svc.rerankPool = 2
 
-	svc.reranker = flip
-	blended := svc.crossEncodeWith(context.Background(), "q", hits, DefaultRerankWeight)
-	if blended[0].Drawer.ID != "A" {
-		t.Errorf("blend at w=%.2f let a mild cross-encoder preference overturn a confident fused score: %s leads",
-			DefaultRerankWeight, blended[0].Drawer.ID)
-	}
-
-	// w=1 is the old behaviour, kept reachable so the eval can measure it.
-	overwritten := svc.crossEncodeWith(context.Background(), "q", hits, 1)
-	if overwritten[0].Drawer.ID != "B" {
-		t.Errorf("w=1 must hand the decision to the cross-encoder, got %s", overwritten[0].Drawer.ID)
+	blended := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight)
+	if survivors[blended[0].Index].Drawer.ID != "A" {
+		t.Errorf("a mild cross-encoder preference overturned a confident fused score at w=%.2f", DefaultRerankWeight)
 	}
 
-	// w=0 means the cross-encoder is not consulted at all.
-	if untouched := svc.crossEncodeWith(context.Background(), "q", hits, 0); untouched[0].Drawer.ID != "A" {
-		t.Errorf("w=0 must leave the hybrid order alone, got %s", untouched[0].Drawer.ID)
+	// w=1 is the handover, kept reachable so the eval can measure what it costs.
+	if over := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 1); survivors[over[0].Index].Drawer.ID != "B" {
+		t.Error("w=1 must hand the decision to the cross-encoder")
+	}
+	// w=0 does not consult it at all.
+	if none := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 0); survivors[none[0].Index].Drawer.ID != "A" {
+		t.Error("w=0 must leave the hybrid order alone")
 	}
 }
 
-// TestCrossEncodeKeepsUnscoredCandidates: a server that scores only part of the
-// page must cost precision, not evict results.
-func TestCrossEncodeKeepsUnscoredCandidates(t *testing.T) {
+// TestRerankKeepsTheWholePage: a partial or failed response costs precision, not
+// results.
+func TestRerankKeepsTheWholePage(t *testing.T) {
 	svc := newTestService(t)
-	hits := []SearchHit{
-		{Drawer: Drawer{ID: "A"}, Score: 0.9},
-		{Drawer: Drawer{ID: "B"}, Score: 0.5},
-		{Drawer: Drawer{ID: "C"}, Score: 0.1},
+	survivors := []SearchHit{
+		{Drawer: Drawer{ID: "A"}}, {Drawer: Drawer{ID: "B"}}, {Drawer: Drawer{ID: "C"}},
 	}
-	svc.reranker = &staticReranker{scores: []RerankScore{{Index: 2, Score: 5}}} // only C scored
+	ranked := []HybridScore{{Index: 0, Fused: 0.9}, {Index: 1, Fused: 0.5}, {Index: 2, Fused: 0.1}}
 
-	got := svc.crossEncodeWith(context.Background(), "q", hits, DefaultRerankWeight)
-	if len(got) != 3 {
-		t.Fatalf("page shrank to %d hits", len(got))
-	}
-	seen := map[string]bool{}
-	for _, h := range got {
-		seen[h.Drawer.ID] = true
-	}
-	for _, id := range []string{"A", "B", "C"} {
-		if !seen[id] {
-			t.Errorf("hit %s was dropped", id)
-		}
+	// Wrong count: upstream's guard rejects it and the hybrid order stands.
+	svc.rerank = &staticReranker{scores: []float64{5}}
+	svc.rerankPool = 3
+	if got := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight); len(got) != 3 {
+		t.Fatalf("page shrank to %d", len(got))
 	}
 }
 
 // staticReranker returns a fixed ordering, so blending is testable without a
 // model.
-type staticReranker struct{ scores []RerankScore }
+type staticReranker struct{ scores []float64 }
 
-func (s *staticReranker) Rerank(context.Context, string, []string) ([]RerankScore, error) {
+func (s *staticReranker) Rerank(context.Context, string, []string) ([]float64, error) {
 	return s.scores, nil
 }

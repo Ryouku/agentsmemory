@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -34,6 +34,25 @@ const (
 	MaxSearchLimit      = 100
 	DefaultMaxDistance  = 1.5
 	DefaultDupThreshold = 0.9
+
+	// DefaultRerankPool is how many fused candidates a configured cross-encoder
+	// scores. Widening the pool is the point of reranking: hybridCandidateMultiplier
+	// alone shows the ranker only limit*3 candidates (15 for a default search), so a
+	// document the vector pass ranked 40th can never reach the page no matter how
+	// well it answers the query. 50 is wide enough to change the answer and small
+	// enough to cross-encode within a search's latency budget.
+	DefaultRerankPool = 50
+
+	// DefaultRerankWeight is how much of the final ordering the cross-encoder
+	// decides, with the rest left to the hybrid score it refines.
+	//
+	// It is a BLEND rather than a handover, and that is a measured choice. Letting
+	// the cross-encoder's score decide alone throws away the lexical evidence in
+	// the fused score: on a 12-question eval of this palace, ordering purely by
+	// cross-encoder scored MRR 0.686 where the fused order scored 1.000, on the
+	// queries that carry an identifier or a flag — exactly the searches a
+	// developer actually types. A sweep put 0.25 and 0.50 joint-best (0.958).
+	DefaultRerankWeight = 0.5
 )
 
 // Diary defaults, mirroring the frozen Python diary tools so the journal behaves
@@ -84,75 +103,16 @@ type Embedder interface {
 	EmbedOne(ctx context.Context, input string) ([]float32, error)
 }
 
-// Reranker reorders search candidates with a cross-encoder. It is declared here,
-// at the consumer, so the palace depends on the one call it makes rather than on
-// a concrete client (internal/rerank).
+// Reranker scores candidate documents against a query with a cross-encoder,
+// returning one score per document IN INPUT ORDER (higher is better). Like
+// Embedder it is declared at the consumer, so the service depends on the
+// capability rather than on the TEI client that currently provides it.
 //
-// It is a REFINEMENT, never a gate: a nil reranker, an unreachable server, or an
-// empty answer leaves the hybrid order untouched. Recall must not become the
-// thing that breaks when an optional service is down.
+// A cross-encoder reads the query and the document together, which is strictly
+// more evidence than the vector+BM25 blend that selects the candidates — but it
+// is also far more expensive, which is why it only ever sees a shortlist.
 type Reranker interface {
-	// Rerank scores documents against query and returns them best-first, each
-	// carrying the index of the document it scored.
-	Rerank(ctx context.Context, query string, documents []string) ([]RerankScore, error)
-}
-
-// RerankScore is one candidate's cross-encoder result: its index in the slice
-// passed to Rerank, and its relevance.
-type RerankScore struct {
-	Index int
-	Score float64
-}
-
-// DefaultRerankTopK is how many hybrid-ranked candidates the cross-encoder sees.
-// It is a cost knob: a cross-encoder reads each pair in full, so this bounds the
-// per-search work regardless of how wide the retrieval pool was. Fifty is deep
-// enough that a genuinely relevant drawer ranked poorly by vector+BM25 can still
-// be rescued, and shallow enough to stay well inside a search's latency budget.
-const DefaultRerankTopK = 50
-
-// DefaultRerankWeight is how much of the final ordering the cross-encoder decides,
-// with the rest left to the hybrid score it is refining.
-//
-// It is a BLEND rather than a handover for a measured reason. Handing the
-// cross-encoder the whole decision — which this code did first — throws away the
-// lexical half that knows an exact identifier match when it sees one. On this
-// palace's eval that cost MRR 1.000 → 0.684 in the regime where a developer
-// searches with the symbol they remember: the cross-encoder understands the
-// question better and the fused score knows the vocabulary, and neither alone
-// beats the two together.
-const DefaultRerankWeight = 0.5
-
-// Option configures a Service at construction. Options exist so optional
-// collaborators (a cross-encoder today) can be added without changing the
-// signature every caller and test already passes.
-type Option func(*Service)
-
-// WithReranker attaches a cross-encoder over the top topK hybrid-ranked
-// candidates. A nil reranker or a topK <= 0 leaves the default (no reranking,
-// DefaultRerankTopK) in place, so a half-configured deployment degrades to plain
-// hybrid search rather than failing.
-func WithReranker(r Reranker, topK int) Option {
-	return func(s *Service) {
-		if r == nil {
-			return
-		}
-		s.reranker = r
-		if topK > 0 {
-			s.rerankTopK = topK
-		}
-	}
-}
-
-// WithRerankWeight sets how much the cross-encoder's opinion counts against the
-// hybrid score it is refining: 1 hands it the whole decision, 0 ignores it.
-// Out-of-range values leave DefaultRerankWeight in place.
-func WithRerankWeight(w float64) Option {
-	return func(s *Service) {
-		if w >= 0 && w <= 1 {
-			s.rerankWeight = w
-		}
-	}
+	Rerank(ctx context.Context, query string, docs []string) ([]float64, error)
 }
 
 // Service is the core memory loop: it files drawers (chunk -> embed -> store) and
@@ -164,10 +124,12 @@ type Service struct {
 	embed   Embedder
 	vectors store.VectorStore
 	dim     int // embedding dimension new namespaces are created with (bge-m3 = 1024)
-	// reranker is the optional cross-encoder applied to the top rerankTopK
-	// candidates of a search. nil means hybrid ranking has the final word.
-	reranker     Reranker
-	rerankTopK   int
+	// rerank, when non-nil, cross-encodes the top rerankPool fused candidates and
+	// reorders them before Search pages. nil is the default and means recall stops
+	// at the vector+BM25+closet fusion — the behaviour every deployment had before
+	// a reranker endpoint was configurable.
+	rerank       Reranker
+	rerankPool   int
 	rerankWeight float64
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
@@ -185,11 +147,36 @@ type Service struct {
 // NewService wires the collaborators. dim is the embedding width used to create a
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
-func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int, opts ...Option) *Service {
-	s := &Service{repo: repo, embed: embed, vectors: vectors, dim: dim,
-		rerankTopK: DefaultRerankTopK, rerankWeight: DefaultRerankWeight}
-	for _, opt := range opts {
-		opt(s)
+func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) *Service {
+	return &Service{repo: repo, embed: embed, vectors: vectors, dim: dim}
+}
+
+// WithReranker attaches a cross-encoder to Search and returns s for chaining.
+// pool is how many fused candidates get cross-encoded; values below 1 fall back
+// to DefaultRerankPool.
+//
+// It is a post-construction setter rather than a NewService parameter because
+// reranking is optional deployment wiring, not a collaborator the service needs
+// to exist — every call site that has no reranker configured simply never calls
+// this. It must be called before the service is shared across goroutines: the
+// field is read without synchronization on the search path.
+func (s *Service) WithReranker(r Reranker, pool int) *Service {
+	if pool < 1 {
+		pool = DefaultRerankPool
+	}
+	s.rerank, s.rerankPool = r, pool
+	if s.rerankWeight == 0 {
+		s.rerankWeight = DefaultRerankWeight
+	}
+	return s
+}
+
+// WithRerankWeight sets how much the cross-encoder's opinion counts against the
+// hybrid score it refines: 1 hands it the whole decision, 0 ignores it. Values
+// outside [0,1] are ignored, leaving DefaultRerankWeight in place.
+func (s *Service) WithRerankWeight(w float64) *Service {
+	if w >= 0 && w <= 1 {
+		s.rerankWeight = w
 	}
 	return s
 }
@@ -210,9 +197,7 @@ type AddInput struct {
 // PendingEmbedding is not an error and not a detail — it is the difference
 // between "this memory is findable" and "this memory exists but nothing will
 // recall it yet". The caller is expected to say so out loud, because the failure
-// it comes from (an embedder that is down) is invisible from the outside: the
-// write succeeded, the text is durable, and search simply will not surface it
-// until the background worker catches up.
+// it comes from (an embedder that is down) is invisible from the outside.
 type AddResult struct {
 	Drawers          []Drawer
 	PendingEmbedding bool
@@ -233,8 +218,8 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 	}
 
 	chunks := ChunkText(content, ChunkSize, ChunkOverlap, ChunkMin)
-	// A failed embed does not fail the write — see deferEmbedding. vectors is nil
-	// in that case and the rows are absorbed onto the background queue instead.
+	// A failed embed does not fail the write — see embedOrDefer. vectors is nil in
+	// that case and the rows are absorbed onto the background queue instead.
 	vectors := s.embedOrDefer(ctx, chunks)
 
 	filedAt := time.Now().UTC().Format(time.RFC3339)
@@ -282,29 +267,6 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 	return AddResult{Drawers: drawers}, nil
 }
 
-// embedOrDefer embeds chunks, returning nil when the embedder could not do it.
-//
-// A nil result means "write the rows without vectors and let the background
-// worker finish the job" — the durable half of a memory is its text, and losing
-// that because an optional-at-this-instant service is down is the worst possible
-// trade. The queue this feeds (embedded_at IS NULL) already exists for migration
-// imports, so a deferred row is picked up by exactly the same worker, embedded by
-// exactly the same model, with no new machinery.
-//
-// EVERY embed failure defers, not just a refused connection: a timeout, a 500, a
-// model that was never pulled. Classifying them would mean deciding which
-// failures are worth losing a memory over, and none are. The cost of being wrong
-// is a row that stays unsearchable until the operator fixes the embedder — which
-// the result's PendingEmbedding flag tells them to do.
-func (s *Service) embedOrDefer(ctx context.Context, chunks []Chunk) [][]float32 {
-	vectors, err := s.embedChunks(ctx, chunks)
-	if err == nil {
-		return vectors
-	}
-	log.Printf("filing: embedder unavailable, storing %d chunk(s) for background embedding: %v", len(chunks), err)
-	return nil
-}
-
 // embedChunks embeds a batch of chunks, returning one vector per chunk in order.
 // It is the shared embed step of every filing path (add_drawer, diary_write), so
 // the chunk -> vector contract is single-sourced rather than copied per tool.
@@ -318,6 +280,26 @@ func (s *Service) embedChunks(ctx context.Context, chunks []Chunk) ([][]float32,
 		return nil, fmt.Errorf("embed drawer: %w", err)
 	}
 	return vectors, nil
+}
+
+// embedOrDefer embeds chunks, returning nil when the embedder could not do it.
+//
+// A nil result means "write the rows without vectors and let the background
+// worker finish the job" — the durable half of a memory is its text, and losing
+// that because an optional-at-this-instant service is down is the worst possible
+// trade. The queue this feeds (embedded_at IS NULL) already exists for migration
+// imports, so a deferred row is picked up by the same worker and the same model.
+//
+// EVERY embed failure defers, not just a refused connection: a timeout, a 500, a
+// model that was never pulled. Classifying them would mean deciding which
+// failures are worth losing a memory over, and none are.
+func (s *Service) embedOrDefer(ctx context.Context, chunks []Chunk) [][]float32 {
+	vectors, err := s.embedChunks(ctx, chunks)
+	if err == nil {
+		return vectors
+	}
+	slog.Warn("embedder unavailable, storing for background embedding", "chunks", len(chunks), "error", err)
+	return nil
 }
 
 // storeDrawers is the shared persistence tail every filing path ends in: ensure
@@ -486,11 +468,27 @@ type SearchQuery struct {
 	Room        string  // optional filter
 	Limit       int     // 1..100, defaults to DefaultSearchLimit
 	MaxDistance float64 // drop hits farther than this; <=0 disables the filter
+	// Context is optional background the caller can supply to sharpen reranking —
+	// what it is working on, so an ambiguous query lands in the right sense. It
+	// feeds the cross-encoder ONLY (see rerankQuery); it deliberately does not
+	// touch the embedding, because widening the query vector would quietly change
+	// which candidates are retrieved rather than how they are ordered.
+	Context string
+}
+
+// rerankQuery returns the text the cross-encoder scores against: the (already
+// capped) query, with Context appended when the caller supplied any. A blank
+// Context leaves the query exactly as the vector pass saw it.
+func (q SearchQuery) rerankQuery(query string) string {
+	if c := strings.TrimSpace(q.Context); c != "" {
+		return query + "\n\n" + c
+	}
+	return query
 }
 
 // searchFilter renders a query's wing/room scope as the backend filter, matching
-// the payload keys written at upsert time (see the Payload literals above). An
-// unscoped query yields nil, which every driver reads as "search everything".
+// the payload keys written at upsert time. An unscoped query yields nil, which
+// every driver reads as "search everything".
 func searchFilter(q SearchQuery) store.Filter {
 	if q.Wing == "" && q.Room == "" {
 		return nil
@@ -545,13 +543,19 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
 	// lexical match outside the top-N to be promoted into it.
 	//
-	// The wing/room scope goes to the backend rather than being applied to the
-	// results: every candidate the index returns is already in scope, so the pool
-	// stays the size the re-rank was designed for no matter how narrow the filter
-	// is. (This used to over-fetch searchCandidatePool candidates and drop the
-	// non-matching ones here — a cost that grew with the palace and was paid on
-	// every scoped search.)
+	// The wing/room scope goes to the BACKEND rather than being applied to the
+	// results, so every candidate the index returns is already in scope and the
+	// pool stays the size the re-rank was designed for however narrow the filter
+	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
+	// ones here — a cost that grew with the palace and was paid on every scoped
+	// search, which is every search once wings are per-project.)
 	candidateK := limit * hybridCandidateMultiplier
+	// A cross-encoder can only promote what retrieval surfaced, so widening the
+	// pool it sees is where the accuracy actually comes from — not from the
+	// scoring alone. Pull at least a full rerank pool when one is configured.
+	if s.rerank != nil && candidateK < s.rerankPool {
+		candidateK = s.rerankPool
+	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
@@ -608,41 +612,39 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	ranked := rankHybrid(query, docs, dists, boosts)
 
-	// Materialize the full hybrid order before paging: the cross-encoder below
-	// can promote a candidate from outside the page, which it could not do if we
-	// truncated to limit here.
-	ordered := make([]SearchHit, 0, len(ranked))
+	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
+	// from a query vector and term overlap; a cross-encoder reads the query and
+	// the document together and is the better judge of MEANING — but the fused
+	// score is the better judge of VOCABULARY, and a query naming an identifier
+	// leans on exactly that. So the two are blended rather than one replacing the
+	// other, and both are reported.
+	ranked = s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+
+	results := make([]SearchHit, 0, limit)
 	for _, r := range ranked {
+		if len(results) >= limit {
+			break
+		}
 		hit := survivors[r.Index]
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		ordered = append(ordered, hit)
-	}
-	ordered = s.crossEncodeWith(ctx, query, ordered, s.rerankWeight)
-
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
+		hit.RerankScore = r.Rerank
+		results = append(results, hit)
 	}
 
 	// Record what this recall found. Best-effort by construction: measurement must
-	// never be able to fail the thing it measures, so the write ignores its error
-	// and happens after the page is final.
+	// never be able to fail the thing it measures.
 	ev := searchEventRow{
-		TeamID:     teamID,
-		Wing:       q.Wing,
-		Room:       q.Room,
-		Query:      query,
-		Candidates: len(hits),
-		Hits:       len(ordered),
-		Reranked:   boolToInt(s.reranker != nil),
+		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),
 	}
-	if len(ordered) > 0 {
-		ev.TopScore = ordered[0].Score
+	if len(results) > 0 {
+		ev.TopScore = results[0].Score
 	}
 	s.repo.recordSearch(ctx, ev)
 
-	return ordered, nil
+	return results, nil
 }
 
 // boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
@@ -653,116 +655,80 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// crossEncode reorders the head of a hybrid-ranked page with the configured
-// cross-encoder and returns the full slice, head rescored and tail untouched.
+// applyRerank cross-encodes the best rerankPool candidates and returns ranked
+// reordered by cross-encoder score, with each reordered entry's Rerank set. The
+// tail beyond the pool keeps its fused order and a zero Rerank — it was never
+// scored, and pretending otherwise would put an unscored drawer above a scored
+// one.
 //
-// Only the head is sent: a cross-encoder reads every pair in full, so the cost is
-// linear in what it is given, and the candidates beyond it were already judged
-// unlikely by two independent signals. Their relative order is kept as-is behind
-// the rescored head, which is what makes this a refinement of the hybrid ranking
-// rather than a replacement for it.
-//
-// Every failure path returns the input unchanged: no reranker configured, a
-// server that is down, a response that scored nothing. Search must degrade to
-// hybrid ranking, never to an error — the memory is still there, just ordered
-// slightly less well.
-func (s *Service) crossEncodeWith(ctx context.Context, query string, hits []SearchHit, weight float64) []SearchHit {
-	if s.reranker == nil || len(hits) < 2 || weight <= 0 {
-		return hits
-	}
-	head := len(hits)
-	if s.rerankTopK > 0 && head > s.rerankTopK {
-		head = s.rerankTopK
-	}
-	docs := make([]string, head)
-	for i := range docs {
-		docs[i] = hits[i].Drawer.Content
-	}
-	scores, err := s.reranker.Rerank(ctx, query, docs)
-	if err != nil {
-		// Degrade, but say so. A silent fallback means a reranker that has been
-		// broken for a week looks exactly like one that is working — the operator
-		// only sees results that are slightly worse than they should be, with
-		// nothing anywhere to explain why.
-		log.Printf("search: reranker unavailable, keeping the hybrid order: %v", err)
-		return hits
-	}
-	if len(scores) == 0 {
-		return hits
-	}
-
-	// BLEND the two opinions rather than letting one overwrite the other. The
-	// cross-encoder reads the query and the drawer together, which the embedder
-	// never did; the fused score carries the lexical evidence, which the
-	// cross-encoder's logit does not distinguish. Both are min-max normalized
-	// within this page first, because a raw logit (roughly -11..+6 here) and a
-	// fused score in [0,1] are not comparable numbers.
-	byIndex := make(map[int]float64, len(scores))
-	for _, sc := range scores {
-		if sc.Index >= 0 && sc.Index < head {
-			byIndex[sc.Index] = sc.Score
-		}
-	}
-	if len(byIndex) == 0 {
-		return hits
-	}
-	rerankNorm := normalizeByIndex(byIndex)
-	fused := make(map[int]float64, head)
-	for i := 0; i < head; i++ {
-		fused[i] = hits[i].Score
-	}
-	fusedNorm := normalizeByIndex(fused)
-
-	type blended struct {
-		hit   SearchHit
-		score float64
-		order int // original position, the tie-break that keeps sorting stable
-	}
-	out := make([]blended, 0, head)
-	for i := 0; i < head; i++ {
-		hit := hits[i]
-		r, scored := rerankNorm[i]
-		if scored {
-			hit.RerankScore = byIndex[i]
-		}
-		// A candidate the server did not score keeps its hybrid standing rather
-		// than being pushed to the bottom: a flaky response should cost precision,
-		// not evict results.
-		score := fusedNorm[i]
-		if scored {
-			score = weight*r + (1-weight)*fusedNorm[i]
-		}
-		out = append(out, blended{hit: hit, score: score, order: i})
-	}
-	sort.SliceStable(out, func(a, b int) bool {
-		if out[a].score != out[b].score {
-			return out[a].score > out[b].score
-		}
-		return out[a].order < out[b].order
-	})
-
-	rescored := make([]SearchHit, 0, len(hits))
-	for _, b := range out {
-		rescored = append(rescored, b.hit)
-	}
-	return append(rescored, hits[head:]...)
+// It fails OPEN: with no reranker configured, nothing to score, or any error
+// from the endpoint, ranked is returned untouched and search proceeds on the
+// hybrid order. That mirrors the closet boost's rule that a ranking input is a
+// signal, never a gate — a reranker that is down or slow must degrade recall,
+// never break it.
+func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []HybridScore {
+	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
 }
 
-// normalizeByIndex min-max scales a set of scores into [0,1], keyed by the same
-// indices. An all-equal set maps to 1 everywhere: nothing to choose between, so
-// nothing should be reordered by this term.
-func normalizeByIndex(in map[int]float64) map[int]float64 {
-	out := make(map[int]float64, len(in))
+// applyRerankWith is applyRerank at an explicit blend weight, so the eval can
+// measure what the weight is worth instead of the default being someone's taste.
+//
+// The two signals know different things: the cross-encoder reads the query and
+// the document together, which the embedder never did, and the fused score
+// carries the lexical evidence, which a cross-encoder logit does not
+// distinguish. Blending keeps both; handing over discards one.
+func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) []HybridScore {
+	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
+		return ranked
+	}
+	pool := min(s.rerankPool, len(ranked))
+	docs := make([]string, pool)
+	for i := range docs {
+		docs[i] = survivors[ranked[i].Index].Drawer.Content
+	}
+
+	scores, err := s.rerank.Rerank(ctx, query, docs)
+	if err != nil {
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
+		return ranked
+	}
+	if len(scores) != pool {
+		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		return ranked
+	}
+
+	// Normalize both terms within this page before combining them: a
+	// cross-encoder logit and a fused [0,1] score are not comparable numbers, and
+	// adding them raw would let whichever has the wider range decide everything.
+	rerankNorm := normalizeScores(scores)
+	fusedRaw := make([]float64, pool)
+	for i := range fusedRaw {
+		fusedRaw[i] = ranked[i].Fused
+	}
+	fusedNorm := normalizeScores(fusedRaw)
+
+	head := make([]HybridScore, pool)
+	for i := range head {
+		head[i] = ranked[i]
+		head[i].Rerank = scores[i]
+		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
+	}
+	// Stable so equal blended scores keep the fused order as the tie-break,
+	// exactly as rankHybrid keeps the vector order.
+	sort.SliceStable(head, func(a, b int) bool { return head[a].Blended > head[b].Blended })
+	return append(head, ranked[pool:]...)
+}
+
+// normalizeScores min-max scales a slice into [0,1]. An all-equal slice maps to
+// 1 everywhere: there is nothing to choose between, so this term should not
+// reorder anything.
+func normalizeScores(in []float64) []float64 {
+	out := make([]float64, len(in))
 	if len(in) == 0 {
 		return out
 	}
-	first := true
-	var min, max float64
+	min, max := in[0], in[0]
 	for _, v := range in {
-		if first {
-			min, max, first = v, v, false
-			continue
-		}
 		if v < min {
 			min = v
 		}
@@ -875,6 +841,14 @@ func (s *Service) Wings(ctx context.Context, teamID string) ([]WingStat, error) 
 // Rooms lists a team's rooms, optionally within one wing.
 func (s *Service) Rooms(ctx context.Context, teamID, wing string) ([]RoomStat, error) {
 	return s.repo.Rooms(ctx, teamID, wing)
+}
+
+// ClosetsByWing lists one wing's closets — the pointer index built by mining.
+// It completes the read surface a wing export needs (drawers, closets, tunnels,
+// wing stats), so one *Service satisfies both halves of a wing transfer rather
+// than callers having to hold a separate repository handle for this one query.
+func (s *Service) ClosetsByWing(ctx context.Context, teamID, wing string) ([]Closet, error) {
+	return s.repo.ClosetsByWing(ctx, teamID, wing)
 }
 
 // Reconnect re-readies a tenant's vector namespace and confirms the store is

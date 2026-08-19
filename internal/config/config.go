@@ -114,36 +114,42 @@ type Config struct {
 	// vectors, matching the frozen Python palace so data stays comparable.
 	OllamaEmbedModel string
 
-	// RerankURL is the base URL of a cross-encoder rerank service
-	// (text-embeddings-inference, llama.cpp's server, or anything speaking either
-	// dialect). Empty — the default — means no reranking: search ends at the
-	// hybrid vector+BM25 fusion, exactly as it did before. It is opt-in because
-	// the model is a second service to run, and search must work without it.
+	// RerankURL is the base URL of a cross-encoder rerank service whose scores
+	// re-order search results. EMPTY — the default — turns reranking off entirely
+	// and search behaves exactly as it did before.
+	//
+	// It is a separate endpoint from OllamaURL because the two are different jobs
+	// and, in practice, different processes: Ollama serves the bge-m3 embeddings,
+	// a cross-encoder server serves bge-reranker-v2-m3. Ollama cannot do this one —
+	// it exposes only a model's embedding layer, never a classification head, so
+	// it has no rerank endpoint to point at (ollama/ollama#10467).
+	//
+	// text-embeddings-inference is the reference server (`brew install
+	// text-embeddings-inference` runs it natively with Metal on Apple Silicon);
+	// llama.cpp's server answers the same shape and is what the compose stack
+	// runs, since it is the only one with an arm64 image.
 	RerankURL string
 
-	// RerankModel names the model when the endpoint serves more than one. TEI and
-	// llama.cpp each serve exactly one, so it is usually empty.
-	RerankModel string
-
-	// RerankTopK bounds how many hybrid-ranked candidates reach the cross-encoder
-	// — the cost knob for the precision it buys. Zero uses the palace default.
+	// RerankPool is how many fused candidates get cross-encoded per search.
+	// Larger means the reranker can rescue a good drawer that the vector+BM25
+	// pass buried, at the cost of latency; 0 or less takes palace.DefaultRerankPool.
+	// Ignored when RerankURL is empty.
 	//
-	// It is small on purpose. A cross-encoder scores each pair in a full forward
-	// pass, so cost is linear in this number, and on CPU a drawer-sized pair runs
-	// ~0.2-0.5s: 50 candidates can exceed a 30-second budget, which was observed
-	// as silent fallbacks to the hybrid order during an eval run.
-	RerankTopK int
+	// There is deliberately no RERANK_MODEL: TEI's /rerank carries no model field,
+	// because the model is fixed when the server starts (--model-id). A knob the
+	// wire cannot carry would only ever mislead.
+	RerankPool int
 
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
 	// with the rest left to the hybrid score it refines. 1 hands it the whole
-	// decision — which measurably loses the lexical evidence — and 0 disables it.
+	// decision, which measurably loses the lexical evidence a query carries when
+	// it names an identifier; 0 disables reranking without unconfiguring it.
 	RerankWeight float64
 
-	// RerankTimeout bounds a single rerank call. It is separate from HTTPTimeout
-	// because the other outbound calls (embed, Qdrant) answer in milliseconds
-	// while this one is doing real inference, and giving them one shared budget
-	// means either cutting the cross-encoder off or waiting far too long on a
-	// dead vector store.
+	// RerankTimeout bounds a rerank call. It is separate from HTTPTimeout because
+	// the other outbound calls (embed, Qdrant) answer in milliseconds while this
+	// one is doing real inference, and one shared budget means either cutting the
+	// cross-encoder off or waiting far too long on a dead vector store.
 	RerankTimeout time.Duration
 
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
@@ -222,8 +228,8 @@ func Default() Config {
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
-		RerankTopK:       20,
-		RerankWeight:     0.5,
+		RerankPool:       50, // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}

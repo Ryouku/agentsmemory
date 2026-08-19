@@ -6,6 +6,7 @@ package views
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -233,6 +234,8 @@ type ProjectDetailData struct {
 	// Merge backs the wing-merge card (fold duplicate wings together as a
 	// background job). Rendered only when the viewer manages the workspace.
 	Merge MergeData
+	// WingTransfer backs the wing bundle download/upload card.
+	WingTransfer WingTransferVM
 	// Members backs the Members section: the workspace roster with per-member
 	// tokens. Every member sees the list; only an admin (CanManage) gets the
 	// add/role/remove controls, and the server re-checks on each mutation.
@@ -249,6 +252,39 @@ type MergeData struct {
 	Duplicates []MergeDupVM // detected wing_X / X collisions
 	Jobs       []MergeJobVM // recent merge jobs, newest first
 	Active     bool         // a job is queued/running — drives the status poller
+}
+
+// WingTransferVM backs the wing transfer card: moving a single wing in or out of
+// this workspace as a portable bundle file.
+//
+// Wings drives the download picker and is shown to any member, because a member
+// already reads those memories over MCP. CanImport gates the upload half, which
+// writes memories into the workspace and so takes the writer/admin bar — the
+// handler re-checks it, so hiding the form is convenience, not the boundary.
+type WingTransferVM struct {
+	TeamID    string
+	Wings     []string // wing names available to download
+	CanImport bool     // viewer is writer/admin: may upload a bundle
+}
+
+// WingExportURL builds the download link for one wing's bundle. It is used both
+// for the anchor's server-rendered href — so the link works before datastar
+// hydrates, and for a viewer with JavaScript off — and as the base the picker
+// rewrites client-side. The wing is query-escaped because a wing name may
+// legitimately contain spaces, dots and apostrophes.
+func WingExportURL(teamID, wing string) string {
+	return "/projects/" + teamID + "/wings/export?wing=" + url.QueryEscape(wing)
+}
+
+// firstWing returns the wing the download picker starts on. Seeding the picker
+// with a real wing rather than a "choose one…" placeholder is what lets the
+// download link always be valid, so the card needs no disabled state for a
+// choice the viewer cannot avoid making.
+func firstWing(wings []string) string {
+	if len(wings) == 0 {
+		return ""
+	}
+	return wings[0]
 }
 
 // MergeDupVM is one detected duplicate: Source (the wing_X) folds into Target (X).

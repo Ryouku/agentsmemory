@@ -152,7 +152,7 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | `am_add_drawer` | ✅ | File a verbatim memory (chunked + embedded; idempotent by source) |
 | `am_get_drawer` / `am_update_drawer` / `am_delete_drawer` | ✅ | Read, edit-in-place, or remove a drawer by id |
 | `am_list_drawers` | ✅ | Paginate drawers, optionally filtered by wing/room |
-| `am_search` | ✅ | Hybrid recall — vector candidates re-ranked by vector + BM25 + closet boost |
+| `am_search` | ✅ | Hybrid recall — vector candidates re-ranked by vector + BM25 + closet boost, then optionally by a TEI cross-encoder (`RERANK_URL`) |
 | `am_check_duplicate` | ✅ | Is content near-identical to an existing drawer? |
 | `am_list_wings` / `am_list_rooms` / `am_get_taxonomy` | ✅ | Indexed wing/room aggregations of a team's memory |
 | `am_get_aaak_spec` | ✅ | The AAAK compressed-memory dialect reference |
@@ -937,6 +937,53 @@ All flags have sensible local defaults:
 | `--qdrant-api-key` | *(empty)* | Qdrant API key (optional) |
 | `--ollama-url` | `http://localhost:11434` | Ollama base URL |
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
+| `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
+| `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
+
+### Cross-encoder re-ranking (optional)
+
+`am_search` fuses vector similarity, BM25 and the closet boost. All three are
+*proxies* — they score the query and the drawer separately and combine the
+numbers. A cross-encoder reads both together, so it judges relevance far better;
+it is also far slower, which is why it only ever sees a shortlist.
+
+Set `RERANK_URL` and search gains a fourth stage: the top `RERANK_POOL` fused
+candidates are cross-encoded and reordered, and the cross-encoder's score — not
+the fused score — decides the page. Both are reported (`rerank_score` beside
+`score`, `bm25_score` and `closet_boost`), so you can see when they disagree.
+Widening the pool is most of the win: without it the ranker only ever sees
+`limit × 3` candidates, so a drawer buried at rank 40 can never surface.
+
+It **fails open**. A reranker that is down, slow or returning nonsense costs
+ordering quality, never recall — search falls back to the hybrid order and logs a
+warning. Nothing else changes, so leaving `RERANK_URL` unset keeps the exact
+behaviour every deployment had before.
+
+`RERANK_POOL` is independent of TEI's own `--max-client-batch-size` (32 by
+default): the pool is split into batches automatically, so you can set it to
+whatever search quality needs without reconfiguring the server. Scoring each
+pair is independent, so batching cannot change a score.
+
+Run one with [TEI](https://github.com/huggingface/text-embeddings-inference):
+
+```bash
+docker run -d --name reranker -p 12434:80 -v $PWD/tei-data:/data --pull always \
+  ghcr.io/huggingface/text-embeddings-inference:cpu-1.9 \
+  --model-id BAAI/bge-reranker-v2-m3
+# CUDA host: swap cpu-1.9 -> cuda-1.9 and add --gpus all
+# TEI listens on port 80 INSIDE the container — map to 80, not 8080.
+
+export RERANK_URL=http://localhost:12434
+```
+
+> **Ollama cannot do this job.** It exposes only a model's embedding layer, never
+> the cross-encoder classification head, so it has no rerank endpoint
+> ([ollama/ollama#10467](https://github.com/ollama/ollama/issues/10467)) — pulling
+> a `bge-reranker` tag into Ollama gets you embeddings, not relevance scores.
+> Keep Ollama for `bge-m3` embeddings and run TEI alongside it.
+
+`am_search`'s optional `context` argument feeds this stage: it sharpens the
+re-ranking without changing which drawers are retrieved.
 
 ---
 
@@ -1009,6 +1056,69 @@ Implementation: [`internal/dataexport`](internal/dataexport/dataexport.go)
 
 ---
 
+## Moving a single wing (`wing export` / `wing import`)
+
+The whole-workspace export above takes *everything*. To move **one wing** —
+restore a backup, seed a new workspace, fork a wing under a second name, or lift a
+project's memory out of a self-hosted install and into the hosted service — use a
+**wing bundle**.
+
+The defining property is that **a bundle carries no wing name**. Not on a record,
+not in a header, nowhere. Exporting is "take this wing's *contents*", and the
+destination is named on the way **in**:
+
+```bash
+# Self-hosted: straight against the database, no server and no token needed.
+agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_forumchat --out forumchat.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file forumchat.ndjson --as wing_abc
+```
+
+`--as` is **required**. A bundle names no wing, so importing without a
+destination would file every memory into an unnamed wing — an import that looks
+like it worked and leaves the memories where nobody looks.
+
+On a multi-workspace database add `--project <slug>` (it defaults to the single
+`local` workspace). The same bundle works over HTTP:
+
+```bash
+# Agents / scripts: the same endpoint the mempalace migration uses, plus ?as=
+curl -X POST -H "Authorization: Bearer $KEY" --data-binary @forumchat.ndjson \
+  "https://your-host/import?as=wing_abc&recompute=1"
+
+# Browser: project page → "Move a wing" (download a wing, upload a bundle).
+```
+
+**What travels, and what deliberately does not:**
+
+| Carried | Left behind |
+|---|---|
+| Drawers, including diary (agent + topic preserved) | **Vectors** — the destination re-embeds |
+| Closets (the mined pointer index) | **Knowledge-graph facts** — team-global, not wing-scoped |
+| Explicit tunnels with **both** ends inside the wing | Hallways and derived tunnels — recomputed |
+
+Both omissions are deliberate. Vectors would multiply the file size *and*
+silently corrupt search if the destination runs a different embedding model or
+dimension, so a bundle stays text and the background worker indexes it on
+arrival. KG facts belong to the whole team rather than to any wing, so shipping
+them with "one wing" would sweep every *other* wing's facts along with it.
+
+A tunnel with one endpoint outside the wing is dropped because the importer
+requires each endpoint room to already hold a drawer — the far end simply isn't
+in the bundle. Since an explicit tunnel exists to link two *different* wings, a
+single-wing bundle usually carries none; the CLI says so rather than leaving you
+to wonder.
+
+Every record id is deterministic, so importing the same bundle twice **upserts
+rather than duplicates**, and importing into an existing wing merges into it.
+Exporting a wing that does not exist fails and lists the wings that do — an
+export must never produce a valid, empty file.
+
+Implementation: [`internal/wingbundle`](internal/wingbundle/wingbundle.go) (the
+format + exporter), `internal/importer` (`?as=`), `cmd/server/wing.go` (the CLI)
+and `internal/web/wing.go` (the dashboard routes).
+
+---
+
 ## Project layout
 
 ```
@@ -1026,6 +1136,8 @@ internal/
   palace/              core memory domain types (wing/room/drawer/hallway/tunnel)
   mcpserver/           MCP tool wiring (status, load_skill, …)
   dataexport/          per-workspace SQLite data export (BDAR right of access)
+  wingbundle/          portable single-wing bundle format (carries no wing name)
+  importer/            POST /import — bundle ingest, ?as= names the target wing
   web/                 dashboard (templ + datastar): projects, keys, export
 ```
 

@@ -305,7 +305,7 @@ type searchHitView struct {
 	// a reranker is configured (omitted otherwise so an unconfigured deployment's
 	// results are byte-identical to before). It is reported rather than folded
 	// into score because the two are not on the same scale — an agent reading the
-	// page should be able to see which signal decided the order.
+	// page should be able to see which signal moved a hit.
 	RerankScore float64 `json:"rerank_score,omitempty"`
 	// Anchors are the code this memory was written about, with the verdict of the
 	// last verification pass. Stale is the summary an agent should branch on.
@@ -331,7 +331,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
-		mcp.WithString("context", mcp.Description("Optional background context (reserved; not used yet).")),
+		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -348,6 +348,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			Room:        req.GetString("room", ""),
 			Limit:       req.GetInt("limit", palace.DefaultSearchLimit),
 			MaxDistance: req.GetFloat("max_distance", palace.DefaultMaxDistance),
+			Context:     req.GetString("context", ""),
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

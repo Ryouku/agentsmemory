@@ -130,9 +130,10 @@ type SearchHit struct {
 	ClosetBoost float64 // closet rank boost folded into Score (0 when none)
 	Distance    float64 // raw cosine distance, lower is closer
 	// RerankScore is the cross-encoder's relevance for this hit, or 0 when no
-	// reranker is configured. It is reported alongside Score rather than folded
-	// into it: the two are not on the same scale, and an agent reading results
-	// benefits from seeing that the final order came from a different signal than
-	// the fused one.
+	// reranker is configured or it did not score this one. It is reported
+	// alongside Score rather than replacing it: the two are not on the same scale
+	// (a cross-encoder logit against a fused [0,1] score), and the final order is
+	// a blend of both, so an agent reading results can see which signal moved a
+	// hit and by how much.
 	RerankScore float64
 }

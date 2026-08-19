@@ -363,6 +363,44 @@ select.input option { color: var(--bone); background: var(--ink-2); }
 .merge-actions { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; margin-top: 1.2rem; }
 .merge-actions .hint { color: var(--brass); font-size: .82rem; max-width: 44ch; }
 
+/* ---- move a wing (portable bundle in/out) ---- */
+.wing-card { margin-top: 1.4rem; }
+.wing-card h2 { font-size: 1.4rem; margin: 0 0 .5rem; }
+.wing-lede { color: var(--muted); margin: 0 0 1.2rem; max-width: 64ch; font-size: .95rem; }
+.wing-half .kv { margin-bottom: .6rem; }
+/* Two rows, two shapes. The download row is one wide picker plus a narrow action,
+   so its second column is sized to the button. The import row is two peer inputs
+   — the destination wing name matters as much as the file — so it splits evenly;
+   sharing one grid squeezed the wing field to 14rem and truncated its placeholder. */
+.wing-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,14rem); gap: 1.1rem; align-items: end; }
+/* start, not end: these are two peer label+input pairs, and a file input's
+   intrinsic height differs from a text input's, so bottom-alignment staggered
+   the two labels. Aligning tops lines the labels up, which is what the eye reads. */
+.wing-import-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 1.1rem; align-items: start; }
+.wing-grid .field, .wing-import-grid .field { margin: 0; }
+/* The action column has no label of its own, so its button aligns to the bottom
+   of the row rather than floating level with the sibling field's label. */
+.wing-field-action { display: flex; align-items: flex-end; }
+.wing-half .cmd-hint { display: block; margin-top: .7rem; max-width: 62ch; }
+.wing-actions { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; margin-top: 1.2rem; }
+.wing-actions .hint { color: var(--brass); font-size: .82rem; max-width: 46ch; }
+/* A file input's native button is unstyleable across browsers, so style the part
+   we can: match .input's frame, then give ::file-selector-button the ghost-button
+   look so the control reads as ours rather than as raw browser chrome. */
+/* Padding is trimmed (vs .input's .65rem) because the nested selector button
+   carries its own box: at .input's padding the control rendered ~9px taller than
+   the text input beside it, so the two peer fields read as misaligned. */
+.wing-file { padding: .35rem .5rem; cursor: pointer; }
+.wing-file::file-selector-button {
+  font: inherit; font-weight: 600;
+  color: var(--bone); background: var(--ink-3, var(--ink-2));
+  border: 1px solid var(--line-2); border-radius: 8px;
+  padding: .35rem .8rem; margin-right: .7rem;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.wing-file::file-selector-button:hover { border-color: var(--ember); }
+
 .merge-jobs { margin-top: 1.4rem; }
 .merge-jobs .kv { margin-top: .2rem; }
 .merge-job-list { display: grid; gap: .55rem; }
@@ -431,6 +469,10 @@ select.input option { color: var(--bone); background: var(--ink-2); }
   .share-req-actions .btn { flex: 1; }
   /* Merge: stack the picker and let duplicate rows breathe on a phone. */
   .merge-grid { grid-template-columns: 1fr; }
+  /* Wing transfer: stack picker over button, and let the download/import actions
+     go full-width so the 44px touch targets aren't cramped on a phone. */
+  .wing-grid, .wing-import-grid { grid-template-columns: 1fr; }
+  .wing-actions .btn { width: 100%; }
   .merge-dup { flex-direction: column; align-items: stretch; }
   .merge-dup .btn { width: 100%; }
   /* Members: stack the add form, and let each row's role select + Remove go

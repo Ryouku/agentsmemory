@@ -8,6 +8,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -36,7 +37,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/passkey"
-	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank/tei"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/share"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -92,6 +93,7 @@ func main() {
 			mcpCommand(def),
 			stdioCommand(def),
 			syncCommand(def),
+			wingCommand(def),
 			evalCommand(def),
 			shareCommand(def),
 			setPlanCommand(def),
@@ -118,9 +120,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		QdrantAPIKey:     c.String("qdrant-api-key"),
 		OllamaURL:        c.String("ollama-url"),
 		OllamaEmbedModel: c.String("ollama-model"),
-		RerankURL:        c.String("rerank-url"),
-		RerankModel:      c.String("rerank-model"),
-		RerankTopK:       c.Int("rerank-top-k"),
+		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
+		RerankPool:       c.Int("rerank-pool"),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
@@ -167,11 +168,10 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "qdrant-api-key", Sources: cli.EnvVars("QDRANT_API_KEY"), Value: def.QdrantAPIKey, Usage: "Qdrant API key (optional)"},
 		&cli.StringFlag{Name: "ollama-url", Sources: cli.EnvVars("OLLAMA_URL"), Value: def.OllamaURL, Usage: "Ollama base URL"},
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
-		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder rerank endpoint (empty = no reranking); a bare host gets /rerank appended"},
-		&cli.StringFlag{Name: "rerank-model", Sources: cli.EnvVars("RERANK_MODEL"), Value: def.RerankModel, Usage: "rerank model name, for endpoints serving more than one"},
-		&cli.IntFlag{Name: "rerank-top-k", Sources: cli.EnvVars("RERANK_TOP_K"), Value: def.RerankTopK, Usage: "how many hybrid-ranked candidates the cross-encoder scores (cost is linear in this)"},
+		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
+		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
-		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for one rerank call; it does real inference, unlike the other outbound calls"},
+		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
 }
@@ -216,8 +216,9 @@ func run(ctx context.Context, cfg config.Config) error {
 		// Make the "why is it silent?" answer obvious on boot: echo the effective
 		// wiring so a misread flag/env is visible before any request arrives.
 		log.Printf("debug mode ON — request + SQL logging enabled")
-		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s",
-			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel)
+		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s",
+			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel,
+			cmp.Or(cfg.RerankURL, "off"))
 	}
 
 	// Claim the database before opening it. Only one server may serve a given
@@ -347,7 +348,7 @@ func run(ctx context.Context, cfg config.Config) error {
 
 	// The human-facing dashboard (register/login/create project) shares the same
 	// chi router and database; agents use /mcp, people use the web routes.
-	webSrv := web.New(tenants, usageSvc, skills, svc.skillsets, svc.shares, svc.merges, billingSrv, exporter, passkeys, cfg.SuperAdminEmails, sessionKey())
+	webSrv := web.New(tenants, usageSvc, skills, svc.skillsets, svc.shares, svc.merges, billingSrv, exporter, svc.drawers, passkeys, cfg.SuperAdminEmails, sessionKey())
 
 	// OAuth discovery + endpoints for the claude.ai remote-connector handshake.
 	r.Get("/.well-known/oauth-protected-resource", authSrv.ProtectedResourceMetadata)
@@ -792,21 +793,22 @@ func buildServices(cfg config.Config) (*services, error) {
 
 	// The cross-encoder is optional and additive: configured, it rescores the top
 	// candidates of every search; unconfigured, search is exactly the hybrid
-	// vector+BM25 fusion it has always been. Building it here (rather than inside
-	// the palace) keeps the composition root the only place that knows which
-	// rerank server is deployed.
-	var opts []palace.Option
+	// vector+BM25 fusion it has always been. Building it here keeps the
+	// composition root the only place that knows which rerank server is deployed.
+	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
 	if cfg.RerankURL != "" {
+		// A rerank call does real inference, unlike the millisecond calls
+		// HTTPTimeout was sized for, so it gets its own budget.
 		timeout := cfg.RerankTimeout
 		if timeout <= 0 {
 			timeout = cfg.HTTPTimeout
 		}
-		opts = append(opts,
-			palace.WithReranker(crossEncoder{rerank.New(cfg.RerankURL, cfg.RerankModel, timeout)}, cfg.RerankTopK),
-			palace.WithRerankWeight(cfg.RerankWeight))
-		log.Printf("reranker: %s (top %d, weight %.2f, timeout %s)", cfg.RerankURL, cfg.RerankTopK, cfg.RerankWeight, timeout)
+		drawers = drawers.
+			WithReranker(tei.New(cfg.RerankURL, timeout), cfg.RerankPool).
+			WithRerankWeight(cfg.RerankWeight)
+		log.Printf("reranker: %s (pool %d, weight %.2f, timeout %s)",
+			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
 	}
-	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim, opts...)
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant
 	// (resolve the destination slug, read roles) and palace (list + copy wings).
@@ -939,25 +941,6 @@ func plural(n int, one, many string) string {
 		return "1 " + one
 	}
 	return fmt.Sprintf("%d %s", n, many)
-}
-
-// crossEncoder adapts the rerank client to the palace's Reranker seam. The two
-// declare their own result types on purpose — the palace names what it needs, the
-// client names what its servers return — so the translation lives here, in the
-// composition root, rather than making either package import the other.
-type crossEncoder struct{ client *rerank.Client }
-
-// Rerank forwards the call and re-labels the scores.
-func (c crossEncoder) Rerank(ctx context.Context, query string, documents []string) ([]palace.RerankScore, error) {
-	scores, err := c.client.Rerank(ctx, query, documents)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]palace.RerankScore, len(scores))
-	for i, s := range scores {
-		out[i] = palace.RerankScore{Index: s.Index, Score: s.Score}
-	}
-	return out, nil
 }
 
 // publishedLoopback reports whether the operator declared that this process's

@@ -100,7 +100,7 @@ func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase,
 		poolSize = 50
 	}
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset}
-	if s.reranker != nil {
+	if s.rerank != nil {
 		arms = append(arms, ArmReranked)
 		for _, w := range rerankSweep {
 			arms = append(arms, rerankArm(w))
@@ -220,23 +220,16 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 					weight = w
 				}
 			}
-			// The cross-encoder refines the fused order, so it must be handed the
-			// fused SCORES too — reranking a list whose scores were dropped would
-			// blend against zeroes and silently become the old overwrite.
-			hitsForRank := make([]SearchHit, 0, len(pool))
-			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
-				hitsForRank = append(hitsForRank, SearchHit{
-					Drawer: Drawer{ID: pool[r.Index].id, Content: pool[r.Index].content},
-					Score:  r.Fused,
-				})
+			// The cross-encoder refines the fused order, so it is handed the fused
+			// SCORES too — reranking a list whose scores were dropped would blend
+			// against zeroes and silently become the overwrite this measures.
+			fused := rankHybrid(c.Query, docs, dists, boosts)
+			hitsForRank := make([]SearchHit, len(pool))
+			for i, p := range pool {
+				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
 			}
-			for _, h := range s.crossEncodeWith(ctx, c.Query, hitsForRank, weight) {
-				for i, p := range pool {
-					if p.id == h.Drawer.ID {
-						ordered = append(ordered, i)
-						break
-					}
-				}
+			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, weight) {
+				ordered = append(ordered, r.Index)
 			}
 		}
 		poolIDs := make([]string, len(pool))

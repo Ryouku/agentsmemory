@@ -60,6 +60,7 @@ type Server struct {
 	merges    *mergejob.Service    // background wing-merge queue (enqueue/list/detect)
 	billing   *billing.Service     // Stripe upgrade-to-Pro; inert until configured
 	exporter  *dataexport.Exporter // per-workspace SQLite data export (BDAR right of access)
+	wings     WingTransfer         // read+write side of single-wing bundle export/import
 	passkeys  *passkey.Service     // WebAuthn register/verify for passwordless + 2nd-factor login
 	store     sessions.Store
 	providers []string // configured OAuth providers; empty until keys are set
@@ -77,7 +78,8 @@ type Server struct {
 // backs the superadmin-only global wakeup-playbook editor. superAdmins is the
 // SUPERADMIN_EMAILS allowlist that gates that editor. exporter builds the
 // per-workspace SQLite download that satisfies a user's BDAR right of access.
-func New(tenants *tenant.Repo, usageSvc *usage.Service, skills *skill.Service, skillsets *skillset.Service, shares *share.Service, merges *mergejob.Service, billingSvc *billing.Service, exporter *dataexport.Exporter, passkeys *passkey.Service, superAdmins []string, sessionKey []byte) *Server {
+// wings is the memory service behind single-wing bundle download and upload.
+func New(tenants *tenant.Repo, usageSvc *usage.Service, skills *skill.Service, skillsets *skillset.Service, shares *share.Service, merges *mergejob.Service, billingSvc *billing.Service, exporter *dataexport.Exporter, wings WingTransfer, passkeys *passkey.Service, superAdmins []string, sessionKey []byte) *Server {
 	store := sessions.NewCookieStore(sessionKey)
 	store.Options = &sessions.Options{
 		Path:     "/",
@@ -85,7 +87,7 @@ func New(tenants *tenant.Repo, usageSvc *usage.Service, skills *skill.Service, s
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   7 * 24 * 60 * 60, // one week
 	}
-	s := &Server{tenants: tenants, usage: usageSvc, skills: skills, skillsets: skillsets, shares: shares, merges: merges, billing: billingSvc, exporter: exporter, passkeys: passkeys, store: store, superAdmins: superAdminSet(superAdmins)}
+	s := &Server{tenants: tenants, usage: usageSvc, skills: skills, skillsets: skillsets, shares: shares, merges: merges, billing: billingSvc, exporter: exporter, wings: wings, passkeys: passkeys, store: store, superAdmins: superAdminSet(superAdmins)}
 	s.providers = registerOAuth(store) // gated: returns nil when no keys set
 	// Stamp the asset cache-buster from the embedded stylesheet's content hash so
 	// templates render <link …/app.css?v=hash>; this changes only when the CSS does.
@@ -210,6 +212,14 @@ func (s *Server) Routes(r chi.Router) {
 		// scoped to this team plus the requester's own identity rows. A plain GET
 		// (not a datastar action) so the browser downloads the file directly.
 		r.Get("/projects/{teamID}/export", s.getExport)
+
+		// Single-wing transfer: download one wing as a portable bundle that names
+		// no wing, and upload such a bundle into a wing named on the form. The
+		// download is a plain GET so the browser saves the file directly; the
+		// upload is a plain multipart POST because a file upload is ordinary HTTP,
+		// not something to force through datastar signals.
+		r.Get("/projects/{teamID}/wings/export", s.getWingExport)
+		r.Post("/projects/{teamID}/wings/import", s.postWingImport)
 
 		// Upgrade to Pro via Stripe hosted checkout. POST starts a checkout session
 		// and redirects the browser to Stripe (admin-gated; the workspace must be on

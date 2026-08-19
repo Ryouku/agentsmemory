@@ -20,18 +20,25 @@ import (
 )
 
 // fakeDrawers records what the handler routed where, so a test can assert each
-// NDJSON kind reached the right service method.
+// NDJSON kind reached the right service method. It also keeps the records
+// themselves, which is what lets a test check the wing each one landed in.
 type fakeDrawers struct {
 	drawers, closets, kg, tunnels, recomputes int
+
+	gotDrawers []palace.ImportDrawer
+	gotClosets []palace.ImportCloset
+	gotTunnels []palace.TunnelInput
 }
 
 func (f *fakeDrawers) AbsorbDrawers(_ context.Context, _ string, in []palace.ImportDrawer) (int, error) {
 	f.drawers += len(in)
+	f.gotDrawers = append(f.gotDrawers, in...)
 	return len(in), nil
 }
 
 func (f *fakeDrawers) AbsorbClosets(_ context.Context, _ string, in []palace.ImportCloset) (int, error) {
 	f.closets += len(in)
+	f.gotClosets = append(f.gotClosets, in...)
 	return len(in), nil
 }
 
@@ -46,8 +53,9 @@ func (f *fakeDrawers) KGAdd(_ context.Context, _, _, _, _, _, _, _, _, _ string)
 	return palace.KGAddResult{}, nil
 }
 
-func (f *fakeDrawers) CreateTunnel(_ context.Context, _ string, _ palace.TunnelInput, _ string) (palace.Tunnel, error) {
+func (f *fakeDrawers) CreateTunnel(_ context.Context, _ string, in palace.TunnelInput, _ string) (palace.Tunnel, error) {
 	f.tunnels++
+	f.gotTunnels = append(f.gotTunnels, in)
 	return palace.Tunnel{}, nil
 }
 
@@ -99,7 +107,7 @@ func TestImportRoutesEveryKind(t *testing.T) {
 	}
 
 	// The final NDJSON line is the summary; parse it.
-	var last progress
+	var last Result
 	sc := bufio.NewScanner(bytes.NewReader(rec.Body.Bytes()))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -154,6 +162,134 @@ func TestImportOverCap(t *testing.T) {
 	h.ServeHTTP(rec, authedRequest(bundle))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+}
+
+// winglessBundle is what internal/wingbundle produces: no wing on any record, so
+// the destination is entirely the importer's to decide.
+const winglessBundle = `{"kind":"manifest","format":"agentsmemory-wing/1","total":3}
+{"kind":"drawer","room":"decisions","content":"why we chose sqlite"}
+{"kind":"closet","room":"decisions","source_file":"x.md","document":"index of x.md"}
+{"kind":"tunnel","source_room":"decisions","target_room":"diary","label":"inside"}
+`
+
+// asRequest builds a POST /import?as=<wing> carrying body, with the tenant the
+// gate would have resolved already on the context.
+func asRequest(body, as string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/import?recompute=1&as="+as, strings.NewReader(body))
+	return r.WithContext(auth.WithTenant(r.Context(), tenant.Tenant{TeamID: "team-1"}))
+}
+
+// TestImportAsRelabelsEveryRecord is the core of the "name the destination at
+// import time" contract: with ?as=, every drawer, closet and BOTH tunnel
+// endpoints land in that one wing, no matter what the bundle claimed. The legacy
+// multi-wing bundle is used deliberately — if any record kept its own wing, a
+// tunnel would end up pointing into a wing this import never created.
+func TestImportAsRelabelsEveryRecord(t *testing.T) {
+	fd := &fakeDrawers{}
+	rec := httptest.NewRecorder()
+	Handler(fd, allowAll{}).ServeHTTP(rec, asRequest(bundle, "wing_abc"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for _, d := range fd.gotDrawers {
+		if d.Wing != "wing_abc" {
+			t.Errorf("drawer %q landed in wing %q, want wing_abc", d.Content, d.Wing)
+		}
+	}
+	for _, c := range fd.gotClosets {
+		if c.Wing != "wing_abc" {
+			t.Errorf("closet landed in wing %q, want wing_abc", c.Wing)
+		}
+	}
+	for _, tn := range fd.gotTunnels {
+		if tn.SourceWing != "wing_abc" || tn.TargetWing != "wing_abc" {
+			t.Errorf("tunnel endpoints = %q/%q, want both wing_abc", tn.SourceWing, tn.TargetWing)
+		}
+	}
+	if len(fd.gotDrawers) != 2 || len(fd.gotClosets) != 1 || len(fd.gotTunnels) != 1 {
+		t.Errorf("routed %d drawers, %d closets, %d tunnels; want 2/1/1",
+			len(fd.gotDrawers), len(fd.gotClosets), len(fd.gotTunnels))
+	}
+}
+
+// TestImportWinglessBundleLandsInTarget is the end-to-end shape of the feature:
+// a bundle that names no wing at all is filed entirely into the wing the caller
+// asked for.
+func TestImportWinglessBundleLandsInTarget(t *testing.T) {
+	fd := &fakeDrawers{}
+	rec := httptest.NewRecorder()
+	Handler(fd, allowAll{}).ServeHTTP(rec, asRequest(winglessBundle, "wing_restored"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(fd.gotDrawers) != 1 || fd.gotDrawers[0].Wing != "wing_restored" {
+		t.Fatalf("drawers = %+v, want one in wing_restored", fd.gotDrawers)
+	}
+	if len(fd.gotClosets) != 1 || fd.gotClosets[0].Wing != "wing_restored" {
+		t.Fatalf("closets = %+v, want one in wing_restored", fd.gotClosets)
+	}
+	if len(fd.gotTunnels) != 1 {
+		t.Fatalf("tunnels = %+v, want one", fd.gotTunnels)
+	}
+	// The bundle carried rooms only; the wing on both ends comes from ?as=.
+	if tn := fd.gotTunnels[0]; tn.SourceWing != "wing_restored" || tn.TargetWing != "wing_restored" ||
+		tn.SourceRoom != "decisions" || tn.TargetRoom != "diary" {
+		t.Errorf("tunnel = %+v, want wing_restored/decisions → wing_restored/diary", tn)
+	}
+}
+
+// TestImportWithoutAsPreservesRecordWing pins the backward-compatible path: the
+// shipped mempalace migration bundles carry their own wings and must keep
+// landing exactly where they say, so omitting ?as= must change nothing.
+func TestImportWithoutAsPreservesRecordWing(t *testing.T) {
+	fd := &fakeDrawers{}
+	rec := httptest.NewRecorder()
+	Handler(fd, allowAll{}).ServeHTTP(rec, authedRequest(bundle))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	wings := map[string]bool{}
+	for _, d := range fd.gotDrawers {
+		wings[d.Wing] = true
+	}
+	if !wings["forumchat"] || !wings["wing_claude"] {
+		t.Errorf("drawer wings = %v, want the bundle's own forumchat + wing_claude", wings)
+	}
+	if tn := fd.gotTunnels[0]; tn.SourceWing != "forumchat" || tn.TargetWing != "wing_claude" {
+		t.Errorf("tunnel endpoints = %q/%q, want the bundle's own forumchat/wing_claude",
+			tn.SourceWing, tn.TargetWing)
+	}
+}
+
+// TestImportRejectsInvalidTargetWing covers the untrusted-input edge: ?as= is
+// attacker-supplied and becomes a stored wing label, so it goes through the same
+// validator as any agent-supplied name and a bad one is refused before a single
+// record is filed.
+func TestImportRejectsInvalidTargetWing(t *testing.T) {
+	for _, as := range []string{"../etc", "wing/abc", "wing_a\x00b", "  ", strings.Repeat("w", 200)} {
+		t.Run(as, func(t *testing.T) {
+			fd := &fakeDrawers{}
+			rec := httptest.NewRecorder()
+			// Build the URL by hand: url.Values would escape the traversal away.
+			r := httptest.NewRequest(http.MethodPost, "/import", strings.NewReader(bundle))
+			q := r.URL.Query()
+			q.Set("as", as)
+			r.URL.RawQuery = q.Encode()
+			r = r.WithContext(auth.WithTenant(r.Context(), tenant.Tenant{TeamID: "team-1"}))
+
+			Handler(fd, allowAll{}).ServeHTTP(rec, r)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d for as=%q, want 400", rec.Code, as)
+			}
+			if fd.drawers != 0 || fd.closets != 0 || fd.tunnels != 0 {
+				t.Errorf("filed records despite a rejected target wing: %+v", fd)
+			}
+		})
 	}
 }
 
