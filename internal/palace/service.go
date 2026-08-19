@@ -140,12 +140,12 @@ type Service struct {
 	// both content versions behind. It is the in-process analogue of the frozen
 	// miner's per-source mine_lock. Note: it does NOT coordinate across horizontally
 	// scaled instances — a cross-instance guard would need a DB advisory lock.
-	mineLocks keyedMutex
+	mineLocks *keyedMutex
 	// graphLocks serializes a team's recompute_graph the same way: a recompute
 	// replaces hallways and delete-and-rebuilds entity tunnels, so two concurrent
 	// recomputes of one team could interleave and leave a stale rebuild. Same
 	// in-process caveat as mineLocks.
-	graphLocks keyedMutex
+	graphLocks *keyedMutex
 }
 
 // NewService wires the collaborators. dim is the embedding width used to create a
@@ -159,6 +159,11 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// would silently make fusion vector-only, which is a measured regression
 		// on identifier queries.
 		bm25Auto: true, bm25Base: hybridBM25Weight,
+		// Pointers, not values: the eval's degraded path shallow-copies the
+		// service to drop the reranker, and a copied sync.Map is a vet error and
+		// a real hazard — the copy must SHARE these locks, it guards the same
+		// palace.
+		mineLocks: &keyedMutex{}, graphLocks: &keyedMutex{},
 	}
 }
 
