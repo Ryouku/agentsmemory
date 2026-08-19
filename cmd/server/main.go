@@ -243,6 +243,7 @@ func run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	log.Printf("vector backend: %s (SQLite source of truth)", cfg.VectorBackend)
+	warnIfPayloadMissing(ctx, cfg, svc)
 	tenants, skills, usageSvc, drawers := svc.tenants, svc.skills, svc.usage, svc.drawers
 
 	// Background embedder: drains rows that /import absorbed (text written, vector
@@ -849,6 +850,49 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 	default:
 		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
 			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
+	}
+}
+
+// warnIfPayloadMissing checks that the search index actually carries the labels
+// scoped search filters on, and says so loudly when it does not.
+//
+// Pushing the wing/room filter into the index made an assumption that is true for
+// every point written since, and false for every point written before: that the
+// payload is there. A palace missing it answers every scoped search with NOTHING
+// and looks like an empty wing — which is the worst way for a memory system to
+// fail, because "I have no memory of that" is a plausible answer and nobody
+// investigates it.
+//
+// It samples rather than counts: this runs at boot against a collection that may
+// hold millions of points, and a hundred settle the question.
+func warnIfPayloadMissing(ctx context.Context, cfg config.Config, svc *services) {
+	if cfg.VectorBackend != config.VectorBackendQdrant {
+		return // only the Qdrant path filters server-side against stored payload
+	}
+	client := qdrant.New(cfg.QdrantURL, cfg.QdrantAPIKey, cfg.HTTPTimeout)
+	// The namespace list comes from the source of truth, which is the one thing
+	// guaranteed to know every tenant regardless of what the index holds.
+	lister, ok := svc.vectors.(interface {
+		Namespaces(context.Context) ([]string, error)
+	})
+	if !ok {
+		return
+	}
+	namespaces, err := lister.Namespaces(ctx)
+	if err != nil || len(namespaces) == 0 {
+		return
+	}
+	for _, ns := range namespaces {
+		withKeys, sampled, err := client.SamplePayloadCoverage(ctx, ns, qdrant.FilterKeys(), 100)
+		if err != nil || sampled == 0 {
+			continue // an unreachable or empty collection is not this check's business
+		}
+		if withKeys == sampled {
+			continue
+		}
+		log.Printf("WARNING: %d of %d sampled points in the search index carry no wing/room label, "+
+			"so every wing-scoped search will silently return NOTHING for them — they will look like an empty wing. "+
+			"Repair without re-embedding: agentsmemory sync --repair-payload", sampled-withKeys, sampled)
 	}
 }
 

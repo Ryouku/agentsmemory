@@ -61,7 +61,9 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "gen-model", Value: "qwen2.5-coder:7b", Usage: "Ollama model that writes the questions"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.IntFlag{Name: "seed", Value: 1, Usage: "sampling seed, so a re-run picks the same drawers"},
-			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace (costs one embedding pass over the corpus)"},
+			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
+			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
+			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
 			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), or absent (questions the palace should NOT answer)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
@@ -95,13 +97,23 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	// Every arm runs per case, and a reranked arm is real inference, so a case can
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
+	if c.Bool("drop-contextual") {
+		n, err := svc.drawers.DropContextualIndex(ctx, t.TeamID, c.Int("contextual-limit"))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "dropped the contextual experiment's vectors (%d point(s))\n", n)
+		return nil
+	}
+
 	if c.Bool("contextual") {
 		// Built here rather than lazily inside the arm: it is an embedding pass
 		// over the whole corpus and the operator should see it happen, and pay
 		// for it once rather than per case.
-		fmt.Fprintf(out, "building the contextual index (one embedding pass over the corpus)…\n")
+		fmt.Fprintf(out, "building the contextual index — one embedding pass over up to %d chunk(s), written beside the real vectors; `eval --drop-contextual` gives the space back\n",
+			c.Int("contextual-limit"))
 		started := time.Now()
-		n, err := svc.drawers.BuildContextualIndex(ctx, t.TeamID, 32)
+		n, err := svc.drawers.BuildContextualIndex(ctx, t.TeamID, 32, c.Int("contextual-limit"))
 		if err != nil {
 			return fmt.Errorf("build contextual index: %w", err)
 		}
