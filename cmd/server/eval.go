@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"sort"
@@ -57,10 +56,9 @@ func evalCommand(def config.Config) *cli.Command {
 		Flags: append(serveFlags(def),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
-			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there"},
+			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
 			&cli.StringFlag{Name: "gen-model", Value: "qwen2.5-coder:7b", Usage: "Ollama model that writes the questions"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
-			&cli.IntFlag{Name: "seed", Value: 1, Usage: "sampling seed, so a re-run picks the same drawers"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
@@ -138,24 +136,34 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, t tenant.Tenant, out io.Writer) ([]palace.EvalCase, string, error) {
 	path := c.String("cases")
 	if path != "" {
-		if cases, err := readCases(path); err == nil && len(cases) > 0 {
-			return cases, "from " + path, nil
+		var merged []palace.EvalCase
+		files := strings.Split(path, ",")
+		for _, f := range files {
+			if cases, err := readCases(strings.TrimSpace(f)); err == nil {
+				merged = append(merged, cases...)
+			}
+		}
+		if len(merged) > 0 {
+			label := "from " + path
+			if len(files) > 1 {
+				label = fmt.Sprintf("from %d files", len(files))
+			}
+			return merged, label, nil
 		}
 	}
 
-	drawers, err := svc.drawers.List(ctx, t.TeamID, c.String("wing"), "", 1000, 0)
+	// Sample across the whole corpus rather than its newest slice: on a palace
+	// that holds years, the newest thousand memories are one week of work, and an
+	// eval built from them measures recall on recent memory only.
+	//
+	// Reproducibility comes from the saved case file rather than from a seed: the
+	// questions are what a re-run must hold constant, and they are on disk.
+	drawers, err := svc.drawers.SampleDrawers(ctx, t.TeamID, c.String("wing"), c.Int("n"))
 	if err != nil {
-		return nil, "", fmt.Errorf("list drawers: %w", err)
+		return nil, "", fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		return nil, "", nil
-	}
-	// Deterministic sample: a ranking change must be judged on the same drawers
-	// as the run before it.
-	rng := rand.New(rand.NewSource(int64(c.Int("seed"))))
-	rng.Shuffle(len(drawers), func(i, j int) { drawers[i], drawers[j] = drawers[j], drawers[i] })
-	if n := c.Int("n"); n < len(drawers) {
-		drawers = drawers[:n]
 	}
 
 	prompt, style := evalPromptParaphrase, c.String("style")
@@ -410,6 +418,11 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 	// honest, because they drag every arm down equally.
 	var lost []string
 	for _, d := range report.Details {
+		// An absent case retrieving nothing is the CORRECT outcome, not a lost
+		// one: listing it as a failure inverts the meaning of the whole category.
+		if d.Category == palace.CatAbsent {
+			continue
+		}
 		missed := true
 		for _, r := range d.Ranks {
 			if r > 0 {

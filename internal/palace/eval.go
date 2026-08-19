@@ -157,8 +157,9 @@ type EvalReport struct {
 // ranking one, and usually means the generated question shares no vocabulary with
 // its own source.
 type EvalCaseResult struct {
-	Query string
-	Ranks map[EvalArm]int
+	Query    string
+	Category string
+	Ranks    map[EvalArm]int
 }
 
 // Evaluate scores every arm over the cases. poolSize is how many neighbours the
@@ -212,7 +213,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
-		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Ranks: ranks})
+		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks})
 		cat := c.category()
 		for _, a := range arms {
 			m := byArm[a]
@@ -434,4 +435,11 @@ func rankOf(ids []string, ordered []int, expect string) int {
 		}
 	}
 	return 0
+}
+
+// SampleDrawers returns a random sample of a team's drawers for eval question
+// generation. It is a thin pass-through to the repo, exposed because the eval
+// command lives outside this package and must not reach into the repository.
+func (s *Service) SampleDrawers(ctx context.Context, teamID, wing string, n int) ([]Drawer, error) {
+	return s.repo.ListRandom(ctx, teamID, wing, n)
 }

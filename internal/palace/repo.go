@@ -485,3 +485,29 @@ func splitEntities(s string) []string {
 	}
 	return out
 }
+
+// ListRandom returns a random sample of a team's drawers.
+//
+// The eval samples the corpus to build questions, and taking the newest N would
+// mean sampling one week of a palace that holds years — the questions would all
+// be about whatever the team happened to be doing lately, and the score would
+// describe recall on recent memory only. SQLite's RANDOM() over an indexed team
+// scan is enough here: this runs once per eval, not per query.
+func (r *Repo) ListRandom(ctx context.Context, teamID, wing string, limit int) ([]Drawer, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).Where("team_id = ?", teamID)
+	if wing != "" {
+		q = q.Where("wing = ?", wing)
+	}
+	var rows []drawerRow
+	if err := q.Order("RANDOM()").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Drawer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromRow(row))
+	}
+	return out, nil
+}
