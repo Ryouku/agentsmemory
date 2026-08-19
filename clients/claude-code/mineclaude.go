@@ -246,7 +246,7 @@ func mineClaudeCommand() *cli.Command {
 			"in the project they belong to.\n\n" +
 			"Start with --dry-run to see what would be filed, and --limit to go gradually:\n" +
 			"  aiagentmemory mine-claude --dry-run\n" +
-			"  aiagentmemory mine-claude --project wcag --limit 20",
+			"  aiagentmemory mine-claude --project acme --limit 20",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "dir", Value: filepath.Join(homeDir(), ".claude", "projects"), Usage: "transcripts root"},
 			&cli.StringFlag{Name: "project", Usage: "only sessions whose project path contains this substring"},
