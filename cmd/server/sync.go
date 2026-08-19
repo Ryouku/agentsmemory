@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"gorm.io/gorm"
 	"log"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
@@ -30,9 +32,14 @@ func syncCommand(def config.Config) *cli.Command {
 				Name:  "recreate",
 				Usage: "drop each tenant's Qdrant collection and rebuild it from scratch (prunes points no longer in the source of truth); without it, sync is additive (upsert only)",
 			},
+			&cli.BoolFlag{
+				Name: "repair-payload",
+				Usage: "attach wing/room payload to points that lack it, WITHOUT re-embedding — needed once for a palace whose vectors " +
+					"were written before scoped search filtered on payload, where every scoped search otherwise returns nothing",
+			},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
-			return syncIndex(ctx, configFromCmd(c, def), c.Bool("recreate"))
+			return syncIndex(ctx, configFromCmd(c, def), c.Bool("recreate"), c.Bool("repair-payload"))
 		},
 	}
 }
@@ -41,7 +48,7 @@ func syncCommand(def config.Config) *cli.Command {
 // When recreate is set, each tenant's Qdrant collection is dropped first so the
 // rebuild prunes points that no longer exist in the source of truth; otherwise the
 // replay is purely additive (upsert).
-func syncIndex(ctx context.Context, cfg config.Config, recreate bool) error {
+func syncIndex(ctx context.Context, cfg config.Config, recreate, repairPayload bool) error {
 	if cfg.VectorBackend != config.VectorBackendQdrant {
 		return fmt.Errorf("sync needs --vector-backend qdrant: with the sqlite backend the " +
 			"source of truth IS the search index, and the chromem backend refills an empty " +
@@ -98,6 +105,14 @@ func syncIndex(ctx context.Context, cfg config.Config, recreate bool) error {
 				continue
 			}
 		}
+		if repairPayload {
+			n, err := repairNamespacePayload(ctx, gdb, index, ns)
+			if err != nil {
+				return fmt.Errorf("repair payload for %q: %w", ns, err)
+			}
+			log.Printf("sync: namespace %q — payload repaired on %d point(s)", ns, n)
+			continue
+		}
 		if err := hybrid.Rebuild(ctx, ns); err != nil {
 			failed++
 			log.Printf("sync: namespace %q FAILED: %v", ns, err)
@@ -110,4 +125,44 @@ func syncIndex(ctx context.Context, cfg config.Config, recreate bool) error {
 	}
 	log.Printf("sync: done — %d namespace(s) in sync", len(namespaces))
 	return nil
+}
+
+// repairNamespacePayload attaches wing/room payload to a namespace's points from
+// the DRAWER ROWS, which are authoritative about where a memory lives.
+//
+// It is deliberately not a re-embedding: the vectors are fine, only their labels
+// are missing, and on a large palace the difference is minutes against days. The
+// rows are paged so a corpus of any size costs bounded memory, and points are
+// grouped by (wing, room) so one HTTP call labels thousands at a time.
+func repairNamespacePayload(ctx context.Context, gdb *gorm.DB, index *qdrant.Client, namespace string) (int, error) {
+	const page = 2000
+	repo := palace.NewRepo(gdb)
+	repaired := 0
+	for offset := 0; ; offset += page {
+		drawers, err := repo.List(ctx, namespace, "", "", page, offset)
+		if err != nil {
+			return repaired, err
+		}
+		if len(drawers) == 0 {
+			return repaired, nil
+		}
+		byLabel := map[[2]string][]string{}
+		for _, d := range drawers {
+			key := [2]string{d.Wing, d.Room}
+			byLabel[key] = append(byLabel[key], d.ID)
+		}
+		for label, ids := range byLabel {
+			payload := map[string]any{"wing": label[0], "room": label[1]}
+			for start := 0; start < len(ids); start += 512 {
+				end := start + 512
+				if end > len(ids) {
+					end = len(ids)
+				}
+				if err := index.SetPayload(ctx, namespace, ids[start:end], payload); err != nil {
+					return repaired, err
+				}
+				repaired += end - start
+			}
+		}
+	}
 }

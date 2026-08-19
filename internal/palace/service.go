@@ -131,24 +131,50 @@ type Service struct {
 	rerank       Reranker
 	rerankPool   int
 	rerankWeight float64
+	// bm25Auto scales the lexical fusion weight per query by its measured lexical
+	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
+	bm25Auto bool
+	bm25Base float64
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
 	// miner's per-source mine_lock. Note: it does NOT coordinate across horizontally
 	// scaled instances — a cross-instance guard would need a DB advisory lock.
-	mineLocks keyedMutex
+	// closetBoostScale scales every closet rank boost: 1 is the full curation
+	// prior, 0 turns closets into a pure ranking no-op. It exists because the
+	// prior's worth depends on what the palace holds: on a curated palace the
+	// boost promotes the memories a human chose to keep; on a corpus dominated
+	// by mined transcripts the eval measured the same boost DEMOTING correct
+	// answers (~0.10 MRR at n=40) — the closets cover the curated 2% and lift
+	// it over the mined gold. The operator knows which palace theirs is.
+	closetBoostScale float64
+
+	mineLocks *keyedMutex
 	// graphLocks serializes a team's recompute_graph the same way: a recompute
 	// replaces hallways and delete-and-rebuilds entity tunnels, so two concurrent
 	// recomputes of one team could interleave and leave a stale rebuild. Same
 	// in-process caveat as mineLocks.
-	graphLocks keyedMutex
+	graphLocks *keyedMutex
 }
 
 // NewService wires the collaborators. dim is the embedding width used to create a
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
 func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) *Service {
-	return &Service{repo: repo, embed: embed, vectors: vectors, dim: dim}
+	return &Service{
+		repo: repo, embed: embed, vectors: vectors, dim: dim,
+		// Adaptive lexical weighting is the default because it is the only
+		// configuration measured best in BOTH query regimes; a zero value here
+		// would silently make fusion vector-only, which is a measured regression
+		// on identifier queries.
+		bm25Auto: true, bm25Base: hybridBM25Weight,
+		// Pointers, not values: the eval's degraded path shallow-copies the
+		// service to drop the reranker, and a copied sync.Map is a vet error and
+		// a real hazard — the copy must SHARE these locks, it guards the same
+		// palace.
+		mineLocks: &keyedMutex{}, graphLocks: &keyedMutex{},
+		closetBoostScale: 1,
+	}
 }
 
 // WithReranker attaches a cross-encoder to Search and returns s for chaining.
@@ -160,6 +186,20 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 // to exist — every call site that has no reranker configured simply never calls
 // this. It must be called before the service is shared across goroutines: the
 // field is read without synchronization on the search path.
+// WithClosetBoost scales the closet curation prior (1 = full, 0 = off). Same
+// post-construction-setter contract as WithReranker: call before the service is
+// shared across goroutines.
+func (s *Service) WithClosetBoost(scale float64) *Service {
+	if scale < 0 {
+		scale = 0
+	}
+	if scale > 1 {
+		scale = 1
+	}
+	s.closetBoostScale = scale
+	return s
+}
+
 func (s *Service) WithReranker(r Reranker, pool int) *Service {
 	if pool < 1 {
 		pool = DefaultRerankPool
@@ -167,6 +207,16 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 	s.rerank, s.rerankPool = r, pool
 	if s.rerankWeight == 0 {
 		s.rerankWeight = DefaultRerankWeight
+	}
+	return s
+}
+
+// WithBM25Weight configures the lexical half of fusion: auto scales it per query,
+// otherwise base is used as a fixed weight. Out-of-range bases keep the default.
+func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
+	s.bm25Auto = auto
+	if base >= 0 && base <= 1 {
+		s.bm25Base = base
 	}
 	return s
 }
@@ -468,6 +518,10 @@ type SearchQuery struct {
 	Room        string  // optional filter
 	Limit       int     // 1..100, defaults to DefaultSearchLimit
 	MaxDistance float64 // drop hits farther than this; <=0 disables the filter
+	// SkipTelemetry keeps this search out of the recall statistics. Set by the
+	// eval, whose thousands of synthetic queries would otherwise drown the real
+	// usage signal the statistics exist to show.
+	SkipTelemetry bool
 	// Context is optional background the caller can supply to sharpen reranking —
 	// what it is working on, so an ambiguous query lands in the right sense. It
 	// feeds the cross-encoder ONLY (see rerankQuery); it deliberately does not
@@ -610,7 +664,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
-	ranked := rankHybrid(query, docs, dists, boosts)
+	var ranked []HybridScore
+	if s.bm25Auto {
+		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
+	} else {
+		ranked = rankHybridWeighted(query, docs, dists, boosts, s.bm25Base)
+	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
@@ -635,6 +694,9 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	// Record what this recall found. Best-effort by construction: measurement must
 	// never be able to fail the thing it measures.
+	if q.SkipTelemetry {
+		return results, nil
+	}
 	ev := searchEventRow{
 		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
 		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),
@@ -694,6 +756,46 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		return ranked
+	}
+	return BlendRerank(ranked, scores, weight)
+}
+
+// RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
+// or nil when there is no reranker or the call fails. The caller blends them with
+// BlendRerank, possibly several times at different weights, without paying for
+// the inference again.
+func (s *Service) RerankScoresFor(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []float64 {
+	if s.rerank == nil || len(ranked) == 0 {
+		return nil
+	}
+	pool := min(s.rerankPool, len(ranked))
+	docs := make([]string, pool)
+	for i := range docs {
+		docs[i] = survivors[ranked[i].Index].Drawer.Content
+	}
+	scores, err := s.rerank.Rerank(ctx, query, docs)
+	if err != nil {
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
+		return nil
+	}
+	if len(scores) != pool {
+		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		return nil
+	}
+	return scores
+}
+
+// BlendRerank combines a fused ranking with cross-encoder scores already
+// obtained for its head, at the given weight.
+//
+// It is separate from the call that fetches those scores because the scores do
+// not depend on the weight: an eval comparing several weights was calling the
+// cross-encoder once per weight with identical inputs, which multiplied the
+// slowest step in the pipeline by the number of arms for no information at all.
+func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []HybridScore {
+	pool := len(scores)
+	if pool == 0 || pool > len(ranked) {
 		return ranked
 	}
 

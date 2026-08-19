@@ -485,3 +485,44 @@ func splitEntities(s string) []string {
 	}
 	return out
 }
+
+// ListRandom returns a random sample of a team's drawers.
+//
+// The eval samples the corpus to build questions, and taking the newest N would
+// mean sampling one week of a palace that holds years — the questions would all
+// be about whatever the team happened to be doing lately, and the score would
+// describe recall on recent memory only. SQLite's RANDOM() over an indexed team
+// scan is enough here: this runs once per eval, not per query.
+func (r *Repo) ListRandom(ctx context.Context, teamID, wing string, limit int) ([]Drawer, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).Where("team_id = ?", teamID)
+	if wing != "" {
+		q = q.Where("wing = ?", wing)
+	}
+	// Over-fetch, then keep at most one drawer per source file. A mined session
+	// arrives as many parts sharing one source, and two eval cases seeded from
+	// the same session are not independent observations — the bootstrap treats
+	// them as if they were, which narrows every interval it prints. Drawers with
+	// no source (hand-filed) are each their own cluster.
+	var rows []drawerRow
+	if err := q.Order("RANDOM()").Limit(limit * 5).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, limit)
+	out := make([]Drawer, 0, limit)
+	for _, row := range rows {
+		if row.SourceFile != "" {
+			if seen[row.SourceFile] {
+				continue
+			}
+			seen[row.SourceFile] = true
+		}
+		out = append(out, fromRow(row))
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}

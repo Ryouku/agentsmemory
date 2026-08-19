@@ -140,6 +140,24 @@ type Config struct {
 	// wire cannot carry would only ever mislead.
 	RerankPool int
 
+	// BM25Weight is how much the lexical half of hybrid fusion counts: "auto"
+	// (the default) scales it per query by how much lexical signal the query
+	// actually has against the candidates, or a fixed number 0..1.
+	//
+	// Auto is a measured choice, not a guess. The same palace scored the fixed
+	// 0.4 as decisively best on identifier-carrying queries and decisively worst
+	// on cross-language ones (MRR 0.625 against auto's 0.938); auto matched the
+	// best fixed weight in BOTH regimes, because the right weight is a property
+	// of the query, not of the corpus.
+	BM25Weight string
+
+	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
+	// keeps the full boost, 0 disables it. On a curated palace the boost
+	// promotes what a human chose to keep; on a mined-transcript corpus the
+	// eval measured it demoting correct answers, and the operator is the one
+	// who knows which corpus theirs is.
+	ClosetBoost float64
+
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
 	// with the rest left to the hybrid score it refines. 1 hands it the whole
 	// decision, which measurably loses the lexical evidence a query carries when
@@ -228,8 +246,10 @@ func Default() Config {
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
+		BM25Weight:       "auto",
 		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		ClosetBoost:      1,
 		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}

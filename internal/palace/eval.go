@@ -2,9 +2,13 @@ package palace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // Retrieval evaluation: does recall actually return the memory that answers the
@@ -44,6 +48,12 @@ const (
 	// little of its parent's context, then ranks it exactly like ArmHybridCloset —
 	// so the delta is the EMBEDDING, not the ranking.
 	ArmContextual EvalArm = "contextual chunks"
+	// ArmProduction goes through Service.Search itself — the code agents actually
+	// call — rather than this file's reconstruction of it. It exists because an
+	// eval that reimplements the pipeline can score well while production is
+	// broken, and has: a mis-set rerank URL made every real search silently fall
+	// back to hybrid while the eval's own arms looked fine.
+	ArmProduction EvalArm = "production (Search)"
 )
 
 // rerankSweep are the blend weights the eval tries alongside production, so how
@@ -51,6 +61,26 @@ const (
 // whoever last had an opinion. 1.0 is the old behaviour: the cross-encoder
 // overwrites the fused order completely.
 var rerankSweep = []float64{0.25, 0.5, 0.75, 1.0}
+
+// bm25Sweep is how much the LEXICAL half counts. 0.0 is vector-only, 0.4 is the
+// inherited default. It is swept because a real corpus has already shown the
+// default can be worse than not fusing at all: BM25 rewards shared vocabulary,
+// and in a large palace many memories share a query's words without answering it.
+var bm25Sweep = []float64{0.0, 0.2, 0.4, 0.6}
+
+// ArmAdaptive picks the lexical weight per query from how much lexical signal
+// that query actually has — the alternative to a constant nobody can set right
+// for every palace.
+const ArmAdaptive EvalArm = "fusion bm25=auto"
+
+// ArmAdaptiveIDF is ArmAdaptive with each query term weighted by its IDF
+// instead of counted once. The candidate to replace the binary coverage: a
+// term in N-1 candidates reads as signal to the binary count and as ~nothing
+// to this one.
+const ArmAdaptiveIDF EvalArm = "fusion bm25=auto-idf"
+
+// bm25Arm names a swept fusion arm.
+func bm25Arm(w float64) EvalArm { return EvalArm(fmt.Sprintf("fusion bm25=%.2f", w)) }
 
 // rerankArm names a swept arm.
 func rerankArm(w float64) EvalArm { return EvalArm(fmt.Sprintf("rerank blend w=%.2f", w)) }
@@ -73,6 +103,12 @@ const (
 	// CatTemporal: a fact was later corrected or superseded, and recall must
 	// prefer the version that is still true.
 	CatTemporal = "temporal"
+	// CatReal: the query is one an agent actually ran against this palace,
+	// replayed from the search_events telemetry. The gold is not a generator's
+	// seed note but a judged set — every pooled candidate an LLM judge marked
+	// relevant — which is what breaks the circularity of generated questions:
+	// nothing about a real query was manufactured to suit any arm's feature.
+	CatReal = "real"
 	// CatAbsent: the palace does NOT hold the answer, and the right behaviour is
 	// to return nothing. Untested until now, which means max_distance was folklore.
 	CatAbsent = "absent"
@@ -81,10 +117,15 @@ const (
 // EvalCase is one labelled question: the query, the drawer that should come back
 // for it, and what kind of question it is.
 type EvalCase struct {
-	Query    string
-	Expect   string // drawer id; empty for CatAbsent, where any hit is a false positive
-	Wing     string // optional scope, mirroring how the query would really be run
-	Category string // one of the Cat* values; empty is treated as CatSingle
+	Query  string
+	Expect string // drawer id; empty for CatAbsent, where any hit is a false positive
+	// ExpectAny lists drawer ids that each count as a correct answer — the
+	// judged qrels of a CatReal case. A generated case has exactly one gold by
+	// construction; a real query can be answered by several memories, and
+	// scoring only one of them turns valid answers into retrieval errors.
+	ExpectAny []string `json:",omitempty"`
+	Wing      string   // optional scope, mirroring how the query would really be run
+	Category  string   // one of the Cat* values; empty is treated as CatSingle
 }
 
 // category returns the case's category, defaulting to single-hop.
@@ -108,6 +149,11 @@ type EvalMetrics struct {
 	MRR      float64
 	NotFound int // the expected drawer was not in the candidate pool at all
 
+	// Ranks are the per-case 1-based ranks (0 = miss), aligned with the case
+	// order, so intervals and paired comparisons can be computed after the fact —
+	// including by a reader of the results file, not only by this process.
+	Ranks []int
+
 	// ByCategory holds the same counts per question kind, because an average over
 	// categories hides the failure that matters: a system can be perfect on
 	// single-hop and blind on temporal, and the mean looks fine.
@@ -121,9 +167,6 @@ type CategoryMetrics struct {
 	Recall5  int
 	MRR      float64
 	NotFound int
-	// FalsePositives counts CatAbsent cases where something was returned anyway.
-	// It is the only metric here that a higher score makes WORSE.
-	FalsePositives int
 }
 
 // Recall1Pct / Recall5Pct render the counts as percentages of cases.
@@ -143,6 +186,19 @@ type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
 
+	// Warnings are conditions that changed what was measured — a degraded
+	// reranker, a skipped arm. They are part of the result, because a table whose
+	// caveats live only in scrollback gets quoted without them.
+	Warnings []string
+
+	// GoldRerank and AbsentRerank are the top-1 CROSS-ENCODER scores for the two
+	// kinds of question. They exist because the distance distributions overlap —
+	// so cosine cannot answer "do I know this?" — and a cross-encoder score is
+	// the one number in the pipeline that was trained on exactly that question
+	// rather than on similarity.
+	GoldRerank   []float64
+	AbsentRerank []float64
+
 	// GoldDistances and AbsentDistances are the top-1 cosine distances for
 	// answerable and unanswerable questions. They exist because max_distance —
 	// the gate that decides when the palace should admit it knows nothing — was
@@ -157,8 +213,9 @@ type EvalReport struct {
 // ranking one, and usually means the generated question shares no vocabulary with
 // its own source.
 type EvalCaseResult struct {
-	Query string
-	Ranks map[EvalArm]int
+	Query    string
+	Category string
+	Ranks    map[EvalArm]int
 }
 
 // Evaluate scores every arm over the cases. poolSize is how many neighbours the
@@ -175,6 +232,11 @@ type EvalOptions struct {
 	// (BuildContextualIndex); the arm is skipped rather than silently empty when
 	// it does not.
 	Contextual bool
+	// AllowDegraded lets the run continue without the reranked arms when the
+	// configured reranker fails its preflight probe. The default is to REFUSE:
+	// this eval has already once produced a full table of "reranked" numbers that
+	// were silently the hybrid order, and a loud stop is the only reliable cure.
+	AllowDegraded bool
 }
 
 func (s *Service) Evaluate(ctx context.Context, teamID string, cases []EvalCase, poolSize int, progress Progress) (EvalReport, error) {
@@ -186,7 +248,42 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	if poolSize <= 0 {
 		poolSize = 50
 	}
+	report := EvalReport{}
+
+	// Preflight the reranker with ONE probe before scoring hundreds of cases
+	// against it. A dead reranker degrades every reranked arm to the hybrid order
+	// SILENTLY — this exact table has been published with that failure in it — so
+	// the default is to stop and say what is wrong.
+	if s.rerank != nil {
+		// The probe mirrors a real call — pool-sized batch, chunk-sized documents —
+		// because a token-sized probe has already passed while every real call
+		// failed on the batch and sequence limits it never touched.
+		probeDocs := make([]string, s.rerankPool)
+		probeText := strings.Repeat("preflight document text sized like a real drawer chunk. ", 30)
+		for i := range probeDocs {
+			probeDocs[i] = probeText
+		}
+		if _, err := s.rerank.Rerank(ctx, "preflight probe", probeDocs); err != nil {
+			if !opts.AllowDegraded {
+				return EvalReport{}, fmt.Errorf(
+					"the configured reranker failed its preflight (%w) — every reranked arm would silently score as plain hybrid, "+
+						"which has already produced one wrong table too many. Fix it, or pass --allow-degraded to run without those arms", err)
+			}
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("reranker preflight failed (%v): reranked arms were DROPPED, not silently degraded", err))
+			s = s.withoutReranker()
+		}
+	}
+
 	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
+	for _, w := range bm25Sweep {
+		arms = append(arms, bm25Arm(w))
+	}
+	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
+	// The reality check runs LAST and always: this is the arm that exercises the
+	// code agents actually call. It went missing once already — built, documented,
+	// and never appended — which an adversarial review caught and no table did.
+	arms = append(arms, ArmProduction)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -201,18 +298,21 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	for _, a := range arms {
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
 	}
-	report := EvalReport{}
 
+	degradedCases := 0
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		ranks, topDistance, topRerank, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
+		}
+		if degraded {
+			degradedCases++
 		}
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
-		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Ranks: ranks})
+		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks})
 		cat := c.category()
 		for _, a := range arms {
 			m := byArm[a]
@@ -223,16 +323,15 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			}
 			cm.Cases++
 
-			// An absent case has no gold to rank: what is measured is whether the
-			// system returned something confident anyway.
+			// An absent case has no gold to rank; its distance evidence is taken
+			// once per CASE below, not here — appending inside this loop copied it
+			// once per arm and silently weighted the separation medians.
 			if cat == CatAbsent {
-				if topDistance >= 0 {
-					report.AbsentDistances = append(report.AbsentDistances, topDistance)
-				}
 				continue
 			}
 
 			m.Cases++
+			m.Ranks = append(m.Ranks, ranks[a])
 			switch r := ranks[a]; {
 			case r == 0:
 				m.NotFound++
@@ -250,9 +349,25 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 				}
 			}
 		}
-		if cat != CatAbsent && topDistance >= 0 {
-			report.GoldDistances = append(report.GoldDistances, topDistance)
+		if cat == CatAbsent {
+			if topDistance >= 0 {
+				report.AbsentDistances = append(report.AbsentDistances, topDistance)
+			}
+			if topRerank != 0 {
+				report.AbsentRerank = append(report.AbsentRerank, topRerank)
+			}
+		} else {
+			if topDistance >= 0 {
+				report.GoldDistances = append(report.GoldDistances, topDistance)
+			}
+			if topRerank != 0 {
+				report.GoldRerank = append(report.GoldRerank, topRerank)
+			}
 		}
+	}
+	if degradedCases > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"the reranker failed mid-run on %d of %d case(s): reranked arms scored the HYBRID order there — treat their numbers as a floor, not a measurement", degradedCases, len(cases)))
 	}
 	for _, a := range arms {
 		m := byArm[a]
@@ -271,14 +386,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (map[EvalArm]int, float64, error) {
+func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, fmt.Errorf("embed eval query: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, fmt.Errorf("eval vector search: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -286,13 +401,49 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, fmt.Errorf("load eval candidates: %w", err)
+		return nil, -1, 0, false, fmt.Errorf("load eval candidates: %w", err)
+	}
+
+	// The gold is a MEMORY, not a chunk of one.
+	//
+	// A long memory is stored as several chunks and any of them answers the
+	// question as far as the agent is concerned — it reads the memory, not the
+	// slice. Scoring only the exact chunk marks a correct retrieval as a miss, and
+	// unevenly: an arm that changes WHICH chunk surfaces (contextual chunking, for
+	// one) is penalised precisely for doing its job. In this corpus every sampled
+	// gold was a chunk of a multi-chunk memory, so the bias applied to every
+	// number measured before this.
+	goldSet := make(map[string]bool, 1+len(c.ExpectAny))
+	for _, id := range append([]string{c.Expect}, c.ExpectAny...) {
+		if id == "" { // CatAbsent cases have no gold to resolve
+			continue
+		}
+		switch gold, err := s.repo.Get(ctx, teamID, id); {
+		case err == nil:
+			if gold.ParentID != "" {
+				goldSet[gold.ParentID] = true
+			} else {
+				goldSet[gold.ID] = true
+			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			// A saved case can outlive its drawer: re-mining a source purges the
+			// old ids and mints new ones. Swallowing that scored the dead case as
+			// an all-arm retrieval miss — and the pool diagnosis then told the
+			// operator to raise --pool, misdiagnosing stale case data as a
+			// retrieval failure. Found by adversarial review, minutes after a
+			// full re-mine had made it live.
+			return nil, -1, 0, false, fmt.Errorf(
+				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
+		default:
+			return nil, -1, 0, false, fmt.Errorf("load eval gold %s: %w", id, err)
+		}
 	}
 
 	// One candidate list, ordered by vector distance — the input every arm
 	// re-orders. Building it once is what makes the comparison fair.
 	type candidate struct {
 		id       string
+		memory   string // the parent memory this chunk belongs to, or its own id
 		content  string
 		distance float64
 		source   string
@@ -303,7 +454,11 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		if !ok {
 			continue
 		}
-		pool = append(pool, candidate{id: d.ID, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile})
+		memory := d.ID
+		if d.ParentID != "" {
+			memory = d.ParentID
+		}
+		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile})
 	}
 
 	docs := make([]string, len(pool))
@@ -326,7 +481,25 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		}
 	}
 
+	// One cross-encoder call per case, shared by every arm that needs it. The
+	// scores do not depend on the blend weight, and fetching them per arm made the
+	// slowest step in the pipeline run six times over identical inputs — which is
+	// why a twelve-case run grew from one minute a case to three.
+	fusedForRerank := rankHybrid(c.Query, docs, dists, boosts)
+	hitsForRerank := make([]SearchHit, len(pool))
+	for i, p := range pool {
+		hitsForRerank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+	}
+	var rerankScores []float64
+	rerankFailed := false
+	if s.rerank != nil {
+		if rerankScores = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedForRerank); rerankScores == nil {
+			rerankFailed = true
+		}
+	}
+
 	out := map[EvalArm]int{}
+	topRerank := 0.0
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
 		switch arm {
@@ -345,13 +518,42 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
+		case ArmProduction:
+			// The real path, telemetry suppressed so an eval does not pollute the
+			// palace's own recall statistics.
+			page, err := s.Search(ctx, teamID, SearchQuery{
+				Query: c.Query, Wing: c.Wing, Limit: MaxSearchLimit,
+				// Production callers pass the default distance gate; omitting it
+				// here would measure a search nobody actually runs.
+				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
+			})
+			if err != nil {
+				break // scored as a miss; the error itself surfaces via NotFound
+			}
+			pageIDs := make([]string, len(page))
+			pageOrder := make([]int, len(page))
+			for i, h := range page {
+				memory := h.Drawer.ID
+				if h.Drawer.ParentID != "" {
+					memory = h.Drawer.ParentID
+				}
+				pageIDs[i] = memory
+				pageOrder[i] = i
+			}
+			out[arm] = rankOf(pageIDs, pageOrder, goldSet)
+			continue
 		case ArmContextual:
 			// A separate retrieval, because the arm's whole claim is about what
 			// gets RETRIEVED. Ranking is the standard fusion so the delta cannot
 			// be attributed to anything else.
 			ctxHits, err := s.vectors.Search(ctx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
-			if err != nil || len(ctxHits) == 0 {
-				break // index not built for this team; the arm reports NotFound
+			if err != nil {
+				// A store failure is not "index not built", and scoring it as a
+				// miss would let a dead backend read as a bad embedding.
+				return nil, -1, 0, false, fmt.Errorf("contextual index search: %w", err)
+			}
+			if len(ctxHits) == 0 {
+				break // index not built (or empty) for this scope: reported NotFound
 			}
 			ctxIDs := make([]string, len(ctxHits))
 			for i, h := range ctxHits {
@@ -359,7 +561,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, fmt.Errorf("load contextual candidates: %w", err)
+				return nil, -1, 0, false, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -369,30 +571,56 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				if !ok {
 					continue
 				}
+				memory := d.ID
+				if d.ParentID != "" {
+					memory = d.ParentID
+				}
 				ctxDocs = append(ctxDocs, d.Content)
 				ctxDists = append(ctxDists, distanceFromScore(h.Score))
-				ctxOrderIDs = append(ctxOrderIDs, d.ID)
+				ctxOrderIDs = append(ctxOrderIDs, memory)
 			}
 			var ctxOrdered []int
 			for _, r := range rankHybrid(c.Query, ctxDocs, ctxDists, nil) {
 				ctxOrdered = append(ctxOrdered, r.Index)
 			}
-			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, c.Expect)
+			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, goldSet)
 			continue
 		case ArmRRF:
 			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmRRFReranked:
-			fused := rankRRF(c.Query, docs, dists, boosts)
-			hitsForRank := make([]SearchHit, len(pool))
-			for i, p := range pool {
-				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+			// RRF changes the ORDER the head is taken in, so it needs its own
+			// scores — the one case where a second call is real information.
+			rrfFused := rankRRF(c.Query, docs, dists, boosts)
+			rrfScores := s.RerankScoresFor(ctx, c.Query, hitsForRerank, rrfFused)
+			for _, r := range BlendRerank(rrfFused, rrfScores, s.rerankWeight) {
+				ordered = append(ordered, r.Index)
 			}
-			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, s.rerankWeight) {
+		case ArmAdaptive:
+			for _, r := range rankHybridAdaptive(c.Query, docs, dists, boosts, hybridBM25Weight) {
+				ordered = append(ordered, r.Index)
+			}
+		case ArmAdaptiveIDF:
+			for _, r := range rankHybridAdaptiveIDF(c.Query, docs, dists, boosts, hybridBM25Weight) {
 				ordered = append(ordered, r.Index)
 			}
 		default:
+			// A swept fusion arm: same pipeline, different lexical weight.
+			if isBM25Arm := func() bool {
+				for _, w := range bm25Sweep {
+					if arm == bm25Arm(w) {
+						for _, r := range rankHybridWeighted(c.Query, docs, dists, boosts, w) {
+							ordered = append(ordered, r.Index)
+						}
+						return true
+					}
+				}
+				return false
+			}(); isBM25Arm {
+				break
+			}
+
 			// Every reranked arm shares one path; only the blend weight differs.
 			weight := s.rerankWeight
 			for _, w := range rerankSweep {
@@ -400,38 +628,65 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 					weight = w
 				}
 			}
-			// The cross-encoder refines the fused order, so it is handed the fused
-			// SCORES too — reranking a list whose scores were dropped would blend
-			// against zeroes and silently become the overwrite this measures.
-			fused := rankHybrid(c.Query, docs, dists, boosts)
-			hitsForRank := make([]SearchHit, len(pool))
-			for i, p := range pool {
-				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+			// Scores were fetched once for this case; only the blend differs per
+			// arm, so no arm pays for inference again.
+			reranked := BlendRerank(fusedForRerank, rerankScores, weight)
+			if arm == ArmReranked && len(reranked) > 0 {
+				topRerank = reranked[0].Rerank
 			}
-			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, weight) {
+			for _, r := range reranked {
 				ordered = append(ordered, r.Index)
 			}
 		}
 		poolIDs := make([]string, len(pool))
 		for i, p := range pool {
-			poolIDs[i] = p.id
+			poolIDs[i] = p.memory
 		}
-		out[arm] = rankOf(poolIDs, ordered, c.Expect)
+		out[arm] = rankOf(poolIDs, ordered, goldSet)
 	}
-	return out, topDistance, nil
+	return out, topDistance, topRerank, rerankFailed, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0
 // when it is absent — which is the signal that the memory never made the pool,
 // a retrieval miss rather than a ranking one.
-func rankOf(ids []string, ordered []int, expect string) int {
+func rankOf(ids []string, ordered []int, expect map[string]bool) int {
+	if len(expect) == 0 {
+		return 0
+	}
 	for rank, idx := range ordered {
 		if idx < 0 || idx >= len(ids) {
 			continue
 		}
-		if ids[idx] == expect {
+		// ids are MEMORY ids here, so several candidates can carry the same one
+		// (sibling chunks). The first position ANY relevant memory reaches is the
+		// rank that matters: that is where the agent sees an answer. Generated
+		// cases carry a single-member set; judged real-query cases carry every
+		// memory the judge accepted.
+		if expect[ids[idx]] {
 			return rank + 1
 		}
 	}
 	return 0
+}
+
+// SampleDrawers returns a random sample of a team's drawers for eval question
+// generation. It is a thin pass-through to the repo, exposed because the eval
+// command lives outside this package and must not reach into the repository.
+func (s *Service) SampleDrawers(ctx context.Context, teamID, wing string, n int) ([]Drawer, error) {
+	return s.repo.ListRandom(ctx, teamID, wing, n)
+}
+
+// SampleSearchQueries exposes the telemetry sampler to the eval command, which
+// lives outside this package and must not reach into the repository.
+func (s *Service) SampleSearchQueries(ctx context.Context, teamID, wing string, n int) ([]string, error) {
+	return s.repo.SampleSearchQueries(ctx, teamID, wing, n)
+}
+
+// withoutReranker returns a shallow copy of the service with the reranker
+// removed, for a degraded eval run — the palace itself is untouched.
+func (s *Service) withoutReranker() *Service {
+	clone := *s
+	clone.rerank = nil
+	return &clone
 }

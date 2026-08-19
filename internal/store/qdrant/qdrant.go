@@ -193,3 +193,67 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	return nil
 }
+
+// SamplePayloadCoverage reports how many of a sample of points carry EVERY key
+// in keys, and how many were sampled.
+//
+// It exists because pushing the wing/room filter into the index made a silent
+// assumption: that every point already carries those payload keys. A palace
+// whose vectors were written before the payload existed would answer every
+// scoped search with NOTHING, and look like an empty wing rather than a broken
+// filter — the worst possible failure for a memory system, because "I have no
+// memory of that" is a plausible answer.
+//
+// Sampling rather than counting: this runs at boot against a collection that may
+// hold millions of points, and a hundred are enough to tell a populated payload
+// from an absent one.
+func (c *Client) SamplePayloadCoverage(ctx context.Context, teamID string, keys []string, sample int) (withKeys, sampled int, err error) {
+	if sample <= 0 {
+		sample = 100
+	}
+	body := map[string]any{"limit": sample, "with_payload": true, "with_vector": false}
+	var resp struct {
+		Result struct {
+			Points []struct {
+				Payload map[string]any `json:"payload"`
+			} `json:"points"`
+		} `json:"result"`
+	}
+	path := "/collections/" + CollectionName(teamID) + "/points/scroll"
+	if err := c.do(ctx, http.MethodPost, path, body, &resp); err != nil {
+		return 0, 0, err
+	}
+	for _, p := range resp.Result.Points {
+		complete := true
+		for _, k := range keys {
+			if v, ok := p.Payload[k]; !ok || v == "" {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			withKeys++
+		}
+	}
+	return withKeys, len(resp.Result.Points), nil
+}
+
+// SetPayload attaches payload to existing points WITHOUT touching their vectors,
+// so a palace can be repaired for the cost of a few HTTP calls rather than a full
+// re-embedding. ids are the caller's own ids, mapped to their derived UUIDs.
+func (c *Client) SetPayload(ctx context.Context, namespace string, ids []string, payload map[string]any) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	pts := make([]string, len(ids))
+	for i, id := range ids {
+		pts[i] = pointID(namespace, id)
+	}
+	body := map[string]any{"payload": payload, "points": pts}
+	path := "/collections/" + CollectionName(namespace) + "/points/payload?wait=true"
+	return c.do(ctx, http.MethodPost, path, body, nil)
+}
+
+// FilterKeys is the payload every scoped search filters on, exported so the
+// repair path and the boot check cannot drift from what Search actually sends.
+func FilterKeys() []string { return append([]string(nil), filterKeys...) }

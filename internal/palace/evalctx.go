@@ -24,6 +24,11 @@ import (
 // against the live one rather than replacing it — an experiment has to be
 // reversible or it is a migration.
 
+// DefaultContextualLimit caps the experiment when the caller names no size. It
+// is small because the cost is an embedding pass and a second copy of the
+// vectors: an experiment that has to be planned around is one nobody runs.
+const DefaultContextualLimit = 2000
+
 // contextualNamespace is where the experimental embeddings live: alongside the
 // team's real vectors, never in place of them.
 func contextualNamespace(teamID string) string { return teamID + "::eval_ctx" }
@@ -56,11 +61,19 @@ func ContextPrefix(d Drawer, parent string) string {
 // It only pays for itself on multi-chunk memories, but it indexes everything: a
 // comparison that quietly excluded the single-chunk majority would flatter the
 // arm by measuring it only where it is designed to win.
-func (s *Service) BuildContextualIndex(ctx context.Context, teamID string, batch int) (int, error) {
+// It is BOUNDED on purpose. Re-embedding is the expensive operation in this
+// system, and a palace can be very large: an unbounded pass would mean hours of
+// inference and a second full set of vectors written beside the real ones. limit
+// caps how many chunks the experiment covers, and the caller is expected to keep
+// it small enough that the answer arrives today.
+func (s *Service) BuildContextualIndex(ctx context.Context, teamID string, batch, limit int) (int, error) {
 	if batch <= 0 {
 		batch = 32
 	}
-	drawers, err := s.repo.List(ctx, teamID, "", "", 100000, 0)
+	if limit <= 0 {
+		limit = DefaultContextualLimit
+	}
+	drawers, err := s.repo.List(ctx, teamID, "", "", limit, 0)
 	if err != nil {
 		return 0, fmt.Errorf("list drawers: %w", err)
 	}
@@ -140,4 +153,29 @@ func (s *Service) upsertEvalPoints(ctx context.Context, namespace string, points
 		return fmt.Errorf("write contextual vectors: %w", err)
 	}
 	return nil
+}
+
+// DropContextualIndex removes the experiment's vectors. An experiment that
+// cannot be undone is a migration, and this one writes a second copy of every
+// chunk it touches — on a large palace that is real storage, so the eval offers
+// to give it back.
+func (s *Service) DropContextualIndex(ctx context.Context, teamID string, limit int) (int, error) {
+	if limit <= 0 {
+		limit = DefaultContextualLimit
+	}
+	drawers, err := s.repo.List(ctx, teamID, "", "", limit, 0)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0, len(drawers))
+	for _, d := range drawers {
+		ids = append(ids, d.ID)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := s.vectors.Delete(ctx, contextualNamespace(teamID), ids); err != nil {
+		return 0, fmt.Errorf("drop contextual vectors: %w", err)
+	}
+	return len(ids), nil
 }

@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"sort"
@@ -59,14 +58,15 @@ func evalCommand(def config.Config) *cli.Command {
 			projectFlag(),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
-			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there"},
+			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
 			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions (must be GENERATIVE — an embedder like bge-m3 cannot answer /api/generate)"},
-			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url, so set it only to generate somewhere other than the embedder (e.g. Ollama Cloud)"},
-			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted Ollama, ignored by a local one"},
+			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
+			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted providers, ignored by a local one"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
-			&cli.IntFlag{Name: "seed", Value: 1, Usage: "sampling seed, so a re-run picks the same drawers"},
-			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace (costs one embedding pass over the corpus)"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), or absent (questions the palace should NOT answer)"},
+			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
+			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
+			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -107,13 +107,23 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	// Every arm runs per case, and a reranked arm is real inference, so a case can
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
+	if c.Bool("drop-contextual") {
+		n, err := svc.drawers.DropContextualIndex(ctx, team.ID, c.Int("contextual-limit"))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "dropped the contextual experiment's vectors (%d point(s))\n", n)
+		return nil
+	}
+
 	if c.Bool("contextual") {
 		// Built here rather than lazily inside the arm: it is an embedding pass
 		// over the whole corpus and the operator should see it happen, and pay
 		// for it once rather than per case.
-		fmt.Fprintf(out, "building the contextual index (one embedding pass over the corpus)…\n")
+		fmt.Fprintf(out, "building the contextual index — one embedding pass over up to %d chunk(s), written beside the real vectors; `eval --drop-contextual` gives the space back\n",
+			c.Int("contextual-limit"))
 		started := time.Now()
-		n, err := svc.drawers.BuildContextualIndex(ctx, team.ID, 32)
+		n, err := svc.drawers.BuildContextualIndex(ctx, team.ID, 32, c.Int("contextual-limit"))
 		if err != nil {
 			return fmt.Errorf("build contextual index: %w", err)
 		}
@@ -129,23 +139,232 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 	printEvalTable(out, report)
+
+	// The full result goes to disk: per-case ranks per arm, warnings, config.
+	// The printed table is a VIEW of this file, not the record — a run that only
+	// exists in scrollback cannot be compared with the next one, and comparing
+	// runs is the entire reason cases are saved.
+	if resPath := resultsPath(c.String("cases")); resPath != "" {
+		if err := writeResults(resPath, c, report, cases); err != nil {
+			fmt.Fprintf(out, "  (could not save the results file: %v)\n", err)
+		} else {
+			fmt.Fprintf(out, "full results (per-case ranks, config, warnings): %s\n", resPath)
+		}
+	}
 	return nil
+}
+
+// resultsPath derives where the results artifact lands: beside the first case
+// file, named after it.
+func resultsPath(casesFlag string) string {
+	first := strings.TrimSpace(strings.Split(casesFlag, ",")[0])
+	if first == "" {
+		return ""
+	}
+	return strings.TrimSuffix(first, ".jsonl") + ".results.json"
+}
+
+// writeResults persists the run in full.
+func writeResults(path string, c *cli.Command, report palace.EvalReport, cases []palace.EvalCase) error {
+	type armOut struct {
+		Arm      string  `json:"arm"`
+		MRR      float64 `json:"mrr"`
+		CILo     float64 `json:"ci_lo"`
+		CIHi     float64 `json:"ci_hi"`
+		Recall1  int     `json:"recall1"`
+		Recall5  int     `json:"recall5"`
+		NotFound int     `json:"not_found"`
+		Ranks    []int   `json:"ranks"`
+	}
+	arms := make([]armOut, 0, len(report.Arms))
+	for _, m := range report.Arms {
+		ci := palace.BootstrapMRR(m.Ranks)
+		arms = append(arms, armOut{Arm: string(m.Arm), MRR: m.MRR, CILo: ci.Lo, CIHi: ci.Hi,
+			Recall1: m.Recall1, Recall5: m.Recall5, NotFound: m.NotFound, Ranks: m.Ranks})
+	}
+	payload := map[string]any{
+		"created":  time.Now().UTC().Format(time.RFC3339),
+		"pool":     c.Int("pool"),
+		"wing":     c.String("wing"),
+		"cases":    len(cases),
+		"warnings": report.Warnings,
+		"arms":     arms,
+		"details":  report.Details,
+	}
+	raw, err := json.MarshalIndent(payload, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
 }
 
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
+// generateRealCases replays queries agents actually ran (from search_events)
+// as eval cases. There is no seed note to serve as gold, so the gold is a
+// judged SET: the broad candidate pool is scored by the generator model as a
+// relevance judge, and every accepted memory counts as a correct answer. Two
+// of the review's findings meet their fix here — real queries were never
+// phrased to suit any arm's feature (the generated styles all are), and a
+// multi-member gold stops a valid alternative answer being scored as an error.
+//
+// The judge is an LLM, not a human, and the pool comes from vector retrieval,
+// so a memory no arm can retrieve is invisible to these qrels. Both limits are
+// recorded in the case-file provenance rather than papered over.
+func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
+	wing := c.String("wing")
+	queries, err := svc.drawers.SampleSearchQueries(ctx, team.ID, wing, c.Int("n"))
+	if err != nil {
+		return nil, "", fmt.Errorf("sample real queries: %w", err)
+	}
+	if len(queries) == 0 {
+		return nil, "", fmt.Errorf("no recorded searches to replay in %s of workspace %q — real-query cases need search telemetry; run some sessions against this palace first, or use a generated --style",
+			corpusLabel(wing), team.Slug)
+	}
+	judge := &questionGen{
+		url:    genURL(c),
+		model:  c.String("gen-model"),
+		apiKey: strings.TrimSpace(c.String("gen-api-key")),
+		prompt: evalPromptRelevanceCheck,
+		http:   &http.Client{Timeout: 120 * time.Second},
+	}
+	fmt.Fprintf(out, "judging %d real queries with %s…\n", len(queries), judge.model)
+	var cases []palace.EvalCase
+	for i, q := range queries {
+		started := time.Now()
+		hits, err := svc.drawers.Search(ctx, team.ID, palace.SearchQuery{
+			// Ungated: the judge decides relevance, not the distance cutoff, and
+			// a relevant memory the gate would drop still belongs in the qrels.
+			// The judged pool is capped at 12 — each hit costs one judge call —
+			// which means a memory below rank 12 here is invisible to the qrels.
+			// That pooling bias is inherent to judged evals; it is recorded in
+			// the provenance line rather than pretended away.
+			Query: q, Wing: wing, Limit: 12, SkipTelemetry: true,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("pool real query %q: %w", q, err)
+		}
+		var relevant []string
+		for _, h := range hits {
+			excerpt := palace.Snippet(h.Drawer.Content, q, 900)
+			reply, jerr := judge.ask(ctx, "QUERY: "+q+"\n\nNOTE:\n"+excerpt)
+			if jerr != nil {
+				// The FIRST failure aborts, matching the generator preflight
+				// doctrine: a judge that cannot score one note is misconfigured,
+				// and every later call would fail the same way.
+				if i == 0 && len(relevant) == 0 {
+					return nil, "", fmt.Errorf("the relevance judge is not usable: %w\n\n%s", jerr, judge.hint(ctx))
+				}
+				fmt.Fprintf(out, "  [%2d/%2d] judge failed on one note, skipped it: %v\n", i+1, len(queries), jerr)
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES") {
+				relevant = append(relevant, h.Drawer.ID)
+			}
+		}
+		if len(relevant) == 0 {
+			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  no relevant memory judged for: %s\n", i+1, len(queries), time.Since(started).Seconds(), firstLineOf(q, 50))
+			continue
+		}
+		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %d relevant  %s\n", i+1, len(queries), time.Since(started).Seconds(), len(relevant), firstLineOf(q, 50))
+		cases = append(cases, palace.EvalCase{Query: q, ExpectAny: relevant, Wing: wing, Category: palace.CatReal})
+	}
+	if len(cases) == 0 {
+		return nil, "", fmt.Errorf("none of the %d replayed queries had a judged-relevant memory — either the palace genuinely cannot answer its own traffic (check the recall stats) or the judge model is refusing everything", len(queries))
+	}
+	if path := c.String("cases"); path != "" {
+		meta := caseFileMeta{
+			Generator: judge.model, Style: "real", Wing: wing,
+			Corpus: len(queries), Created: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := writeCases(path, cases, meta); err != nil {
+			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
+		} else {
+			fmt.Fprintf(out, "saved %d case(s) to %s\n", len(cases), path)
+		}
+	}
+	return cases, "replayed from telemetry", nil
+}
+
+// verifyAbsent checks a generated "absent" question against the whole corpus,
+// not just the note it was seeded from. The generator only promises the seed
+// note cannot answer it; if any other memory can, the case would score a
+// correct retrieval as a false positive, and every gate calibrated on such
+// cases would be calibrated on invalid labels. Returns the id of a drawer that
+// answers the question, or "" when the top hits all fail the answer check.
+func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question string, gen *questionGen) (string, error) {
+	// No distance gate: absence must be checked broadly. A hit the production
+	// gate would drop can still prove the knowledge exists in the palace.
+	hits, err := svc.drawers.Search(ctx, teamID, palace.SearchQuery{
+		Query: question, Wing: wing, Limit: 3, SkipTelemetry: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	checker := &questionGen{
+		url: gen.url, model: gen.model, apiKey: gen.apiKey,
+		prompt: evalPromptAnswerCheck, http: gen.http,
+	}
+	for _, h := range hits {
+		// The query-centred snippet, not the head of the note: the answer to the
+		// question sits near the query terms, and the head of a long mined part
+		// is usually about something else entirely.
+		excerpt := palace.Snippet(h.Drawer.Content, question, 900)
+		reply, err := checker.ask(ctx, "QUESTION: "+question+"\n\nNOTE:\n"+excerpt)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES") {
+			return h.Drawer.ID, nil
+		}
+	}
+	return "", nil
+}
+
 func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
 	path := c.String("cases")
 	if path != "" {
-		if cases, err := readCases(path); err == nil && len(cases) > 0 {
-			return cases, "from " + path, nil
+		var merged []palace.EvalCase
+		files := strings.Split(path, ",")
+		for _, f := range files {
+			f = strings.TrimSpace(f)
+			cases, err := readCases(f)
+			switch {
+			case err == nil:
+				merged = append(merged, cases...)
+			case os.IsNotExist(err) && len(files) == 1:
+				// The generate-then-save flow: a single named file that does not
+				// exist yet is where the generated cases will land.
+			default:
+				// A CORRUPT file, or a missing one among several, silently shrank
+				// the case set once; the label still said "from N files" and no
+				// run was comparable with any other.
+				return nil, "", fmt.Errorf("cases file %s: %w", f, err)
+			}
+		}
+		if len(merged) > 0 {
+			label := "from " + path
+			if len(files) > 1 {
+				label = fmt.Sprintf("from %d files", len(files))
+			}
+			return merged, label, nil
 		}
 	}
 
-	drawers, err := svc.drawers.List(ctx, team.ID, c.String("wing"), "", 1000, 0)
+	if c.String("style") == "real" {
+		return generateRealCases(ctx, c, svc, team, out)
+	}
+
+	// Sample across the whole corpus rather than its newest slice: on a palace
+	// that holds years, the newest thousand memories are one week of work, and an
+	// eval built from them measures recall on recent memory only.
+	//
+	// Reproducibility comes from the saved case file rather than from a seed: the
+	// questions are what a re-run must hold constant, and they are on disk.
+	drawers, err := svc.drawers.SampleDrawers(ctx, team.ID, c.String("wing"), c.Int("n"))
 	if err != nil {
-		return nil, "", fmt.Errorf("list drawers: %w", err)
+		return nil, "", fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		// Named distinctly rather than folded into runEval's "no eval cases": an
@@ -154,13 +373,6 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		// wing that was never the problem.
 		return nil, "", fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
 			corpusLabel(c.String("wing")), team.Slug)
-	}
-	// Deterministic sample: a ranking change must be judged on the same drawers
-	// as the run before it.
-	rng := rand.New(rand.NewSource(int64(c.Int("seed"))))
-	rng.Shuffle(len(drawers), func(i, j int) { drawers[i], drawers[j] = drawers[j], drawers[i] })
-	if n := c.Int("n"); n < len(drawers) {
-		drawers = drawers[:n]
 	}
 
 	prompt, style := evalPromptParaphrase, c.String("style")
@@ -180,6 +392,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		prompt:  prompt,
 		http:    &http.Client{Timeout: 120 * time.Second},
 		verbose: out,
+	}
+
+	// Ask for ONE question before asking for thirty. A missing model, a wrong URL
+	// or a bad key fails identically on every case, and printing that failure n
+	// times is thirty lines that say one thing — while the run still takes as long
+	// as a working one.
+	if _, err := gen.ask(ctx, drawers[0].Content); err != nil {
+		return nil, "", fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
 	genStart := time.Now()
@@ -214,12 +434,24 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			// There is no gold for a question the palace should not answer; what
 			// gets measured is whether it returns something confident anyway.
 			expect = ""
+			// The seed note not answering it is not enough — verify the rest of
+			// the corpus cannot either, or drop the case.
+			if answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen); verr != nil {
+				fmt.Fprintf(out, "  [%2d/%2d] kept UNVERIFIED (absence check failed: %v)\n", i+1, len(drawers), verr)
+			} else if answeredBy != "" {
+				fmt.Fprintf(out, "  [%2d/%2d] rejected: memory %s answers it, so it is not absent\n", i+1, len(drawers), answeredBy)
+				continue
+			}
 		}
 		cases = append(cases, palace.EvalCase{Query: q, Expect: expect, Wing: c.String("wing"), Category: category})
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
-		if err := writeCases(path, cases); err != nil {
+		meta := caseFileMeta{
+			Generator: gen.model, Style: style, Wing: c.String("wing"),
+			Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := writeCases(path, cases, meta); err != nil {
 			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
 		} else {
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
@@ -252,11 +484,49 @@ func genURL(c *cli.Command) string {
 type questionGen struct {
 	url    string
 	model  string
-	apiKey string // sent as Authorization: Bearer when set; hosted Ollama needs it
+	apiKey string // sent as Authorization: Bearer when set; hosted providers need it
 	prompt string
 
 	http    *http.Client
 	verbose io.Writer
+}
+
+// openAIShaped reports whether the endpoint should be called as an
+// OpenAI-compatible chat API rather than Ollama's own. The /v1 convention is what
+// every hosted provider and every local shim agrees on, so it is the honest
+// discriminator — and it means a cloud model needs no new flag beyond its URL.
+func (g *questionGen) openAIShaped() bool { return strings.Contains(g.url, "/v1") }
+
+// hint turns a generator failure into something actionable: which models the
+// endpoint actually serves, when it can be asked.
+func (g *questionGen) hint(ctx context.Context) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  endpoint: %s\n  model:    %s\n", g.url, g.model)
+	if g.openAIShaped() {
+		b.WriteString("  Set EVAL_GEN_MODEL to a model this endpoint serves, and EVAL_GEN_API_KEY if it needs a key.\n")
+		return b.String()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(g.url, "/")+"/api/tags", nil)
+	if err == nil {
+		if resp, err := g.http.Do(req); err == nil {
+			defer resp.Body.Close()
+			var tags struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&tags) == nil && len(tags.Models) > 0 {
+				names := make([]string, 0, len(tags.Models))
+				for _, m := range tags.Models {
+					names = append(names, m.Name)
+				}
+				fmt.Fprintf(&b, "  this endpoint serves: %s\n", strings.Join(names, ", "))
+			}
+		}
+	}
+	b.WriteString("  Set EVAL_GEN_MODEL to one of those, pull the one you want (ollama pull <model>),\n")
+	b.WriteString("  or point EVAL_GEN_URL at another endpoint — a URL containing /v1 is called as an OpenAI-compatible API.\n")
+	return b.String()
 }
 
 // Two prompts, because there are two regimes and they rank differently.
@@ -323,6 +593,26 @@ NOTE:
 %s
 
 QUESTION:`
+
+// evalPromptAnswerCheck asks whether a note answers a question. It exists
+// because "absent" used to mean absent from the one sampled note, while the
+// evaluator scored it as absent from the whole palace — another memory could
+// answer the question perfectly, and the case would count a correct retrieval
+// as a false positive.
+const evalPromptAnswerCheck = `Does the NOTE below contain the answer to the QUESTION?
+Reply with exactly one word: YES or NO.
+
+%s`
+
+// evalPromptRelevanceCheck judges a real query against one retrieved note. Real
+// queries are often fragments rather than questions, so this asks about intent
+// ("what the searcher wanted") instead of literal answerhood.
+const evalPromptRelevanceCheck = `An engineer searched their team memory. Below is their QUERY and one NOTE the
+search returned. Is this note what they were looking for — does it contain the
+information the query is after?
+Reply with exactly one word: YES or NO.
+
+%s`
 
 const evalPromptLiteral = `You are writing an evaluation question for a memory search system.
 
@@ -397,6 +687,21 @@ func cleanQuestion(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// caseFileMeta is the provenance record written as the FIRST line of a case
+// file. Two runs of "the same" eval on different machines have already disagreed
+// for reasons that were invisible afterwards — different generator models write
+// questions of different difficulty, and nothing recorded which model wrote
+// which file. A case file that does not say how it was made cannot be compared
+// with anything.
+type caseFileMeta struct {
+	Meta      bool   `json:"meta"`
+	Generator string `json:"generator"`
+	Style     string `json:"style"`
+	Wing      string `json:"wing"`
+	Corpus    int    `json:"corpus_drawers"`
+	Created   string `json:"created"`
+}
+
 // readCases loads a JSONL case file.
 func readCases(path string) ([]palace.EvalCase, error) {
 	f, err := os.Open(path)
@@ -412,6 +717,10 @@ func readCases(path string) ([]palace.EvalCase, error) {
 		if line == "" {
 			continue
 		}
+		// A provenance line is metadata, not a case.
+		if strings.Contains(line, `"meta":true`) {
+			continue
+		}
 		var c palace.EvalCase
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
@@ -422,13 +731,17 @@ func readCases(path string) ([]palace.EvalCase, error) {
 }
 
 // writeCases saves cases as JSONL.
-func writeCases(path string, cases []palace.EvalCase) error {
+func writeCases(path string, cases []palace.EvalCase, meta caseFileMeta) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
+	meta.Meta = true
+	if err := enc.Encode(meta); err != nil {
+		return err
+	}
 	for _, c := range cases {
 		if err := enc.Encode(c); err != nil {
 			return err
@@ -439,13 +752,46 @@ func writeCases(path string, cases []palace.EvalCase) error {
 
 // printEvalTable renders the arms and the cases every arm missed.
 func printEvalTable(out io.Writer, report palace.EvalReport) {
-	fmt.Fprintf(out, "%-22s %8s %8s %8s %10s\n", "arm", "R@1", "R@5", "MRR", "not found")
-	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 60))
-	for _, m := range report.Arms {
-		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %10d\n",
-			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, m.NotFound)
+	for _, w := range report.Warnings {
+		fmt.Fprintf(out, "⚠ %s\n", w)
 	}
 
+	// The baseline every arm is compared against is the best MRR in the table.
+	// A PAIRED difference that includes zero is reported as INCONCLUSIVE, not as
+	// equivalence: the winner was itself picked from this data (winner's curse),
+	// and a CI spanning zero means the data cannot rule out a difference — it
+	// never means one was ruled out. The table says exactly that and no more.
+	best := 0
+	for i, m := range report.Arms {
+		if m.MRR > report.Arms[best].MRR {
+			best = i
+		}
+	}
+
+	fmt.Fprintf(out, "%-22s %8s %8s %8s %14s %10s   %s\n", "arm", "R@1", "R@5", "MRR", "95% CI", "not found", "vs best")
+	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 92))
+	for i, m := range report.Arms {
+		ci := palace.BootstrapMRR(m.Ranks)
+		verdict := ""
+		switch {
+		case len(m.Ranks) == 0:
+			verdict = "no scoreable cases"
+		case i == best:
+			verdict = "BEST"
+		case len(m.Ranks) == len(report.Arms[best].Ranks):
+			if delta := palace.PairedDelta(m.Ranks, report.Arms[best].Ranks); delta.Contains(0) {
+				verdict = "inconclusive vs best (CI spans zero)"
+			} else {
+				verdict = fmt.Sprintf("worse by %.2f–%.2f", -delta.Hi, -delta.Lo)
+			}
+		}
+		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
+			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, ci, m.NotFound, verdict)
+	}
+	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap). The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner; 'inconclusive' means exactly that, never equivalence\n",
+		len(report.Arms[0].Ranks))
+
+	printPoolDiagnosis(out, report)
 	printCategories(out, report)
 	printSeparation(out, report)
 
@@ -454,6 +800,11 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 	// honest, because they drag every arm down equally.
 	var lost []string
 	for _, d := range report.Details {
+		// An absent case retrieving nothing is the CORRECT outcome, not a lost
+		// one: listing it as a failure inverts the meaning of the whole category.
+		if d.Category == palace.CatAbsent {
+			continue
+		}
 		missed := true
 		for _, r := range d.Ranks {
 			if r > 0 {
@@ -477,6 +828,44 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 	}
 }
 
+// printPoolDiagnosis separates the two failures a single score hides.
+//
+// A memory can be missed because ranking put it below the page (a RANKING
+// failure, which reranking and fusion address) or because it never entered the
+// candidate pool at all (a RETRIEVAL failure, which no amount of reranking can
+// fix — the answer was never on the table). They call for opposite work, and on
+// a large corpus the second becomes the common one while the score alone still
+// just says "worse".
+func printPoolDiagnosis(out io.Writer, report palace.EvalReport) {
+	worst, contextualExtra := 0, 0
+	for _, m := range report.Arms {
+		// The contextual arm retrieves from its own CAPPED index, so its misses
+		// mean "outside the experiment's sample", not "outside the shared pool" —
+		// folding them in once steered an operator toward raising --pool when the
+		// binding knob was --contextual-limit.
+		if m.Arm == palace.ArmContextual {
+			contextualExtra = m.NotFound
+			continue
+		}
+		if m.NotFound > worst {
+			worst = m.NotFound
+		}
+	}
+	if contextualExtra > worst {
+		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", contextualExtra-worst)
+	}
+	if worst == 0 {
+		return
+	}
+	cases := 0
+	if len(report.Arms) > 0 {
+		cases = report.Arms[0].Cases
+	}
+	fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
+	fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
+	fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
+}
+
 // printCategories breaks the leading arm out by question kind. An average over
 // categories hides the failure that matters: a system can be perfect on
 // single-hop questions and blind on the ones that need the CURRENT version of a
@@ -485,8 +874,21 @@ func printCategories(out io.Writer, report palace.EvalReport) {
 	if len(report.Arms) == 0 {
 		return
 	}
-	// The production arm is the last one that is not a swept variant.
+	// Break out the arm an operator will actually run: production first, then the
+	// configured blend, then the plain fusion — never a sweep extreme, which is
+	// what "last in the list" silently was once the sweeps existed.
 	best := report.Arms[len(report.Arms)-1]
+	for _, want := range []palace.EvalArm{palace.ArmProduction, palace.ArmReranked, palace.ArmHybridCloset} {
+		for _, m := range report.Arms {
+			if m.Arm == want && len(m.ByCategory) > 0 {
+				best = m
+				break
+			}
+		}
+		if best.Arm == want {
+			break
+		}
+	}
 	if len(best.ByCategory) <= 1 {
 		return // nothing to break out
 	}
@@ -532,6 +934,33 @@ func printSeparation(out io.Writer, report palace.EvalReport) {
 		return
 	}
 	fmt.Fprintf(out, "  distributions OVERLAP — no max_distance separates them; a confidence gate needs a different signal\n")
+	printRerankSeparation(out, report)
+}
+
+// printRerankSeparation asks the same question of the cross-encoder's score.
+//
+// Cosine distance answers "how similar", which is not the question — a note about
+// the same system in the same vocabulary is similar to a question it cannot
+// answer, which is exactly why the distributions overlap. A cross-encoder score
+// answers "does this document answer this query", which IS the question, so it is
+// the natural candidate for the gate that decides when to say nothing.
+func printRerankSeparation(out io.Writer, report palace.EvalReport) {
+	if len(report.GoldRerank) == 0 || len(report.AbsentRerank) == 0 {
+		return
+	}
+	gold := append([]float64(nil), report.GoldRerank...)
+	absent := append([]float64(nil), report.AbsentRerank...)
+	sort.Float64s(gold)
+	sort.Float64s(absent)
+	fmt.Fprintf(out, "top-1 rerank score: answerable %.3f–%.3f (median %.3f) | unanswerable %.3f–%.3f (median %.3f)\n",
+		gold[0], gold[len(gold)-1], median(gold), absent[0], absent[len(absent)-1], median(absent))
+	if absent[len(absent)-1] < gold[0] {
+		fmt.Fprintf(out, "  CLEAN SEPARATION — a cross-encoder threshold between %.3f and %.3f answers only what the palace holds\n",
+			absent[len(absent)-1], gold[0])
+		return
+	}
+	fmt.Fprintf(out, "  overlapping too — but compare the medians: %.3f against %.3f is the size of the signal available\n",
+		median(gold), median(absent))
 }
 
 // median of a sorted slice.

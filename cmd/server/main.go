@@ -122,6 +122,8 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		OllamaEmbedModel: c.String("ollama-model"),
 		RerankURL:        strings.TrimSpace(c.String("rerank-url")),
 		RerankPool:       c.Int("rerank-pool"),
+		BM25Weight:       strings.TrimSpace(c.String("bm25-weight")),
+		ClosetBoost:      c.Float64("closet-boost"),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      def.HTTPTimeout,
@@ -170,6 +172,8 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
+		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), or a fixed 0..1"},
+		&cli.Float64Flag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -243,6 +247,7 @@ func run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	log.Printf("vector backend: %s (SQLite source of truth)", cfg.VectorBackend)
+	warnIfPayloadMissing(ctx, cfg, svc)
 	tenants, skills, usageSvc, drawers := svc.tenants, svc.skills, svc.usage, svc.drawers
 
 	// Background embedder: drains rows that /import absorbed (text written, vector
@@ -796,6 +801,18 @@ func buildServices(cfg config.Config) (*services, error) {
 	// vector+BM25 fusion it has always been. Building it here keeps the
 	// composition root the only place that knows which rerank server is deployed.
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
+	if cfg.ClosetBoost != 1 {
+		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
+		log.Printf("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
+	}
+	if w := cfg.BM25Weight; w != "" && w != "auto" {
+		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
+			drawers = drawers.WithBM25Weight(false, fixed)
+			log.Printf("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
+		} else {
+			log.Printf("bm25 weight: %q is not 'auto' or a number; keeping auto", w)
+		}
+	}
 	if cfg.RerankURL != "" {
 		// A rerank call does real inference, unlike the millisecond calls
 		// HTTPTimeout was sized for, so it gets its own budget.
@@ -849,6 +866,49 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 	default:
 		return nil, fmt.Errorf("unknown vector backend %q (want %q, %q or %q)",
 			cfg.VectorBackend, config.VectorBackendSQLite, config.VectorBackendChromem, config.VectorBackendQdrant)
+	}
+}
+
+// warnIfPayloadMissing checks that the search index actually carries the labels
+// scoped search filters on, and says so loudly when it does not.
+//
+// Pushing the wing/room filter into the index made an assumption that is true for
+// every point written since, and false for every point written before: that the
+// payload is there. A palace missing it answers every scoped search with NOTHING
+// and looks like an empty wing — which is the worst way for a memory system to
+// fail, because "I have no memory of that" is a plausible answer and nobody
+// investigates it.
+//
+// It samples rather than counts: this runs at boot against a collection that may
+// hold millions of points, and a hundred settle the question.
+func warnIfPayloadMissing(ctx context.Context, cfg config.Config, svc *services) {
+	if cfg.VectorBackend != config.VectorBackendQdrant {
+		return // only the Qdrant path filters server-side against stored payload
+	}
+	client := qdrant.New(cfg.QdrantURL, cfg.QdrantAPIKey, cfg.HTTPTimeout)
+	// The namespace list comes from the source of truth, which is the one thing
+	// guaranteed to know every tenant regardless of what the index holds.
+	lister, ok := svc.vectors.(interface {
+		Namespaces(context.Context) ([]string, error)
+	})
+	if !ok {
+		return
+	}
+	namespaces, err := lister.Namespaces(ctx)
+	if err != nil || len(namespaces) == 0 {
+		return
+	}
+	for _, ns := range namespaces {
+		withKeys, sampled, err := client.SamplePayloadCoverage(ctx, ns, qdrant.FilterKeys(), 100)
+		if err != nil || sampled == 0 {
+			continue // an unreachable or empty collection is not this check's business
+		}
+		if withKeys == sampled {
+			continue
+		}
+		log.Printf("WARNING: %d of %d sampled points in the search index carry no wing/room label, "+
+			"so every wing-scoped search will silently return NOTHING for them — they will look like an empty wing. "+
+			"Repair without re-embedding: agentsmemory sync --repair-payload", sampled-withKeys, sampled)
 	}
 }
 
