@@ -110,6 +110,16 @@ func New(deps Deps) *server.MCPServer {
 		server.WithToolCapabilities(true), // advertise the tools/list capability
 	)
 	reg := &registrar{srv: srv}
+	registerAll(reg, deps)
+	return srv
+}
+
+// registerAll wires every tool onto a registrar. It is split out of New so a
+// test can hold the registrar afterwards and read the catalogue it built:
+// registration only constructs tools and closures, so this runs with nil
+// services and no database, which is what makes the tool surface itself
+// assertable rather than something a reader has to count by hand.
+func registerAll(reg *registrar, deps Deps) {
 	registerStatus(reg, deps.Drawers, deps.Usage, deps.Workspaces, deps.Local)
 	registerLoadSkill(reg, deps.Skills, deps.Usage)
 	// Skill-registry management: list + update (write is role-gated).
@@ -133,7 +143,6 @@ func New(deps Deps) *server.MCPServer {
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)
-	return srv
 }
 
 // wingFor resolves the wing a write belongs to: the one the caller passed, or —

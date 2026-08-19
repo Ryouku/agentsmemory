@@ -14,8 +14,8 @@ versioned skills** the team keeps up to date.
 > **Status: early skeleton.** The tenancy, auth, skill registry, storage clients
 > and MCP transport are wired and verified end-to-end, and the **core memory
 > loop** (file a drawer → recall it semantically) now works end-to-end against
-> Ollama + the vector store. Today the server exposes **36 of the planned 37 MCP
-> tools** — the WRITE/FILE + SEARCH/RECALL families, the agent `diary`, the `am_mine`
+> Ollama + the vector store. Today the server exposes **41 MCP
+> tools** (40 of them hosted; `am_delete_wing` is self-hosted only) — the WRITE/FILE + SEARCH/RECALL families, the agent `diary`, the `am_mine`
 > pipeline (text → chunked drawers + closet index), **hybrid** search (vector +
 > BM25 + closet boost), the navigable **graph** (hallways + tunnels + traverse),
 > the temporal **knowledge graph**, the skill-registry CRUD, and wing admin. Only
@@ -350,7 +350,7 @@ What changes:
 | Listen address | `:8080` (all interfaces) | `127.0.0.1:8080` |
 | Search index | `sqlite` (the source of truth scans itself) | **`chromem`** — embedded, no service to run |
 
-All 37 MCP tools behave identically — they only ever see a resolved workspace,
+All 41 MCP tools behave identically — they only ever see a resolved workspace,
 and local mode injects one instead of resolving it from a credential.
 
 Point any MCP client straight at it, with no header:
@@ -691,7 +691,7 @@ tarball needs the same treatment.
 
 ### The server is inert without the protocol
 
-Connecting the MCP gives your agent 37 tools and **no reason to call any of
+Connecting the MCP gives your agent 41 tools and **no reason to call any of
 them**. Nothing about a tool catalogue tells an agent to recall before it acts or
 to write down what it learned; without that instruction the memory simply never
 gets opened. Delegation comes in three layers, and self-hosting only gets you the
@@ -1184,7 +1184,7 @@ donors land on the same page.
 - [x] Graph — hallways (entity co-occurrence) + tunnels (explicit + entity) + traverse/find/stats/recompute (10 tools, 27 of 37)
 - [x] Knowledge graph — temporal subject→predicate→object facts with validity windows (5 tools, 32 of 37)
 - [x] Skill registry CRUD — `am_list_skills` + `am_update_skill` (role-gated)
-- [x] Admin — `am_merge_wing` + `am_memories_filed_away` (36 of 37; `sync`/`hook_settings` are single-user-local, not ported)
+- [x] Admin — `am_merge_wing` + `am_memories_filed_away` (`sync`/`hook_settings` stay single-user-local, not ported)
 - [x] Web dashboard — local (`goth`) login, project create + one-time API key, monthly usage metering — `templ` + datastar
 - [x] Web skill management — per-project list / create / edit (role-gated to writer/admin), membership-checked routes
 - [x] Migration — read-only `mempalace` exporter + streaming `POST /import` (drawers, diary, closets, KG facts, tunnels; re-embedded, graph rebuilt)
