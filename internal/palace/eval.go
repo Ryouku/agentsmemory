@@ -58,6 +58,11 @@ var rerankSweep = []float64{0.25, 0.5, 0.75, 1.0}
 // and in a large palace many memories share a query's words without answering it.
 var bm25Sweep = []float64{0.0, 0.2, 0.4, 0.6}
 
+// ArmAdaptive picks the lexical weight per query from how much lexical signal
+// that query actually has — the alternative to a constant nobody can set right
+// for every palace.
+const ArmAdaptive EvalArm = "fusion bm25=auto"
+
 // bm25Arm names a swept fusion arm.
 func bm25Arm(w float64) EvalArm { return EvalArm(fmt.Sprintf("fusion bm25=%.2f", w)) }
 
@@ -208,6 +213,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	for _, w := range bm25Sweep {
 		arms = append(arms, bm25Arm(w))
 	}
+	arms = append(arms, ArmAdaptive)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -319,10 +325,25 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		return nil, -1, 0, fmt.Errorf("load eval candidates: %w", err)
 	}
 
+	// The gold is a MEMORY, not a chunk of one.
+	//
+	// A long memory is stored as several chunks and any of them answers the
+	// question as far as the agent is concerned — it reads the memory, not the
+	// slice. Scoring only the exact chunk marks a correct retrieval as a miss, and
+	// unevenly: an arm that changes WHICH chunk surfaces (contextual chunking, for
+	// one) is penalised precisely for doing its job. In this corpus every sampled
+	// gold was a chunk of a multi-chunk memory, so the bias applied to every
+	// number measured before this.
+	goldMemory := c.Expect
+	if gold, err := s.repo.Get(ctx, teamID, c.Expect); err == nil && gold.ParentID != "" {
+		goldMemory = gold.ParentID
+	}
+
 	// One candidate list, ordered by vector distance — the input every arm
 	// re-orders. Building it once is what makes the comparison fair.
 	type candidate struct {
 		id       string
+		memory   string // the parent memory this chunk belongs to, or its own id
 		content  string
 		distance float64
 		source   string
@@ -333,7 +354,11 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		if !ok {
 			continue
 		}
-		pool = append(pool, candidate{id: d.ID, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile})
+		memory := d.ID
+		if d.ParentID != "" {
+			memory = d.ParentID
+		}
+		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile})
 	}
 
 	docs := make([]string, len(pool))
@@ -354,6 +379,20 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 		if topDistance < 0 || p.distance < topDistance {
 			topDistance = p.distance
 		}
+	}
+
+	// One cross-encoder call per case, shared by every arm that needs it. The
+	// scores do not depend on the blend weight, and fetching them per arm made the
+	// slowest step in the pipeline run six times over identical inputs — which is
+	// why a twelve-case run grew from one minute a case to three.
+	fusedForRerank := rankHybrid(c.Query, docs, dists, boosts)
+	hitsForRerank := make([]SearchHit, len(pool))
+	for i, p := range pool {
+		hitsForRerank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+	}
+	var rerankScores []float64
+	if s.rerank != nil {
+		rerankScores = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedForRerank)
 	}
 
 	out := map[EvalArm]int{}
@@ -400,27 +439,34 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				if !ok {
 					continue
 				}
+				memory := d.ID
+				if d.ParentID != "" {
+					memory = d.ParentID
+				}
 				ctxDocs = append(ctxDocs, d.Content)
 				ctxDists = append(ctxDists, distanceFromScore(h.Score))
-				ctxOrderIDs = append(ctxOrderIDs, d.ID)
+				ctxOrderIDs = append(ctxOrderIDs, memory)
 			}
 			var ctxOrdered []int
 			for _, r := range rankHybrid(c.Query, ctxDocs, ctxDists, nil) {
 				ctxOrdered = append(ctxOrdered, r.Index)
 			}
-			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, c.Expect)
+			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, goldMemory)
 			continue
 		case ArmRRF:
 			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmRRFReranked:
-			fused := rankRRF(c.Query, docs, dists, boosts)
-			hitsForRank := make([]SearchHit, len(pool))
-			for i, p := range pool {
-				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+			// RRF changes the ORDER the head is taken in, so it needs its own
+			// scores — the one case where a second call is real information.
+			rrfFused := rankRRF(c.Query, docs, dists, boosts)
+			rrfScores := s.RerankScoresFor(ctx, c.Query, hitsForRerank, rrfFused)
+			for _, r := range BlendRerank(rrfFused, rrfScores, s.rerankWeight) {
+				ordered = append(ordered, r.Index)
 			}
-			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, s.rerankWeight) {
+		case ArmAdaptive:
+			for _, r := range rankHybridAdaptive(c.Query, docs, dists, boosts, hybridBM25Weight) {
 				ordered = append(ordered, r.Index)
 			}
 		default:
@@ -446,23 +492,21 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 					weight = w
 				}
 			}
-			// The cross-encoder refines the fused order, so it is handed the fused
-			// SCORES too — reranking a list whose scores were dropped would blend
-			// against zeroes and silently become the overwrite this measures.
-			fused := rankHybrid(c.Query, docs, dists, boosts)
-			hitsForRank := make([]SearchHit, len(pool))
-			for i, p := range pool {
-				hitsForRank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
+			// Scores were fetched once for this case; only the blend differs per
+			// arm, so no arm pays for inference again.
+			reranked := BlendRerank(fusedForRerank, rerankScores, weight)
+			if arm == ArmReranked && len(reranked) > 0 {
+				topRerank = reranked[0].Rerank
 			}
-			for _, r := range s.applyRerankWith(ctx, c.Query, hitsForRank, fused, weight) {
+			for _, r := range reranked {
 				ordered = append(ordered, r.Index)
 			}
 		}
 		poolIDs := make([]string, len(pool))
 		for i, p := range pool {
-			poolIDs[i] = p.id
+			poolIDs[i] = p.memory
 		}
-		out[arm] = rankOf(poolIDs, ordered, c.Expect)
+		out[arm] = rankOf(poolIDs, ordered, goldMemory)
 	}
 	return out, topDistance, topRerank, nil
 }
@@ -475,6 +519,9 @@ func rankOf(ids []string, ordered []int, expect string) int {
 		if idx < 0 || idx >= len(ids) {
 			continue
 		}
+		// ids are MEMORY ids here, so several candidates can carry the same one
+		// (sibling chunks). The first position it reaches is the rank that
+		// matters: that is where the agent sees the memory.
 		if ids[idx] == expect {
 			return rank + 1
 		}

@@ -696,6 +696,46 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
 		return ranked
 	}
+	return BlendRerank(ranked, scores, weight)
+}
+
+// RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
+// or nil when there is no reranker or the call fails. The caller blends them with
+// BlendRerank, possibly several times at different weights, without paying for
+// the inference again.
+func (s *Service) RerankScoresFor(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []float64 {
+	if s.rerank == nil || len(ranked) == 0 {
+		return nil
+	}
+	pool := min(s.rerankPool, len(ranked))
+	docs := make([]string, pool)
+	for i := range docs {
+		docs[i] = survivors[ranked[i].Index].Drawer.Content
+	}
+	scores, err := s.rerank.Rerank(ctx, query, docs)
+	if err != nil {
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
+		return nil
+	}
+	if len(scores) != pool {
+		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		return nil
+	}
+	return scores
+}
+
+// BlendRerank combines a fused ranking with cross-encoder scores already
+// obtained for its head, at the given weight.
+//
+// It is separate from the call that fetches those scores because the scores do
+// not depend on the weight: an eval comparing several weights was calling the
+// cross-encoder once per weight with identical inputs, which multiplied the
+// slowest step in the pipeline by the number of arms for no information at all.
+func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []HybridScore {
+	pool := len(scores)
+	if pool == 0 || pool > len(ranked) {
+		return ranked
+	}
 
 	// Normalize both terms within this page before combining them: a
 	// cross-encoder logit and a fused [0,1] score are not comparable numbers, and

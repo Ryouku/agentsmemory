@@ -287,6 +287,65 @@ func rankHybridWeighted(query string, docs []string, distances, boosts []float64
 	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight)
 }
 
+// LexicalCoverage reports what share of a query's terms carry usable lexical
+// signal against a candidate set: terms that appear in at least one candidate but
+// not in all of them.
+//
+// Both exclusions matter. A term in NO candidate cannot match anything — a
+// Lithuanian question against English memories is mostly these, which is why
+// lexical fusion measured WORSE than vector alone there. A term in EVERY
+// candidate cannot discriminate between them; it is the vocabulary of the corpus
+// rather than of the answer.
+//
+// This is the quantity that actually decides whether BM25 helps, and it is
+// knowable per query without any tuning, labels, or corpus statistics gathered in
+// advance.
+func LexicalCoverage(query string, docs []string) float64 {
+	terms := map[string]struct{}{}
+	for _, t := range tokenize(query) {
+		terms[t] = struct{}{}
+	}
+	if len(terms) == 0 || len(docs) == 0 {
+		return 0
+	}
+	df := make(map[string]int, len(terms))
+	for _, d := range docs {
+		seen := map[string]struct{}{}
+		for _, t := range tokenize(d) {
+			if _, ok := terms[t]; ok {
+				seen[t] = struct{}{}
+			}
+		}
+		for t := range seen {
+			df[t]++
+		}
+	}
+	informative := 0
+	for t := range terms {
+		if n := df[t]; n > 0 && n < len(docs) {
+			informative++
+		}
+	}
+	return float64(informative) / float64(len(terms))
+}
+
+// adaptiveBM25Weight scales the lexical half by how much lexical signal this
+// query actually has against these candidates.
+//
+// It replaces a constant that cannot be right for everyone: the same palace
+// measured BM25 as decisively helpful on questions that keep an identifier and
+// decisively harmful on questions asked in another language. Corpus SIZE looked
+// like the variable in early runs and is not — the same 114 memories produce both
+// verdicts. Coverage is the variable, and it is a per-query property.
+func adaptiveBM25Weight(query string, docs []string, base float64) float64 {
+	return base * LexicalCoverage(query, docs)
+}
+
+// rankHybridAdaptive fuses with the lexical weight chosen per query.
+func rankHybridAdaptive(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
+	return rankHybridWeighted(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base))
+}
+
 // rankFused is the shared implementation.
 func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64) []HybridScore {
 	raw := bm25Scores(query, docs)

@@ -273,3 +273,40 @@ func TestRankRRFRewardsAgreement(t *testing.T) {
 		t.Errorf("agreed-on candidate ranked %d, want it first", got[0].Index)
 	}
 }
+
+// TestLexicalCoverageSeesWhatBM25CanUse pins the quantity the adaptive weight is
+// built on. A query whose terms appear in no candidate has nothing for BM25 to
+// match — the cross-lingual case, where lexical fusion measured worse than vector
+// alone — and a query whose terms appear in EVERY candidate cannot discriminate.
+func TestLexicalCoverageSeesWhatBM25CanUse(t *testing.T) {
+	docs := []string{
+		"the installer pins CLAUDE_CONFIG_DIR on every subprocess",
+		"the installer writes commands into the config dir",
+		"unrelated notes about deployment windows",
+	}
+
+	// Distinctive terms present in some but not all: real signal.
+	if got := LexicalCoverage("CLAUDE_CONFIG_DIR subprocess", docs); got < 0.9 {
+		t.Errorf("coverage for distinctive matching terms = %.2f, want ~1", got)
+	}
+	// Nothing in common — the cross-lingual shape.
+	if got := LexicalCoverage("kokie yra rezervacijų laiko juostos", docs); got != 0 {
+		t.Errorf("coverage for terms absent from every candidate = %.2f, want 0", got)
+	}
+	// A term in every candidate discriminates nothing.
+	if got := LexicalCoverage("installer", docs[:2]); got != 0 {
+		t.Errorf("coverage for a term in every candidate = %.2f, want 0", got)
+	}
+}
+
+// TestAdaptiveWeightCollapsesWithoutSignal: with no lexical overlap the fusion
+// must fall back to the vector ranking rather than mixing in noise.
+func TestAdaptiveWeightCollapsesWithoutSignal(t *testing.T) {
+	docs := []string{"english note about batching", "another english note"}
+	if w := adaptiveBM25Weight("lietuviškas klausimas apie rezervacijas", docs, 0.4); w != 0 {
+		t.Errorf("adaptive weight with no shared vocabulary = %.2f, want 0", w)
+	}
+	if w := adaptiveBM25Weight("batching note", docs, 0.4); w <= 0 {
+		t.Errorf("adaptive weight with shared vocabulary = %.2f, want > 0", w)
+	}
+}
