@@ -196,6 +196,55 @@ func TestResolveLaunchAgentAndArgs(t *testing.T) {
 // directory inside a project: the nearest level holding either file wins, and
 // both files are read from that same level so a personal override can never be
 // paired with a shared file from a different directory.
+// TestResolveLaunchWingPrecedence pins the wing ladder: the shell's variable
+// beats the personal file, which beats the committed one. An unresolved wing must
+// stay EMPTY rather than being invented here — the memory protocol derives one
+// from the git remote, and a guess made here would silently outrank it.
+func TestResolveLaunchWingPrecedence(t *testing.T) {
+	base := launchInputs{registry: "acme"} // any sandbox, so resolveLaunch succeeds
+
+	cases := []struct {
+		name string
+		in   launchInputs
+		want string
+	}{
+		{"env wins", launchInputs{registry: "acme",
+			envWing: "wing_env",
+			local:   projectConfig{wing: "wing_local"},
+			shared:  projectConfig{wing: "wing_shared"}}, "wing_env"},
+		{"personal file over committed", launchInputs{registry: "acme",
+			local:  projectConfig{wing: "wing_local"},
+			shared: projectConfig{wing: "wing_shared"}}, "wing_local"},
+		{"committed file", launchInputs{registry: "acme",
+			shared: projectConfig{wing: "wing_shared"}}, "wing_shared"},
+		{"nothing recorded", base, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := resolveLaunch(c.in)
+			if err != nil {
+				t.Fatalf("resolveLaunch: %v", err)
+			}
+			if res.wing != c.want {
+				t.Errorf("wing = %q, want %q", res.wing, c.want)
+			}
+		})
+	}
+}
+
+// TestProjectConfigWingRoundTrip checks the committed file carries the wing back
+// out again: teammates share a wing, so unlike the sandbox name it belongs in the
+// file everyone clones.
+func TestProjectConfigWingRoundTrip(t *testing.T) {
+	out := renderProjectConfig(projectConfig{agent: "claude", wing: "wing_acme"})
+	if !strings.Contains(string(out), "wing=wing_acme") {
+		t.Fatalf("rendered config missing the wing:\n%s", out)
+	}
+	if got := parseProjectConfig(out); got.wing != "wing_acme" {
+		t.Errorf("round-tripped wing = %q, want wing_acme", got.wing)
+	}
+}
+
 func TestFindProjectConfig(t *testing.T) {
 	root := t.TempDir()
 	deep := filepath.Join(root, "internal", "web")

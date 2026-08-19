@@ -29,16 +29,50 @@ const (
 	// wider than the page or BM25 cannot promote a lexical match the page missed.
 	hybridCandidateMultiplier = 3
 	// closetDistanceCap is the farthest a closet hit may be (cosine distance) and
-	// still lend its source a boost (frozen CLOSET_DISTANCE_CAP).
-	closetDistanceCap = 1.5
+	// still lend its source a boost.
+	//
+	// The frozen Python used 1.5, and porting that number verbatim was a mistake
+	// this palace's own eval caught: with bge-m3, UNRELATED text sits at distance
+	// 0.60-0.71, so a 1.5 cap admits everything. Measured against a real closet:
+	//
+	//   0.114  the closet's own text
+	//   0.49   a genuinely related question
+	//   0.63   an unrelated technical question
+	//   0.71   "how do I bake a cake"
+	//
+	// A cap that a cake recipe clears is not a cap. 0.6 is set just below where
+	// unrelated content lands, and closetBoostStrength below fades the boost to
+	// zero as a hit approaches it, so there is no cliff at the boundary.
+	closetDistanceCap = 0.6
 )
 
 // closetRankBoosts is the diminishing boost a closet hit adds to its source's
 // drawers by closet rank: the best-matching closet lifts its source most, the
 // fifth barely (frozen CLOSET_RANK_BOOSTS). Closets are a ranking SIGNAL, never a
 // gate — they only raise scores, never filter — so the boost is added to the
-// fused score and the cap above bounds how far a closet may be to count.
+// fused score, scaled by closetBoostStrength.
+//
+// The scaling is not cosmetic. A flat +0.40 on a fused score that lives in [0,1]
+// outranks every other signal combined, so a single mediocre closet match
+// promotes its whole source above genuinely better answers. On this palace, with
+// exactly one closet filed, that alone dropped recall@1 from 92% to 17%.
 var closetRankBoosts = []float64{0.40, 0.25, 0.15, 0.08, 0.04}
+
+// closetBoostStrength scales a closet's boost by how close it actually is: full
+// strength at distance 0, fading linearly to nothing at closetDistanceCap.
+//
+// Rank alone is the wrong scale on its own — "best closet of the five returned"
+// says nothing about whether any of them are relevant, and with one closet in the
+// palace the best is also the worst.
+func closetBoostStrength(distance float64) float64 {
+	if distance >= closetDistanceCap {
+		return 0
+	}
+	if distance < 0 {
+		return 1
+	}
+	return (closetDistanceCap - distance) / closetDistanceCap
+}
 
 // tokenRE matches the frozen _TOKEN_RE: runs of two or more word characters.
 // \w is widened to the Unicode letter/number/underscore classes so non-ASCII
@@ -139,6 +173,65 @@ func vecSimFromDistance(distance float64) float64 {
 	return 0
 }
 
+// rrfK is the smoothing constant in reciprocal rank fusion, 1/(k+rank). The
+// value 60 is the one the original RRF paper used and every implementation since
+// has kept; it flattens the difference between the top few ranks so that a
+// document ranked 1st by one retriever and 5th by the other beats one ranked 2nd
+// and 2nd only slightly, which is the behaviour that makes RRF robust.
+const rrfK = 60.0
+
+// rankRRF fuses the vector and BM25 orderings by RANK rather than by score.
+//
+// It exists because our weighted fusion has a known weakness: BM25 is unbounded
+// and cosine similarity is not, so combining them means normalizing two
+// distributions that do not share a shape, and the 0.6/0.4 split that governs it
+// was inherited rather than measured. RRF sidesteps the problem entirely — it
+// never looks at a score, only at position — which is why it needs no tuning and
+// why the published comparisons keep finding it competitive with tuned weights.
+//
+// Whether that holds HERE is exactly what the eval's rrf arm is for; this
+// function is the candidate, not the decision.
+func rankRRF(query string, docs []string, distances, boosts []float64) []HybridScore {
+	n := len(docs)
+	out := make([]HybridScore, n)
+
+	// Position of each candidate in the vector ordering (closest first).
+	byVector := make([]int, n)
+	for i := range byVector {
+		byVector[i] = i
+	}
+	sort.SliceStable(byVector, func(a, b int) bool { return distances[byVector[a]] < distances[byVector[b]] })
+
+	bm25 := bm25Scores(query, docs)
+	byLexical := make([]int, n)
+	for i := range byLexical {
+		byLexical[i] = i
+	}
+	sort.SliceStable(byLexical, func(a, b int) bool { return bm25[byLexical[a]] > bm25[byLexical[b]] })
+
+	fused := make([]float64, n)
+	for rank, idx := range byVector {
+		fused[idx] += 1 / (rrfK + float64(rank+1))
+	}
+	for rank, idx := range byLexical {
+		fused[idx] += 1 / (rrfK + float64(rank+1))
+	}
+
+	for i := range out {
+		boost := 0.0
+		if boosts != nil {
+			// The closet boost is a score, not a ranking, so it cannot join the
+			// fusion as a third list. Scaling it into RRF's range keeps it the
+			// nudge it is meant to be: a full-strength closet is worth about one
+			// rank position here, not the whole ordering.
+			boost = boosts[i] / rrfK
+		}
+		out[i] = HybridScore{Index: i, Fused: fused[i] + boost, BM25: bm25[i], Boost: boost}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Fused > out[b].Fused })
+	return out
+}
+
 // HybridScore is one candidate's fused ranking: its position in the input slice
 // plus the component and combined scores, exposed so the search tool can report
 // the lexical and closet contributions alongside the final order.
@@ -153,6 +246,11 @@ type HybridScore struct {
 	// fell outside the pool — which is safe to read as such because a sigmoid
 	// score is never exactly zero.
 	Rerank float64
+
+	// Blended is the weighted combination of the normalized fused and rerank
+	// scores that actually decided this hit's position. It is what sorts the page
+	// when a reranker is configured; without one it stays zero and Fused sorts.
+	Blended float64
 }
 
 // rankHybrid fuses vector similarity, BM25 and an optional closet boost over a
@@ -188,5 +286,75 @@ func rankHybrid(query string, docs []string, distances, boosts []float64) []Hybr
 	}
 	// Stable so equal-fused candidates keep their incoming (vector) order.
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Fused > out[b].Fused })
+	return out
+}
+
+// DefaultSnippetChars is how much of a hit's content search returns by default.
+//
+// Recall is paid for in an agent's context window, and the price decides whether
+// it gets called twice. A 5-hit page of full 1600-character drawers is ~2,500
+// tokens; the same page as snippets is a few hundred, and the agent can pull any
+// one of them in full by id. What it must never do is return so little that the
+// agent cannot tell whether the memory is the one it wanted — so the window is
+// centred on the query's own terms rather than cut from the front.
+const DefaultSnippetChars = 400
+
+// Snippet returns the window of content most relevant to query, with an ellipsis
+// where text was removed. It returns content unchanged when it already fits.
+//
+// The window is chosen by term density, not position: the first paragraph of a
+// memory is usually its heading, and the sentence that answers the query is
+// usually not there.
+func Snippet(content, query string, maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = DefaultSnippetChars
+	}
+	runes := []rune(content)
+	if len(runes) <= maxChars {
+		return content
+	}
+
+	terms := tokenize(query)
+	if len(terms) == 0 {
+		return string(runes[:maxChars]) + "…"
+	}
+	lower := []rune(strings.ToLower(content))
+
+	// Score each candidate window by how many query terms start inside it. A
+	// coarse stride keeps this linear-ish on long content while still landing
+	// within a sentence of the best match.
+	const stride = 40
+	best, bestScore := 0, -1
+	for start := 0; start+maxChars <= len(runes) || start == 0; start += stride {
+		end := start + maxChars
+		if end > len(runes) {
+			end = len(runes)
+		}
+		window := string(lower[start:end])
+		score := 0
+		for _, t := range terms {
+			if strings.Contains(window, t) {
+				score++
+			}
+		}
+		if score > bestScore {
+			best, bestScore = start, score
+		}
+		if end == len(runes) {
+			break
+		}
+	}
+
+	end := best + maxChars
+	if end > len(runes) {
+		end = len(runes)
+	}
+	out := string(runes[best:end])
+	if best > 0 {
+		out = "…" + out
+	}
+	if end < len(runes) {
+		out += "…"
+	}
 	return out
 }

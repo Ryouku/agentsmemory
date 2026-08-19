@@ -99,8 +99,8 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	// Commands + hook must be on disk.
-	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile} {
+	// Commands + both hooks must be on disk.
+	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile, sessionEndHookFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
@@ -108,8 +108,22 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 
 	// Stop hook must be registered pointing at the installed hook.
 	wantCmd := "bash " + filepath.Join(dir, hookFile)
-	if !stopHookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
+	if !hookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered", wantCmd)
+	}
+
+	// ...and its SessionStart companion, which is what makes anchor verification
+	// automatic rather than a command nobody remembers to run.
+	wantVerify := "bash " + filepath.Join(dir, verifyHookFile)
+	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionStart"), wantVerify) {
+		t.Errorf("SessionStart hook %q not registered", wantVerify)
+	}
+
+	// ...and the closing report, which is the only one of the three that sees a
+	// whole session.
+	wantEnd := "bash " + filepath.Join(dir, sessionEndHookFile)
+	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionEnd"), wantEnd) {
+		t.Errorf("SessionEnd hook %q not registered", wantEnd)
 	}
 
 	// Only the two agentsmemory MCP calls should have run (no extensions).
@@ -130,6 +144,52 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 		if len(c.env) == 0 || c.env[0] != "CLAUDE_CONFIG_DIR="+dir {
 			t.Errorf("call %q missing CLAUDE_CONFIG_DIR=%s env, got %v", c.rendered(), dir, c.env)
 		}
+	}
+}
+
+// TestGlobalInstallDoesNotPinConfigDir pins the fix for the silent-no-tools bug:
+// a global install must leave the agent's config-dir variable alone. Pinning
+// CLAUDE_CONFIG_DIR=~/.claude moves the MCP registry to ~/.claude/.claude.json,
+// while a later plain `claude` reads ~/.claude.json and finds nothing.
+func TestGlobalInstallDoesNotPinConfigDir(t *testing.T) {
+	rr := &recordingRunner{}
+	inst := &Installer{
+		targetDir: claudeKit.globalConfigDir(homeDir()),
+		kit:       claudeKit,
+		agentBin:  claudeKit.bin,
+		out:       &bytes.Buffer{},
+		runner:    rr,
+	}
+	if err := inst.agent(false, "mcp", "add", "agentsmemory"); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	if len(rr.calls) != 1 {
+		t.Fatalf("expected 1 recorded call, got %d", len(rr.calls))
+	}
+	if len(rr.calls[0].env) != 0 {
+		t.Errorf("global install pinned %v; it must inherit the environment", rr.calls[0].env)
+	}
+}
+
+// TestSandboxInstallPinsConfigDir is the other half: a sandbox is not a directory
+// the agent looks in on its own, so registration only lands there with the
+// variable set — and `aiagentmemory run <name>` exports the same one at launch.
+func TestSandboxInstallPinsConfigDir(t *testing.T) {
+	rr := &recordingRunner{}
+	dir := sandboxDir("acme")
+	inst := &Installer{
+		targetDir:   dir,
+		sandboxName: "acme",
+		kit:         claudeKit,
+		agentBin:    claudeKit.bin,
+		out:         &bytes.Buffer{},
+		runner:      rr,
+	}
+	if err := inst.agent(false, "mcp", "add", "agentsmemory"); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	if want := "CLAUDE_CONFIG_DIR=" + dir; len(rr.calls[0].env) == 0 || rr.calls[0].env[0] != want {
+		t.Errorf("sandbox install env = %v, want %s", rr.calls[0].env, want)
 	}
 }
 
@@ -384,7 +444,7 @@ func TestInstallCodexCore(t *testing.T) {
 	}
 
 	wantCmd := "bash " + filepath.Join(dir, hookFile)
-	if !stopHookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
+	if !hookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered in hooks.json", wantCmd)
 	}
 
@@ -577,7 +637,7 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyCmd := "bash " + legacy
-	if _, err := ensureStopHook(filepath.Join(dir, "settings.json"), legacyCmd, nil); err != nil {
+	if _, err := ensureHook(filepath.Join(dir, "settings.json"), "Stop", legacyCmd, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -593,10 +653,10 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 	}
 
 	stop := readStop(t, filepath.Join(dir, "settings.json"))
-	if stopHookPresent(stop, legacyCmd) {
+	if hookPresent(stop, legacyCmd) {
 		t.Error("the stale Stop entry survived; it would run a deleted file on every stop")
 	}
-	if want := "bash " + filepath.Join(dir, hookFile); !stopHookPresent(stop, want) {
+	if want := "bash " + filepath.Join(dir, hookFile); !hookPresent(stop, want) {
 		t.Errorf("relocated Stop hook %q not registered", want)
 	}
 }

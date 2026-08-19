@@ -215,6 +215,16 @@ func (r *Repo) IDsBySource(ctx context.Context, teamID, wing, room, source strin
 // (team, wing, room) in a single statement — the row half of an add_drawer purge
 // (the caller drops the matching vectors via the ids from IDsBySource).
 func (r *Repo) DeleteBySource(ctx context.Context, teamID, wing, room, source string) error {
+	// Anchors first, while the drawers that name them are still queryable.
+	var ids []string
+	if err := r.db.WithContext(ctx).Model(&drawerRow{}).
+		Where("team_id = ? AND wing = ? AND room = ? AND source_file = ?", teamID, wing, room, source).
+		Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	if err := r.deleteAnchors(ctx, teamID, ids); err != nil {
+		return err
+	}
 	return r.db.WithContext(ctx).
 		Where("team_id = ? AND wing = ? AND room = ? AND source_file = ?", teamID, wing, room, source).
 		Delete(&drawerRow{}).Error
@@ -284,9 +294,25 @@ func (r *Repo) Update(ctx context.Context, teamID, id string, patch DrawerPatch)
 // (RowsAffected is not checked) so the caller can pair it with a vector delete
 // without racing on which store dropped the point first.
 func (r *Repo) Delete(ctx context.Context, teamID, id string) error {
-	return r.db.WithContext(ctx).
+	if err := r.db.WithContext(ctx).
 		Where("team_id = ? AND id = ?", teamID, id).
-		Delete(&drawerRow{}).Error
+		Delete(&drawerRow{}).Error; err != nil {
+		return err
+	}
+	return r.deleteAnchors(ctx, teamID, []string{id})
+}
+
+// deleteAnchors removes the code anchors of deleted drawers. Without this an
+// anchor outlives the memory it pinned, and `verify` reports drift on a sentence
+// nobody can read any more — a warning about nothing, which is the fastest way to
+// teach people to ignore warnings.
+func (r *Repo) deleteAnchors(ctx context.Context, teamID string, drawerIDs []string) error {
+	if len(drawerIDs) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).
+		Where("team_id = ? AND drawer_id IN ?", teamID, drawerIDs).
+		Delete(&anchorRow{}).Error
 }
 
 // List returns drawers for a team, optionally narrowed to a wing and/or room,

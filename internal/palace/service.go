@@ -43,15 +43,16 @@ const (
 	// enough to cross-encode within a search's latency budget.
 	DefaultRerankPool = 50
 
-	// searchCandidatePool is how many nearest neighbours to pull before applying
-	// a wing/room filter. The vector seam's Search has no server-side filter, so
-	// a filtered search must over-fetch and discard non-matching candidates in Go.
-	// This is set high enough that a wing/room with results far down the global
-	// ranking is not cut before the filter sees it; on the brute-force SQLite
-	// backend an over-fetch is free (it scans everything anyway), and Qdrant caps
-	// the scan at this bound. The principled fix — pushing the filter into the
-	// store as a payload predicate — lands with the hybrid-ranking phase.
-	searchCandidatePool = 10000
+	// DefaultRerankWeight is how much of the final ordering the cross-encoder
+	// decides, with the rest left to the hybrid score it refines.
+	//
+	// It is a BLEND rather than a handover, and that is a measured choice. Letting
+	// the cross-encoder's score decide alone throws away the lexical evidence in
+	// the fused score: on a 12-question eval of this palace, ordering purely by
+	// cross-encoder scored MRR 0.686 where the fused order scored 1.000, on the
+	// queries that carry an identifier or a flag — exactly the searches a
+	// developer actually types. A sweep put 0.25 and 0.50 joint-best (0.958).
+	DefaultRerankWeight = 0.5
 )
 
 // Diary defaults, mirroring the frozen Python diary tools so the journal behaves
@@ -127,8 +128,9 @@ type Service struct {
 	// reorders them before Search pages. nil is the default and means recall stops
 	// at the vector+BM25+closet fusion — the behaviour every deployment had before
 	// a reranker endpoint was configurable.
-	rerank     Reranker
-	rerankPool int
+	rerank       Reranker
+	rerankPool   int
+	rerankWeight float64
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -163,6 +165,19 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 		pool = DefaultRerankPool
 	}
 	s.rerank, s.rerankPool = r, pool
+	if s.rerankWeight == 0 {
+		s.rerankWeight = DefaultRerankWeight
+	}
+	return s
+}
+
+// WithRerankWeight sets how much the cross-encoder's opinion counts against the
+// hybrid score it refines: 1 hands it the whole decision, 0 ignores it. Values
+// outside [0,1] are ignored, leaving DefaultRerankWeight in place.
+func (s *Service) WithRerankWeight(w float64) *Service {
+	if w >= 0 && w <= 1 {
+		s.rerankWeight = w
+	}
 	return s
 }
 
@@ -176,25 +191,36 @@ type AddInput struct {
 	ContentDate string
 }
 
+// AddResult is what a filing returned: the drawers written, and whether their
+// vectors are still owed.
+//
+// PendingEmbedding is not an error and not a detail — it is the difference
+// between "this memory is findable" and "this memory exists but nothing will
+// recall it yet". The caller is expected to say so out loud, because the failure
+// it comes from (an embedder that is down) is invisible from the outside.
+type AddResult struct {
+	Drawers          []Drawer
+	PendingEmbedding bool
+}
+
 // Add files a memory: it chunks oversized content, embeds every chunk in one
 // batch, writes the vectors, then writes the metadata rows. Vectors are written
 // before rows so a row never exists without its embedding — search joins row to
 // vector, and the inverse orphan (a vector with no row) is harmless because
 // search skips ids it cannot resolve. It returns the drawers created (one per
 // chunk), so the tool can report their ids.
-func (s *Service) Add(ctx context.Context, teamID string, in AddInput) ([]Drawer, error) {
+func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResult, error) {
 	wing := strings.TrimSpace(in.Wing)
 	room := strings.TrimSpace(in.Room)
 	content := strings.TrimSpace(in.Content)
 	if wing == "" || room == "" || content == "" {
-		return nil, fmt.Errorf("%w: wing, room and content are required", ErrInvalidInput)
+		return AddResult{}, fmt.Errorf("%w: wing, room and content are required", ErrInvalidInput)
 	}
 
 	chunks := ChunkText(content, ChunkSize, ChunkOverlap, ChunkMin)
-	vectors, err := s.embedChunks(ctx, chunks)
-	if err != nil {
-		return nil, err
-	}
+	// A failed embed does not fail the write — see embedOrDefer. vectors is nil in
+	// that case and the rows are absorbed onto the background queue instead.
+	vectors := s.embedOrDefer(ctx, chunks)
 
 	filedAt := time.Now().UTC().Format(time.RFC3339)
 	drawers := make([]Drawer, len(chunks))
@@ -225,14 +251,20 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) ([]Drawer
 	// is a standalone memory (deduped by its content-hash id), so it is not purged.
 	if in.SourceFile != "" {
 		if err := s.purgeSource(ctx, teamID, wing, room, in.SourceFile); err != nil {
-			return nil, err
+			return AddResult{}, err
 		}
 	}
 
-	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
-		return nil, err
+	if vectors == nil {
+		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
+			return AddResult{}, fmt.Errorf("save drawers (embedding deferred): %w", err)
+		}
+		return AddResult{Drawers: drawers, PendingEmbedding: true}, nil
 	}
-	return drawers, nil
+	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{Drawers: drawers}, nil
 }
 
 // embedChunks embeds a batch of chunks, returning one vector per chunk in order.
@@ -248,6 +280,26 @@ func (s *Service) embedChunks(ctx context.Context, chunks []Chunk) ([][]float32,
 		return nil, fmt.Errorf("embed drawer: %w", err)
 	}
 	return vectors, nil
+}
+
+// embedOrDefer embeds chunks, returning nil when the embedder could not do it.
+//
+// A nil result means "write the rows without vectors and let the background
+// worker finish the job" — the durable half of a memory is its text, and losing
+// that because an optional-at-this-instant service is down is the worst possible
+// trade. The queue this feeds (embedded_at IS NULL) already exists for migration
+// imports, so a deferred row is picked up by the same worker and the same model.
+//
+// EVERY embed failure defers, not just a refused connection: a timeout, a 500, a
+// model that was never pulled. Classifying them would mean deciding which
+// failures are worth losing a memory over, and none are.
+func (s *Service) embedOrDefer(ctx context.Context, chunks []Chunk) [][]float32 {
+	vectors, err := s.embedChunks(ctx, chunks)
+	if err == nil {
+		return vectors
+	}
+	slog.Warn("embedder unavailable, storing for background embedding", "chunks", len(chunks), "error", err)
+	return nil
 }
 
 // storeDrawers is the shared persistence tail every filing path ends in: ensure
@@ -434,6 +486,23 @@ func (q SearchQuery) rerankQuery(query string) string {
 	return query
 }
 
+// searchFilter renders a query's wing/room scope as the backend filter, matching
+// the payload keys written at upsert time. An unscoped query yields nil, which
+// every driver reads as "search everything".
+func searchFilter(q SearchQuery) store.Filter {
+	if q.Wing == "" && q.Room == "" {
+		return nil
+	}
+	f := store.Filter{}
+	if q.Wing != "" {
+		f["wing"] = q.Wing
+	}
+	if q.Room != "" {
+		f["room"] = q.Room
+	}
+	return f
+}
+
 // Search recalls drawers by hybrid relevance to a query. It embeds the query and
 // over-fetches a pool of nearest vector neighbours, applies the wing/room and
 // max-distance filters, then RE-RANKS the survivors by a convex blend of vector
@@ -463,14 +532,23 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	vec, err := s.embed.EmbedOne(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
+		// Recall genuinely cannot proceed — a query has to become a vector — so
+		// unlike filing this fails. Name the cause, because the same outage lets
+		// writes succeed (queued), and an agent seeing one work and the other not
+		// will otherwise conclude the memory itself is broken.
+		return nil, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
-	// lexical match outside the top-N to be promoted into it. When filtering by
-	// wing/room the survivors are a subset of the pool, so over-fetch far more
-	// (searchCandidatePool) to be sure the page can still be filled.
+	// lexical match outside the top-N to be promoted into it.
+	//
+	// The wing/room scope goes to the BACKEND rather than being applied to the
+	// results, so every candidate the index returns is already in scope and the
+	// pool stays the size the re-rank was designed for however narrow the filter
+	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
+	// ones here — a cost that grew with the palace and was paid on every scoped
+	// search, which is every search once wings are per-project.)
 	candidateK := limit * hybridCandidateMultiplier
 	// A cross-encoder can only promote what retrieval surfaced, so widening the
 	// pool it sees is where the accuracy actually comes from — not from the
@@ -478,11 +556,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	if s.rerank != nil && candidateK < s.rerankPool {
 		candidateK = s.rerankPool
 	}
-	filtering := q.Wing != "" || q.Room != ""
-	if filtering && candidateK < searchCandidatePool {
-		candidateK = searchCandidatePool
-	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK)
+	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -499,6 +573,9 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	// Keep the survivors that pass the wing/room/max-distance filters, in vector
 	// order, carrying content (for BM25) and distance (for vector similarity).
+	// The wing/room comparisons are redundant when the index honoured the filter
+	// above, and deliberately kept: the drawer row is the truth about where a
+	// drawer lives, and a stale index must never surface another wing's memory.
 	survivors := make([]SearchHit, 0, len(hits))
 	for _, h := range hits {
 		d, ok := rows[h.ID]
@@ -536,9 +613,11 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	ranked := rankHybrid(query, docs, dists, boosts)
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
-	// from a query vector and term overlap; a cross-encoder reads the query and the
-	// document together and is the better judge, so when one is configured its
-	// score — not the fused score — decides the order. Both are reported.
+	// from a query vector and term overlap; a cross-encoder reads the query and
+	// the document together and is the better judge of MEANING — but the fused
+	// score is the better judge of VOCABULARY, and a query naming an identifier
+	// leans on exactly that. So the two are blended rather than one replacing the
+	// other, and both are reported.
 	ranked = s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
 
 	results := make([]SearchHit, 0, limit)
@@ -553,7 +632,27 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.RerankScore = r.Rerank
 		results = append(results, hit)
 	}
+
+	// Record what this recall found. Best-effort by construction: measurement must
+	// never be able to fail the thing it measures.
+	ev := searchEventRow{
+		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),
+	}
+	if len(results) > 0 {
+		ev.TopScore = results[0].Score
+	}
+	s.repo.recordSearch(ctx, ev)
+
 	return results, nil
+}
+
+// boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // applyRerank cross-encodes the best rerankPool candidates and returns ranked
@@ -568,7 +667,18 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
 func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []HybridScore {
-	if s.rerank == nil || len(ranked) == 0 {
+	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
+}
+
+// applyRerankWith is applyRerank at an explicit blend weight, so the eval can
+// measure what the weight is worth instead of the default being someone's taste.
+//
+// The two signals know different things: the cross-encoder reads the query and
+// the document together, which the embedder never did, and the fused score
+// carries the lexical evidence, which a cross-encoder logit does not
+// distinguish. Blending keeps both; handing over discards one.
+func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) []HybridScore {
+	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
 		return ranked
 	}
 	pool := min(s.rerankPool, len(ranked))
@@ -587,15 +697,54 @@ func (s *Service) applyRerank(ctx context.Context, query string, survivors []Sea
 		return ranked
 	}
 
+	// Normalize both terms within this page before combining them: a
+	// cross-encoder logit and a fused [0,1] score are not comparable numbers, and
+	// adding them raw would let whichever has the wider range decide everything.
+	rerankNorm := normalizeScores(scores)
+	fusedRaw := make([]float64, pool)
+	for i := range fusedRaw {
+		fusedRaw[i] = ranked[i].Fused
+	}
+	fusedNorm := normalizeScores(fusedRaw)
+
 	head := make([]HybridScore, pool)
 	for i := range head {
 		head[i] = ranked[i]
 		head[i].Rerank = scores[i]
+		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
 	}
-	// Stable so equal cross-encoder scores keep the fused order as the tie-break,
+	// Stable so equal blended scores keep the fused order as the tie-break,
 	// exactly as rankHybrid keeps the vector order.
-	sort.SliceStable(head, func(a, b int) bool { return head[a].Rerank > head[b].Rerank })
+	sort.SliceStable(head, func(a, b int) bool { return head[a].Blended > head[b].Blended })
 	return append(head, ranked[pool:]...)
+}
+
+// normalizeScores min-max scales a slice into [0,1]. An all-equal slice maps to
+// 1 everywhere: there is nothing to choose between, so this term should not
+// reorder anything.
+func normalizeScores(in []float64) []float64 {
+	out := make([]float64, len(in))
+	if len(in) == 0 {
+		return out
+	}
+	min, max := in[0], in[0]
+	for _, v := range in {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	span := max - min
+	for i, v := range in {
+		if span == 0 {
+			out[i] = 1
+			continue
+		}
+		out[i] = (v - min) / span
+	}
+	return out
 }
 
 // DuplicateResult is the check_duplicate verdict: whether the most similar
@@ -628,7 +777,7 @@ func (s *Service) CheckDuplicate(ctx context.Context, teamID, content string, th
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("embed content: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, 1)
+	hits, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("vector search: %w", err)
 	}
@@ -734,6 +883,10 @@ type DiaryWriteResult struct {
 	Timestamp string
 	Chunks    int
 	ChunkIDs  []string
+	// PendingEmbedding is true when the entry is durable but not yet searchable
+	// because the embedder could not be reached; the background worker will index
+	// it. See AddResult for why this is surfaced rather than swallowed.
+	PendingEmbedding bool
 }
 
 // WriteDiary files an agent's journal entry. It mirrors the frozen tool: the
@@ -796,10 +949,7 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 	// canonical, fetchable handle); the frozen tool's logical handle was opaque and
 	// un-fetchable, but for the common single-chunk AAAK entry the two coincide.
 	chunks := diaryChunks(entry, ChunkSize)
-	vectors, err := s.embedChunks(ctx, chunks)
-	if err != nil {
-		return DiaryWriteResult{}, err
-	}
+	vectors := s.embedOrDefer(ctx, chunks)
 
 	drawers := make([]Drawer, len(chunks))
 	for i, c := range chunks {
@@ -821,16 +971,22 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 			Topic:       topic,
 		}
 	}
-	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
+	pending := vectors == nil
+	if pending {
+		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
+			return DiaryWriteResult{}, fmt.Errorf("save diary entry (embedding deferred): %w", err)
+		}
+	} else if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
 		return DiaryWriteResult{}, err
 	}
 
 	res := DiaryWriteResult{
-		EntryID:   drawers[0].ID,
-		Agent:     agent,
-		Topic:     topic,
-		Timestamp: filedAt,
-		Chunks:    len(drawers),
+		PendingEmbedding: pending,
+		EntryID:          drawers[0].ID,
+		Agent:            agent,
+		Topic:            topic,
+		Timestamp:        filedAt,
+		Chunks:           len(drawers),
 	}
 	// A single-chunk entry's id is already EntryID; only a chunked entry needs its
 	// physical ids enumerated so a caller can fetch each piece by id.

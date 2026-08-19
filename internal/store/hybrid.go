@@ -62,8 +62,8 @@ func (h *Hybrid) Upsert(ctx context.Context, namespace string, points []Point) e
 
 // Search is served by the index — the SoT only stores, it does not serve
 // production queries.
-func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32, k int) ([]Hit, error) {
-	return h.index.Search(ctx, namespace, vector, k)
+func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) ([]Hit, error) {
+	return h.index.Search(ctx, namespace, vector, k, filter)
 }
 
 // Delete removes from both, SoT first so the truth no longer claims a point the

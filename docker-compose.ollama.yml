@@ -1,0 +1,82 @@
+# agentsmemory — run the embedder in the stack too.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.full.yml -f docker-compose.ollama.yml up -d
+#
+# (Works on the base stack as well — drop the -f docker-compose.full.yml.)
+#
+# WHY A THIRD FILE AND NOT A PROFILE: a profile can start a service, but it
+# cannot repoint the one that talks to it. Ollama in the stack is only useful if
+# OLLAMA_URL follows it there, and that override is what this file adds. A
+# profile would have started a container the server never called.
+#
+# WHAT IT BUYS YOU: nothing to install on the host, and the failure everybody
+# hits first — "every write fails at the embed step" because Ollama is not
+# running, or is bound to 127.0.0.1 where a container cannot reach it — stops
+# being possible. The model is pulled on first boot, so `up -d` really is the
+# whole setup.
+#
+# WHAT IT COSTS: on macOS and Windows a containerised Ollama cannot reach the
+# GPU (no Metal passthrough), so embedding runs on CPU and is slower than a host
+# install — and the model is downloaded a second time into the volume below,
+# separately from whatever ~/.ollama already holds. On Linux it is the same
+# engine either way.
+#
+# SO ON A MAC, PREFER THE HOST and leave this file out — the reason people reach
+# for it is usually that Ollama was not running, and the fix for THAT is to make
+# it start on its own:
+#
+#   brew services start ollama    # survives reboots, keeps Metal
+#
+# This service publishes no ports, so it cannot collide with a host Ollama on
+# 11434 even if both run; the cost of keeping both is a duplicated model and an
+# idle daemon, not a conflict.
+
+services:
+  agentsmemory:
+    depends_on:
+      ollama:
+        # service_healthy here means "the model is pulled", not merely "the
+        # daemon answers" — see the healthcheck below. Starting the server before
+        # the model exists would fail every write for however long the first pull
+        # takes, which on a cold start is minutes.
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: http://ollama:11434
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      # Models are gigabytes and survive `down`; this volume is why the first
+      # boot is the only slow one.
+      - ollama-models:/root/.ollama
+    environment:
+      # Which model to pull and serve. Keep it in step with OLLAMA_EMBED_MODEL in
+      # .env.docker: the server asks for that name, and a name Ollama has not
+      # pulled fails every write with a 404 from /api/embed.
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-bge-m3}
+    # Serve first, then pull in the background: `ollama pull` needs the daemon it
+    # is pulling into, so the two cannot be sequenced the other way round. $$ is
+    # an escaped $ — Compose interpolates single ones itself.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ollama serve &
+        pid=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$${OLLAMA_EMBED_MODEL:-bge-m3}"
+        wait $$pid
+    healthcheck:
+      # Healthy means the embedding model is actually present. `ollama list`
+      # succeeding only proves the daemon is up, which is not the state anything
+      # downstream cares about.
+      test: ["CMD-SHELL", "ollama list | grep -q \"$${OLLAMA_EMBED_MODEL%%:*}\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      # A cold first boot downloads ~1.2GB before this can pass.
+      retries: 90
+      start_period: 20s
+
+volumes:
+  ollama-models:

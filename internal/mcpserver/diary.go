@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
@@ -65,7 +67,12 @@ func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage
 			Agent: agent,
 			Entry: entry,
 			Topic: req.GetString("topic", ""),
-			Wing:  req.GetString("wing", ""),
+			// An explicit wing wins; otherwise the project this registration
+			// belongs to; otherwise the palace's own wing_<agent> default. A diary
+			// entry written while working on a project belongs to that project —
+			// filing every project's journal under the agent's name is exactly the
+			// mixing this default exists to stop.
+			Wing: firstWing(req.GetString("wing", ""), auth.DefaultWingFrom(ctx)),
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -81,8 +88,23 @@ func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage
 		if len(res.ChunkIDs) > 0 {
 			out["chunk_ids"] = res.ChunkIDs
 		}
+		if res.PendingEmbedding {
+			out["pending_embedding"] = true
+			out["warning"] = pendingEmbeddingWarning
+		}
 		return jsonResult(out), nil
 	})
+}
+
+// firstWing returns the first non-blank wing of those given, or "" when there is
+// none — which the palace reads as "use the agent's own wing".
+func firstWing(wings ...string) string {
+	for _, w := range wings {
+		if w = strings.TrimSpace(w); w != "" {
+			return w
+		}
+	}
+	return ""
 }
 
 // registerDiaryRead: return an agent's most recent diary entries, newest first.

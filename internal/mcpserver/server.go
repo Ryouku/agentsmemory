@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -68,6 +69,15 @@ func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description})
 }
 
+// WorkspaceLookup resolves the workspace a session is scoped to. It is declared
+// here, at the consumer, so the MCP layer depends on the one method it needs
+// rather than on the whole tenant repository — and so a test can name a workspace
+// without a database.
+type WorkspaceLookup interface {
+	// TeamByID returns the workspace with this id.
+	TeamByID(ctx context.Context, id string) (tenant.Team, error)
+}
+
 // Deps are the collaborators the tools need. Passing them in (rather than
 // reaching for globals) keeps the server testable and the wiring explicit.
 type Deps struct {
@@ -75,9 +85,17 @@ type Deps struct {
 	Skillset *skillset.Service // the global wakeup playbook am_skillset serves
 	Usage    *usage.Service
 	Drawers  *palace.Service
-	// Local is set by the self-hosted single-workspace server. It widens the tool
-	// surface to operations that are only safe when the agent, the operator and the
-	// workspace are one person on one machine — see registerAdmin.
+
+	// Workspaces names the workspace am_status reports. Optional: a nil lookup
+	// simply omits the workspace block, so the wake-up call never depends on it.
+	Workspaces WorkspaceLookup
+
+	// Local is true when this process serves the single self-hosted workspace
+	// (server --local). am_status reports it as the session's mode, which is what
+	// lets an agent tell "my own machine" from "the hosted server" without
+	// inspecting its own config — the check a protocol gate actually needs. It also
+	// widens the tool surface to operations that are only safe when the agent, the
+	// operator and the workspace are one person on one machine — see registerAdmin.
 	Local bool
 }
 
@@ -92,7 +110,7 @@ func New(deps Deps) *server.MCPServer {
 		server.WithToolCapabilities(true), // advertise the tools/list capability
 	)
 	reg := &registrar{srv: srv}
-	registerStatus(reg, deps.Drawers, deps.Usage)
+	registerStatus(reg, deps.Drawers, deps.Usage, deps.Workspaces, deps.Local)
 	registerLoadSkill(reg, deps.Skills, deps.Usage)
 	// Skill-registry management: list + update (write is role-gated).
 	registerSkills(reg, deps.Skills, deps.Usage)
@@ -108,10 +126,36 @@ func New(deps Deps) *server.MCPServer {
 	registerKG(reg, deps.Drawers, deps.Usage)
 	// Palace maintenance: merge_wing, memories_filed_away, and delete_wing when local.
 	registerAdmin(reg, deps.Drawers, deps.Usage, deps.Local)
+	// Recall measurement: how well the memory answers, per wing.
+	registerRecallStats(reg, deps.Drawers, deps.Usage)
+	// Staleness: pin memories to code, and record what verification found.
+	registerAnchors(reg, deps.Drawers, deps.Usage)
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)
 	return srv
+}
+
+// wingFor resolves the wing a write belongs to: the one the caller passed, or —
+// when it passed none — the one this MCP registration was created for.
+//
+// The fallback is what keeps projects apart without depending on an agent
+// remembering a convention. A per-project registration states its wing once (see
+// auth.WingHeader) and every write from that project lands there; an agent that
+// does name a wing still wins, because an explicit argument is a decision and a
+// default is only a default.
+//
+// The error names both routes, since a caller with neither has two different
+// things it could fix.
+func wingFor(ctx context.Context, passed string) (string, error) {
+	if strings.TrimSpace(passed) == "" {
+		if def := auth.DefaultWingFrom(ctx); def != "" {
+			return palace.SanitizeName(def, "wing")
+		}
+		return "", fmt.Errorf("wing is required: pass one, or register this MCP with a default wing "+
+			"(header %s) so every write from this project files itself", auth.WingHeader)
+	}
+	return palace.SanitizeName(passed, "wing")
 }
 
 // admit resolves the tenant and meters one request against the workspace's
@@ -141,9 +185,9 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 // in the shape of its memory before searching, mirroring mempalace's status. The
 // taxonomy read is best-effort: a status call still succeeds (with an empty
 // overview) if the aggregation fails, so liveness never depends on it.
-func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, workspaces WorkspaceLookup, local bool) {
 	tool := newTool("status",
-		mcp.WithDescription("Wake-up call: the team this MCP session is scoped to and its role, the memory overview (total drawers + the wing→rooms taxonomy with counts), and remaining monthly quota."),
+		mcp.WithDescription("Wake-up call: the workspace this MCP session is scoped to (name, slug, and whether the server is self-hosted or hosted) plus your role, the memory overview (total drawers + the wing→rooms taxonomy with counts), and remaining monthly quota. Check the workspace to confirm you are talking to the palace you think you are — an empty wing list means nothing has been written yet, NOT that you are in the wrong place."),
 	)
 	reg.add(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -160,10 +204,41 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			total += w.Drawers
 		}
 
+		// Workspace identity. An agent's protocol gate needs to know WHICH palace
+		// it is talking to before it recalls or writes — a token from another
+		// project answers every probe happily, and the wing list cannot tell that
+		// apart from a wing nobody has written to yet. Naming the workspace and
+		// the mode here is what makes that check possible without guessing.
+		// Best-effort, like the taxonomy above: a lookup failure omits the block
+		// rather than failing the wake-up call.
+		mode := "hosted"
+		if local {
+			mode = "local"
+		}
+		// The wing this registration files into, if it was registered for a
+		// project. An agent that can see it does not have to guess whether its
+		// writes are landing in the right place.
+		defaultWing := auth.DefaultWingFrom(ctx)
+
+		var workspace map[string]any
+		if workspaces != nil {
+			if team, err := workspaces.TeamByID(ctx, t.TeamID); err == nil {
+				workspace = map[string]any{
+					"id":   team.ID,
+					"slug": team.Slug,
+					"name": team.Name,
+					"kind": team.Kind,
+				}
+			}
+		}
+
 		out, _ := json.Marshal(map[string]any{
 			"ok":            true,
 			"team_id":       t.TeamID,
 			"role":          string(t.Role),
+			"mode":          mode,
+			"workspace":     workspace,
+			"default_wing":  defaultWing,
 			"total_drawers": total,
 			"wings":         tax.Wings, // [{wing, drawers, rooms:[{wing, room, drawers}]}]
 			"usage": map[string]any{

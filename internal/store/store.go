@@ -41,6 +41,17 @@ type Hit struct {
 	Payload map[string]any
 }
 
+// Filter narrows a search to points whose payload matches every entry, compared
+// as strings. An empty (or nil) Filter matches everything.
+//
+// It exists so the caller's wing/room scoping is answered BY the index rather
+// than after it: filtering in the caller means over-fetching a pool wide enough
+// that the survivors can still fill a page, which grows with the palace and is
+// paid on every scoped search. Every backend here can do it natively — a Qdrant
+// payload filter, a chromem metadata `where`, a comparison inside SQLite's
+// brute-force scan — so the seam carries it.
+type Filter map[string]string
+
 // VectorStore is the swappable vector backend (a search index, or — for SQLite —
 // the source of truth doubling as one).
 //
@@ -60,9 +71,10 @@ type VectorStore interface {
 	Upsert(ctx context.Context, namespace string, points []Point) error
 
 	// Search returns up to k nearest neighbours of vector by cosine similarity,
-	// ordered closest-first. Fewer than k hits means the namespace held fewer
-	// points; a k <= 0 returns no hits.
-	Search(ctx context.Context, namespace string, vector []float32, k int) ([]Hit, error)
+	// ordered closest-first, restricted to points whose payload matches filter.
+	// Fewer than k hits means the namespace held fewer matching points; a k <= 0
+	// returns no hits. A nil or empty filter searches the whole namespace.
+	Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) ([]Hit, error)
 
 	// Delete removes points by ID. IDs that are not present are ignored; an
 	// empty slice is a no-op.

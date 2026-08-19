@@ -29,6 +29,14 @@ const (
 	// sandboxEnvVar overrides the recorded sandbox for a single launch, for
 	// one-off work in another sandbox without editing any file.
 	sandboxEnvVar = "AIAGENTMEMORY_SANDBOX"
+
+	// wingEnvVar carries the project's memory wing to the agent. A palace holds
+	// every project you work on and wings are the per-project partition, but the
+	// server speaks HTTP MCP and cannot see the client's working directory — so
+	// the wing has to travel from here. The memory protocol reads this variable
+	// first and falls back to the git remote when it is unset, which is why an
+	// unconfigured project still gets a sane wing instead of a shared one.
+	wingEnvVar = "AGENTSMEMORY_WING"
 )
 
 // projectConfig is the launch intent recorded for a project directory: which
@@ -39,6 +47,7 @@ type projectConfig struct {
 	sandbox string
 	agent   string
 	args    []string
+	wing    string // memory wing this project's drawers and diary entries belong to
 }
 
 // parseProjectConfig reads the KEY=VALUE form used by both .aiagentmemory files.
@@ -65,6 +74,8 @@ func parseProjectConfig(raw []byte) projectConfig {
 			cfg.agent = value
 		case "args":
 			cfg.args = splitArgs(value)
+		case "wing":
+			cfg.wing = value
 		}
 	}
 	return cfg
@@ -171,6 +182,10 @@ func renderProjectConfig(cfg projectConfig) []byte {
 	b.WriteString("# aiagentmemory project config — safe to commit.\n")
 	b.WriteString("# Launch this project with: aiagentmemory load\n")
 	b.WriteString("#\n")
+	b.WriteString("# wing= is the memory wing this project's decisions are filed under, so one\n")
+	b.WriteString("# palace can hold every project without them bleeding into each other. It IS\n")
+	b.WriteString("# safe to commit: teammates share a wing, that is the point.\n")
+	b.WriteString("#\n")
 	b.WriteString("# The sandbox name is NOT recorded here: teammates name their sandboxes\n")
 	b.WriteString("# differently. Yours lives in ~/.sandboxes/" + agentRegistryFile + " (machine-local),\n")
 	b.WriteString("# or in " + projectLocalFile + " if you prefer to keep it in the project.\n")
@@ -179,6 +194,9 @@ func renderProjectConfig(cfg projectConfig) []byte {
 	}
 	if len(cfg.args) > 0 {
 		fmt.Fprintf(&b, "args=%s\n", formatArgs(cfg.args))
+	}
+	if cfg.wing != "" {
+		fmt.Fprintf(&b, "wing=%s\n", cfg.wing)
 	}
 	if cfg.sandbox != "" {
 		fmt.Fprintf(&b, "sandbox=%s\n", cfg.sandbox)
@@ -212,6 +230,7 @@ type launchInputs struct {
 	local       projectConfig // .aiagentmemory.local (personal, git-ignored)
 	shared      projectConfig // .aiagentmemory (committed)
 	extraArgs   []string      // arguments after `--` on the load command
+	envWing     string        // $AGENTSMEMORY_WING, when the shell already pinned one
 }
 
 // resolvedLaunch is what `load` decided, including where the sandbox choice came
@@ -222,6 +241,7 @@ type resolvedLaunch struct {
 	agent   string
 	args    []string
 	origin  string
+	wing    string // memory wing to export as $AGENTSMEMORY_WING ("" = let the protocol derive it)
 }
 
 // resolveLaunch applies the launch precedence, most specific first: an explicit
@@ -253,9 +273,17 @@ func resolveLaunch(in launchInputs) (resolvedLaunch, error) {
 	if len(args) == 0 {
 		args = in.shared.args
 	}
+	// The wing follows the same ladder as the agent, with the shell's variable on
+	// top: a one-off launch in another project's wing needs no file edit. An
+	// unresolved wing stays empty rather than being invented here — the memory
+	// protocol derives one from the git remote, which is a better guess than
+	// anything this function knows.
+	wing := firstNonEmpty(in.envWing, in.local.wing, in.shared.wing)
+
 	return resolvedLaunch{
 		sandbox: sandbox,
 		agent:   agent,
+		wing:    wing,
 		// Extras land last so a flag typed at the command line beats the same
 		// flag recorded in the file, which is how every agent CLI we drive
 		// resolves a repeated flag.

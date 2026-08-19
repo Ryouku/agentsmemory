@@ -2,6 +2,7 @@ package chromemvec
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -20,6 +21,101 @@ func newTestIndex(t *testing.T) *Index {
 	return idx
 }
 
+// TestSearchFilterNarrowsToPayload proves the wing/room scope is answered by the
+// index rather than by the caller: the nearest vector is in the wrong wing, and a
+// filtered search must skip past it instead of returning it for the caller to
+// discard.
+// TestOpenDiscardsAnOlderIndexLayout covers the upgrade path for an install that
+// already has an index on disk: a directory written before the flat filter keys
+// existed must be thrown away and rebuilt, not read. Reading it would silently
+// return an empty page for every wing-scoped search — a wrong answer, where a
+// rebuild costs only a replay of vectors SQLite still holds.
+func TestOpenDiscardsAnOlderIndexLayout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agentsmemory.chromem")
+	if err := os.MkdirAll(filepath.Join(dir, "team1"), 0o755); err != nil {
+		t.Fatalf("seed old index: %v", err)
+	}
+	stale := filepath.Join(dir, "team1", "doc.gob")
+	if err := os.WriteFile(stale, []byte("pre-v2 document"), 0o644); err != nil {
+		t.Fatalf("seed old document: %v", err)
+	}
+
+	if _, err := New(dir); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale document survived the layout change (err=%v)", err)
+	}
+	stamp, err := os.ReadFile(filepath.Join(dir, schemaFile))
+	if err != nil || string(stamp) != schemaVersion {
+		t.Errorf("schema stamp = %q (err %v), want %q", stamp, err, schemaVersion)
+	}
+
+	// Re-opening a stamped directory must keep what is in it — otherwise every
+	// restart would throw the index away and pay for a full rebuild.
+	idx, err := New(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if err := idx.Upsert(context.Background(), "team1", []store.Point{{ID: "a", Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := New(dir); err != nil {
+		t.Fatalf("third open: %v", err)
+	}
+	again, err := New(dir)
+	if err != nil {
+		t.Fatalf("fourth open: %v", err)
+	}
+	if n, err := again.Count("team1"); err != nil || n != 1 {
+		t.Errorf("reopen lost the index: count=%d err=%v", n, err)
+	}
+}
+
+func TestSearchFilterNarrowsToPayload(t *testing.T) {
+	idx := newTestIndex(t)
+	ctx := context.Background()
+	const ns = "team1"
+
+	points := []store.Point{
+		{ID: "a", Vector: []float32{1, 0, 0}, Payload: map[string]any{"wing": "wing_one", "room": "decisions"}},
+		{ID: "b", Vector: []float32{0.9, 0.1, 0}, Payload: map[string]any{"wing": "wing_two", "room": "decisions"}},
+		{ID: "c", Vector: []float32{0.8, 0.2, 0}, Payload: map[string]any{"wing": "wing_two", "room": "diary"}},
+	}
+	if err := idx.Upsert(ctx, ns, points); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	hits, err := idx.Search(ctx, ns, []float32{1, 0, 0}, 3, store.Filter{"wing": "wing_two"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 2 || hits[0].ID != "b" || hits[1].ID != "c" {
+		t.Fatalf("wing filter: want [b c], got %v", ids(hits))
+	}
+
+	// Two keys must both hold, and the payload still round-trips verbatim.
+	hits, err = idx.Search(ctx, ns, []float32{1, 0, 0}, 3, store.Filter{"wing": "wing_two", "room": "diary"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "c" {
+		t.Fatalf("wing+room filter: want [c], got %v", ids(hits))
+	}
+	if hits[0].Payload["room"] != "diary" {
+		t.Errorf("payload not round-tripped: %v", hits[0].Payload)
+	}
+}
+
+// ids renders hit ids for a failure message.
+func ids(hits []store.Hit) []string {
+	out := make([]string, len(hits))
+	for i, h := range hits {
+		out[i] = h.ID
+	}
+	return out
+}
+
 func TestUpsertSearchRanking(t *testing.T) {
 	idx := newTestIndex(t)
 	ctx := context.Background()
@@ -34,7 +130,7 @@ func TestUpsertSearchRanking(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	hits, err := idx.Search(ctx, ns, []float32{1, 0, 0}, 2)
+	hits, err := idx.Search(ctx, ns, []float32{1, 0, 0}, 2, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -79,7 +175,7 @@ func TestUpsertReplacesByID(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("re-upserting an ID must replace, not duplicate: count = %d", n)
 	}
-	hits, err := idx.Search(ctx, ns, []float32{0, 1, 0}, 1)
+	hits, err := idx.Search(ctx, ns, []float32{0, 1, 0}, 1, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -99,7 +195,7 @@ func TestSearchClampsK(t *testing.T) {
 	if err := idx.Upsert(ctx, ns, []store.Point{{ID: "a", Vector: []float32{1, 0, 0}}}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	hits, err := idx.Search(ctx, ns, []float32{1, 0, 0}, 10)
+	hits, err := idx.Search(ctx, ns, []float32{1, 0, 0}, 10, nil)
 	if err != nil {
 		t.Fatalf("search with k above the point count: %v", err)
 	}
@@ -114,7 +210,7 @@ func TestSearchEdgeCases(t *testing.T) {
 
 	// An empty namespace is a legitimate state (a workspace before its first
 	// drawer), not an error.
-	hits, err := idx.Search(ctx, "empty", []float32{1, 0, 0}, 5)
+	hits, err := idx.Search(ctx, "empty", []float32{1, 0, 0}, 5, nil)
 	if err != nil {
 		t.Fatalf("search on an empty namespace: %v", err)
 	}
@@ -125,7 +221,7 @@ func TestSearchEdgeCases(t *testing.T) {
 	if err := idx.Upsert(ctx, "team1", []store.Point{{ID: "a", Vector: []float32{1, 0, 0}}}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if hits, err = idx.Search(ctx, "team1", []float32{1, 0, 0}, 0); err != nil || len(hits) != 0 {
+	if hits, err = idx.Search(ctx, "team1", []float32{1, 0, 0}, 0, nil); err != nil || len(hits) != 0 {
 		t.Fatalf("k <= 0 must return no hits and no error, got %d hits, err %v", len(hits), err)
 	}
 }
@@ -141,7 +237,7 @@ func TestNamespacesAreIsolated(t *testing.T) {
 		t.Fatalf("upsert team2: %v", err)
 	}
 
-	hits, err := idx.Search(ctx, "team1", []float32{1, 0, 0}, 5)
+	hits, err := idx.Search(ctx, "team1", []float32{1, 0, 0}, 5, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -201,7 +297,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	hits, err := second.Search(ctx, ns, []float32{1, 0, 0}, 1)
+	hits, err := second.Search(ctx, ns, []float32{1, 0, 0}, 1, nil)
 	if err != nil {
 		t.Fatalf("search after reopen: %v", err)
 	}

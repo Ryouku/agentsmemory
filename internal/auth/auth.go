@@ -24,6 +24,29 @@ type ctxKey struct{}
 // tenantKey is the single context key under which the resolved tenant is stored.
 var tenantKey = ctxKey{}
 
+// wingKeyType / wingKey carry the connection's DEFAULT WING — the project this
+// MCP registration belongs to.
+//
+// A palace holds every project an agent works on, and wings are how they stay
+// apart. The server cannot infer which project a caller is in: it speaks HTTP,
+// and the working directory is on the other side of the wire. Asking the agent to
+// remember a convention works until it forgets, and then one project's decisions
+// are filed into another's wing, permanently.
+//
+// So the wing travels with the CONNECTION instead: whoever registers the MCP for
+// a project states it once, and every write from that registration lands in the
+// right wing whether or not the agent was paying attention.
+type wingKeyType struct{}
+
+var wingKey = wingKeyType{}
+
+// WingHeader and wingQueryParam are the two ways a registration states its wing.
+// The header is the clean one; the query parameter exists because not every MCP
+// client can attach custom headers, and a URL always can.
+const WingHeader = "X-Agentsmemory-Wing"
+
+const wingQueryParam = "wing"
+
 // Resolver resolves a plaintext bearer token to a tenant. *tenant.Repo
 // satisfies it; defining the interface here (consumer side) keeps auth
 // decoupled from gorm.
@@ -131,9 +154,41 @@ func tokenMatches(want, got string) bool {
 // an upstream middleware (the OAuth gate) on the HTTP request into the context
 // the MCP tools receive. When the gate fronts /mcp, resolution happens once
 // there; this just forwards the result so the tools can read it via TenantFrom.
+//
+// It also lifts the connection's default wing off the request, for the same
+// reason it lifts the tenant: this is the one place per request where the HTTP
+// layer is still visible, and everything downstream should see decisions, not
+// headers.
 func Bridge(ctx context.Context, r *http.Request) context.Context {
 	if t, ok := TenantFrom(r.Context()); ok {
-		return WithTenant(ctx, t)
+		ctx = WithTenant(ctx, t)
+	}
+	if wing := requestWing(r); wing != "" {
+		ctx = WithDefaultWing(ctx, wing)
 	}
 	return ctx
+}
+
+// requestWing reads the default wing a registration declared, header first and
+// query parameter second. Empty means the registration named no project, which
+// is the pre-existing behaviour: the caller passes a wing per call or the tool
+// says it needs one.
+func requestWing(r *http.Request) string {
+	if w := strings.TrimSpace(r.Header.Get(WingHeader)); w != "" {
+		return w
+	}
+	return strings.TrimSpace(r.URL.Query().Get(wingQueryParam))
+}
+
+// WithDefaultWing returns a context carrying the connection's default wing.
+func WithDefaultWing(ctx context.Context, wing string) context.Context {
+	return context.WithValue(ctx, wingKey, wing)
+}
+
+// DefaultWingFrom returns the wing this connection was registered for, or "" if
+// it was registered without one. The value is UNVALIDATED — it arrived over the
+// wire — so callers sanitize it exactly as they would a wing passed per call.
+func DefaultWingFrom(ctx context.Context) string {
+	w, _ := ctx.Value(wingKey).(string)
+	return w
 }

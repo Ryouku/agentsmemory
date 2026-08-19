@@ -2,11 +2,14 @@ package qdrant
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
 
 // TestCollectionNameIsDeterministicAndScoped verifies the tenancy invariant the
@@ -68,5 +71,86 @@ func TestDeleteCollection(t *testing.T) {
 	defer srv.Close()
 	if err := New(srv.URL, "", time.Second).DeleteCollection(ctx, "team-x"); err == nil {
 		t.Error("status 500: want error, got nil")
+	}
+}
+
+// TestMatchFilter pins the Qdrant request shape: a must-match clause per key, in
+// sorted order so the body is stable, and nil when there is nothing to filter on
+// (Qdrant rejects an empty filter object).
+func TestMatchFilter(t *testing.T) {
+	if got := matchFilter(nil); got != nil {
+		t.Errorf("nil filter rendered %v, want nil", got)
+	}
+	if got := matchFilter(store.Filter{}); got != nil {
+		t.Errorf("empty filter rendered %v, want nil", got)
+	}
+
+	got, err := json.Marshal(matchFilter(store.Filter{"room": "diary", "wing": "wing_two"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"must":[{"key":"room","match":{"value":"diary"}},{"key":"wing","match":{"value":"wing_two"}}]}`
+	if string(got) != want {
+		t.Errorf("filter body =\n %s\nwant\n %s", got, want)
+	}
+}
+
+// TestEnsureCollectionIndexesFilterKeys: a filtered search without a payload
+// index is answered by SCANNING, which is invisible on a small palace and
+// becomes the whole latency budget on a large one. Per-project wings make every
+// search filtered, so the index is not an optimisation, it is the feature
+// working.
+func TestEnsureCollectionIndexesFilterKeys(t *testing.T) {
+	var indexed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/index"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if schema, _ := body["field_schema"].(string); schema != "keyword" {
+				t.Errorf("field_schema = %v, want keyword", body["field_schema"])
+			}
+			name, _ := body["field_name"].(string)
+			indexed = append(indexed, name)
+		case r.Method == http.MethodGet:
+			// collectionExists: report absent so the create path runs too.
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":true,"status":"ok"}`))
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "", time.Second).EnsureCollection(context.Background(), "team-1", 1024); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if len(indexed) != 2 || indexed[0] != "wing" || indexed[1] != "room" {
+		t.Errorf("indexed %v, want [wing room]", indexed)
+	}
+}
+
+// TestEnsureCollectionIndexesAnExistingCollection: a palace created before the
+// index existed must get one on the next boot, not stay slow forever with
+// nothing to say why.
+func TestEnsureCollectionIndexesAnExistingCollection(t *testing.T) {
+	var indexed int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/index") {
+			indexed++
+		}
+		if r.Method == http.MethodPut && !strings.HasSuffix(r.URL.Path, "/index") {
+			t.Error("an existing collection must not be re-created")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"status":"green"},"status":"ok"}`))
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "", time.Second).EnsureCollection(context.Background(), "team-1", 1024); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if indexed != 2 {
+		t.Errorf("indexed %d key(s) on an existing collection, want 2", indexed)
 	}
 }

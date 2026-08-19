@@ -114,15 +114,20 @@ type Config struct {
 	// vectors, matching the frozen Python palace so data stays comparable.
 	OllamaEmbedModel string
 
-	// RerankURL is the base URL of a HuggingFace text-embeddings-inference (TEI)
-	// server whose cross-encoder re-orders search results. EMPTY — the default —
-	// turns reranking off entirely and search behaves exactly as it did before.
+	// RerankURL is the base URL of a cross-encoder rerank service whose scores
+	// re-order search results. EMPTY — the default — turns reranking off entirely
+	// and search behaves exactly as it did before.
 	//
 	// It is a separate endpoint from OllamaURL because the two are different jobs
 	// and, in practice, different processes: Ollama serves the bge-m3 embeddings,
-	// TEI serves the bge-reranker-v2-m3 cross-encoder. Ollama cannot do this one —
+	// a cross-encoder server serves bge-reranker-v2-m3. Ollama cannot do this one —
 	// it exposes only a model's embedding layer, never a classification head, so
 	// it has no rerank endpoint to point at (ollama/ollama#10467).
+	//
+	// text-embeddings-inference is the reference server (`brew install
+	// text-embeddings-inference` runs it natively with Metal on Apple Silicon);
+	// llama.cpp's server answers the same shape and is what the compose stack
+	// runs, since it is the only one with an arm64 image.
 	RerankURL string
 
 	// RerankPool is how many fused candidates get cross-encoded per search.
@@ -131,9 +136,21 @@ type Config struct {
 	// Ignored when RerankURL is empty.
 	//
 	// There is deliberately no RERANK_MODEL: TEI's /rerank carries no model field,
-	// because the model is fixed when the container starts (--model-id). A knob the
+	// because the model is fixed when the server starts (--model-id). A knob the
 	// wire cannot carry would only ever mislead.
 	RerankPool int
+
+	// RerankWeight is how much of the final ordering the cross-encoder decides,
+	// with the rest left to the hybrid score it refines. 1 hands it the whole
+	// decision, which measurably loses the lexical evidence a query carries when
+	// it names an identifier; 0 disables reranking without unconfiguring it.
+	RerankWeight float64
+
+	// RerankTimeout bounds a rerank call. It is separate from HTTPTimeout because
+	// the other outbound calls (embed, Qdrant) answer in milliseconds while this
+	// one is doing real inference, and one shared budget means either cutting the
+	// cross-encoder off or waiting far too long on a dead vector store.
+	RerankTimeout time.Duration
 
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
 	HTTPTimeout time.Duration
@@ -210,8 +227,10 @@ func Default() Config {
 		QdrantURL:        "http://localhost:6333",
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
-		RerankPool:       50, // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		HTTPTimeout:      30 * time.Second,
+		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		RerankTimeout:    90 * time.Second,
 		Debug:            false,
 	}
 }
