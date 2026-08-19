@@ -129,6 +129,15 @@ var manifest = []tableSpec{
 var redactors = map[string]map[string]func(row map[string]any) any{
 	"users": {
 		"password_hash": func(map[string]any) any { return "" },
+		// The base32 shared secret an authenticator app is seeded with. It is a
+		// LIVE credential, not a record of one: anyone holding it generates
+		// valid second-factor codes indefinitely, so exporting it hands over the
+		// second factor along with the data it protects. It reached this export
+		// by omission — copyTable selects every column, this map is maintained
+		// by hand, and migration 00017 added the column years after the map was
+		// last extended. TestExportedCredentialColumnsAreRedacted now fails when
+		// that happens again.
+		"totp_secret": func(map[string]any) any { return "" },
 	},
 	"api_keys": {
 		"token_hash": func(row map[string]any) any { return row["id"] },
