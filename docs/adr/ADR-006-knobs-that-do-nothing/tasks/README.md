@@ -24,5 +24,5 @@ telemetry lying while the gate is still being built.
 |------|------|----------|----------|--------|
 | [T1](T1-extract-the-ranking-wiring.md) | Make the ranking wiring drivable without a server | `configureRanking` | none | done |
 | [T2](T2-discover-the-inert-set.md) | Discover which knobs are inert in which mode, by running them | the discovered inert set | `configureRanking` | done |
-| [T3](T3-admit-the-condition.md) | Every discovered pair admits its condition where an operator reads it | the admission requirement | the discovered inert set | todo |
+| [T3](T3-admit-the-condition.md) | Every discovered pair admits its condition where an operator reads it | the admission requirement | the discovered inert set | done |
 | [T4](T4-fix-what-the-audit-found.md) | Fix the three defects the audit found | honest telemetry, settable timeout, scoped CLI search | none | done |

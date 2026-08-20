@@ -57,9 +57,17 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| delete the `--fusion` clause from `--bm25-weight`'s Usage | yes | `TestDiscoveredPairsAdmitTheirCondition` |
-| add a Config field to neither the sweep nor the unobservable list | yes | `TestEveryKnobIsSweptOrNamed` |
-| print both startup lines under rrf again | yes | `TestStartupDoesNotContradictItself` |
+| replace the `--fusion` clause in `--bm25-weight`'s Usage with "ignored under rank fusion" | yes | `TestDiscoveredPairsAdmitTheirCondition` |
+| `if rrf {` → `if rrf && false {` (the early return stops guarding) | yes | `TestStartupDoesNotContradictItself` |
+| `_ = cfg.SearchScope` inside `configureRanking` (a field joins the wiring undeclared) | yes | `TestEveryKnobIsSweptOrNamed` |
+| drop `RerankTimeout` from `unobservableKnobs` | yes | `TestEveryKnobIsSweptOrNamed` |
+| `--fusion`'s apply stops assigning `c.Fusion` | yes | `TestEveryKnobIsSweptOrNamed` |
+
+Two first attempts did not build and were rewritten before they counted. Deleting the `if rrf` block
+outright left `rrf` declared and unused; `&& false` keeps every identifier live. And `cfg.EmbeddingModel`
+is not a field of `config.Config` — the mutation that was supposed to prove the universe is read out of
+the source instead proved only that Go rejects a typo. Both printed `FAIL <pkg> [build failed]` with no
+`--- FAIL` line, which is exactly the shape a naive failure count reads as a caught mutant.
 
 ## Out of Scope
 
@@ -81,4 +89,4 @@ Stop and ask if a knob's condition cannot be stated without contradicting an acc
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · 9b520f3* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

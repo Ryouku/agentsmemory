@@ -178,7 +178,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
-		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1"},
+		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1. DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no weight to apply"},
 		&cli.StringFlag{Name: "embed-backend", Sources: cli.EnvVars("EMBED_BACKEND"), Value: def.EmbedBackend, Usage: "what embeds text: ollama (default) or tei (text-embeddings-inference — the only path to bge-m3's sparse and multi-vector output)"},
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
@@ -801,13 +801,22 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
 	// served the linear blend instead, they would read the eval's rrf column and
 	// their production ordering as the same configuration when they are not.
+	rrf := false
 	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
 		if strings.EqualFold(f, "rrf") {
 			drawers = drawers.WithFusion("rrf")
+			rrf = true
 			say("fusion: reciprocal-rank (bm25 weight does not apply)")
 		} else {
 			say("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
 		}
+	}
+	// Under rrf the weight is inert and the line above has just said so; reporting
+	// one anyway leaves two adjacent lines disagreeing, and a reader believes
+	// whichever they read second. The sweep discovers this pair by running it, so
+	// the startup output and the measurement now agree.
+	if rrf {
+		return drawers, lines
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
 		drawers = drawers.WithLexicalIDF(true)

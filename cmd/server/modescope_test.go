@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -286,4 +288,235 @@ func (e sweepEmbedder) EmbedOne(ctx context.Context, in string) ([]float32, erro
 		return nil, err
 	}
 	return v[0], nil
+}
+
+// TestDiscoveredPairsAdmitTheirCondition closes the loop T2 opens: a pair the
+// sweep discovers is a knob that silently does nothing under some mode, and the
+// only fix an operator can act on is being told so where they read.
+//
+// The admission must name the gating knob GREPPABLY. That is deliberate
+// strictness: prose counts here only when it is mechanically checkable, which is
+// the same line this repository already holds for environment variables. An
+// honest sentence phrased without the gating knob's name fails, and that is the
+// trade — the alternative is a check that accepts text it cannot verify.
+func TestDiscoveredPairsAdmitTheirCondition(t *testing.T) {
+	pairs, _ := sweep(t)
+	if len(pairs) == 0 {
+		t.Fatal("the sweep discovered no pairs, so this check has nothing to enforce — " +
+			"--bm25-weight under --fusion=rrf exists in the code and should have been found")
+	}
+
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	cfgSrc, err := os.ReadFile(filepath.Join("..", "..", "internal", "config", "config.go"))
+	if err != nil {
+		t.Fatalf("read config.go: %v", err)
+	}
+
+	for _, p := range pairs {
+		// "--bm25-weight is inert when --fusion=rrf"
+		knobName, gate := parsePair(t, p)
+		usage := flagUsage(t, string(src), knobName)
+		if usage == "" {
+			t.Errorf("no Usage string found for %s", knobName)
+			continue
+		}
+		if !mentions(usage, gate) && !mentions(string(cfgSrc), gate+" "+knobName) {
+			t.Errorf("%s does nothing when %s is set, and its --help says nothing about it:\n  %q\n"+
+				"  An operator who sets it gets no behaviour change and no explanation. Naming the "+
+				"gating knob is the whole remedy.", knobName, gate, usage)
+		}
+	}
+}
+
+// TestStartupDoesNotContradictItself: under rrf the wiring announces that the
+// bm25 weight does not apply, and then announced the bm25 weight anyway. Two
+// lines, adjacent, disagreeing — a reader believes whichever they read second.
+func TestStartupDoesNotContradictItself(t *testing.T) {
+	cfg := config.Default()
+	cfg.Fusion = "rrf"
+	cfg.BM25Weight = "auto-idf"
+
+	_, lines := configureRanking(bareService(), cfg, noReranker)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "does not apply") {
+		t.Fatalf("rrf did not announce that the bm25 weight is inert:\n%s", joined)
+	}
+	if strings.Contains(joined, "bm25 weight: auto (IDF-weighted coverage)") {
+		t.Errorf("startup says the bm25 weight does not apply and then reports one:\n%s\n"+
+			"A reader believes whichever line they read second.", joined)
+	}
+}
+
+// parsePair splits "--knob is inert when --gate=value" into its two flag names.
+func parsePair(t *testing.T, pair string) (knob, gate string) {
+	t.Helper()
+	parts := strings.SplitN(pair, " is inert when ", 2)
+	if len(parts) != 2 {
+		t.Fatalf("unparseable pair %q", pair)
+	}
+	gate = parts[1]
+	if i := strings.Index(gate, "="); i >= 0 {
+		gate = gate[:i]
+	}
+	return parts[0], gate
+}
+
+// flagUsage pulls a flag's Usage text out of the command wiring.
+func flagUsage(t *testing.T, src, flag string) string {
+	t.Helper()
+	name := strings.TrimPrefix(flag, "--")
+	i := strings.Index(src, `Name: "`+name+`"`)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(src[i:], "Usage: ")
+	if j < 0 {
+		return ""
+	}
+	rest := src[i+j:]
+	if k := strings.Index(rest, "},\n"); k >= 0 {
+		rest = rest[:k]
+	}
+	return rest
+}
+
+// mentions accepts the flag spelling or the environment spelling, since an
+// operator may know a knob by either.
+func mentions(text, flag string) bool {
+	name := strings.TrimPrefix(flag, "--")
+	env := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	return strings.Contains(text, "--"+name) || strings.Contains(text, env)
+}
+
+// unobservableKnobs are the ranking settings the sweep cannot move, each with
+// the reason it is silent. The list exists so that silence is DECLARED: a knob
+// absent from both the sweep and this map fails TestEveryKnobIsSweptOrNamed
+// rather than passing unnoticed, which is how a setting joins the wiring and
+// nobody ever measures whether it does anything.
+var unobservableKnobs = map[string]string{
+	"RerankURL":     "selects a live cross-encoder service; with none reachable the sweep measures the absence, not the setting",
+	"RerankTimeout": "bounds a call the sweep never makes, so every value produces the same ordering in-process",
+	"HTTPTimeout":   "bounds outbound calls to the vector and embedding backends, which the fixture serves locally",
+}
+
+// TestEveryKnobIsSweptOrNamed: every config field the ranking wiring READS is
+// either swept for mode-scoping or listed as unobservable with a reason.
+//
+// The universe is read out of configureRanking's own body rather than declared
+// beside it, because a list kept beside the truth is a thing somebody has to
+// remember. A field that joins the wiring joins this check on the same commit.
+//
+// The mapping from knob to field is EXECUTED, not asserted: each knob's apply
+// runs against a zero Config and the fields it moves are the fields it owns. A
+// knob whose Usage claims one setting while its apply moves another cannot pass
+// by naming itself correctly.
+func TestEveryKnobIsSweptOrNamed(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	universe := fieldsReadBy(t, string(src), "configureRanking")
+	if len(universe) == 0 {
+		t.Fatal("no cfg.* reads found in configureRanking — the extraction that this " +
+			"check reads has moved, so it is measuring nothing")
+	}
+
+	covered := map[string]string{}
+	for _, k := range sweptKnobs {
+		for _, f := range fieldsMovedBy(k) {
+			covered[f] = "swept as " + k.name
+		}
+	}
+	for f, why := range unobservableKnobs {
+		if why == "" {
+			t.Errorf("%s is listed as unobservable with no reason; the list is a declaration, not a mute button", f)
+		}
+		if prior, dup := covered[f]; dup {
+			t.Errorf("%s is both %s and listed as unobservable — one of the two is wrong", f, prior)
+		}
+		covered[f] = "declared unobservable"
+	}
+
+	for _, f := range universe {
+		if _, ok := covered[f]; !ok {
+			t.Errorf("configureRanking reads cfg.%s, but no knob sweeps it and nothing declares it "+
+				"unobservable.\n  An operator can set it and nobody has measured whether it changes "+
+				"anything. Add it to sweptKnobs, or to unobservableKnobs with the reason the sweep "+
+				"is silent.", f)
+		}
+	}
+
+	inUniverse := map[string]bool{}
+	for _, f := range universe {
+		inUniverse[f] = true
+	}
+	for f := range unobservableKnobs {
+		if !inUniverse[f] {
+			t.Errorf("%s is declared unobservable but the ranking wiring no longer reads it; "+
+				"a stale excuse outlives the thing it excused", f)
+		}
+	}
+}
+
+// fieldsReadBy returns the config.Config field names a named function reads,
+// scanned out of its source body.
+func fieldsReadBy(t *testing.T, src, fn string) []string {
+	t.Helper()
+	i := strings.Index(src, "\nfunc "+fn+"(")
+	if i < 0 {
+		return nil
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j >= 0 {
+		body = body[:j]
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range strings.Split(body, "cfg.")[1:] {
+		end := 0
+		for end < len(part) && (isIdentRune(part[end])) {
+			end++
+		}
+		name := part[:end]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func isIdentRune(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// fieldsMovedBy runs a knob's apply over every value it sweeps and reports which
+// config fields actually changed. Running it is the point: a knob is bound to the
+// field it MOVES, not to the field its name suggests.
+func fieldsMovedBy(k knob) []string {
+	var zero config.Config
+	seen := map[string]bool{}
+	var out []string
+	rz := reflect.ValueOf(zero)
+	for _, v := range k.values {
+		rv := reflect.ValueOf(k.apply(zero, v))
+		for i := 0; i < rv.NumField(); i++ {
+			name := rv.Type().Field(i).Name
+			if seen[name] {
+				continue
+			}
+			if !reflect.DeepEqual(rv.Field(i).Interface(), rz.Field(i).Interface()) {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
