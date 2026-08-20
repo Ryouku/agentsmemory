@@ -248,3 +248,92 @@ func TestStaleAboveRateWilsonNotBootstrap(t *testing.T) {
 		t.Error("no samples must not produce an interval claiming anything")
 	}
 }
+
+// TestSupersessionGateThreeOutcomes pins that the verdict is read off the
+// INTERVAL, not the point estimate, and that straddling the bar is its own
+// answer rather than being rounded to one side.
+//
+// On a corpus with a few dozen verified pairs the point estimate is mostly
+// noise. A gate that compares it to a bar answers confidently either way and is
+// wrong about half the time it matters; the honest third outcome is "this corpus
+// cannot tell", which is a finding about the evidence rather than about the
+// ranker.
+func TestSupersessionGateThreeOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		successes  int
+		n          int
+		wantStatus string
+	}{
+		// Interval entirely above the bar: the failure is real and common.
+		{"clearly above the bar", 30, 40, VerdictJustified},
+		// Interval entirely below: the failure is rare enough not to justify work.
+		{"clearly below the bar", 0, 60, VerdictNotJustified},
+		// Straddling: the corpus cannot separate the two.
+		{"straddles the bar", 8, 40, VerdictUnresolved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cell := SupersessionCell{Scope: ScopePool, Cases: tc.n, StaleAbove: tc.successes}
+			got := SupersessionVerdict(cell, supersessionBar)
+			if got.Status != tc.wantStatus {
+				t.Errorf("%d/%d against a bar of %.2f gave %q (interval %s), want %q",
+					tc.successes, tc.n, supersessionBar, got.Status, got.Interval, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestSupersessionGateDisagreeingTreatmentsAreUnresolved pins the rule that a
+// verdict depending on which defensible treatment you pick is not a verdict.
+//
+// A case whose CORRECTION was never retrieved can be counted as a failure — the
+// stale one came back and its replacement did not — or excluded, on the grounds
+// that no ranking could have fixed a retrieval miss. Both are defensible. When
+// they disagree about the outcome, the answer is unresolved and both rates are
+// named, rather than the report quietly shipping whichever one the author
+// happened to code first.
+func TestSupersessionGateDisagreeingTreatmentsAreUnresolved(t *testing.T) {
+	// Counting unreachable as failures puts the rate well above the bar; excluding
+	// them puts it well below.
+	cell := SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 30,
+		StaleAboveReachable: 0, CurrentUnreachable: 30}
+	got := SupersessionVerdict(cell, supersessionBar)
+	if got.Status != VerdictUnresolved {
+		t.Errorf("status %q, want %q — counting unreachable cases as failures and excluding them "+
+			"give opposite answers here, and a verdict that depends on that choice is not one",
+			got.Status, VerdictUnresolved)
+	}
+	if got.Reason == "" {
+		t.Error("an unresolved verdict must say which two treatments disagreed")
+	}
+}
+
+// TestSupersessionGateVetoNeedsNonInferiority pins both halves of the recency
+// veto, and the argument order that makes it honest.
+//
+// A cheap fix may only close the case if it is cheap: a band that fixes
+// supersession while costing general ranking has not closed anything, it has
+// moved the loss. And PairedDelta(a, b) is MRR(a) − MRR(b), so an inverted pair
+// would let a band veto by being WORSE than the arm it replaces.
+func TestSupersessionGateVetoNeedsNonInferiority(t *testing.T) {
+	base := SupersessionVerdict(SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 30}, supersessionBar)
+	if base.Status != VerdictJustified {
+		t.Fatalf("fixture: the base verdict must be %q to have anything to veto, got %q", VerdictJustified, base.Status)
+	}
+
+	// A band that closes the failure AND costs nothing vetoes.
+	cheap := SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 0}
+	if got := ApplyRecencyVeto(base, cheap, Interval{Lo: -0.01, Hi: 0.03}, len(recencySweep)); got.Status != VerdictNotJustified {
+		t.Errorf("a band that closes the failure at no ranking cost must veto, got %q", got.Status)
+	}
+	// A band that closes the failure but costs general ranking must NOT veto.
+	if got := ApplyRecencyVeto(base, cheap, Interval{Lo: -0.20, Hi: -0.10}, len(recencySweep)); got.Status == VerdictNotJustified {
+		t.Error("a band that closes supersession while costing general ranking vetoed anyway — " +
+			"that is not a cheap fix, it is the loss moved somewhere the gate was not looking")
+	}
+	// A band whose own rate does not clear the bar cannot veto however cheap it is.
+	weak := SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 20}
+	if got := ApplyRecencyVeto(base, weak, Interval{Lo: -0.01, Hi: 0.03}, len(recencySweep)); got.Status == VerdictNotJustified {
+		t.Error("a band that does not close the failure vetoed on cost alone")
+	}
+}
