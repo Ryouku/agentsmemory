@@ -82,8 +82,11 @@ Steps 1b and 1c are independent MCP calls — fire them in the **same message, i
 parallel** (1c is two calls: `mempalace_status` to wake up, then
 `mempalace_search`). Step 1a is a Skill invocation.
 
-- **1a. Specs (intent)** — invoke the `eidos:spec` skill to load the project's
-  source-of-truth specs (`eidos/*.md`). These describe what the system *should*
+- **1a. Specs (intent)** — invoke the `eidos:spec` skill when it is registered,
+  to load the project's source-of-truth specs (`eidos/*.md`). When it is not —
+  which is the common case — name what actually carries intent instead (OpenAPI,
+  an ADR corpus, `docs/`, `CLAUDE.md`) and say so in one line. These describe
+  what the system *should*
   be. After it loads, emit the literal audit line `specs loaded ✓`.
 - **1b. Code graph (reality) — MUST, do not skip.** **Reindex before any
   action.** First call `index_repository(repo_path=<cwd>)` to index/reindex this
@@ -181,7 +184,8 @@ hesitates on the params, that hesitation **is** the cue to query the palace firs
 
 ## Step 2 — Plan
 
-Invoke the **`eidos:plan`** skill to turn the loaded context into a structured,
+Turn the loaded context into a structured plan — via the **`eidos:plan`** skill
+when it is registered, directly when it is not —
 multi-step plan grounded in spec intent and code reality. Cite concrete
 `file:line` from the code graph in the plan steps. Surface unresolved conflicts
 from Step 1 as decision points, not silent choices.
