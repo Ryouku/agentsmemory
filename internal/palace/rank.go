@@ -96,6 +96,25 @@ func tokenize(text string) []string {
 // so a term in every candidate cannot drive a score below zero. Returned scores
 // are raw (unbounded) and in docs order; the caller normalizes.
 func bm25Scores(query string, docs []string) []float64 {
+	scores, _ := bm25ScoresAndCeiling(query, docs)
+	return scores
+}
+
+// bm25ScoresAndCeiling returns each candidate's raw BM25 score and C, the
+// largest score this query could attain against any document at all.
+//
+// The two are computed together because they share the same smoothed IDF: a
+// candidate's score is a sum of idf(t)·tf-saturation over the query terms, and
+// that saturation approaches (k1+1) as term frequency grows without bound, so
+// C = (k1+1)·Σ idf(t). Computing the ceiling anywhere else would mean a second
+// copy of the IDF formula, and the identity the anchored normalisers rest on is
+// exact only while both use the same one.
+//
+// C is a property of the query AND the candidate set, not of the query alone:
+// the smoothed IDF reads N and df from the page. Anchoring therefore removes the
+// dependence on WHICH candidate won, not the dependence on which candidates are
+// present.
+func bm25ScoresAndCeiling(query string, docs []string) ([]float64, float64) {
 	n := len(docs)
 	scores := make([]float64, n)
 
@@ -106,7 +125,7 @@ func bm25Scores(query string, docs []string) []float64 {
 		queryTerms[t] = struct{}{}
 	}
 	if len(queryTerms) == 0 || n == 0 {
-		return scores
+		return scores, 0
 	}
 
 	tokenized := make([][]string, n)
@@ -116,7 +135,7 @@ func bm25Scores(query string, docs []string) []float64 {
 		totalLen += len(tokenized[i])
 	}
 	if totalLen == 0 {
-		return scores // every candidate is text-less; nothing to rank lexically
+		return scores, 0 // every candidate is text-less; nothing to rank lexically
 	}
 	avgdl := float64(totalLen) / float64(n)
 
@@ -134,9 +153,14 @@ func bm25Scores(query string, docs []string) []float64 {
 		}
 	}
 	idf := make(map[string]float64, len(queryTerms))
+	var idfSum float64
 	for t := range queryTerms {
 		idf[t] = math.Log((float64(n-df[t])+0.5)/(float64(df[t])+0.5) + 1)
+		idfSum += idf[t]
 	}
+	// The per-term factor f·(k1+1)/(f + k1·(…)) rises toward (k1+1) as f grows,
+	// so no candidate can exceed this however often it repeats the query.
+	ceiling := (bm25K1 + 1) * idfSum
 
 	for i, toks := range tokenized {
 		dl := len(toks)
@@ -159,7 +183,7 @@ func bm25Scores(query string, docs []string) []float64 {
 		}
 		scores[i] = score
 	}
-	return scores
+	return scores, ceiling
 }
 
 // vecSimFromDistance maps a cosine distance in [0,2] (0 = identical) to a
@@ -299,7 +323,7 @@ func rankHybridWeighted(query string, docs []string, distances, boosts []float64
 		bm25Weight = 1
 	}
 	vectorWeight := 1 - bm25Weight
-	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight)
+	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight, lexNormPageMax)
 }
 
 // LexicalCoverage reports what share of a query's terms carry usable lexical
@@ -415,27 +439,107 @@ func rankHybridAdaptiveIDF(query string, docs []string, distances, boosts []floa
 	return rankHybridWeighted(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs))
 }
 
-// rankFused is the shared implementation.
-func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64) []HybridScore {
-	raw := bm25Scores(query, docs)
-	var maxBM25 float64
+// lexNorm maps a page's raw BM25 scores to the [0,1] lexical term the fusion
+// adds, given ceiling — the largest score this query could attain (see
+// bm25ScoresAndCeiling). Implementations must return a slice as long as raw, and
+// must yield zero rather than NaN when there is no lexical signal to normalise.
+//
+// It is a named type because the choice of divisor is a ranking decision worth
+// measuring, not an implementation detail: page-max and the anchored transforms
+// disagree about what a good lexical score IS, and that disagreement is what
+// ADR-002 is about.
+type lexNorm func(raw []float64, ceiling float64) []float64
+
+// lexNormPageMax divides by the best raw score on the page. It is what this
+// code has always done and stays the default.
+//
+// Its weakness is structural rather than a matter of tuning: the winner scores
+// 1.0 by definition, so the lexical term says where a candidate stands relative
+// to its neighbours and nothing about whether any of them matched well. A page
+// of uniformly poor matches and a page with one excellent match produce the same
+// top-candidate contribution.
+func lexNormPageMax(raw []float64, _ float64) []float64 {
+	out := make([]float64, len(raw))
+	var max float64
 	for _, s := range raw {
-		if s > maxBM25 {
-			maxBM25 = s
+		if s > max {
+			max = s
 		}
 	}
+	if max <= 0 {
+		return out
+	}
+	for i, s := range raw {
+		out[i] = s / max
+	}
+	return out
+}
+
+// lexNormCeiling divides by C, the score the query could have attained, so a
+// weak match reports as weak however weak its neighbours are.
+//
+// What it buys is winner-independence: which candidate happens to top the page
+// no longer moves everyone else's lexical contribution. What it does NOT buy is
+// candidate-set independence — N, df, idf and avgdl are all pool quantities, so
+// dropping or adding a sibling still moves both raw and C. Anything stronger
+// needs corpus-wide term statistics, which this does not have.
+//
+// Because C is the supremum over all documents and no real candidate reaches it,
+// the result is strictly below 1 whenever any query term carries IDF; the
+// anchored lexical weight is therefore always smaller than the nominal one.
+func lexNormCeiling(raw []float64, ceiling float64) []float64 {
+	out := make([]float64, len(raw))
+	if ceiling <= 0 {
+		return out
+	}
+	for i, s := range raw {
+		out[i] = s / ceiling
+	}
+	return out
+}
+
+// lexNormSaturatingKappa places the half-way point of the saturating transform
+// at kappa·C: a candidate scoring that much of the query's ceiling contributes
+// 0.5. It is a second free constant, which is exactly what anchoring set out to
+// remove, so it stays at one value until an eval says otherwise.
+const lexNormSaturatingKappa = 0.5
+
+// lexNormSaturating maps raw to raw/(raw + kappa·C), a soft version of the
+// ceiling transform that compresses the top of the range instead of clipping it.
+//
+// It exists as a separate arm because the two anchored transforms disagree about
+// strong matches, not weak ones: the ceiling transform keeps them proportional
+// while this one flattens the difference between very good and excellent, on the
+// argument that past some point more lexical overlap stops meaning more
+// relevance.
+func lexNormSaturating(raw []float64, ceiling float64) []float64 {
+	out := make([]float64, len(raw))
+	if ceiling <= 0 {
+		return out
+	}
+	half := lexNormSaturatingKappa * ceiling
+	for i, s := range raw {
+		if s <= 0 {
+			continue
+		}
+		out[i] = s / (s + half)
+	}
+	return out
+}
+
+// rankFused is the shared implementation. norm decides how raw BM25 becomes the
+// lexical term; pass lexNormPageMax for the shipping behaviour.
+func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64, norm lexNorm) []HybridScore {
+	raw, ceiling := bm25ScoresAndCeiling(query, docs)
+	lexical := norm(raw, ceiling)
 
 	out := make([]HybridScore, len(docs))
 	for i := range docs {
-		norm := 0.0
-		if maxBM25 > 0 {
-			norm = raw[i] / maxBM25
-		}
 		boost := 0.0
 		if boosts != nil {
 			boost = boosts[i]
 		}
-		fused := vectorWeight*vecSimFromDistance(distances[i]) + bm25Weight*norm + boost
+		fused := vectorWeight*vecSimFromDistance(distances[i]) + bm25Weight*lexical[i] + boost
 		out[i] = HybridScore{Index: i, Fused: fused, BM25: raw[i], Boost: boost}
 	}
 	// Stable so equal-fused candidates keep their incoming (vector) order.
