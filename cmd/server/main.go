@@ -815,18 +815,23 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	// one anyway leaves two adjacent lines disagreeing, and a reader believes
 	// whichever they read second. The sweep discovers this pair by running it, so
 	// the startup output and the measurement now agree.
-	if rrf {
-		return drawers, lines
-	}
-	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
-		drawers = drawers.WithLexicalIDF(true)
-		say("bm25 weight: auto (IDF-weighted coverage)")
-	} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
-		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
-			drawers = drawers.WithBM25Weight(false, fixed)
-			say("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
-		} else {
-			say("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
+	//
+	// This guards the BM25 block ONLY. The first version returned here instead,
+	// which silently took the reranker with it: rrf and reranking COMPOSE — Search
+	// fuses first and reranks the fused order, and rrf+rerank is an eval arm an
+	// operator reads before choosing it. Suppressing a contradictory line is worth
+	// one condition, never an early exit past wiring that is still wanted.
+	if !rrf {
+		if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
+			drawers = drawers.WithLexicalIDF(true)
+			say("bm25 weight: auto (IDF-weighted coverage)")
+		} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
+			if fixed, err := strconv.ParseFloat(w, 64); err == nil {
+				drawers = drawers.WithBM25Weight(false, fixed)
+				say("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
+			} else {
+				say("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
+			}
 		}
 	}
 	if cfg.RerankURL != "" {

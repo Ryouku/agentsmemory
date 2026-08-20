@@ -83,3 +83,46 @@ func TestConfigureRankingHonoursTheRerankURLGuard(t *testing.T) {
 func bareService() *palace.Service { return palace.NewService(nil, nil, nil, 0) }
 
 func noReranker(string, time.Duration) palace.Reranker { return nil }
+
+// TestRerankSurvivesEveryFusionMode: the reranker is wired whatever the fusion
+// mode is, because the two compose — Search runs fusion first and reranks the
+// fused order, and the eval carries an explicit rrf+rerank arm an operator reads
+// before choosing this configuration.
+//
+// This test exists because the fix for a startup contradiction created exactly
+// the defect this repository is trying to stop shipping. Under --fusion=rrf the
+// bm25 weight is inert, so the wiring returned early to stop announcing one —
+// and took the reranker block with it. A reviewer found it; no gate did. The
+// gate that discovered the inert pair could not: it varies knobs and watches the
+// RESULT ORDER, and a fixture with no reranker to lose sees nothing go missing.
+//
+// What this observes is the factory CALL, plus the line the same block emits.
+// It does NOT observe the pool and weight arriving on the Service: those are
+// unexported and palace exposes no accessor, so a WithReranker that dropped its
+// arguments would pass here. Said plainly rather than papered over — the
+// reachability question ("did the wiring reach the reranker at all") is the one
+// that shipped broken, and it is the one this answers.
+func TestRerankSurvivesEveryFusionMode(t *testing.T) {
+	for _, fusion := range []string{"linear", "rrf", "RRF", ""} {
+		called := 0
+		factory := func(string, time.Duration) palace.Reranker { called++; return nil }
+
+		cfg := config.Default()
+		cfg.Fusion = fusion
+		cfg.RerankURL = "http://reranker.invalid/v1"
+		cfg.RerankPool = 64
+		cfg.RerankWeight = 0.25
+
+		_, lines := configureRanking(bareService(), cfg, factory)
+
+		if called != 1 {
+			t.Errorf("fusion=%q: the reranker factory was called %d time(s) with a rerank URL set; lines=%v",
+				fusion, called, lines)
+		}
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "pool 64") || !strings.Contains(joined, "weight 0.25") {
+			t.Errorf("fusion=%q: the reranker block did not report the configured pool and weight:\n%s",
+				fusion, joined)
+		}
+	}
+}
