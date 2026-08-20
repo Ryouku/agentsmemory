@@ -332,6 +332,22 @@ func printSupersessionTable(out io.Writer, report EvalReport) {
 	if len(order) == 0 {
 		return
 	}
+	// A run with no temporal cases would otherwise print one all-zero row per
+	// arm — thirty-odd lines saying nothing, which trains a reader to skip the
+	// block entirely on the runs where it does say something.
+	measured := false
+	for _, arms := range byScope {
+		for _, m := range arms {
+			if m.Supersession.Cases > 0 || m.Supersession.Vacuous > 0 {
+				measured = true
+			}
+		}
+	}
+	if !measured {
+		fmt.Fprintf(out, "\nsupersession — no temporal cases in this run, so nothing to measure "+
+			"(generate some with --style temporal)\n")
+		return
+	}
 
 	fmt.Fprintf(out, "\nsupersession — how often the arm put the SUPERSEDED memory above the correction:\n")
 	for _, sc := range order {
@@ -344,11 +360,11 @@ func printSupersessionTable(out io.Writer, report EvalReport) {
 		default:
 			fmt.Fprintf(out, "  scope %s — retrieves from its own namespace, so its pool is not the shared one\n", sc)
 		}
-		fmt.Fprintf(out, "    %-26s %6s %10s %16s %10s %12s %8s\n",
+		fmt.Fprintf(out, "    %-40s %6s %10s %16s %10s %12s %8s\n",
 			"arm", "cases", "stale@1+", "95% Wilson", "in page", "unreachable", "vacuous")
 		for _, m := range byScope[sc] {
 			c := m.Supersession
-			fmt.Fprintf(out, "    %-26s %6d %9.1f%% %16s %10d %12d %8d\n",
+			fmt.Fprintf(out, "    %-40s %6d %9.1f%% %16s %10d %12d %8d\n",
 				m.Arm, c.Cases, 100*c.Rate(), WilsonInterval(c.StaleAbove, c.Cases),
 				c.StaleInPage, c.CurrentUnreachable, c.Vacuous)
 		}

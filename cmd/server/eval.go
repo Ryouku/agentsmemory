@@ -977,7 +977,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		}
 	}
 
-	fmt.Fprintf(out, "%-22s %8s %8s %8s %14s %10s   %s\n", "arm", "R@1", "R@5", "MRR", "95% CI", "not found", "vs best")
+	fmt.Fprintf(out, "%-40s %8s %8s %8s %14s %10s   %s\n", "arm", "R@1", "R@5", "MRR", "95% CI", "not found", "vs best")
 	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 92))
 	for i, m := range report.Arms {
 		ci := palace.BootstrapMRR(m.Ranks)
@@ -994,7 +994,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 				verdict = fmt.Sprintf("worse by %.2f–%.2f", -delta.Hi, -delta.Lo)
 			}
 		}
-		fmt.Fprintf(out, "%-22s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
+		fmt.Fprintf(out, "%-40s %7.0f%% %7.0f%% %8.3f %14s %10d   %s\n",
 			m.Arm, m.Recall1Pct(), m.Recall5Pct(), m.MRR, ci, m.NotFound, verdict)
 	}
 	fmt.Fprintf(out, "n=%d — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap). The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner; 'inconclusive' means exactly that, never equivalence\n",
