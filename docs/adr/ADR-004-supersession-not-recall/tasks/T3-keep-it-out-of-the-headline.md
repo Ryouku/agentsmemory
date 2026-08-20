@@ -33,7 +33,7 @@ Stop the headline average from absorbing supersession failures, and print the su
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
 ```
 
 ## Tests
@@ -68,15 +68,15 @@ tests, but the printer lives in internal/palace/evalstats.go and the tests with 
 tests-exist check caught the mismatch — it reads the real files, which is the whole point of it. -->
 
 ## Verification Log
-- 2026-08-20 · e743a9d · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · e743a9d · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
   ```
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.054s
   ok  	github.com/atvirokodosprendimai/agentsmemory/cmd/server	0.006s [no tests to run]
   ```
-- 2026-08-20 · 0663646* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · 0663646* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
   ```
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.058s
   ok  	github.com/atvirokodosprendimai/agentsmemory/cmd/server	0.006s [no tests to run]
   ```
-- 2026-08-20 · 0663646* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
-- 2026-08-20 · 85ffbef · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · 0663646* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · 85ffbef · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`

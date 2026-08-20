@@ -46,7 +46,7 @@ Make the eval record where the superseded drawer landed — per arm, and once pe
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
 ```
 
 ## Tests
@@ -84,5 +84,5 @@ Stop if the distractor cannot be ranked without re-running retrieval for it — 
 - Choosing which arm the gate reads, and the family-wise correction over the recency sweep — T5 owns both; this task only labels the scopes that make the choice possible.
 
 ## Verification Log
-- 2026-08-20 · a962858* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
-- 2026-08-20 · 8a89e42 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · a962858* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · 8a89e42 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
