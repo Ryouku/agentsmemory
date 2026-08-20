@@ -74,3 +74,4 @@ Stop if fewer than `supersessionMinCases` verified, non-vacuous pairs exist once
 - Re-running the gate automatically as the corpus grows (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+- 2026-08-20 · c57bd43 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestSupersessionGate" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
