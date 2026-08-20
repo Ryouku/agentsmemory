@@ -67,6 +67,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
 			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted providers, ignored by a local one"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
+			&cli.BoolFlag{Name: "supersession-gate", Usage: "decide whether the supersession failure is common enough to justify a mechanism against it, from this run's temporal cases. Refuses rather than answering when the evidence is too thin, unhardened, or missing the pre-registered arm"},
 			&cli.Float64Flag{Name: "pair-max-distance", Value: 0.55, Usage: "how close a temporal pair must be before it is offered to the judge (cosine distance; 0 disables the ceiling). Without it, 'nearest older neighbour' is a claim about how sparse the wing is rather than about the two memories"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
@@ -146,6 +147,11 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	printEvalTable(out, report)
 	printClosetBlock(out, report)
 	palace.PrintSupersessionTable(out, report)
+	if c.Bool("supersession-gate") {
+		if err := printSupersessionGate(out, report, runMeta); err != nil {
+			fmt.Fprintf(out, "\nsupersession gate: REFUSED — %v\n", err)
+		}
+	}
 
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
@@ -1474,3 +1480,57 @@ func gatedArmCell(report palace.EvalReport) (palace.SupersessionCell, error) {
 // message: vacuity is defined against the pool a run used, so the count the gate
 // refuses on is only interpretable beside it.
 const defaultEvalPool = 50
+
+// printSupersessionGate renders the pre-registered verdict, or the reason it
+// refuses to give one.
+//
+// A refusal is the useful answer more often than a verdict is: below the case
+// floor the interval straddles almost any bar, and a gate that answers anyway
+// teaches people to ignore it. Each refusal names its own cause so an operator
+// can tell a thin corpus from an unhardened case file from a degraded run.
+func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta) error {
+	cell, err := gatedArmCell(report)
+	if err != nil {
+		return err
+	}
+	if err := supersessionGateReady(cell, meta); err != nil {
+		return err
+	}
+
+	verdict := palace.SupersessionVerdict(cell, palace.SupersessionBar())
+	// The veto is selection-aware: the best of the swept bands is compared at
+	// alpha/k, and only vetoes if it also costs no general ranking.
+	for _, m := range report.Arms {
+		band, ok := palace.RecencyBandCell(m)
+		if !ok {
+			continue
+		}
+		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report))
+		if v := palace.ApplyRecencyVeto(verdict, band, delta, palace.RecencyBandCount()); v.Status != verdict.Status {
+			verdict = v
+			break
+		}
+	}
+
+	fmt.Fprintf(out, "\nsupersession gate — %s\n", strings.ToUpper(verdict.Status))
+	fmt.Fprintf(out, "  arm %s (pre-registered, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
+		palace.SupersessionGatedArm(), cell.Cases, defaultEvalPool)
+	fmt.Fprintf(out, "  stale-above %.1f%% %s against a bar of %.2f; excluding unreachable corrections: %.1f%%\n",
+		100*verdict.Rate, verdict.Interval, palace.SupersessionBar(), 100*verdict.RateReachable)
+	if verdict.Reason != "" {
+		fmt.Fprintf(out, "  %s\n", verdict.Reason)
+	}
+	return nil
+}
+
+// gatedArmRanks returns the pre-registered arm's per-case ranks, for the
+// non-inferiority comparison. Empty when the arm is absent, which the caller has
+// already refused on.
+func gatedArmRanks(report palace.EvalReport) []int {
+	for _, m := range report.Arms {
+		if m.Arm == palace.SupersessionGatedArm() {
+			return m.Ranks
+		}
+	}
+	return nil
+}

@@ -27,6 +27,7 @@ func TestEvalOutputsAreReachableFromTheCommand(t *testing.T) {
 		"printEvalTable":         "runEval",
 		"printClosetBlock":       "runEval",
 		"PrintSupersessionTable": "runEval",
+		"printSupersessionGate":  "runEval",
 		"writeResults":           "runEval",
 		"writeCells":             "runEval",
 		"cellsPath":              "runEval",

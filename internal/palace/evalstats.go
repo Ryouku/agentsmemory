@@ -536,3 +536,20 @@ func SupersessionGatedArm() EvalArm { return supersessionGatedArm }
 // SupersessionMinCases is the floor on verified, non-vacuous pairs. Exported for
 // the command's refusal message.
 func SupersessionMinCases() int { return supersessionMinCases }
+
+// SupersessionBar is the pre-registered rate the verdict is read against.
+func SupersessionBar() float64 { return supersessionBar }
+
+// RecencyBandCount is k, the number of pre-registered bands the veto corrects
+// over. The correction is what stops the best of k, chosen after the fact, from
+// being reported as a 95% claim about any one of them.
+func RecencyBandCount() int { return len(recencySweep) }
+
+// RecencyBandCell reports an arm's supersession cell when the arm is a swept
+// recency band, so the veto can consider it without the caller matching names.
+func RecencyBandCell(m EvalMetrics) (SupersessionCell, bool) {
+	if _, ok := recencyBandOf(m.Arm); !ok {
+		return SupersessionCell{}, false
+	}
+	return m.Supersession, true
+}
