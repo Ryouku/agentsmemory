@@ -63,6 +63,12 @@ Keeping everything has a cost, and it is not disk. It is **retrieval**: a larger
 
 Give a record a validity window and that trade disappears. An ended record leaves the default recall path without leaving the store, so accumulation stops costing precision. **Deletion is not the price of good retrieval once ending is possible** — and that is the argument for keeping everything, stated so it can be checked.
 
+**Storage and payload are separate budgets, and this ADR only spends the first.** The obvious objection to keeping everything is the context window: if the store holds the whole history, what reaches the model? The answer is that the payload has never been a function of corpus size. A default recall returns `DefaultSearchLimit` = 5 hits at `DefaultSnippetChars` = 400 characters each — a window centred on the match, not the memory — so roughly 2,000 characters, on the order of 500 tokens, whether the palace holds 200 drawers or 200,000. Ending records changes the candidate POOL, and the pool was already bounded by `limit × snippet_chars` before it reached anybody's context.
+
+So "keep everything" costs disk and index, and costs the context window nothing. That is the whole reason the validity window makes accumulation affordable rather than merely principled.
+
+**The one payload cost this ADR does add, and its bound.** Carrying "supersedes X, because Y" on the live record puts the reason on the default path — which is the point — and reasons are free text. Five hits each carrying a 120-character reason is ~600 characters, a 30% increase on a ~2,000-character page, which is real. So the reason is **truncated to 200 characters in a recall response**, with the full text reachable through `include_history` alongside the record it ended. A retraction whose reasoning needs more than 200 characters is a memory in its own right and should be filed as one.
+
 **Pre-registered falsification — and a note on what it deliberately does not measure.**
 
 The first draft proposed retracting the history chain if `include_history` were rarely called. That was wrong, and it is worth saying why rather than quietly replacing it: read frequency is a bad proxy for the value of an archive. A decision record's payoff is rare and large — the one time someone asks why an alternative was rejected and the answer exists. Measuring it by call count would retract a feature whose value model is low-frequency and high-consequence, which is the same error as cancelling insurance because no claim was filed. Struck.
@@ -95,6 +101,7 @@ The `reason` field gets the same correction. Its quality is measured — median 
 | `am_update_drawer` content edit | change — supersedes instead of overwriting; returns the new id and names the ended one | `internal/mcpserver/drawers.go` | every agent that corrects a memory |
 | `am_invalidate_drawer(id, reason)` | add | `internal/mcpserver/drawers.go` | any agent retracting a memory |
 | `drawers.ended_reason`, `drawers.ended_at` | add (migration) | `db/migrations` | recall, and the current record's provenance |
+| recall response: `supersedes` + reason, truncated to 200 chars | add | `internal/mcpserver/drawers.go` | every recall — bounded so accumulation never grows the payload |
 | `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` | change — leave the agent surface | `internal/mcpserver` | agents (removed), operators (retained) |
 | `am_kg_invalidate` `reason` | add — required, mirroring the drawer verb | `internal/mcpserver/kg.go` | anyone reading why a fact ended |
 | `am_search` / `am_list_drawers` | change — current records only, with an explicit history flag | `internal/mcpserver` | every recall |

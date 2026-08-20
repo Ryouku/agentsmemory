@@ -59,6 +59,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestHistoryIsReachableWhenAsked` | `internal/mcptest/scoping_audit_test.go` | `include_history` returns the chain, newest first | — |
 | `TestTheReasonReachesDefaultRecall` | `internal/mcptest/scoping_audit_test.go` | a default search for the CURRENT record surfaces why its predecessor was ended — without the stale text | — |
 | `TestAccumulationDoesNotDegradeCurrentRecall` | `internal/mcptest/scoping_audit_test.go` | with superseded records outnumbering current ones 2:1, the same queries return the same current records in the same order | — |
+| `TestRecallPayloadIsBoundedRegardlessOfHistory` | `internal/mcptest/scoping_audit_test.go` | a default recall over a corpus with a long supersession chain returns the same number of bytes as one with none, within the 200-char reason allowance | — |
 
 ## Mutants
 
@@ -69,6 +70,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `include_history` defaults true | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
 | the live record drops the ended reason | yes | `TestTheReasonReachesDefaultRecall` |
 | ended records rejoin the candidate pool before ranking | yes | `TestAccumulationDoesNotDegradeCurrentRecall` |
+| the carried reason is emitted untruncated | yes | `TestRecallPayloadIsBoundedRegardlessOfHistory` |
 | `include_history` read but not declared | yes | `TestEveryArgumentAHandlerReadsIsDeclared` |
 
 ## Out of Scope
