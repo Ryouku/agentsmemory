@@ -132,6 +132,16 @@ func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
 		}
 		v := verdict{ID: a.ID}
 		switch {
+		case !src.exists && here == "" && a.Repo != "":
+			// We cannot tell whether this tree IS a.Repo, so we cannot tell an
+			// absent file from a file that lives somewhere else. Reporting
+			// MISSING here would be the destructive reading of an unknown: the
+			// honest response to "the file is gone" is to delete the memory, and
+			// a session once deleted three chunks that way. Anything we CAN
+			// confirm below is still confirmed — an unknown tree verifies what it
+			// finds and stays silent about what it does not.
+			elsewhere++
+			continue
 		case !src.exists:
 			v.Status, missing = statusMissing, missing+1
 			fmt.Fprintf(out, "  MISSING  %s — file is gone (memory %s)\n", a.Path, short(a.DrawerID))
@@ -148,7 +158,12 @@ func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
 	}
 
 	if elsewhere > 0 {
-		fmt.Fprintf(out, "  %d anchor(s) belong to another repository and were not checked from here (this tree is %q)\n", elsewhere, here)
+		if here == "" {
+			fmt.Fprintf(out, "  %d anchor(s) name a repository and this tree does not name itself (no git remote), "+
+				"so a file not found here is not evidence the memory is stale — left unrecorded\n", elsewhere)
+		} else {
+			fmt.Fprintf(out, "  %d anchor(s) belong to another repository and were not checked from here (this tree is %q)\n", elsewhere, here)
+		}
 	}
 	if c.Bool("dry-run") {
 		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing, %d elsewhere (dry run — nothing recorded)\n",
@@ -328,7 +343,19 @@ func currentRepoLabel(root string) string {
 			return url[i+1:]
 		}
 	}
-	return filepath.Base(root)
+	// Unknown, deliberately — NOT the directory name.
+	//
+	// The skip above reads an empty label as "unknown" and checks every anchor
+	// rather than skipping them, because a verifier that silently checked
+	// nothing would be worse than one that occasionally checks too much. That
+	// path was unreachable while this returned filepath.Base(root), which is
+	// non-empty for any real path — so in a tree with no origin remote (a
+	// tarball, a vendored copy, a clone whose remote is named differently, a
+	// worktree in a differently-named folder) the label became the folder name,
+	// every anchor from a named repository looked like it belonged elsewhere,
+	// and the report read "0 verified, 0 drifted, 0 missing, N elsewhere". A
+	// clean-looking report from a verifier that had checked nothing.
+	return ""
 }
 
 // wingLabel renders the scope for the report, or nothing when unscoped.

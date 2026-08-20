@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,9 +84,12 @@ func readSourceFrom(content string) *sourceFile {
 // because the skip decision is only as good as the two labels agreeing.
 func TestCurrentRepoLabelPrefersTheRemote(t *testing.T) {
 	dir := t.TempDir()
-	// No git remote: the directory name is the label.
-	if got := currentRepoLabel(dir); got != filepath.Base(dir) {
-		t.Errorf("without a remote the label is the directory name, got %q", got)
+	// No git remote: the label is UNKNOWN, not the directory name. Using the
+	// folder name made every anchor from a named repository look foreign, so the
+	// verifier reported success having checked nothing. See
+	// TestCurrentRepoLabelIsEmptyWhenTheRepoIsUnknown.
+	if got := currentRepoLabel(dir); got != "" {
+		t.Errorf("without a remote the label must be empty (unknown), got %q", got)
 	}
 }
 
@@ -103,7 +107,65 @@ func TestAnchorsFromAnotherRepoAreNotMissing(t *testing.T) {
 	// verdict about the memory.
 	foreign := anchor{Path: "infra/docker/base/Dockerfile", Repo: "some-other-repo"}
 	if foreign.Repo != "" && here != "" && !strings.EqualFold(foreign.Repo, here) {
-		return // skipped, as intended
+		return // named tree, foreign label: skipped before the file is looked for
 	}
-	t.Fatalf("an anchor labelled %q must be skipped in a tree labelled %q, not reported missing", foreign.Repo, here)
+	// Unknown tree (no remote): the label check cannot decide, so the file is
+	// looked for — and when it is not found, runVerify must still refuse to call
+	// it MISSING, because it cannot distinguish "deleted" from "lives elsewhere".
+	// That second guard is what keeps the regression fixed now that an unknown
+	// tree no longer skips everything.
+	if here != "" {
+		t.Fatalf("an anchor labelled %q must be skipped in a tree labelled %q, not reported missing", foreign.Repo, here)
+	}
+	src := readSource(filepath.Join(root, foreign.Path))
+	if src.exists {
+		t.Fatal("fixture: the foreign path should not exist in this temp tree")
+	}
+	if !(here == "" && foreign.Repo != "") {
+		t.Fatal("the unknown-tree guard would not fire for this anchor")
+	}
+}
+
+// TestCurrentRepoLabelIsEmptyWhenTheRepoIsUnknown pins the safety valve the doc
+// comment describes and the code did not have.
+//
+// The comment on the skip says an empty result means "unknown", and that an
+// unknown repository checks every anchor rather than skipping them — because a
+// verifier that silently checked nothing would be worse than one that
+// occasionally checks too much. That path was unreachable: the fallback was
+// filepath.Base(root), which is non-empty for any real path.
+//
+// The failure it was supposed to prevent was therefore live. In a tree with no
+// origin remote — a tarball, a vendored copy, a clone whose remote is named
+// something else, a worktree in a differently-named directory — `here` became the
+// DIRECTORY name, every anchor's Repo mismatched, and runVerify reported
+// "N anchor(s): 0 verified, 0 drifted, 0 missing, N elsewhere". A clean-looking
+// report from a verifier that checked nothing.
+func TestCurrentRepoLabelIsEmptyWhenTheRepoIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if got := currentRepoLabel(dir); got != "" {
+		t.Errorf("currentRepoLabel on a non-git directory = %q, want \"\" — a non-empty label "+
+			"makes every anchor from a named repository look like it belongs elsewhere, and the "+
+			"verifier reports success while checking nothing", got)
+	}
+}
+
+// TestCurrentRepoLabelReadsTheRemote is the other half: when there IS a remote,
+// the label must come from it and not from the directory, or two clones of one
+// repository in differently-named folders disagree about their own identity.
+func TestCurrentRepoLabelReadsTheRemote(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "git@github.com:someone/expected-name.git"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable in this environment: %v (%s)", err, out)
+		}
+	}
+	if got := currentRepoLabel(dir); got != "expected-name" {
+		t.Errorf("currentRepoLabel = %q, want %q — the label must come from the remote, not the "+
+			"directory, or the same repo cloned into two folders disagrees with itself", got, "expected-name")
+	}
 }
