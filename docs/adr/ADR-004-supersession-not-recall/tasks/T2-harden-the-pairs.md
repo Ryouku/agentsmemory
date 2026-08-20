@@ -74,3 +74,4 @@ Stop and ask if accepted pairs fall below roughly one in five candidates: at tha
 ## Verification Log
 - 2026-08-20 · d0b37a9 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'`
 - 2026-08-20 · f273396 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'`
+- 2026-08-20 · d06e9e6 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'`
