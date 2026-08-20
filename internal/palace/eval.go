@@ -245,6 +245,15 @@ type EvalCaseResult struct {
 	Query    string
 	Category string
 	Ranks    map[EvalArm]int
+
+	// PoolRank is where the gold sat in the pool ordered by vector distance, or
+	// 0 when the dense channel never surfaced it. It duplicates what
+	// EvalReport.PoolRanks carries and it has to: PoolRanks skips absent cases
+	// while Details holds every case, so the two cannot be aligned by index. A
+	// paired statistic needs to exclude a case whose gold was never reachable —
+	// a zero delta there is a retrieval fact wearing a ranking result's clothes —
+	// and that exclusion is only expressible per case.
+	PoolRank int
 }
 
 // Progress reports how far a run has got. An eval that prints nothing for
@@ -323,7 +332,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
-		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks})
+		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks, PoolRank: poolRank})
 		cat := c.category()
 		for _, a := range arms {
 			m := byArm[a]
@@ -989,6 +998,18 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 	}
 	take(indexes(rankHybrid(query, docs, dists, nil)))
 	take(indexes(rankRRF(query, docs, dists, nil)))
+	// The closet-boosted ordering is pooled too, at FULL strength whatever the
+	// server serves. Without it a memory that only the curation prior would
+	// surface can never be judged relevant, and the qrels built from this pool
+	// would then be used to decide whether the prior helps — the instrument
+	// assuming the conclusion. One more ordering over candidates already fetched.
+	if closetBySource := s.closetBoostsAt(ctx, teamID, vec, 1); len(closetBySource) > 0 {
+		closet := make([]float64, len(drawers))
+		for i, d := range drawers {
+			closet[i] = closetBySource[d.SourceFile]
+		}
+		take(indexes(rankHybrid(query, docs, dists, closet)))
+	}
 	if s.rerank != nil {
 		fused := rankHybrid(query, docs, dists, nil)
 		hitsForRerank := make([]SearchHit, len(drawers))
