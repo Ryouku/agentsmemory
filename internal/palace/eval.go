@@ -596,10 +596,17 @@ const (
 	ScopeOwnIndex SupersessionScope = "own-index"
 )
 
-// supersessionScope classifies an arm. It is exhaustive by construction: a new
-// arm with no scope fails TestSupersessionRanksScopePerArm rather than having
-// its number printed beside arms measuring something else.
-func supersessionScope(arm EvalArm) SupersessionScope {
+// ArmScope classifies an arm by the population its ranks — and therefore its
+// NotFound count — are taken over. It is exhaustive by construction: a new arm
+// with no scope fails TestSupersessionRanksScopePerArm rather than having its
+// number printed beside arms measuring something else.
+//
+// Exported because the scope is not only a supersession concern. Any reader that
+// aggregates NotFound across arms is summing different populations unless it
+// filters on this: a gold at pool rank 12 is a miss for a ScopePage arm and a hit
+// for every ScopePool one, and calling that a retrieval failure sends the reader
+// after the embedding when nothing was ever missing from the pool.
+func ArmScope(arm EvalArm) SupersessionScope {
 	switch arm {
 	case ArmProduction:
 		return ScopePage

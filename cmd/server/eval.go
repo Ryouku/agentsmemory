@@ -1092,33 +1092,49 @@ func printRetrievalCeiling(out io.Writer, report palace.EvalReport) {
 // a large corpus the second becomes the common one while the score alone still
 // just says "worse".
 func printPoolDiagnosis(out io.Writer, report palace.EvalReport) {
-	worst, contextualExtra := 0, 0
+	// Only ScopePool arms re-order the shared candidate set, so only their misses
+	// mean "the gold was never on the table". The other scopes count something
+	// else entirely and are reported on their own terms below — ArmContextual
+	// retrieves from its own capped index, and ArmProduction is scored over the
+	// PAGE Search returns, which is far shorter than the pool.
+	//
+	// This filters on the classification rather than naming arms, because naming
+	// them is how production got folded in: the contextual case was excluded by
+	// name when it was found, and the next arm with a non-pool scope inherited
+	// the bug. A new arm now has to declare a scope (ArmScope is exhaustive by
+	// construction) before it can appear here at all.
+	worst, cases := 0, 0
+	extra := map[palace.SupersessionScope]int{}
 	for _, m := range report.Arms {
-		// The contextual arm retrieves from its own CAPPED index, so its misses
-		// mean "outside the experiment's sample", not "outside the shared pool" —
-		// folding them in once steered an operator toward raising --pool when the
-		// binding knob was --contextual-limit.
-		if m.Arm == palace.ArmContextual {
-			contextualExtra = m.NotFound
+		if palace.ArmScope(m.Arm) != palace.ScopePool {
+			if m.NotFound > extra[palace.ArmScope(m.Arm)] {
+				extra[palace.ArmScope(m.Arm)] = m.NotFound
+			}
 			continue
 		}
 		if m.NotFound > worst {
 			worst = m.NotFound
 		}
+		if m.Cases > cases {
+			cases = m.Cases
+		}
 	}
-	if contextualExtra > worst {
-		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", contextualExtra-worst)
+
+	if worst > 0 {
+		fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
+		fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
+		fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
 	}
-	if worst == 0 {
-		return
+
+	// Each non-pool scope gets its own sentence naming ITS knob. A count printed
+	// without the knob that moves it is worse than no count: the reader reaches
+	// for the one knob the text mentions, which is the wrong one.
+	if n := extra[palace.ScopeOwnIndex] - worst; n > 0 {
+		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", n)
 	}
-	cases := 0
-	if len(report.Arms) > 0 {
-		cases = report.Arms[0].Cases
+	if n := extra[palace.ScopePage] - worst; n > 0 {
+		fmt.Fprintf(out, "\nproduction missed %d question(s) beyond the pool's misses — it is scored over the PAGE Search returns, not the pool, so those golds were retrieved and ranked below the page cut. Raising --pool does not move them: the knobs are the search limit and RERANK_POOL (which widens the fetch when a reranker is configured).\n", n)
 	}
-	fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
-	fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
-	fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
 }
 
 // printCategories breaks the leading arm out by question kind. An average over

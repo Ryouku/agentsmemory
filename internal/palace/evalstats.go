@@ -294,7 +294,7 @@ func fillSupersession(report *EvalReport) {
 	for i := range report.Arms {
 		arm := report.Arms[i].Arm
 		cell := StaleAboveRate(report.Details, arm)
-		cell.Scope = supersessionScope(arm)
+		cell.Scope = ArmScope(arm)
 		report.Arms[i].Supersession = cell
 	}
 }
