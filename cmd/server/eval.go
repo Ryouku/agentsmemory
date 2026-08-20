@@ -230,6 +230,7 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // loadOrGenerateCases reads a case file when one exists, and otherwise samples
 // drawers and generates questions — writing them out so the next run compares
 // like with like.
+
 // generateTemporalCases builds the CatTemporal case set. Each case pairs a dated
 // drawer with its nearest semantic neighbour whose content date is strictly
 // older (OlderNeighbor): the newer drawer is the expected answer, and the older
@@ -435,6 +436,7 @@ func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team 
 // correct retrieval as a false positive, and every gate calibrated on such
 // cases would be calibrated on invalid labels. Returns the id of a drawer that
 // answers the question, or "" when the top hits all fail the answer check.
+
 // evalPromptPairCheck asks the judge the one question distance cannot answer.
 //
 // Not "are these related" — nearby memories are related all the time. The

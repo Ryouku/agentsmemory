@@ -694,6 +694,7 @@ func landingFeatureList() []feature {
 // landingPlans are the pricing tiers, matching the plans catalog (Free + Pro).
 // Pro is one tier sold two ways — €50 / month or €500 / year (two months free) —
 // so the annual option rides as a point under the headline monthly price.
+
 // freeRequestsPerMonth is the Free plan's metered-request allowance, formatted
 // for display. Four surfaces quote it — the hero note, the pricing tier, the FAQ
 // answer and the register page — and each used to say it in its own words, which

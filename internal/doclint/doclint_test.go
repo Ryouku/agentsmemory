@@ -83,9 +83,14 @@ func TestDocCommentsMatchTheirDeclaration(t *testing.T) {
 			// field wearing its neighbour's comment misleads the next reader of
 			// this package exactly as much, and this package is where the
 			// reasoning lives.
-			if !d.field && !ast.IsExported(d.name) {
-				continue
-			}
+			// Unexported declarations are checked too, since 6f17446f: the live
+			// defect this gate exists for landed on an UNEXPORTED method — a
+			// 320-line evalCase lost its doc comment to a var inserted below it,
+			// and the gate stayed green precisely because of this skip. The
+			// argument already made for struct fields ("an unexported field
+			// wearing its neighbour's comment misleads the next reader of the
+			// package just as much") applies unchanged. Measured cost before
+			// removing it: 4 sites in 1,141 documented unexported declarations.
 			first := firstWord(d.doc)
 			// "Deprecated" without the colon: firstWord already trims trailing
 			// punctuation, so the old comparison against "Deprecated:" could
@@ -354,9 +359,7 @@ func hijacked(t *testing.T, src string) []string {
 		if d.name == "" || d.doc == nil {
 			continue
 		}
-		if !d.field && !ast.IsExported(d.name) {
-			continue
-		}
+		// Same rule as the repo-wide check: unexported declarations count.
 		first := firstWord(d.doc)
 		if first == "" || first == d.name || first == "Deprecated" {
 			continue

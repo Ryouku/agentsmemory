@@ -183,14 +183,35 @@ func readEnvVars(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	read := map[string]bool{}
 	consult := regexp.MustCompile(`(?:cli\.EnvVars\(|os\.Getenv\(|os\.LookupEnv\(|t\.Setenv\()([^)]*)`)
+	// A read through a CONSTANT is still a read. envVarPattern matches the
+	// variable's own shape, so cli.EnvVars(mcpURLEnvVar) is invisible to it — and
+	// this gate then reported AGENTSMEMORY_MCP_URL as "documented but read by
+	// nothing" the moment the reverse gate learned to see it. Both directions have
+	// to resolve the indirection or they describe different sets and contradict
+	// each other.
+	constDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*"([A-Z][A-Z0-9_]+)"`)
+	consts := map[string]string{}
+	bodies := map[string]string{}
 	for _, path := range goFilesUnder(t, root) {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		for _, m := range consult.FindAllStringSubmatch(string(src), -1) {
+		bodies[path] = string(src)
+		for _, m := range constDecl.FindAllStringSubmatch(bodies[path], -1) {
+			consts[m[1]] = m[2]
+		}
+	}
+	ident := regexp.MustCompile(`[a-zA-Z_][A-Za-z0-9_]*`)
+	for _, body := range bodies {
+		for _, m := range consult.FindAllStringSubmatch(body, -1) {
 			for _, v := range envVarPattern.FindAllString(m[1], -1) {
 				read[v] = true
+			}
+			for _, id := range ident.FindAllString(m[1], -1) {
+				if name, ok := consts[id]; ok {
+					read[name] = true
+				}
 			}
 		}
 	}
@@ -270,6 +291,7 @@ func dedupe(in []string) []string {
 //
 // Scoped to variables reachable through the CLI's own EnvVars declarations,
 // because those are the ones a user is invited to set.
+
 // notOperatorFacing lists variables the program reads that an operator is not
 // expected to set, each with the reason. It is the escape hatch that keeps this
 // check usable: without it the gate flags build-time and test affordances, and a
@@ -279,6 +301,7 @@ var notOperatorFacing = map[string]string{
 	"AIAGENTMEMORY_SERVER_BIN": "test/dev override for locating the server binary; not a deployment knob",
 	"AIAGENTMEMORY_CODEX_BIN":  "test/dev override for locating the codex binary",
 	"AIAGENTMEMORY_PI_BIN":     "test/dev override for locating the pi binary",
+	"AIAGENTMEMORY_CLAUDE_BIN": "test/dev override for locating the claude binary",
 	"AIAGENTMEMORY_VERSION":    "stamped at build time by the release workflow, not set by hand",
 }
 
@@ -287,8 +310,16 @@ var notOperatorFacing = map[string]string{
 // stale cover for whatever replaced it.
 func TestNotOperatorFacingIsJustified(t *testing.T) {
 	root := repoRoot(t)
+	// Non-test sources only. goFilesUnder does not skip _test.go and the
+	// notOperatorFacing literal lives in THIS file, so scanning everything made
+	// every name match itself: adding a deliberately bogus variable that nothing
+	// reads still passed. The half of this check that was supposed to catch a
+	// stale entry could never fire.
 	var all strings.Builder
 	for _, path := range goFilesUnder(t, root) {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
 		if raw, err := os.ReadFile(path); err == nil {
 			all.Write(raw)
 		}
@@ -307,7 +338,17 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 	root := repoRoot(t)
 
 	read := map[string]string{} // var -> file that reads it
-	envVarsDecl := regexp.MustCompile(`EnvVars\("([A-Z][A-Z0-9_]+)"`)
+	// Two forms. A literal is the common one; a CONSTANT is the form that hid a
+	// live defect — AGENTSMEMORY_MCP_URL is declared as mcpURLEnvVar, read at four
+	// call sites, operator-facing, and documented nowhere. A regex requiring a
+	// quote straight after EnvVars( could not see it, which is precisely the
+	// "knob only its author knows about" this check exists for.
+	envVarsLiteral := regexp.MustCompile(`EnvVars\("([A-Z][A-Z0-9_]+)"`)
+	envVarsConst := regexp.MustCompile(`EnvVars\(([a-zA-Z_][A-Za-z0-9_]*)\)`)
+	constDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*"([A-Z][A-Z0-9_]+)"`)
+
+	consts := map[string]string{} // identifier -> the variable name it holds
+	var sources []struct{ rel, body string }
 	for _, path := range goFilesUnder(t, root) {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -316,10 +357,26 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		for _, m := range envVarsDecl.FindAllStringSubmatch(string(src), -1) {
+		rel, _ := filepath.Rel(root, path)
+		body := string(src)
+		sources = append(sources, struct{ rel, body string }{rel, body})
+		for _, m := range constDecl.FindAllStringSubmatch(body, -1) {
+			consts[m[1]] = m[2]
+		}
+	}
+	for _, src := range sources {
+		for _, m := range envVarsLiteral.FindAllStringSubmatch(src.body, -1) {
 			if _, seen := read[m[1]]; !seen {
-				rel, _ := filepath.Rel(root, path)
-				read[m[1]] = rel
+				read[m[1]] = src.rel
+			}
+		}
+		for _, m := range envVarsConst.FindAllStringSubmatch(src.body, -1) {
+			name, ok := consts[m[1]]
+			if !ok {
+				continue // not a single-constant indirection we can resolve
+			}
+			if _, seen := read[name]; !seen {
+				read[name] = src.rel
 			}
 		}
 	}
@@ -354,8 +411,13 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 		names = append(names, v)
 	}
 	sort.Strings(names)
+	// A promise, not a mention. strings.Contains counted prose ABOUT a variable —
+	// including prose explaining that it deliberately does not exist — as
+	// documenting it. The sibling direction already guards this by requiring
+	// VAR=value; this requires the same, or a compose-style "VAR:" key.
 	for _, v := range names {
-		if !strings.Contains(text, v) {
+		promised := regexp.MustCompile(`(?m)^\s*#?\s*` + regexp.QuoteMeta(v) + `\s*[:=]`)
+		if !promised.MatchString(text) {
 			t.Errorf("%s is read by %s and documented nowhere an operator would look "+
 				"(.env examples, README, AGENTS.md, compose) — a knob only its author knows about",
 				v, read[v])

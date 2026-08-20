@@ -160,6 +160,16 @@ func gitignoreMatcher(t *testing.T, root string) func(rel string, isDir bool) bo
 			if isDir && base == strings.Trim(d, "/") {
 				return true
 			}
+			// git's own storage is a DIRECTORY in a clone and a FILE in a
+			// worktree or submodule, holding a line like "gitdir: /Users/…". The
+			// isDir gate above therefore walked that file, matched the home path
+			// inside it, and accused the tree of leaking one — so this suite went
+			// red for anyone reviewing from a worktree, which is the obvious way
+			// to check out a PR. A gate that cries wolf is one people delete, and
+			// this one cried at reviewers specifically.
+			if !isDir && base == ".git" && strings.Trim(d, "/") == ".git" {
+				return true
+			}
 		}
 		for _, e := range exact {
 			if base == e {

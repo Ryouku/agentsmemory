@@ -882,6 +882,7 @@ func buildServices(cfg config.Config) (*services, error) {
 // can select is not a backend, which is the same defect the eval's production
 // arm and the IDF coverage each shipped with — worth naming here because it is
 // evidently this codebase's favourite way to be wrong.
+
 // buildEmbedder selects the embedding backend, or reports why it cannot.
 //
 // It returns an error rather than exiting because it runs inside buildServices,

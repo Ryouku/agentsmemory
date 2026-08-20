@@ -1141,3 +1141,29 @@ func TestAdaptiveArmsAreNotInterchangeable(t *testing.T) {
 			"under a swap for a reason unrelated to the arms")
 	}
 }
+
+// TestSupersessionTableSaysWhyItIsEmpty pins the one output path in the table
+// work that had nothing holding it.
+//
+// A run with no temporal cases used to print an all-zero row per arm — thirty-odd
+// lines saying nothing, which is how a reader learns to skip the block on the
+// runs where it does say something. The replacement is one line, and a line
+// nothing pins is a line that quietly becomes wrong.
+func TestSupersessionTableSaysWhyItIsEmpty(t *testing.T) {
+	var buf strings.Builder
+	printSupersessionTable(&buf, EvalReport{Arms: []EvalMetrics{
+		{Arm: ArmHybrid, Supersession: SupersessionCell{Scope: ScopePool}},
+		{Arm: ArmProduction, Supersession: SupersessionCell{Scope: ScopePage}},
+	}})
+	got := buf.String()
+	if strings.Count(got, "\n") > 3 {
+		t.Errorf("an empty supersession table printed %d lines; it should say why there is nothing "+
+			"to measure and stop:\n%s", strings.Count(got, "\n"), got)
+	}
+	for _, want := range []string{"no temporal cases", "--style temporal"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the empty-table line never mentions %q, so a reader cannot tell an empty run "+
+				"from a broken one:\n%s", want, got)
+		}
+	}
+}

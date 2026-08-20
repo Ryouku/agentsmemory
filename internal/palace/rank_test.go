@@ -770,10 +770,28 @@ func TestLexNormSaturatingBoundOnAchievableInput(t *testing.T) {
 			"longer sweeps the achievable range and the bound is untested", max, sup)
 	}
 
-	// And the gap against page-max at the same weight, which is what makes the
-	// grid unfair rather than merely different.
-	if pm := lexNormPageMax([]float64{ceiling * 0.999}, ceiling)[0]; pm <= max {
-		t.Errorf("page-max reached %.6f and saturating %.6f; the truncation this test exists to "+
-			"pin has gone away — check whether the sweep still needs its Risks note", pm, max)
+	// The gap against page-max, on a page where page-max is not 1.0 by
+	// construction. The first version compared a SINGLE-element page, where
+	// page-max divides by that element and is therefore always exactly 1.0 — so
+	// the check read "1.0 <= 0.667", which cannot hold, and detected nothing.
+	// The gap is at the TOP of the range, and only there. Saturating is concave,
+	// so it sits ABOVE the proportional curve for small raw and below it for
+	// large — asserting it is smaller everywhere was wrong, and the run said so.
+	// What truncates the sweep is the winner: page-max hands its best candidate
+	// exactly 1.0 by construction, while saturating cannot exceed 2/3 however
+	// good that candidate is.
+	multi := []float64{ceiling * 0.9, ceiling * 0.5, ceiling * 0.1}
+	pm := lexNormPageMax(multi, ceiling)
+	sat := lexNormSaturating(multi, ceiling)
+	if pm[0] != 1.0 {
+		t.Fatalf("fixture: page-max must hand its winner 1.0, got %.6f", pm[0])
+	}
+	if sat[0] >= pm[0] {
+		t.Errorf("the page winner scored %.6f under saturating and %.6f under page-max — the "+
+			"truncation this test exists to pin has gone away; check whether the sweep still needs "+
+			"its Risks note", sat[0], pm[0])
+	}
+	if sat[0] >= sup {
+		t.Errorf("the page winner scored %.6f under saturating, at or above the %.6f supremum", sat[0], sup)
 	}
 }
