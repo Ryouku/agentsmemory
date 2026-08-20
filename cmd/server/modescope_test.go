@@ -6,7 +6,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -23,6 +22,8 @@ import (
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	cli "github.com/urfave/cli/v3"
 )
 
 // knob is one operator setting and the values the sweep tries for it.
@@ -309,24 +310,17 @@ func TestDiscoveredPairsAdmitTheirCondition(t *testing.T) {
 			"--bm25-weight under --fusion=rrf exists in the code and should have been found")
 	}
 
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
-	}
-	cfgSrc, err := os.ReadFile(filepath.Join("..", "..", "internal", "config", "config.go"))
-	if err != nil {
-		t.Fatalf("read config.go: %v", err)
-	}
+	flags := serveFlags(config.Default())
 
 	for _, p := range pairs {
 		// "--bm25-weight is inert when --fusion=rrf"
 		knobName, gate := parsePair(t, p)
-		usage := flagUsage(t, string(src), knobName)
+		usage := flagUsage(t, flags, knobName)
 		if usage == "" {
 			t.Errorf("no Usage string found for %s", knobName)
 			continue
 		}
-		if !mentions(usage, gate) && !mentions(string(cfgSrc), gate+" "+knobName) {
+		if !mentions(usage, gate) {
 			t.Errorf("%s does nothing when %s is set, and its --help says nothing about it:\n  %q\n"+
 				"  An operator who sets it gets no behaviour change and no explanation. Naming the "+
 				"gating knob is the whole remedy.", knobName, gate, usage)
@@ -368,23 +362,30 @@ func parsePair(t *testing.T, pair string) (knob, gate string) {
 	return parts[0], gate
 }
 
-// flagUsage pulls a flag's Usage text out of the command wiring.
-func flagUsage(t *testing.T, src, flag string) string {
+// flagUsage returns a flag's Usage text from the flags the command actually
+// builds, not from the source text of main.go.
+//
+// The string-scanning version this replaced was satisfied by dead text: a line
+// reading `// Name: "bm25-weight", Usage: "unused --fusion"` anywhere earlier in
+// the file passed the admission while the real --help stayed silent. Which is the
+// same defect the admission exists to prevent, one level up — a promise that is
+// present in the source and absent from the surface an operator reads.
+func flagUsage(t *testing.T, flags []cli.Flag, flag string) string {
 	t.Helper()
 	name := strings.TrimPrefix(flag, "--")
-	i := strings.Index(src, `Name: "`+name+`"`)
-	if i < 0 {
-		return ""
+	for _, f := range flags {
+		for _, n := range f.Names() {
+			if n != name {
+				continue
+			}
+			d, ok := f.(cli.DocGenerationFlag)
+			if !ok {
+				t.Fatalf("--%s carries no usage text at all", name)
+			}
+			return d.GetUsage()
+		}
 	}
-	j := strings.Index(src[i:], "Usage: ")
-	if j < 0 {
-		return ""
-	}
-	rest := src[i+j:]
-	if k := strings.Index(rest, "},\n"); k >= 0 {
-		rest = rest[:k]
-	}
-	return rest
+	return ""
 }
 
 // mentions accepts the flag spelling or the environment spelling, since an
