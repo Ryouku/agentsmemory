@@ -727,6 +727,30 @@ func TestUpdateRefusesToHalfRewriteAMultiChunkMemory(t *testing.T) {
 		}
 	}
 
+	// A wing or room MOVE splits the same memory instead of contradicting it: one
+	// chunk leaves and the rest stay. This release sharpens the consequence,
+	// because recall now defaults to the registration's wing — after a split
+	// neither wing returns the whole memory, and nothing marks what you get as a
+	// fragment. Found by review, one field over from the reported defect.
+	other := "other-wing"
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Wing: &other}); err == nil {
+		t.Error("moving one chunk of a multi-chunk memory to another wing was accepted — the memory " +
+			"is now split and no single scope returns all of it")
+	}
+	otherRoom := "other-room"
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Room: &otherRoom}); err == nil {
+		t.Error("moving one chunk of a multi-chunk memory to another room was accepted")
+	}
+	if chunks, err := svc.repo.MemoryChunks(ctx, team, parent); err != nil {
+		t.Fatalf("MemoryChunks: %v", err)
+	} else {
+		for _, c := range chunks {
+			if c.Wing != "w" || c.Room != "r" {
+				t.Errorf("a refused move still relocated chunk %d to %s/%s", c.ChunkIndex, c.Wing, c.Room)
+			}
+		}
+	}
+
 	// A single-chunk memory still updates, or the fix has broken the common case.
 	one, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "short", Content: "a short memory"})
 	if err != nil {

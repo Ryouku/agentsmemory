@@ -511,19 +511,32 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 	// how many rows exist and which ids they carry, which silently invalidates
 	// every anchor, tunnel and knowledge-graph fact pointing at the old ones.
 	// That is a bigger change than a bug fix and it is recorded in the backlog.
-	if patch.Content != nil {
-		chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
-		if err != nil {
-			return Drawer{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
+	// Every patchable field is one the chunks of a memory must agree on, so the
+	// guard covers all of them rather than content alone.
+	//
+	// Content was the reported case: rewriting one chunk left the others live with
+	// the old text, ranking above the correction. Wing and room split the memory
+	// instead — one chunk moves and the rest stay — and this release makes that
+	// worse than it was, because recall now defaults to the registration's wing:
+	// after a split neither wing returns the whole memory, and nothing tells the
+	// reader that what they got is a fragment.
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if err != nil {
+		return Drawer{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
+	}
+	if len(chunks) > 1 {
+		what := "content"
+		harm := "leave the other chunk(s) live with the old text — still embedded, still returned " +
+			"by search, and with nothing marking them retracted"
+		if patch.Content == nil {
+			what = "wing or room"
+			harm = "move this chunk away from the rest of the memory, so no single scope returns " +
+				"all of it and a scoped search answers with a fragment that does not say it is one"
 		}
-		if len(chunks) > 1 {
-			return Drawer{}, fmt.Errorf(
-				"%w: drawer %s is chunk %d of a %d-chunk memory, and updating its content would leave "+
-					"the other %d chunk(s) live with the old text — still embedded, still returned by "+
-					"search, and with nothing marking them retracted. Delete the memory and file the "+
-					"correction as a new one",
-				ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks), len(chunks)-1)
-		}
+		return Drawer{}, fmt.Errorf(
+			"%w: drawer %s is chunk %d of a %d-chunk memory, and changing its %s would %s. "+
+				"Delete the memory and file it again as one piece",
+			ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks), what, harm)
 	}
 
 	// Compute the post-patch state and refresh the derived index first.

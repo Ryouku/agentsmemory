@@ -263,6 +263,11 @@ Refusing is the safe half of the fix, not the whole one. Two things are still op
   how many rows exist and which ids they carry, which silently invalidates every anchor, tunnel and
   knowledge-graph fact pointing at the old ones. Doing it properly means deciding what happens to
   those references, which is an ADR rather than a bug fix.
+- **A wing or room MOVE split the memory** instead of contradicting it — one chunk leaves and the
+  rest stay. Fixed in the same place as the content case: every patchable field is one the chunks
+  must agree on. Worth recording because this release sharpened the consequence — recall now
+  defaults to the registration's wing, so after a split neither wing returns the whole memory and
+  nothing marks what you get as a fragment.
 - **`Delete` has the same shape.** `Service.Delete` removes one row and one vector; deleting a
   parent leaves its children orphaned, still embedded, still searchable, and now with a dangling
   `parent_id`. Not yet reproduced, but the code is one row deep in exactly the same way.
