@@ -31,9 +31,10 @@ A superseded record is unreachable by every default route and reachable by one e
 1. Write the failing test first (TDD red): `TestSupersededRecordIsUnreachableByEveryDefaultRoute` — search, list and get, each asked for the retracted text. Commit it red.
 2. Filter through T1's single `current()` predicate rather than adding a condition per query.
 3. Add `include_history`, declared on the tool as well as read by the handler — an argument the handler honours and the schema hides is a capability nobody can discover, which this repository shipped once already this week.
-4. Audit the CLASS, not the instance. The wing-scoping leak was fixed in one tool and found in three more only because every route was asked; supersession has the same shape and the same number of routes.
-5. Falsify: filter search but not list; filter list but not get; make `include_history` default true.
-6. Run the acceptance command.
+4. Prove accumulation is affordable, which is the claim the whole ADR rests on. Seed a wing until superseded records outnumber current ones 2:1, then run the same queries against it and against the same corpus before the endings existed. Current-record ordering must be identical. This is the ADR's pre-registered falsification: if it fails, ended records are competing after all and the filter is broken — the remedy is the filter, never deletion.
+5. Audit the CLASS, not the instance. The wing-scoping leak was fixed in one tool and found in three more only because every route was asked; supersession has the same shape and the same number of routes.
+6. Falsify: filter search but not list; filter list but not get; make `include_history` default true.
+7. Run the acceptance command.
 
 ## Acceptance
 
@@ -42,9 +43,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcptest/ -run "TestSupersededRecordIsUnreachable|TestHistoryIsReachableWhenAsked" -count=1 -v 2>&1 | tee /tmp/v3.out
+  go test ./internal/mcptest/ -run "TestSupersededRecordIsUnreachable|TestHistoryIsReachableWhenAsked|TestAccumulationDoesNotDegradeCurrentRecall" -count=1 -v 2>&1 | tee /tmp/v3.out
   grep -q -- "--- PASS: TestSupersededRecordIsUnreachableByEveryDefaultRoute" /tmp/v3.out
   grep -q -- "--- PASS: TestHistoryIsReachableWhenAsked" /tmp/v3.out
+  grep -q -- "--- PASS: TestAccumulationDoesNotDegradeCurrentRecall" /tmp/v3.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/v3.out
   go test ./... -count=1'
 ```
@@ -56,6 +58,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` | `internal/mcptest/scoping_audit_test.go` | search, list and get all exclude retracted text | — |
 | `TestHistoryIsReachableWhenAsked` | `internal/mcptest/scoping_audit_test.go` | `include_history` returns the chain, newest first | — |
 | `TestTheReasonReachesDefaultRecall` | `internal/mcptest/scoping_audit_test.go` | a default search for the CURRENT record surfaces why its predecessor was ended — without the stale text | — |
+| `TestAccumulationDoesNotDegradeCurrentRecall` | `internal/mcptest/scoping_audit_test.go` | with superseded records outnumbering current ones 2:1, the same queries return the same current records in the same order | — |
 
 ## Mutants
 
@@ -65,6 +68,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | filter list but not get | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
 | `include_history` defaults true | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
 | the live record drops the ended reason | yes | `TestTheReasonReachesDefaultRecall` |
+| ended records rejoin the candidate pool before ranking | yes | `TestAccumulationDoesNotDegradeCurrentRecall` |
 | `include_history` read but not declared | yes | `TestEveryArgumentAHandlerReadsIsDeclared` |
 
 ## Out of Scope
@@ -83,6 +87,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 - A route is added later without the filter. Mitigated: the class audit in step 4 is written to ask every route, so a new one fails until it is answered.
 
 ## Stop Condition
+
+Stop and report if accumulation DOES degrade current recall and the filter cannot be fixed — that is the one finding that would put the "keep everything" position and good retrieval genuinely in tension, and it deserves a decision rather than a workaround.
 
 Stop and report if the falsification cannot be satisfied — a superseded record reachable by any default route reproduces the live-chunk-1 defect this ADR exists to make impossible, and shipping it would be worse than not shipping.
 

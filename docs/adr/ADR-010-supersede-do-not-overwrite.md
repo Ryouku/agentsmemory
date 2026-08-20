@@ -57,13 +57,23 @@ Drawers gain a validity window, and the two operations are separated at the tool
 
 **Recall returns current records; the reason rides along.** Superseded TEXT does not compete with its correction — that failure is documented here already, where an update rewrote chunk 0 while chunk 1 stayed live with its own embedding, still answering with the retracted claim. But the current record names what it replaced and why, so a reader of the live memory learns the decision was taken and does not re-take it. Full history stays behind an explicit flag for the cases that want the whole chain.
 
-**Pre-registered falsification, two parts.** The claim has two halves and each can fail on its own.
+**Why accumulation is affordable here, which is the load-bearing claim.** The maintainer's position is that everything the palace can accumulate should be kept, because the accumulation *is* the value. This ADR is what makes that position payable rather than merely principled.
 
-*History is worth keeping.* If `include_history` is never called over a meaningful window and no eval case is answerable only from a superseded record, the chain bought storage for nothing.
+Keeping everything has a cost, and it is not disk. It is **retrieval**: a larger, more heterogeneous corpus measurably retrieves worse, because unrelated records do not remove the answer — they add competitors ahead of it. That is already this project's own recorded finding, and it is why deletion exists at all. `am_delete_drawer` is a workaround for the absence of a validity window: with no way to mark a record ended, the only way to stop it competing in recall is to destroy it.
 
-*Reasons are worth requiring.* If the median `reason` is under ~20 characters, or a sample reads as "obsolete", "wrong", "outdated", then the field is being satisfied rather than used, and a required argument that teaches nothing is a tax on every retraction.
+Give a record a validity window and that trade disappears. An ended record leaves the default recall path without leaving the store, so accumulation stops costing precision. **Deletion is not the price of good retrieval once ending is possible** — and that is the argument for keeping everything, stated so it can be checked.
 
-Either half failing retracts that half rather than weakening the bar. Both are declared before the code lands, because afterwards every unread feature has an advocate.
+**Pre-registered falsification — and a note on what it deliberately does not measure.**
+
+The first draft proposed retracting the history chain if `include_history` were rarely called. That was wrong, and it is worth saying why rather than quietly replacing it: read frequency is a bad proxy for the value of an archive. A decision record's payoff is rare and large — the one time someone asks why an alternative was rejected and the answer exists. Measuring it by call count would retract a feature whose value model is low-frequency and high-consequence, which is the same error as cancelling insurance because no claim was filed. Struck.
+
+What *is* falsifiable is the engineering claim this ADR actually makes:
+
+> **Accumulation must not degrade recall of current records.** Measured on a corpus where superseded records outnumber current ones by at least 2:1, MRR over current-only cases must be within noise of the same case set measured before the ended records existed.
+
+If that fails, the exclusion is not working and ended records are competing after all — which is a defect in this ADR's implementation, not a reason to start deleting. The remedy is to fix the filter, and the second remedy, only if the first is impossible, is to move ended records to a separate index.
+
+The `reason` field gets the same correction. Its quality is measured — median length, and a sample read by a human — but the measurement **improves the prompting, it does not retract the field**. A reason that reads "obsolete" is a case for a better tool description, not an argument that recording why a decision changed was a mistake.
 
 ## Alternatives Considered
 
@@ -105,14 +115,14 @@ Either half failing retracts that half rather than weakening the bar. Both are d
 ## Consequences
 
 - **Positive:** the record that explains why a decision changed survives the change. "We used X until March, then Y, because Z" becomes expressible, and it is the shape a reader actually needs.
-- **Negative:** the store grows monotonically, and a correction now costs a row rather than reusing one. Superseded rows keep their vectors until an operator erases them, so the index grows too.
+- **Negative:** the store grows monotonically, and a correction costs a row rather than reusing one. Superseded rows keep their vectors, so the index grows too. This is accepted as the intended trade rather than tolerated as a cost: the growth is what is being bought, and it is affordable only because ended records leave the default recall path.
 - **Neutral:** `am_update_drawer` returns a new id. Any caller that assumed the id was stable across a content edit must be updated — inside this repository the only such caller is the tool itself.
 
 ## Out of Scope
 
 - Full event sourcing of the whole store (deferred: docs/adr/BACKLOG.md — see Alternatives; revisit when a second consumer of history exists)
 - Versioning wing/room moves (permanent: a move is not a claim about the world, so ending and re-filing would record noise as history)
-- Retention or automatic pruning of superseded records (deferred: docs/adr/BACKLOG.md — needs the falsification measurement below to say what history is worth first)
+- Retention or automatic pruning of superseded records (permanent: the position this ADR is built on is that accumulation is the value, and a pruner would spend engineering effort undoing it. Erasure stays available to an operator for the cases that require it — a leaked credential, a deletion request — which is a legal and safety path, not a housekeeping one)
 - Applying the same model to diary entries (deferred: docs/adr/BACKLOG.md — a diary is already append-only by construction; nothing overwrites an entry)
 - Removing `merge_wing` and `delete_wing` from the OPERATOR surface (permanent: they are the erasure path this ADR requires to exist; the decision is that agents cannot reach them, not that nobody can)
 - Structured reasons — a taxonomy of why something ended (deferred: docs/adr/BACKLOG.md — free text first, because a taxonomy chosen before there are reasons to classify is a guess, and the falsification below will show what people actually write)
@@ -124,7 +134,7 @@ Either half failing retracts that half rather than weakening the bar. Both are d
 | A required `reason` gets filled with "obsolete" and buys nothing | High | Med | Accepted and measured rather than designed around: T2 records reason length and the falsification below reads it. A taxonomy imposed now would be a guess about reasons nobody has written yet |
 | Superseded records leak back into default recall | Med | High | T3's falsification: a superseded record must be unreachable by every default route — search, list, and get — checked from an end-to-end scenario rather than a unit test, since this exact failure shipped once already as a live chunk 1 |
 | Agents cannot erase a wrongly-filed secret and file it anyway | Med | High | The operator erasure path lands in the same task, and the refusal text names it |
-| The store grows without bound | High | Low | Accepted deliberately; pruning is deferred until the falsification says what history is worth |
+| The store grows without bound | High | Low | Accepted as the point, not tolerated as a cost. The falsification measures whether growth harms recall of CURRENT records; if it does the filter is broken, and the remedy is the filter |
 | The migration mis-handles existing rows | Low | High | Empty `valid_to` means current, so every existing row is correct with no backfill; T1 asserts that on a copy of a real database |
 
 ## Rollback
