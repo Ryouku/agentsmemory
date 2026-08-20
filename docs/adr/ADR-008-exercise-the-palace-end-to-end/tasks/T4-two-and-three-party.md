@@ -1,6 +1,12 @@
 # Task ADR-008-T4: Two parties see what they should, three parties prove isolation
 
 **Depends-on:** T1
+
+> **Amended 2026-08-20 during execution.** The scenarios were planned for
+> `internal/mcpserver/multiparty_test.go`. They live in `internal/mcptest` instead: the harness
+> imports `mcpserver`, so a test inside `mcpserver` that used the harness would be an import cycle.
+> Every file reference below is amended accordingly, and T2's gate reads the scenario registry, which
+> can name tests in either package.
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
@@ -16,8 +22,8 @@ What one registration writes, another finds when it should and does not when it 
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/mcpserver/multiparty_test.go` | add | the two- and three-party scenarios |
-| `internal/mcpserver/scenarios_test.go` | edit | register them so T2's gate counts them |
+| `internal/mcptest/multiparty_test.go` | add | the two- and three-party scenarios |
+| `internal/mcptest/harness.go` | edit | `Parties` (one client per wing over one database) and the wing header the client sends |
 
 ## Ordered Steps
 
@@ -36,10 +42,12 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcpserver/ -run "Scenario(SecondParty|Handoff)" -count=1 -v 2>&1 | tee /tmp/e4.out
-  grep -q -- "ScenarioSecondPartySeesASharedWing" /tmp/e4.out
-  grep -q -- "ScenarioSecondPartyDoesNotSeeAnotherWing" /tmp/e4.out
-  grep -q -- "ScenarioHandoffReachesBAndNotC" /tmp/e4.out
+  go test ./internal/mcptest/ -run "TestScenario" -count=1 -v 2>&1 | tee /tmp/e4.out
+  grep -q -- "--- PASS: TestScenarioSecondPartySeesASharedWing" /tmp/e4.out
+  grep -q -- "--- PASS: TestScenarioSecondPartyDoesNotSeeAnotherWing" /tmp/e4.out
+  grep -q -- "--- PASS: TestScenarioCrossWingRecallReachesTheOtherParty" /tmp/e4.out
+  grep -q -- "--- PASS: TestScenarioHandoffReachesBAndNotC" /tmp/e4.out
+  grep -q -- "--- PASS: TestScenarioHandoffIntoAnUnknownWingIsRefusedForEveryone" /tmp/e4.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/e4.out
   go test ./... -count=1'
 ```
@@ -48,19 +56,29 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `ScenarioSecondPartySeesASharedWing` | `internal/mcpserver/multiparty_test.go` | a shared wing is readable by both registrations | — |
-| `ScenarioSecondPartyDoesNotSeeAnotherWing` | `internal/mcpserver/multiparty_test.go` | scoping holds; the pair is what proves it | — |
-| `ScenarioCrossWingRecallReachesTheOtherParty` | `internal/mcpserver/multiparty_test.go` | `wing: "*"` reaches another wing when explicitly asked | — |
-| `ScenarioHandoffReachesBAndNotC` | `internal/mcpserver/multiparty_test.go` | delivery and isolation observed from both the target's and a bystander's side | — |
+| `TestScenarioSecondPartySeesASharedWing` | `internal/mcptest/multiparty_test.go` | a shared wing is readable by both registrations | — |
+| `TestScenarioSecondPartyDoesNotSeeAnotherWing` | `internal/mcptest/multiparty_test.go` | scoping holds; the pair is what proves it | — |
+| `TestScenarioCrossWingRecallReachesTheOtherParty` | `internal/mcptest/multiparty_test.go` | `wing: "*"` reaches another wing when explicitly asked | — |
+| `TestScenarioHandoffReachesBAndNotC` | `internal/mcptest/multiparty_test.go` | delivery and isolation observed from both the target's and a bystander's side | — |
 
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| drop wing scoping from search | yes | `ScenarioSecondPartyDoesNotSeeAnotherWing` |
-| make `wing: "*"` scope to the caller's wing | yes | `ScenarioCrossWingRecallReachesTheOtherParty` |
-| file the handoff into every wing | yes | `ScenarioHandoffReachesBAndNotC` |
-| count another wing's inbox in `am_status` | yes | `ScenarioHandoffReachesBAndNotC` |
+| drop wing scoping from search (`searchWingFor(..., false)`) | yes | `TestScenarioSecondPartyDoesNotSeeAnotherWing`, `TestScenarioHandoffReachesBAndNotC` |
+| `wing:"*"` resolves to the caller's wing instead of every wing | yes | `TestScenarioCrossWingRecallReachesTheOtherParty` |
+| the handoff guard removed, so an undeliverable wing is accepted | yes | `TestScenarioHandoffIntoAnUnknownWingIsRefusedForEveryone` |
+| the client stops sending the wing header | yes | `TestScenarioSecondPartyDoesNotSeeAnotherWing`, `TestScenarioHandoffReachesBAndNotC` |
+
+**A defect the pair caught, in the harness itself.** The first version stored each registration's
+wing and never sent it, so every client looked unscoped. `TestScenarioSecondPartySeesASharedWing`
+passed — a server that shows everything to everyone satisfies it — and the negative half failed. Had
+this task only asserted visibility, it would have shipped a harness that cannot observe scoping at
+all, and T2's gate would then have counted those scenarios as coverage. The fix sends
+`auth.WingHeader` from the client, which is how `install` writes a real registration.
+
+**Also caught: this repo's `doclint` gate.** A scenario's doc comment opened with the scenario name
+rather than the test function's, and `TestDocCommentsMatchTheirDeclaration` failed the build.
 
 ## Out of Scope
 
@@ -82,4 +100,10 @@ Stop and ask if two registrations cannot be created against one in-process serve
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · b2583ed* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  testing: warning: no tests to run
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.005s [no tests to run]
+  ```
+- 2026-08-20 · b2583ed* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

@@ -44,6 +44,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pressly/goose/v3"
@@ -115,13 +116,29 @@ func NewWithWing(t *testing.T, wing string) *Harness {
 	return newOn(t, openDB(t, filepath.Join(t.TempDir(), "mcptest.db")), wing)
 }
 
-// Pair returns two clients over ONE database, so what one writes the other can
-// be asked to find. Isolation and delivery are one property seen from two sides,
-// and a single client cannot observe either.
-func Pair(t *testing.T, wingA, wingB string) (*Harness, *Harness) {
+// Parties returns one client per wing, all over ONE database, so what one writes
+// the others can be asked to find.
+//
+// Two parties prove scoping, and only as a pair: a test showing that A's wing is
+// visible to B passes with scoping removed entirely, so the claim needs its
+// negative beside it. A third party is what turns "delivered" into "delivered to
+// the right place" — the handoff defect this repo shipped was invisible because
+// nobody ever looked from the recipient's side, let alone a bystander's.
+func Parties(t *testing.T, wings ...string) []*Harness {
 	t.Helper()
 	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
-	return newOn(t, gdb, wingA), newOn(t, gdb, wingB)
+	out := make([]*Harness, len(wings))
+	for i, w := range wings {
+		out[i] = newOn(t, gdb, w)
+	}
+	return out
+}
+
+// Pair is Parties for the common two-sided case.
+func Pair(t *testing.T, wingA, wingB string) (*Harness, *Harness) {
+	t.Helper()
+	p := Parties(t, wingA, wingB)
+	return p[0], p[1]
 }
 
 func openDB(t *testing.T, path string) *gorm.DB {
@@ -177,7 +194,16 @@ func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
 	}))
 	t.Cleanup(srv.Close)
 
-	cli, err := client.NewStreamableHttpClient(srv.URL)
+	// The wing rides on the registration as a header, exactly as `install` writes
+	// it — see auth.WingHeader. A harness that stored the wing without sending it
+	// would show every registration as unscoped, and the first version of this
+	// file did: the positive half of the scoping pair passed and the negative half
+	// caught it, which is why the pair exists.
+	var opts []transport.StreamableHTTPCOption
+	if wing != "" {
+		opts = append(opts, transport.WithHTTPHeaders(map[string]string{auth.WingHeader: wing}))
+	}
+	cli, err := client.NewStreamableHttpClient(srv.URL, opts...)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
