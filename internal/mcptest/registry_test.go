@@ -336,6 +336,135 @@ var scenarios = []mcptest.Scenario{
 			}
 		},
 	},
+	{
+		// The wake-up sequence an agent is told to run first. If any leg of it
+		// fails, every session in every project starts blind, and nothing else in
+		// the palace matters.
+		Name:  "the wake-up sequence works end to end",
+		Tools: []string{"am_skillset", "am_status", "am_get_aaak_spec", "am_add_drawer", "am_search"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			for _, tool := range []string{"am_skillset", "am_get_aaak_spec"} {
+				if out := h.MustCall(t, tool, map[string]any{}); len(out) < 50 {
+					t.Errorf("%s returned %d bytes — a waking agent is told to call this first and "+
+						"gets nothing:\n%s", tool, len(out), out)
+				}
+			}
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_wake", "room": "decisions", "content": "the wake-up path is exercised",
+			})
+			h.MustCall(t, "am_status", map[string]any{})
+			if out := h.MustCall(t, "am_search", map[string]any{
+				"query": "wake-up path", "wing": "wing_wake", "limit": 5,
+			}); !contains(out, "wake-up path is exercised") {
+				t.Errorf("recall after the wake-up sequence returned nothing:\n%s", out)
+			}
+		},
+	},
+	{
+		// Centralised skills are the team's shared conventions, and they exist in
+		// no repository — the palace is their only copy. A write that cannot be
+		// read back loses them silently.
+		Name:  "a centralised skill written by one session is loadable by the next",
+		Tools: []string{"am_update_skill", "am_list_skills", "am_load_skill"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_update_skill", map[string]any{
+				"name": "scenario-conventions", "description": "how this team writes tests",
+				"content": "SKILL-BODY-MARKER a test must be able to fail for the right reason",
+			})
+			if out := h.MustCall(t, "am_list_skills", map[string]any{}); !contains(out, "scenario-conventions") {
+				t.Errorf("a written skill is not in the catalogue:\n%s", out)
+			}
+			if out := h.MustCall(t, "am_load_skill", map[string]any{"name": "scenario-conventions"}); !contains(out, "SKILL-BODY-MARKER") {
+				t.Errorf("a skill in the catalogue does not load its body — the catalogue would then "+
+					"advertise conventions nobody can read:\n%s", out)
+			}
+		},
+	},
+	{
+		// A fact that STOPPED being true is the one thing search cannot express,
+		// and invalidation is how the graph says so. If the ended fact still reads
+		// as current, the graph is worse than absent — it is confidently wrong.
+		Name:  "an invalidated fact stops reading as current",
+		Tools: []string{"am_kg_add", "am_kg_invalidate", "am_kg_query", "am_kg_timeline"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_kg_add", map[string]any{
+				"subject": "batch-runner", "predicate": "deploys_to", "object": "old-node",
+				"valid_from": "2026-01-01",
+			})
+			h.MustCall(t, "am_kg_invalidate", map[string]any{
+				"subject": "batch-runner", "predicate": "deploys_to", "object": "old-node",
+				"ended": "2026-06-01",
+			})
+
+			out := h.MustCall(t, "am_kg_query", map[string]any{"entity": "batch-runner"})
+			if contains(out, `"current":true`) {
+				t.Errorf("an invalidated fact still reads as current — a confidently wrong graph is "+
+					"worse than no graph:\n%s", out)
+			}
+			// The timeline must still hold it: invalidation ends a fact, it does not
+			// erase that the fact was once true.
+			if out := h.MustCall(t, "am_kg_timeline", map[string]any{"entity": "batch-runner"}); !contains(out, "old-node") {
+				t.Errorf("the timeline lost an ended fact; ending is not deleting:\n%s", out)
+			}
+		},
+	},
+	{
+		// Anchors are what let a memory be checked against the code it describes.
+		// A verdict that does not stick means every memory stays "unchecked" and
+		// the staleness signal never fires.
+		Name:  "an anchor verdict is recorded and readable",
+		Tools: []string{"am_add_drawer", "am_list_anchors", "am_mark_anchors"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_verdict", "room": "decisions", "content": "the parser trims whitespace",
+				"code_anchors": []any{map[string]any{
+					"path": "internal/parse/parse.go", "snippet": "strings.TrimSpace(v)",
+				}},
+			})
+			listed := h.MustCall(t, "am_list_anchors", map[string]any{"wing": "wing_verdict"})
+			id := firstAnchorID(t, h, listed)
+
+			h.MustCall(t, "am_mark_anchors", map[string]any{
+				"verdicts": []any{map[string]any{"id": id, "status": "verified", "line": 42}},
+			})
+			if out := h.MustCall(t, "am_list_anchors", map[string]any{
+				"wing": "wing_verdict", "status": "verified",
+			}); !contains(out, id) {
+				t.Errorf("a recorded verdict did not stick, so every memory stays unchecked and the "+
+					"staleness signal never fires:\n%s", out)
+			}
+		},
+	},
+	{
+		Name:  "the palace reports what it holds and what recall has done",
+		Tools: []string{"am_add_drawer", "am_search", "am_memories_filed_away", "am_recall_stats", "am_graph_stats"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_stats", "room": "decisions", "content": "a memory to be counted",
+			})
+			h.MustCall(t, "am_search", map[string]any{"query": "a memory to be counted", "wing": "wing_stats"})
+			for _, tool := range []string{"am_memories_filed_away", "am_recall_stats", "am_graph_stats"} {
+				if out := h.MustCall(t, tool, map[string]any{}); len(out) < 10 {
+					t.Errorf("%s returned nothing usable:\n%s", tool, out)
+				}
+			}
+		},
+	},
+}
+
+// firstAnchorID pulls the id of the first anchor a listing returned.
+func firstAnchorID(t *testing.T, h *mcptest.Harness, out string) string {
+	t.Helper()
+	rows, _ := h.JSON(t, out)["anchors"].([]any)
+	if len(rows) == 0 {
+		t.Fatalf("no anchors listed:\n%s", out)
+	}
+	row, _ := rows[0].(map[string]any)
+	id, _ := row["id"].(string)
+	if id == "" {
+		t.Fatalf("anchor has no id:\n%s", out)
+	}
+	return id
 }
 
 // filler pads a memory past ChunkSize so it is stored as several drawers.
