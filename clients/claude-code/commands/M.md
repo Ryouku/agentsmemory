@@ -79,8 +79,8 @@ get silently skipped, so they are enforced with audit lines and a re-check —
 its audit line appears in this turn.**
 
 Steps 1b and 1c are independent MCP calls — fire them in the **same message, in
-parallel** (1c is two calls: `mempalace_status` to wake up, then
-`mempalace_search`). Step 1a is a Skill invocation.
+parallel** (1c is two calls: `am_status` to wake up, then
+`am_search`). Step 1a is a Skill invocation.
 
 - **1a. Specs (intent)** — invoke the `eidos:spec` skill when it is registered,
   to load the project's source-of-truth specs (`eidos/*.md`). When it is not —
@@ -88,27 +88,31 @@ parallel** (1c is two calls: `mempalace_status` to wake up, then
   an ADR corpus, `docs/`, `CLAUDE.md`) and say so in one line. These describe
   what the system *should*
   be. After it loads, emit the literal audit line `specs loaded ✓`.
-- **1b. Code graph (reality) — MUST, do not skip.** **Reindex before any
-  action.** First call `index_repository(repo_path=<cwd>)` to index/reindex this
-  repo into the knowledge graph so the database is fresh — never search or act
-  against a stale graph. (Already-indexed repos reindex incrementally;
-  `index_status` / `detect_changes` confirm what moved.) Only **after** the
-  reindex, call `mcp__codebase-memory-mcp__search_code` with the task as the
-  query to locate the relevant symbols/files/routes in **this** repo. Both the
-  `index_repository` call **and** the `search_code` call are mandatory — a
-  reindex without a search, or a search without a reindex, does not satisfy the
-  gate. After both return, emit the literal audit line `code graph indexed +
-  searched ✓`.
+- **1b. Code graph (reality)** — when the `codebase-memory` MCP is registered,
+  reindex before you search: `index_repository(repo_path=<cwd>)` first, so the
+  graph is fresh (already-indexed repos reindex incrementally; `index_status` /
+  `detect_changes` confirm what moved), then `search_code` with the task as the
+  query to locate the symbols, files and routes it touches in **this** repo. A
+  search against a stale graph is worse than no search, because it answers.
+  Emit `code graph indexed + searched ✓`.
+
+  When it is **not** registered — which is common — say so in one line and use
+  what this repo actually has: `grep`/`glob` over the paths the task names, the
+  architecture doc if there is one, the test files for the subsystem. Do not
+  treat the absence as a blocked gate. This bullet used to read "MUST, do not
+  skip" and named the tool unconditionally, which is the same defect as naming a
+  tool that is not there: an instruction an agent cannot follow teaches it to
+  ignore instructions.
 - **1c. Memory palace (who + why) — MUST, do not skip.** Two calls, both
   required, in order:
   - **Wake up first** — call
-    `mcp__plugin_mempalace_mempalace__mempalace_status` to load the palace
+    `mcp__agentsmemory__am_status` to load the palace
     overview + AAAK spec. This is the MCP server's own **on-wake-up** call: it
     grounds you in identity and palace shape *before* any task-specific recall, so
     later searches read against a known structure. After it returns, emit the
     literal audit line `palace woken ✓`.
   - **Then search** — call
-    `mcp__plugin_mempalace_mempalace__mempalace_search` with the task to recall
+    `mcp__agentsmemory__am_search` with the task to recall
     past decisions, learnings, and rationale across all projects. This is **not
     optional** and **not replaceable by grep or your own memory** — the palace is
     the only source of cross-project rationale. After it returns, emit the literal
@@ -137,7 +141,7 @@ already holds what that code does and why it's shaped that way.
 Before any broad `grep` / `search_code` / file sweep over unfamiliar or
 unrelated code:
 
-1. **Query `mempalace_search` first** with what you're about to look for — the
+1. **Query `am_search` first** with what you're about to look for — the
    symbol, the subsystem, the behavior. If the palace already explains that
    code/part, **use the recalled memory**; do not reconstruct it from scratch.
 2. **Grep only the gap.** If the palace is silent or stale, sweep the code — but
@@ -151,7 +155,7 @@ makes you reach into unfamiliar code, pause and query the palace before the grep
 
 ## Memory-first tool use (recall how a tool works before you fumble it)
 
-`mempalace_search` is **not a startup-only call** — it is a mid-session reflex.
+`am_search` is **not a startup-only call** — it is a mid-session reflex.
 The same way you ask the palace about unfamiliar *code*, ask it about unfamiliar
 *tools* the moment you reach for one whose exact shape you're unsure of: which
 tool does the job, its required params, the calling pattern, the gotcha that bit
@@ -163,8 +167,8 @@ This is a **standing rule**, armed every time you're about to use a tool you
 don't already know cold — an MCP tool, a skill, a CLI invocation, a less-used
 flag:
 
-1. **Recall first.** Before the call, `mempalace_search` for the tool / task —
-   e.g. *"mempalace create_tunnel params"*, *"codebase-memory index_repository
+1. **Recall first.** Before the call, `am_search` for the tool / task —
+   e.g. *"am_create_tunnel params"*, *"codebase-memory index_repository
    gotcha"*, *"playwright skill dev-server detect"*. If the palace explains how to
    call it, **use the recalled usage** — correct params, correct sequence — instead
    of guessing.
@@ -325,16 +329,16 @@ something uncommitted, state the reason before stopping.
 
 The `Stop` hook is more than a commit gate — treat it as the **end-of-session
 checkpoint** where you write what you learned back into the memory palace, so the
-next session (Step 1c) recalls it. `mempalace_search` is only the *read* side;
+next session (Step 1c) recalls it. `am_search` is only the *read* side;
 these are the *write* side, and they go beyond a one-line drawer:
 
 - **Diary (what happened, why it mattered)** — call
-  `mcp__plugin_mempalace_mempalace__mempalace_diary_write` to journal this
+  `mcp__agentsmemory__am_diary_write` to journal this
   session: what you built/decided/learned and any open thread. Write in **AAAK**
   (compressed, entity-coded, emotion-marked), e.g.
   `SESSION:2026-06-22|added.diary+tunnel.step.to.M.md|why:stop.hook=natural.checkpoint|★★★`.
   Use a stable `agent_name` so the journal threads across sessions; read it back
-  next time with `mempalace_diary_read`.
+  next time with `am_diary_read`.
 - **Tool-usage notes (how to drive a tool, not just what it did)** — when this
   session you worked out a tool's correct params, calling sequence, deferred-load
   activation, or a gotcha the hard way, file it back (drawer or diary line) so
@@ -343,10 +347,10 @@ these are the *write* side, and they go beyond a one-line drawer:
   `TOOL:create_tunnel|needs from_room+to_room+both wings|check find_tunnels first`.
 - **Tunnels (link related memories across wings)** — when this session's work
   connects to another project/domain, weave a cross-wing tunnel with
-  `mcp__plugin_mempalace_mempalace__mempalace_create_tunnel` (e.g. an API design
+  `mcp__agentsmemory__am_create_tunnel` (e.g. an API design
   here ↔ the schema it depends on elsewhere). Before creating, check existing
-  links with `mempalace_find_tunnels` (which wings bridge) and
-  `mempalace_follow_tunnels` (what a room already connects to) so you reinforce,
+  links with `am_find_tunnels` (which wings bridge) and
+  `am_follow_tunnels` (what a room already connects to) so you reinforce,
   not duplicate.
 
 Persist *before* you let the turn end — a verified change that isn't journaled or
