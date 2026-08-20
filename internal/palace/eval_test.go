@@ -705,3 +705,89 @@ func TestCandidateUnionPoolsTheClosetHead(t *testing.T) {
 		}
 	}
 }
+
+// TestSupersessionRanksDistractorInSamePool pins that the superseded version is
+// scored through the SAME ordering as the gold, and — the part a review caught
+// before this was written — that it is resolved to a MEMORY id the way the gold
+// is.
+//
+// The pool is keyed by memory id, and the gold reaches that key through a Get
+// plus ParentID. Rank a raw distractor DRAWER id against memory ids and every
+// multi-chunk distractor scores as never-retrieved: Vacuous inflates, every
+// stale-above rate is flattered, and nothing fails. So the fixture's distractor
+// is deliberately multi-chunk — a single-chunk one passes either way and would
+// have let the bug ship behind a green suite.
+func TestSupersessionRanksDistractorInSamePool(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// Long enough to chunk, so the distractor's id is a CHILD whose ParentID is
+	// what the pool is keyed by.
+	stale := strings.Repeat("The retention window is thirty days and applies to every tenant. ", 30)
+	staleRes, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy-v1", Content: stale})
+	if err != nil {
+		t.Fatalf("add stale: %v", err)
+	}
+	if len(staleRes.Drawers) < 2 {
+		t.Fatalf("fixture: the distractor must be multi-chunk to exercise the resolution, got %d chunk(s)", len(staleRes.Drawers))
+	}
+	current := strings.Repeat("The retention window is ninety days and applies to every tenant. ", 30)
+	curRes, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy-v2", Content: current})
+	if err != nil {
+		t.Fatalf("add current: %v", err)
+	}
+
+	// A CHILD chunk id on both sides, which is what a generated case carries.
+	child := staleRes.Drawers[len(staleRes.Drawers)-1].ID
+	arms := []EvalArm{ArmHybrid, ArmHybridCloset}
+	res, err := svc.evalCaseResult(ctx, team, EvalCase{
+		Query: "retention window", Expect: curRes.Drawers[0].ID, Distractor: child,
+		Wing: "w", Category: CatTemporal,
+	}, arms, 20)
+	if err != nil {
+		t.Fatalf("evalCase: %v", err)
+	}
+
+	if res.DistractorPoolRank == 0 {
+		t.Fatal("the superseded version was scored as never retrieved — a multi-chunk distractor " +
+			"whose drawer id was never resolved to its parent memory looks exactly like this, and " +
+			"it makes every stale-above rate look better than it is")
+	}
+	for _, a := range arms {
+		if _, ok := res.DistractorRanks[a]; !ok {
+			t.Errorf("%s has no distractor rank; it must be read from the same ordering that produced its gold rank", a)
+		}
+	}
+}
+
+// TestSupersessionRanksScopePerArm pins that the report names the population each
+// arm's number was measured over.
+//
+// Three arms answer a different question by construction. A pool-scoped arm
+// re-orders the shared candidate set. ArmProduction is scored over the page
+// Search actually returns, which is at most DefaultSearchLimit long after the
+// distance gate — so "the distractor was not above the gold" can mean "it was not
+// on the page at all". ArmContextual retrieves from its own namespace entirely.
+// Printing those three as one column would be the same error as reading an arm's
+// zero as "outside the pool".
+func TestSupersessionRanksScopePerArm(t *testing.T) {
+	for arm, want := range map[EvalArm]SupersessionScope{
+		ArmHybrid:       ScopePool,
+		ArmHybridCloset: ScopePool,
+		ArmRRF:          ScopePool,
+		ArmReranked:     ScopePool,
+		ArmProduction:   ScopePage,
+		ArmContextual:   ScopeOwnIndex,
+	} {
+		if got := supersessionScope(arm); got != want {
+			t.Errorf("supersessionScope(%s) = %q, want %q", arm, got, want)
+		}
+	}
+	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
+		if supersessionScope(arm) == "" {
+			t.Errorf("%s has no supersession scope — its number would be printed beside arms "+
+				"measuring a different population", arm)
+		}
+	}
+}
