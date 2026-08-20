@@ -2,6 +2,8 @@ package palace
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -142,5 +144,137 @@ func TestOlderNeighborStaysInWing(t *testing.T) {
 	}
 	if !ok || got.ID != inWing.ID {
 		t.Fatalf("expected the same-wing older drawer %q, got ok=%v id=%q", inWing.ID, ok, got.ID)
+	}
+}
+
+// closetFixture mines one source and files an unmined rival covering the same
+// vocabulary, so a closet boost has something to lift the gold ABOVE. Without a
+// rival every candidate carries the same boost and the ordering never moves,
+// which would let the closet tests pass while measuring nothing.
+func closetFixture(t *testing.T, svc *Service, team string) (query string, gold string) {
+	t.Helper()
+	ctx := context.Background()
+
+	mined := strings.Repeat("Kubernetes orchestrates the deployment pipeline. ", 20) +
+		"\n\n# Kubernetes Pipeline\n\nThe canary rollout guards the deployment pipeline."
+	if _, err := svc.Mine(ctx, team, MineInput{Content: mined, Wing: "infra", Room: "ops", Source: "k8s-runbook"}); err != nil {
+		t.Fatalf("mine: %v", err)
+	}
+
+	// The rival is filed, not mined, so it has no closet and takes no boost.
+	rival, err := svc.Add(ctx, team, AddInput{
+		Wing: "infra", Room: "ops", SourceFile: "notes",
+		Content: "The canary rollout guards the deployment pipeline in staging as well.",
+	})
+	if err != nil {
+		t.Fatalf("add rival: %v", err)
+	}
+	if len(rival.Drawers) == 0 {
+		t.Fatal("rival drawer was not filed")
+	}
+
+	drawers, err := svc.List(ctx, team, "infra", "ops", 100, 0)
+	if err != nil {
+		t.Fatalf("list drawers: %v", err)
+	}
+	for _, d := range drawers {
+		if d.SourceFile == "k8s-runbook" {
+			return "canary rollout deployment pipeline", d.ID
+		}
+	}
+	t.Fatal("no drawer from the mined source")
+	return "", ""
+}
+
+// TestArmBoostsDimension pins the classification every rank call now goes
+// through: an arm carries the closet prior only if its name says so.
+//
+// This is the defect the task exists for. evalCase built one boosts slice and
+// handed it to fourteen arms, twelve of which never mention closets — so a
+// decision about the lexical weight was read off a table that was silently
+// measuring a curation prior at the same time. The test enumerates the REGISTERED
+// arms rather than a hand-written list, so an arm added later is classified or
+// the test fails.
+func TestArmBoostsDimension(t *testing.T) {
+	closet := []float64{0.1, 0.2, 0.3}
+	carriers := map[EvalArm]bool{ArmHybridCloset: true, ArmReranked: true}
+
+	arms := evalArms(EvalOptions{Contextual: true}, true)
+	if len(arms) < 14 {
+		t.Fatalf("expected the full arms list, got %d arms", len(arms))
+	}
+	seenCarrier := 0
+	for _, arm := range arms {
+		got := armBoosts(arm, closet)
+		if carriers[arm] {
+			seenCarrier++
+			if !reflect.DeepEqual(got, closet) {
+				t.Errorf("%s is named for the closet prior and must carry it, got %v", arm, got)
+			}
+			continue
+		}
+		if got != nil {
+			t.Errorf("%s does not mention closets and must not carry the prior, got %v", arm, got)
+		}
+	}
+	if seenCarrier != len(carriers) {
+		t.Errorf("only %d of the %d closet-named arms are registered; the classification is untested for the rest", seenCarrier, len(carriers))
+	}
+}
+
+// TestClosetArmMeasuresClosetsWhenServedPriorIsOff pins that an arm measures
+// what its name says whatever the server is configured to serve.
+//
+// Before this task the closet slice came from s.closetBoosts, which returns
+// nothing when the served scale is 0 — correct for Search, and wrong for an arm
+// whose entire purpose is to show what the prior does. With CLOSET_BOOST=0 about
+// to become the default, the arm that decides whether that was right would have
+// measured a disabled prior against itself.
+func TestClosetArmMeasuresClosetsWhenServedPriorIsOff(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t).WithClosetBoost(0)
+	const team = "team-1"
+
+	query, gold := closetFixture(t, svc, team)
+	arms := []EvalArm{ArmHybrid, ArmHybridCloset}
+	ranks, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+	if err != nil {
+		t.Fatalf("evalCase: %v", err)
+	}
+	if ranks[ArmHybrid] == 0 {
+		t.Fatal("fixture: the gold never made the pool, so no arm can separate")
+	}
+	if ranks[ArmHybridCloset] == ranks[ArmHybrid] {
+		t.Fatalf("hybrid+closet ranked the gold at %d, same as hybrid — the arm is not applying closet boosts at served scale 0", ranks[ArmHybridCloset])
+	}
+}
+
+// TestProductionArmFollowsServedClosetScale pins the other half, and it is the
+// opposite rule: the production arm exists to exercise what agents actually
+// call, so it must track the SERVED scale rather than the arms' full-strength
+// one. If both halves are not pinned, one fix breaks the other silently.
+func TestProductionArmFollowsServedClosetScale(t *testing.T) {
+	ctx := context.Background()
+	const team = "team-1"
+	arms := []EvalArm{ArmHybridCloset, ArmProduction}
+
+	run := func(scale float64) map[EvalArm]int {
+		t.Helper()
+		svc := newTestService(t).WithClosetBoost(scale)
+		query, gold := closetFixture(t, svc, team)
+		ranks, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+		if err != nil {
+			t.Fatalf("evalCase at scale %v: %v", scale, err)
+		}
+		return ranks
+	}
+
+	off, on := run(0), run(1)
+
+	if off[ArmProduction] == on[ArmProduction] {
+		t.Errorf("production ranked the gold at %d under both served scales; it is supposed to reflect what the server serves", off[ArmProduction])
+	}
+	if off[ArmHybridCloset] != on[ArmHybridCloset] {
+		t.Errorf("hybrid+closet ranked the gold at %d served-off and %d served-on; the arm must measure the prior at full strength either way", off[ArmHybridCloset], on[ArmHybridCloset])
 	}
 }
