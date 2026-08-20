@@ -278,3 +278,165 @@ func TestProductionArmFollowsServedClosetScale(t *testing.T) {
 		t.Errorf("hybrid+closet ranked the gold at %d served-off and %d served-on; the arm must measure the prior at full strength either way", off[ArmHybridCloset], on[ArmHybridCloset])
 	}
 }
+
+// anchorFixture is T1's page-max fixture in eval clothing: the rare query term
+// appears in no candidate and the common one in all, so every match is weak and
+// page-max still awards its winner a perfect lexical score while an anchored
+// normaliser does not. If the two normalisers cannot disagree here they cannot
+// disagree anywhere.
+func anchorFixture() (query string, docs []string, dists []float64) {
+	return "cache eviction", []string{
+			"eviction eviction happens twice here",
+			"eviction happens once here",
+			"eviction here",
+		}, []float64{0.55, 0.5, 0.45}
+}
+
+// TestAnchoredArmsRankDifferentlyFromPageMax is the behavioural check, and the
+// only one here that can catch the failure that matters: an anchored arm
+// falling through to the page-max branch of the dispatch.
+//
+// A registry test cannot catch it — the arm is registered either way, and the
+// table would show two identical rows reading as "the normaliser makes no
+// difference". This follows TestLexicalIDFChangesWhatSearchReturns, whose
+// predecessor asserted only that both modes returned results and passed happily
+// while the flag was read by nothing at all.
+func TestAnchoredArmsRankDifferentlyFromPageMax(t *testing.T) {
+	query, docs, dists := anchorFixture()
+
+	plain := fusionRankerFor(bm25Arm(0.4), hybridBM25Weight)
+	if plain == nil {
+		t.Fatal("fusion bm25=0.40 has no ranker; the dispatch does not cover it")
+	}
+	for _, norm := range anchoredNorms {
+		arm := anchoredArm(bm25Arm(0.4), norm.name)
+		ranker := fusionRankerFor(arm, hybridBM25Weight)
+		if ranker == nil {
+			t.Errorf("%s has no ranker; it would fall through to the page-max branch", arm)
+			continue
+		}
+		base := plain(query, docs, dists, nil)
+		got := ranker(query, docs, dists, nil)
+		if len(got) != len(base) {
+			t.Fatalf("%s returned %d scores, page-max returned %d", arm, len(got), len(base))
+		}
+		same := true
+		for i := range got {
+			if got[i].Fused != base[i].Fused {
+				same = false
+			}
+		}
+		if same {
+			t.Errorf("%s produced the same fused scores as %s on a fixture built to separate them — the arm is named but not wired", arm, bm25Arm(0.4))
+		}
+	}
+}
+
+// TestAnchoredArmsCarryNoClosetPrior pins the resolution of a collision between
+// two accepted ADRs.
+//
+// ADR-002 T2 was written to add BOOSTED anchored arms plus a `no-closet` control
+// family, because anchoring inflates an additive boost and a single boost regime
+// cannot separate that from a lexical-weighting effect. ADR-003 T1 then made the
+// closet prior something an arm opts into by name and tagged closet variants of
+// the sweep arms as permanently out of scope, which removes the confound at the
+// source: no sweep arm is boosted, so there is one regime and nothing to
+// control for. The families collapse into one, and this test is what keeps them
+// collapsed — if a boosted anchored arm is ever added, it fails.
+func TestAnchoredArmsCarryNoClosetPrior(t *testing.T) {
+	closet := []float64{0.1, 0.2, 0.3}
+	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
+		if !strings.Contains(string(arm), "anchored:") {
+			continue
+		}
+		if got := armBoosts(arm, closet); got != nil {
+			t.Errorf("%s carries the closet prior; anchored arms are one unboosted family", arm)
+		}
+	}
+}
+
+// TestAnchoredArmsCoverEveryNonzeroWeight pins the registry: every fusion arm
+// whose lexical term can matter gets both anchored counterparts.
+func TestAnchoredArmsCoverEveryNonzeroWeight(t *testing.T) {
+	registered := map[EvalArm]bool{}
+	for _, a := range evalArms(EvalOptions{Contextual: true}, true) {
+		registered[a] = true
+	}
+
+	var want []EvalArm
+	for _, w := range bm25Sweep {
+		if w == 0 {
+			continue
+		}
+		for _, norm := range anchoredNorms {
+			want = append(want, anchoredArm(bm25Arm(w), norm.name))
+		}
+	}
+	for _, adaptive := range []EvalArm{ArmAdaptive, ArmAdaptiveIDF} {
+		for _, norm := range anchoredNorms {
+			want = append(want, anchoredArm(adaptive, norm.name))
+		}
+	}
+	if len(want) != 10 {
+		t.Fatalf("expected 10 anchored arms from the sweep and the adaptive pair, computed %d", len(want))
+	}
+	for _, a := range want {
+		if !registered[a] {
+			t.Errorf("%s is not registered; its page-max counterpart has no anchored comparison", a)
+		}
+	}
+}
+
+// TestAnchoredArmsSkipWeightZero pins the one omission: at w=0 the lexical term
+// is multiplied by zero, so the normaliser cannot change the order and the row
+// would duplicate `fusion bm25=0.00` while reading as a finding.
+func TestAnchoredArmsSkipWeightZero(t *testing.T) {
+	for _, a := range evalArms(EvalOptions{Contextual: true}, true) {
+		for _, norm := range anchoredNorms {
+			if a == anchoredArm(bm25Arm(0), norm.name) {
+				t.Errorf("%s is registered; at zero lexical weight the normaliser cannot matter", a)
+			}
+		}
+	}
+}
+
+// TestEvalArmsKeepProductionLast pins the invariant eval.go states in a comment
+// and nothing enforced: the arm that exercises the code agents actually call
+// runs after every other non-reranked arm.
+func TestEvalArmsKeepProductionLast(t *testing.T) {
+	for _, rerankReady := range []bool{false, true} {
+		arms := evalArms(EvalOptions{Contextual: true}, rerankReady)
+		prod := -1
+		for i, a := range arms {
+			if a == ArmProduction {
+				prod = i
+			}
+		}
+		if prod < 0 {
+			t.Fatalf("rerankReady=%v: the production arm is not registered at all", rerankReady)
+		}
+		for i, a := range arms[:prod] {
+			if a == ArmContextual {
+				t.Errorf("rerankReady=%v: %s at %d runs before production at %d", rerankReady, a, i, prod)
+			}
+		}
+		if !rerankReady && prod != len(arms)-1 {
+			t.Errorf("without reranking production should be the last arm, got position %d of %d", prod, len(arms))
+		}
+	}
+}
+
+// TestEvalArmNamesAreUnique pins that two arms never collide on a name. The
+// report is keyed by arm name, so a collision does not error — it silently
+// overwrites a row, and the table looks complete.
+func TestEvalArmNamesAreUnique(t *testing.T) {
+	for _, rerankReady := range []bool{false, true} {
+		seen := map[EvalArm]int{}
+		for _, a := range evalArms(EvalOptions{Contextual: true}, rerankReady) {
+			seen[a]++
+			if seen[a] > 1 {
+				t.Errorf("rerankReady=%v: arm name %q is registered %d times; the later row overwrites the earlier", rerankReady, a, seen[a])
+			}
+		}
+	}
+}
