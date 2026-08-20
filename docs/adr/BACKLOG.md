@@ -10,18 +10,20 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 ## From ADR-001 (recall answers or abstains)
 
 - **Contradiction reporting** — recall says "this changed on `<date>`: it was X, it is now Y".
-  Blocked on a populated temporal knowledge graph: the palace holds ~65 triples against ~5,020
-  drawers, so the mechanism exists and is unfed. Revisit once `kg-extract` has run at corpus scale.
+  Blocked on a populated temporal knowledge graph: measured 2026-08-18 on the pre-reset palace, ~65
+  triples against ~5,020 drawers, so the mechanism existed and was unfed. Post-reset (2026-08-20)
+  the ratio inverted — 41 triples against 80 drawers — so the blocker is now corpus size, not
+  extraction coverage. Revisit once `kg-extract` has run at corpus scale.
 - **Write-time findability gate** — when a memory is filed, generate the question it answers and
   try to retrieve it; report at write time when a memory is unfindable at birth. Reuses ADR-001's
   calibration, so it is drafted after ADR-001 ships rather than beside it.
 - **Continuous evaluation with automatic promotion** — shadow-run competing retrieval
   configurations against real traffic and promote the winner when a paired test clears. Blocked on
-  real-query telemetry volume: `search_events` currently holds ~10 rows, which is why the
-  `--style real` eval arm produced n=4.
+  real-query telemetry volume: `search_events` held ~10 rows on the pre-reset palace, which is why
+  the `--style real` eval arm produced n=4; it holds 25 as of 2026-08-20.
 - **Learned multi-feature abstention** — a classifier over score, margin, distance and lexical
-  coverage rather than one threshold. Blocked on labels: 21 verified-absent cases cannot fit and
-  hold out. Revisit above ~200, and only if it beats the one-float-per-backend baseline on the same
+  coverage rather than one threshold. Blocked on labels: the 21 verified-absent cases the pre-reset corpus
+  produced cannot fit and hold out. Revisit above ~200, and only if it beats the one-float-per-backend baseline on the same
   risk–coverage curve.
 - **Growing the verified-absent corpus** beyond what a single `--n` run produces, including whether
   hard negatives can be mined from real queries instead of generated.
@@ -64,9 +66,11 @@ Metrics the harness still cannot express, each blocking a class of idea:
 `hybridCandidateMultiplier = 3` are the same numbers on a 5,000-drawer palace and on one
 orders of magnitude larger. The retrieval reach they buy is not the same:
 
+Measured 2026-08-18, before the reset:
+
 - large corpus, `--pool 50`: 3 of 30 answers outside the pool (~10% unreachable)
 - large corpus, `--pool 128`: 1 of 30 (~3%)
-- our corpus (45x smaller), `--pool 20`: 1 of 40 (~2.5%)
+- our corpus then (45x smaller, ~5,020 drawers), `--pool 20`: 1 of 40 (~2.5%)
 
 A small palace reaches ~97% of its answers with a pool of 20; the large one needs ~128 for the
 same reach. One constant is wrong for one of them by roughly a factor of six.
@@ -142,7 +146,9 @@ exposes its cost and its effect, and can be turned off when it adds neither.
 
 ## Unused core capabilities — what the palace offers and nobody calls
 
-Audited 2026-08-20 against a live palace of 49 drawers across 8 wings, one day after a full reset.
+Audited 2026-08-20 against a live palace of 80 drawers across 8 wings, one day after a full reset.
+The drawer count moves by tens per day while sessions refile, so read it as a snapshot; the zeros
+below were re-confirmed against the same palace at 80 drawers.
 The server registers 41 tools; roughly eight are in regular use. What is built, working, and idle:
 
 | capability | live count | why it is idle |
@@ -150,13 +156,13 @@ The server registers 41 tools; roughly eight are in regular use. What is built, 
 | closets | **0** | Built by `am_mine` only, and mining is retired for now — the prior it feeds measured harmful on mined corpora (~0.10 MRR) and `CLOSET_BOOST` defaults to 0. The summary index itself is untested against a curated corpus, which is a different question from the ranking prior and has never been asked. |
 | hallways | **0** | Never used once. `am_recompute_graph` derives them and no session has called it. Nothing in the protocol tells an agent when a hallway would help, so the feature is undiscoverable rather than rejected. |
 | tunnels | **0** | Never used — and now the most obviously wanted of the three, because the craft/project wing split creates exactly the cross-wing links tunnels exist for. |
-| skills (centralised) | **0** | Every session this week reported `am_list_skills` empty and fell back to generic conventions. The bootstrap tells agents to load team skills as a hard gate; the catalogue has never had an entry, so the gate passes vacuously. This is the largest gap between what the protocol promises and what the palace holds. |
+| skills (centralised) | 2 | Was **0** for the project's whole life: every session reported `am_list_skills` empty and fell back to generic conventions while the bootstrap called loading them a hard gate, so the gate passed vacuously. `memory-orchestration` and `writing-memories` were published 2026-08-20 and sessions began loading them the same hour. Still short of what the protocol names: `AGENTS.md` and `CLAUDE.md` promise `effective-go` and `cqrs`, and neither exists. |
 | anchors | 5 | Used, and the cross-repo verdict bug that deleted memories is fixed. Adoption is still incidental rather than routine. |
-| knowledge graph | 27 triples / 50 entities | Genuinely in use by sessions since the reset, but its job is undecided — ADR-004 exists to make supersession its acceptance criterion rather than recall. |
+| knowledge graph | 41 triples | Genuinely in use by sessions since the reset, but its job is undecided — ADR-004 exists to make supersession its acceptance criterion rather than recall. |
 | `am_merge_wing` | first use 2026-08-20 | Folded two derived wings into one after registrations corrected. Worked exactly as documented; simply nobody had needed it before. |
 
 Three of these are worth acting on, in order:
 
-1. **Populate the skills catalogue.** Sessions ask for it every single time and get nothing. The house conventions currently live in per-repo `CLAUDE.md` files, which is precisely the duplication a central catalogue removes.
+1. **Finish populating the skills catalogue.** Two entries exist; the two this repo's own protocol names by name — `effective-go` and `cqrs` — do not. A protocol that tells an agent to load a named skill that is absent is documentation promising a capability nothing provides, which is the reachability defect this repo hunts, pointed at itself. Either author them or stop naming them.
 2. **Give tunnels a reason to exist in the protocol.** They are the mechanism for "this craft lesson came from that project's incident", and the split makes that link worth having.
 3. **Decide whether hallways are a feature or dead weight.** Zero uses since the project began is a finding, not a backlog item: either the protocol should teach them or they should be retired.

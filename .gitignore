@@ -31,3 +31,6 @@ graphify-out/
 
 # OS noise
 .DS_Store
+
+# Claude Code session state, worktrees and local agent config — never the repo's business
+.claude/
