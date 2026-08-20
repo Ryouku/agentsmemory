@@ -707,13 +707,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
-	candidateK := limit * hybridCandidateMultiplier
-	// A cross-encoder can only promote what retrieval surfaced, so widening the
-	// pool it sees is where the accuracy actually comes from — not from the
-	// scoring alone. Pull at least a full rerank pool when one is configured.
-	if s.rerank != nil && candidateK < s.rerankPool {
-		candidateK = s.rerankPool
-	}
+	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
 	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
@@ -788,7 +782,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked = s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
 
 	results := make([]SearchHit, 0, limit)
 	for _, r := range ranked {
@@ -810,7 +804,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	ev := searchEventRow{
 		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
-		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),
+		// Whether reranking HAPPENED, not whether a reranker exists. The previous
+		// value was boolToInt(s.rerank != nil), so at weight 0 — where
+		// applyRerankWith returns before scoring anything — every event claimed a
+		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
+		// threshold from these rows.
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
@@ -818,6 +817,25 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	s.repo.recordSearch(ctx, ev)
 
 	return results, nil
+}
+
+// candidateKFor is how many vector neighbours a search fetches.
+//
+// A cross-encoder can only promote what retrieval surfaced, so widening the pool
+// it sees is where the accuracy comes from — not from the scoring alone. But it
+// widens only when the cross-encoder will actually RUN: at weight 0,
+// applyRerankWith returns before scoring anything, so a configured reranker
+// bought a wider fetch and a bigger GetMany join on every search and cross-
+// encoded none of it.
+//
+// It is a function rather than a branch inline so the rule can be driven by a
+// test; the inline version was correct and unfalsifiable.
+func candidateKFor(limit int, rerankConfigured bool, rerankPool int, rerankWeight float64) int {
+	k := limit * hybridCandidateMultiplier
+	if rerankConfigured && rerankWeight > 0 && k < rerankPool {
+		k = rerankPool
+	}
+	return k
 }
 
 // boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
@@ -839,7 +857,7 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []HybridScore {
+func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
 	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
 }
 
@@ -850,9 +868,9 @@ func (s *Service) applyRerank(ctx context.Context, query string, survivors []Sea
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) []HybridScore {
+func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
-		return ranked
+		return ranked, false
 	}
 	pool := min(s.rerankPool, len(ranked))
 	docs := make([]string, pool)
@@ -862,14 +880,17 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 
 	scores, err := s.rerank.Rerank(ctx, query, docs)
 	if err != nil {
+		// A degraded reranker returns FALSE, deliberately. It failed open and the
+		// page is the fused order, so a telemetry row claiming a cross-encoder pass
+		// would be exactly as wrong as the weight-0 case this fix is about.
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
-		return ranked
+		return ranked, false
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
-		return ranked
+		return ranked, false
 	}
-	return BlendRerank(ranked, scores, weight)
+	return BlendRerank(ranked, scores, weight), true
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,

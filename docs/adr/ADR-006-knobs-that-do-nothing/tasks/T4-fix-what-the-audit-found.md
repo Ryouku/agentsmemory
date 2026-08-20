@@ -53,7 +53,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestRerankedRecordsWhatHappened` | `internal/palace/service_test.go` | a configured reranker at weight 0 records `Reranked` false | — |
+| `TestRerankedRecordsWhatHappened` | `internal/palace/telemetry_test.go` | a configured reranker at weight 0 records `Reranked` false | — |
+| `TestRerankedIsTrueWhenItActuallyRan` | `internal/palace/telemetry_test.go` | the true case, so the field cannot be hardcoded false | — |
+| `TestDegradedRerankIsNotRecordedAsAPass` | `internal/palace/telemetry_test.go` | a failed rerank records false, on the path that fires when something is wrong | — |
+| `TestRerankPoolDoesNotWidenTheFetchForNothing` | `internal/palace/telemetry_test.go` | a configured-but-disabled reranker stops paying for a wider fetch | — |
 | `TestCLISearchHonoursSearchScope` | `cmd/server/mcp_test.go` | the CLI path scopes to the registration wing by default | — |
 | `TestConfigFieldsAreSettableByAnOperator` | `cmd/server/wiring_test.go` | a field assigned only from `def.X` fails, as the message has always claimed | — |
 
@@ -61,9 +64,22 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| restore `Reranked: boolToInt(s.rerank != nil)` | yes | `TestRerankedRecordsWhatHappened` |
-| assign `HTTPTimeout: def.HTTPTimeout` again | yes | `TestConfigFieldsAreSettableByAnOperator` |
-| drop the scope resolution from the CLI search | yes | `TestCLISearchHonoursSearchScope` |
+| `Reranked` back to "a reranker exists" | yes | `TestRerankedRecordsWhatHappened` |
+| `Reranked` hardcoded false | yes | `TestRerankedIsTrueWhenItActuallyRan` |
+| the fetch widens when the reranker will not run | yes | `TestRerankPoolDoesNotWidenTheFetchForNothing` |
+| a degraded reranker reports success | yes | `TestDegradedRerankIsNotRecordedAsAPass` |
+| assign `HTTPTimeout: def.HTTPTimeout` again | yes | `TestConfigFieldsAreSettableByAnOperator` (pending) |
+| drop the scope resolution from the CLI search | yes | `TestCLISearchHonoursSearchScope` (pending) |
+
+**Two mutants had to be rewritten to count.** Restoring `boolToInt(s.rerank != nil)` and hardcoding
+`false` both left `reranked` unused, so neither compiled — a mutant that does not build has not been
+tested, it has been skipped. `reranked || s.rerank != nil` and `reranked && false` keep every
+identifier live and both die.
+
+**And a third only died once a test existed for it.** A reranker that ERRORS fails open, which is
+correct, but the search then did not rerank — recording that it did is the same lie on the path that
+fires exactly when something is wrong. This palace has published an eval table with a silently
+degraded reranker in it before. `TestDegradedRerankIsNotRecordedAsAPass` covers it.
 
 ## Out of Scope
 
