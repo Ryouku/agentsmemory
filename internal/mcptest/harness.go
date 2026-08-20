@@ -102,7 +102,20 @@ type Harness struct {
 
 	cli *client.Client
 	srv *httptest.Server
+
+	// called records every tool this harness invoked, in order.
+	//
+	// It exists so coverage is MEASURED rather than declared. A scenario that
+	// lists the tools it covers is a list kept beside the truth, and this repo
+	// has been bitten by exactly that twice this week — an exclusion list keyed
+	// by arm name, and a registration gate that scanned only const declarations.
+	// Recording the calls means a scenario cannot claim a tool it never invoked.
+	called []string
 }
+
+// Called returns the tools this harness invoked, in order. The exhaustiveness
+// gate reads it; a scenario's own assertions do not need it.
+func (h *Harness) Called() []string { return append([]string(nil), h.called...) }
 
 // New returns a harness whose client authenticates as TeamID with no default
 // wing, mirroring a registration that named no project.
@@ -262,6 +275,7 @@ func (h *Harness) ListTools(t *testing.T) ([]string, error) {
 // several tools and a scenario needs to assert it.
 func (h *Harness) Call(t *testing.T, name string, args map[string]any) (string, bool, error) {
 	t.Helper()
+	h.called = append(h.called, name)
 	req := mcp.CallToolRequest{}
 	req.Params.Name = name
 	req.Params.Arguments = args

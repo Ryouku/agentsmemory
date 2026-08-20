@@ -1,6 +1,17 @@
 # Task ADR-008-T2: Every registered tool has a scenario, or the build fails
 
 **Depends-on:** T1
+
+> **Amended 2026-08-20 during execution, on the "lands red" risk.** The task said to mark the gate
+> `t.Skip` with a dated TODO if it stayed red. That was the wrong instrument and the amendment is
+> the whole file's, not this line's: a skipped gate is decoration that reads as coverage, and a
+> permanently red one blocks every unrelated task's acceptance run until somebody deletes the gate
+> rather than the gap. It is a RATCHET instead — the uncovered count is pinned exactly at today's
+> honest 38, so it fails on regression AND fails when coverage improves without the ceiling being
+> lowered in the same commit. T3 takes it to 0 and deletes the constant.
+>
+> The scenarios and the gate also live in `internal/mcptest`, not `internal/mcpserver`: the harness
+> imports `mcpserver`, so a test there would be an import cycle. Same amendment as T4.
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
@@ -16,8 +27,10 @@ The live catalogue is compared against the scenario registry; a tool with no sce
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/mcpserver/e2e_test.go` | add | the gate, reading `fullCatalog` — the live registry, not a list |
-| `internal/mcpserver/scenarios_test.go` | add | the registry, one entry per tool |
+| `internal/mcptest/exhaustive_test.go` | add | the gate, reading the RUNNING server's catalogue, not a list |
+| `internal/mcptest/scenarios.go` | add | the `Scenario` and `Unobservable` types |
+| `internal/mcptest/registry_test.go` | add | the scenario registry and the exemption list |
+| `internal/mcptest/harness.go` | edit | record every call, so coverage is measured from what ran rather than claimed |
 
 ## Ordered Steps
 
@@ -36,9 +49,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcpserver/ -run "TestEveryToolIsExercisedEndToEnd|TestScenariosObserveAnEffect|TestUnobservableListNamesADependency" -count=1 -v 2>&1 | tee /tmp/e2.out
+  go test ./internal/mcptest/ -run "TestEveryToolIsExercisedEndToEnd|TestScenariosObserveAnEffect|TestScenariosOnlyClaimToolsTheyCall|TestUnobservableListNamesADependency" -count=1 -v 2>&1 | tee /tmp/e2.out
   grep -q -- "--- PASS: TestEveryToolIsExercisedEndToEnd" /tmp/e2.out
   grep -q -- "--- PASS: TestScenariosObserveAnEffect" /tmp/e2.out
+  grep -q -- "--- PASS: TestScenariosOnlyClaimToolsTheyCall" /tmp/e2.out
   grep -q -- "--- PASS: TestUnobservableListNamesADependency" /tmp/e2.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/e2.out
   go test ./... -count=1'
@@ -48,18 +62,25 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestEveryToolIsExercisedEndToEnd` | `internal/mcpserver/e2e_test.go` | every registered tool has a scenario or a reasoned exemption | — |
-| `TestScenariosObserveAnEffect` | `internal/mcpserver/e2e_test.go` | no scenario passes on a single call | — |
-| `TestUnobservableListNamesADependency` | `internal/mcpserver/e2e_test.go` | an exemption names an external dependency, so the list cannot become a parking lot | — |
+| `TestEveryToolIsExercisedEndToEnd` | `internal/mcptest/exhaustive_test.go` | every registered tool has a scenario or a reasoned exemption | — |
+| `TestScenariosObserveAnEffect` | `internal/mcptest/exhaustive_test.go` | no scenario passes on a single call | — |
+| `TestUnobservableListNamesADependency` | `internal/mcptest/exhaustive_test.go` | an exemption names an external dependency, so the list cannot become a parking lot | — |
 
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| register a new tool with no scenario | yes | `TestEveryToolIsExercisedEndToEnd` |
-| replace a scenario body with a single call | yes | `TestScenariosObserveAnEffect` |
-| exempt a tool with the reason "hard to test" | yes | `TestUnobservableListNamesADependency` |
-| enumerate scenarios from a literal list instead of `fullCatalog` | yes | `TestEveryToolIsExercisedEndToEnd` |
+| a scenario claims a tool it never calls | yes | `TestScenariosOnlyClaimToolsTheyCall` |
+| a scenario body reduced to one call | yes | `TestScenariosObserveAnEffect` + the ratchet |
+| exempt a tool for "more time" | yes | `TestUnobservableListNamesADependency` |
+| the harness stops recording calls | yes | `TestEveryToolIsExercisedEndToEnd` (41/41 uncovered) + `TestScenariosObserveAnEffect` |
+| tool list read from a literal instead of the running server | yes | `TestEveryToolIsExercisedEndToEnd` (ratchet: improved without lowering) |
+
+All five compile and all five die. The last two are the ones worth having: coverage is counted from
+the calls the harness RECORDED, so a scenario cannot claim a tool it never invoked, and the tool list
+comes from the running server, so a tool added without a scenario fails without anyone maintaining a
+list. Both are the failure this repo hit twice this week — an exclusion list keyed by arm name, and a
+registration gate that scanned only `const` declarations.
 
 ## Out of Scope
 
@@ -81,4 +102,4 @@ Stop and ask if the number of genuinely unobservable tools exceeds five — that
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · 283c282* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
