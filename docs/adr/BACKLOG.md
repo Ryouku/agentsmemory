@@ -156,13 +156,20 @@ The server registers 41 tools; roughly eight are in regular use. What is built, 
 | closets | **0** | Built by `am_mine` only, and mining is retired for now — the prior it feeds measured harmful on mined corpora (~0.10 MRR) and `CLOSET_BOOST` defaults to 0. The summary index itself is untested against a curated corpus, which is a different question from the ranking prior and has never been asked. |
 | hallways | **0** | Never used once. `am_recompute_graph` derives them and no session has called it. Nothing in the protocol tells an agent when a hallway would help, so the feature is undiscoverable rather than rejected. |
 | tunnels | **0** | Never used — and now the most obviously wanted of the three, because the craft/project wing split creates exactly the cross-wing links tunnels exist for. |
-| skills (centralised) | 2 | Was **0** for the project's whole life: every session reported `am_list_skills` empty and fell back to generic conventions while the bootstrap called loading them a hard gate, so the gate passed vacuously. `memory-orchestration` and `writing-memories` were published 2026-08-20 and sessions began loading them the same hour. Still short of what the protocol names: `AGENTS.md` and `CLAUDE.md` promise `effective-go` and `cqrs`, and neither exists. |
+| skills (centralised) | 2 | Was **0** for the project's whole life: every session reported `am_list_skills` empty and fell back to generic conventions while the bootstrap called loading them a hard gate, so the gate passed vacuously. `memory-orchestration` and `writing-memories` were published 2026-08-20 and sessions began loading them the same hour. `effective-go` and `cqrs` — the two this repo's protocol names by name — were published the same day, so the catalogue holds 4 and the promise in `AGENTS.md` and `CLAUDE.md` is true for the first time. |
 | anchors | 5 | Used, and the cross-repo verdict bug that deleted memories is fixed. Adoption is still incidental rather than routine. |
 | knowledge graph | 41 triples | Genuinely in use by sessions since the reset, but its job is undecided — ADR-004 exists to make supersession its acceptance criterion rather than recall. |
 | `am_merge_wing` | first use 2026-08-20 | Folded two derived wings into one after registrations corrected. Worked exactly as documented; simply nobody had needed it before. |
 
 Three of these are worth acting on, in order:
 
-1. **Finish populating the skills catalogue.** Two entries exist; the two this repo's own protocol names by name — `effective-go` and `cqrs` — do not. A protocol that tells an agent to load a named skill that is absent is documentation promising a capability nothing provides, which is the reachability defect this repo hunts, pointed at itself. Either author them or stop naming them.
+1. **Make the catalogue reachable on a fresh install.** The four skills exist in *this* palace
+   because they were pushed by hand. A fresh `aiagentmemory install` seeds no skills at all, so
+   `AGENTS.md`'s claim that `effective-go` lives in the centralised catalogue is true here and false
+   everywhere else — the reachability defect one level up: the capability is finished and nothing
+   selects it for a new workspace. `update-skill` is not this; it refreshes local markdown. What is
+   missing is a seed path (skill bodies in the repo tree, pushed at install) plus the gate that
+   naturally follows: a test failing when the protocol names a skill the tree does not carry.
+
 2. **Give tunnels a reason to exist in the protocol.** They are the mechanism for "this craft lesson came from that project's incident", and the split makes that link worth having.
 3. **Decide whether hallways are a feature or dead weight.** Zero uses since the project began is a finding, not a backlog item: either the protocol should teach them or they should be retired.

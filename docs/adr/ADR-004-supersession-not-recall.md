@@ -1,6 +1,6 @@
 # ADR-004: Justify the knowledge graph on supersession, not on recall
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-19
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.

@@ -53,6 +53,13 @@ the Docker invocation this repo builds under, and `adr-verify` runs that one.
 
 ## Notes
 
+- **T3 does not run on this palace.** The 2026-08-19 reset left 80 drawers, and a 2026-08-20 smoke
+  run measured the retrieval ceiling at 100% in-pool / 100% top-5 with seven arms tied at MRR 1.000.
+  At that ceiling the answer-recall constraint below is met at a trivially low threshold and `--gate`
+  exits 0 without testing its premise, which would authorise T4–T6 on a sign-off that means nothing.
+  T1–T3 run on the upstream maintainer's ~5,020-drawer corpus — the one every figure in the ADR's
+  Context was measured on — or on ours once its ceiling is no longer saturated. T3 step 1 is the
+  check; the sign-off line carries the corpus size and the ceiling beside the exit code.
 - The whole ADR is falsifiable at T3, and the criterion is declared in the ADR before the run: at
   the threshold holding answer-recall ≥ 0.95 on reachable-answerable cases, the 90% Wilson lower
   bound on the correct-refusal rate over verified-absent cases must be ≥ 0.30. `--gate`'s exit code

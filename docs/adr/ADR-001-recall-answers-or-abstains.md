@@ -1,6 +1,6 @@
 # ADR-001: Recall answers or abstains
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-19
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; the decision rests on measurements recorded in the eval harness rather than on elicited requirements.
@@ -133,6 +133,22 @@ No new component. No module moves. This repo has no `docs/architecture.md`; one 
 
 Six tasks — see [`ADR-001-recall-answers-or-abstains/tasks/README.md`](ADR-001-recall-answers-or-abstains/tasks/README.md).
 
+**Precondition — the corpus this runs on is not ours.** Accepted 2026-08-20 on the understanding
+that execution waits for a corpus that can falsify it. The palace these tasks would run against was
+reset on 2026-08-19 and holds 80 drawers across 8 wings; a smoke run on 2026-08-20 put the retrieval
+ceiling at 100% in-pool, top-5 100%, with seven arms tied at MRR 1.000. On a corpus where every
+answer is already in the pool, T3's recall constraint (answer-recall ≥ 0.95) is met at a trivially
+low threshold, so `--gate` returns exit 0 without testing the premise it exists to test. That is not
+a weak measurement, it is a gate that cannot fail — the defect class this repository names in
+`AGENTS.md` and hunts with `TestEveryDeclaredArmIsRegistered` and friends, aimed at our own ADR.
+
+Because T3's `ship` sign-off is what authorises T4–T6, running it here would authorise four shipping
+tasks on a verdict that means nothing. **T1–T3 run on the upstream maintainer's corpus** (~5,020
+drawers, the one every measurement in the Context section was taken on), or on ours once it is large
+enough that the ceiling is no longer saturated. Whoever executes T3 must paste the corpus size and
+the retrieval ceiling into the Verification Log beside the exit code; a `ship` recorded without them
+is not a sign-off.
+
 T1, T2 and T3 are the falsification half and they run first: honest negatives, then the curve and the gate, then the gate run. Nothing that ships starts until T3 records a `ship` sign-off. If identifier-preserving negatives and properly verified labels collapse the measured separation, this gate does not ship on this corpus and three tasks were spent finding that out instead of six.
 
 ## Consequences
@@ -170,6 +186,7 @@ T1, T2 and T3 are the falsification half and they run first: honest negatives, t
 | `no_answer` on a page that does hold the answer at rank 2–5, since the gold is top-1 only ~75% of the time | Med | Med | The verdict never filters hits and is documented as a judgement about the top result; the raw score and both boundaries are returned so a consumer can apply its own bar |
 | A caller passes a `limit` above the calibrated regime, so fusion evicts candidates the cross-encoder never scores | Med | Med | The verdict is `unknown` unless `limit × 3 ≤` the calibrated rerank pool, checked per request in T5; the page itself is unaffected |
 | Agents ignore the verdict and read hits regardless | High | Low | Additive field; no behaviour is removed, so ignoring it leaves today's behaviour intact |
+| The gate is run on a corpus whose retrieval ceiling is saturated, so it passes vacuously and authorises T4–T6 on a meaningless sign-off | Certain on our post-reset corpus | High | The Implementation section makes the corpus a precondition, not a detail; T3's Verification Log must carry the corpus size and the measured ceiling beside the exit code |
 | Overlapping tails make any operating point wrong for some queries | Certain | Med | Stated explicitly in the response (the score and both boundaries are returned) and in the calibration file's counts |
 
 ## Rollback

@@ -19,6 +19,10 @@ Find out, before any of the serving code exists, whether a usable operating poin
 
 ## Ordered Steps
 
+**Preflight — before step 1, check that the corpus can falsify the gate at all.** Run the eval once and read the retrieval ceiling it prints. If the answer is already in the pool for essentially every case, the answer-recall ≥ 0.95 constraint is met at a trivially low threshold and `--gate` exits 0 without testing anything — a pass here is not evidence, it is the instrument agreeing with itself. This is not hypothetical: on 2026-08-20 our own palace (80 drawers, post-reset) measured 100% in-pool, top-5 100%, with seven arms tied at MRR 1.000. Run this task against the upstream maintainer's ~5,020-drawer corpus, or against ours once its ceiling is no longer saturated. The corpus size and the measured ceiling go into the sign-off line beside the exit code.
+
+Then the steps proper, test-first as everywhere else:
+
 1. Re-run T1's and T2's acceptance commands first and confirm both test sets are green. A curve taken while the population labels or the verification drop are still red is not evidence — it is the old easy-negative measurement wearing a new name.
 2. Generate a fresh case set with the identifier-preserving generator and the depth-20 verification (`agentsmemory eval --style absent --n 25 --cases <file>`), keeping the file, and record how many candidates survived verification and how many were dropped for which reason.
 3. Generate or reuse the answerable set at the same settings so both populations come from one corpus and one build, and run the eval so the production arm scores every case.
@@ -32,7 +36,7 @@ Acceptance is human-observed: the gate needs a populated palace, a live reranker
 
 ```text
 ~/.claude/bin/adr-verify docs/adr/ADR-001-recall-answers-or-abstains/tasks/T3-run-the-gate.md \
-  --human "gate run on hard negatives: <n> verified-absent (<n> dropped), <n> reachable-answerable; answer_at=<x> refuse_below=<y>; refusal <k>/<n> = <r>, 90% Wilson lower bound <b> against the declared 0.30; absent cases below refuse_below = <n>; eval --calibrate --gate exit <0|1>; recorded in evidence/abstain-gate-2026-08.md; decision <ship|withdraw>"
+  --human "corpus <n> drawers, retrieval ceiling in-pool <c>%; gate run on hard negatives: <n> verified-absent (<n> dropped), <n> reachable-answerable; answer_at=<x> refuse_below=<y>; refusal <k>/<n> = <r>, 90% Wilson lower bound <b> against the declared 0.30; absent cases below refuse_below = <n>; eval --calibrate --gate exit <0|1>; recorded in evidence/abstain-gate-2026-08.md; decision <ship|withdraw>"
 ```
 
 ## Tests
@@ -53,7 +57,10 @@ Acceptance is human-observed: the gate needs a populated palace, a live reranker
 
 ## Stop Condition
 
-Stop the ADR — not just this task — if `--gate` exits non-zero: no threshold reaching the declared answer-recall refuses enough unanswerable queries to be worth a knob, a wire field and a column. Stop and ask if the two regimes disagree in direction (the easy set passing while the hard set fails is expected and is a pass for the *method*; the reverse means something is wired wrong).
+Stop the ADR — not just this task — if `--gate` exits non-zero: no threshold reaching the declared answer-recall refuses enough unanswerable queries to be worth a knob, a wire field and a column. Stop before running anything if the corpus's retrieval ceiling is saturated — a gate that cannot
+fail authorises T4–T6 on a verdict that means nothing, and running it anyway is worse than not
+running it, because the Verification Log would then hold a `ship` nobody can distinguish from a real
+one. Stop and ask if the two regimes disagree in direction (the easy set passing while the hard set fails is expected and is a pass for the *method*; the reverse means something is wired wrong).
 
 ## Out of Scope
 
