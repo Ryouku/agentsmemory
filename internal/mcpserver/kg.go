@@ -25,7 +25,7 @@ func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Serv
 	tool := newTool("kg_add",
 		mcp.WithDescription("Add a fact (subject → predicate → object) to the temporal knowledge graph, optionally with a validity window. Re-adding an identical current fact is a no-op; to replace a fact, invalidate the old one first."),
 		mcp.WithString("subject", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's subject entity. A SHORT LABEL (max %d characters), not a sentence — the entity is a node the graph is queried by, so put explanation in a drawer and point at it with source_drawer_id.", palace.MaxKGValueLen))),
-		mcp.WithString("predicate", mcp.Required(), mcp.Description("The relationship (e.g. \"works_at\").")),
+		mcp.WithString("predicate", mcp.Required(), mcp.Description(fmt.Sprintf("The relationship (e.g. \"works_at\"). A safe name: max %d characters, and no \"/\", \"\\\\\" or \"..\" — it is validated like a name, not stored like a value, so \"uses/abuses\" is rejected.", palace.MaxNameLength))),
 		mcp.WithString("object", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's object entity. A SHORT LABEL (max %d characters), not a sentence — evidence, commit ids and repro steps belong in a drawer referenced by source_drawer_id, never smuggled in here.", palace.MaxKGValueLen))),
 		mcp.WithString("valid_from", mcp.Description("Optional start of validity (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")),
 		mcp.WithString("valid_to", mcp.Description("Optional end of validity; omit while the fact is current.")),

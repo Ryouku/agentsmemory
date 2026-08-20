@@ -804,7 +804,10 @@ func buildServices(cfg config.Config) (*services, error) {
 
 	// The memory loop: Ollama embeds text, the store seam holds the vectors, and
 	// the palace service ties them to drawer metadata.
-	embedder := buildEmbedder(cfg)
+	embedder, err := buildEmbedder(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// The cross-encoder is optional and additive: configured, it rescores the top
 	// candidates of every search; unconfigured, search is exactly the hybrid
@@ -879,19 +882,26 @@ func buildServices(cfg config.Config) (*services, error) {
 // can select is not a backend, which is the same defect the eval's production
 // arm and the IDF coverage each shipped with — worth naming here because it is
 // evidently this codebase's favourite way to be wrong.
-func buildEmbedder(cfg config.Config) palace.Embedder {
+// buildEmbedder selects the embedding backend, or reports why it cannot.
+//
+// It returns an error rather than exiting because it runs inside buildServices,
+// whose four preceding failure paths all return wrapped errors and by which
+// point the database is open and migrated and the vector store is built.
+// log.Fatalf here exited without unwinding any of that, and routed one config
+// mistake differently from every other config mistake.
+func buildEmbedder(cfg config.Config) (palace.Embedder, error) {
 	if !strings.EqualFold(strings.TrimSpace(cfg.EmbedBackend), "tei") {
-		return ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout)
+		return ollama.New(cfg.OllamaURL, cfg.OllamaEmbedModel, cfg.HTTPTimeout), nil
 	}
 	url := strings.TrimSpace(cfg.EmbedURL)
 	if url == "" {
 		// No silent fallback to Ollama: an operator who asked for TEI and gets
 		// Ollama has a palace embedded by a model they did not choose, and
 		// vectors from two models in one index are not comparable.
-		log.Fatalf("EMBED_BACKEND=tei needs EMBED_URL (the text-embeddings-inference base URL)")
+		return nil, fmt.Errorf("EMBED_BACKEND=tei needs EMBED_URL (the text-embeddings-inference base URL)")
 	}
 	log.Printf("embeddings: text-embeddings-inference at %s", url)
-	return teiembed.New(url, cfg.HTTPTimeout)
+	return teiembed.New(url, cfg.HTTPTimeout), nil
 }
 
 func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error) {

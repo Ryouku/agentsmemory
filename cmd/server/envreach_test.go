@@ -251,3 +251,114 @@ func dedupe(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestReadEnvVarsAreDocumented is TestDocumentedEnvVarsAreRead with the arrows
+// swapped, and it is the direction that actually bit.
+//
+// The existing check catches a variable promised and never read — a line in an
+// example file that does nothing. The reverse is the same defect and worse: a
+// variable the program READS and nobody documents is a knob only its author
+// knows exists, and the more consequential the knob the more it matters.
+//
+// It bit exactly there. SEARCH_SCOPE changes recall's default from every wing to
+// the registration's wing — the one BREAKING behaviour change on this branch —
+// and it appeared in two places: a cli.StringFlag and one tool description.
+// EMBED_BACKEND, EMBED_URL and BM25_WEIGHT=auto-idf, none of which change
+// existing behaviour, all got .env.example entries with rationale. The operator
+// most likely to need SEARCH_SCOPE is the one whose recall just narrowed, and
+// nothing they would read mentions it.
+//
+// Scoped to variables reachable through the CLI's own EnvVars declarations,
+// because those are the ones a user is invited to set.
+// notOperatorFacing lists variables the program reads that an operator is not
+// expected to set, each with the reason. It is the escape hatch that keeps this
+// check usable: without it the gate flags build-time and test affordances, and a
+// gate that cries wolf is one people delete. An entry needs a reason, because
+// the reason is the review.
+var notOperatorFacing = map[string]string{
+	"AIAGENTMEMORY_SERVER_BIN": "test/dev override for locating the server binary; not a deployment knob",
+	"AIAGENTMEMORY_CODEX_BIN":  "test/dev override for locating the codex binary",
+	"AIAGENTMEMORY_PI_BIN":     "test/dev override for locating the pi binary",
+	"AIAGENTMEMORY_VERSION":    "stamped at build time by the release workflow, not set by hand",
+}
+
+// TestNotOperatorFacingIsJustified keeps that list honest: an entry with no
+// reason is unreviewed, and one naming a variable nothing reads any more is
+// stale cover for whatever replaced it.
+func TestNotOperatorFacingIsJustified(t *testing.T) {
+	root := repoRoot(t)
+	var all strings.Builder
+	for _, path := range goFilesUnder(t, root) {
+		if raw, err := os.ReadFile(path); err == nil {
+			all.Write(raw)
+		}
+	}
+	for v, why := range notOperatorFacing {
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("notOperatorFacing[%q] has no reason", v)
+		}
+		if !strings.Contains(all.String(), v) {
+			t.Errorf("notOperatorFacing names %q, which nothing reads any more", v)
+		}
+	}
+}
+
+func TestReadEnvVarsAreDocumented(t *testing.T) {
+	root := repoRoot(t)
+
+	read := map[string]string{} // var -> file that reads it
+	envVarsDecl := regexp.MustCompile(`EnvVars\("([A-Z][A-Z0-9_]+)"`)
+	for _, path := range goFilesUnder(t, root) {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, m := range envVarsDecl.FindAllStringSubmatch(string(src), -1) {
+			if _, seen := read[m[1]]; !seen {
+				rel, _ := filepath.Rel(root, path)
+				read[m[1]] = rel
+			}
+		}
+	}
+	if len(read) == 0 {
+		t.Fatal("found no EnvVars declarations — this check has stopped checking anything")
+	}
+
+	// Where an operator would look. A variable named in any of these is
+	// documented; it does not have to be in all of them.
+	var docs []string
+	for _, rel := range []string{".env.example", ".env.docker.example", "README.md", "AGENTS.md"} {
+		docs = append(docs, filepath.Join(root, rel))
+	}
+	composeFiles, _ := filepath.Glob(filepath.Join(root, "docker-compose*.yml"))
+	docs = append(docs, composeFiles...)
+
+	var corpus strings.Builder
+	for _, path := range docs {
+		if raw, err := os.ReadFile(path); err == nil {
+			corpus.Write(raw)
+			corpus.WriteString("\n")
+		}
+	}
+	text := corpus.String()
+
+	names := make([]string, 0, len(read))
+	for v := range read {
+		if why, internal := notOperatorFacing[v]; internal {
+			_ = why
+			continue
+		}
+		names = append(names, v)
+	}
+	sort.Strings(names)
+	for _, v := range names {
+		if !strings.Contains(text, v) {
+			t.Errorf("%s is read by %s and documented nowhere an operator would look "+
+				"(.env examples, README, AGENTS.md, compose) — a knob only its author knows about",
+				v, read[v])
+		}
+	}
+}

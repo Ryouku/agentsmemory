@@ -537,10 +537,10 @@ type LandingData struct {
 // production origin so search engines and AI answer engines index one canonical
 // page regardless of how a given request reached the server (localhost, proxy…).
 const (
-	siteName           = "AI Agent Memory"
-	siteURL            = "https://aiagentmemory.dev"
-	repoURL            = "https://github.com/atvirokodosprendimai/agentsmemory"
-	openCollectiveURL  = "https://opencollective.com/it-uoga/projects/ai-agents-memory"
+	siteName          = "AI Agent Memory"
+	siteURL           = "https://aiagentmemory.dev"
+	repoURL           = "https://github.com/atvirokodosprendimai/agentsmemory"
+	openCollectiveURL = "https://opencollective.com/it-uoga/projects/ai-agents-memory"
 )
 
 // --- landing-page content (single source for the page AND its JSON-LD) ---

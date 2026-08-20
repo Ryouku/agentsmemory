@@ -137,9 +137,14 @@ type Config struct {
 	EmbedBackend string
 
 	// EmbedURL is the embedding server's base URL when EmbedBackend is "tei".
-	// Empty falls back to OllamaURL's host with TEI's usual port left to the
-	// operator, because there is no sane universal default for a service the
-	// operator chose to run.
+	// Required in that case: there is no fallback, because an operator who asked
+	// for TEI and silently got Ollama would have a palace embedded by a model
+	// they did not choose, and vectors from two models in one index are not
+	// comparable. Startup refuses instead.
+	//
+	// The sentence this replaces described a fallback to OllamaURL's host that
+	// the code has never had — a design that was considered and rejected, left
+	// documented as if it shipped.
 	EmbedURL string
 
 	// OllamaURL is the base URL of the Ollama server used for embeddings.
