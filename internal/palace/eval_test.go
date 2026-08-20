@@ -793,3 +793,87 @@ func TestSupersessionRanksScopePerArm(t *testing.T) {
 		}
 	}
 }
+
+// TestRecencyArmPrefersNewerWithinBand pins the arm's whole behaviour: inside a
+// band of fused score it prefers the newer memory, and outside it changes
+// nothing.
+//
+// The band matters more than the preference. A recency prior that reorders
+// across large score gaps is not a tie-break, it is a different ranker — it would
+// promote a recent irrelevance over an older exact answer. So the test asserts
+// both halves: two candidates within the band swap, and a candidate far below
+// stays below however new it is.
+//
+// The baseline is unboosted ArmHybrid. The task originally said ArmHybridCloset,
+// which was true when it was written and is now a guaranteed red test —
+// TestArmBoostsDimension errors when any arm outside the two closet-named ones
+// receives boosts.
+func TestRecencyArmPrefersNewerWithinBand(t *testing.T) {
+	query := "retention window"
+	docs := []string{
+		"the retention window is thirty days",  // older
+		"the retention window is ninety days",  // newer, near-identical score
+		"retention window retention window retention window unrelated filler",
+	}
+	dists := []float64{0.30, 0.31, 0.90}
+	dates := []string{"2024-01-01", "2026-01-01", "2026-06-01"}
+
+	base := rankHybrid(query, docs, dists, nil)
+	got := reorderByRecency(base, dates, 0.05)
+
+	if len(got) != len(base) {
+		t.Fatalf("recency reorder returned %d scores, want %d", len(got), len(base))
+	}
+	// The newer of the two near-tied candidates must come first.
+	posOf := func(page []HybridScore, idx int) int {
+		for i, h := range page {
+			if h.Index == idx {
+				return i
+			}
+		}
+		return -1
+	}
+	if posOf(got, 1) >= posOf(got, 0) {
+		t.Errorf("the newer of two candidates inside the band did not move ahead: order %v", orderOf(got))
+	}
+	// The far-below candidate must not be promoted by being newest.
+	if posOf(got, 2) != len(got)-1 {
+		t.Errorf("a candidate outside the band was reordered by date: order %v — a recency prior "+
+			"that crosses large score gaps is a different ranker, not a tie-break", orderOf(got))
+	}
+	// And a zero band must be a no-op, or the sweep has no baseline.
+	if !reflect.DeepEqual(orderOf(reorderByRecency(base, dates, 0)), orderOf(base)) {
+		t.Error("a zero band must leave the order untouched")
+	}
+}
+
+// TestRecencyArmLeavesUndatedInPlace pins the rule that keeps the arm honest:
+// absence of a date is not evidence of being old.
+//
+// An undated memory is neither promoted nor demoted. Treating "" as very old
+// would push every un-dated memory down a ranking on no evidence at all, and
+// most memories in a real palace carry no content date.
+func TestRecencyArmLeavesUndatedInPlace(t *testing.T) {
+	query := "retention window"
+	docs := []string{
+		"the retention window is thirty days",
+		"the retention window is ninety days",
+	}
+	dists := []float64{0.30, 0.31}
+
+	base := rankHybrid(query, docs, dists, nil)
+	// Neither dated: nothing to compare, so nothing moves.
+	if got := reorderByRecency(base, []string{"", ""}, 0.05); !reflect.DeepEqual(orderOf(got), orderOf(base)) {
+		t.Errorf("two undated candidates were reordered: %v, want %v", orderOf(got), orderOf(base))
+	}
+	// One dated, one not: the undated one is not demoted for lacking a date.
+	got := reorderByRecency(base, []string{"", "2026-01-01"}, 0.05)
+	if !reflect.DeepEqual(orderOf(got), orderOf(base)) {
+		t.Errorf("an undated candidate moved against a dated one: %v, want %v — absence of a date "+
+			"is not evidence of being old, and most memories carry none", orderOf(got), orderOf(base))
+	}
+	// An unparseable date behaves the same as none.
+	if got := reorderByRecency(base, []string{"not-a-date", "2026-01-01"}, 0.05); !reflect.DeepEqual(orderOf(got), orderOf(base)) {
+		t.Errorf("an unparseable date was treated as old: %v", orderOf(got))
+	}
+}
