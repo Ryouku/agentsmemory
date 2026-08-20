@@ -565,3 +565,33 @@ func (r *Repo) ListRandom(ctx context.Context, teamID, wing string, limit int) (
 	}
 	return out, nil
 }
+
+// MemoryChunks returns every drawer belonging to one memory — the parent and its
+// children — given any drawer id in it, ordered by chunk index.
+//
+// A memory over ChunkSize is stored as several rows sharing a parent, and any
+// operation that treats one of those rows as the whole memory leaves the rest
+// live and contradicting it. That is not hypothetical: an update rewrote chunk 0
+// and left chunks 1 and 2 returning the retracted claim, above the correction, in
+// search.
+func (r *Repo) MemoryChunks(ctx context.Context, teamID, id string) ([]Drawer, error) {
+	var self drawerRow
+	if err := r.db.WithContext(ctx).Where("team_id = ? AND id = ?", teamID, id).First(&self).Error; err != nil {
+		return nil, err
+	}
+	root := self.ID
+	if self.ParentID != "" {
+		root = self.ParentID
+	}
+	var rows []drawerRow
+	if err := r.db.WithContext(ctx).
+		Where("team_id = ? AND (id = ? OR parent_id = ?)", teamID, root, root).
+		Order("chunk_index asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]Drawer, len(rows))
+	for i, row := range rows {
+		out[i] = fromRow(row)
+	}
+	return out, nil
+}

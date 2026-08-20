@@ -245,3 +245,28 @@ rejects a `done` whose logged command no longer matches), so it is a deliberate 
 drive-by: strip the guards, re-run adr-verify on every completed task, commit between runs. Until
 then, scope a multi-package acceptance to the package that holds the tests.
 
+## A memory is several rows and most operations treat it as one
+
+Found in production 2026-08-20 by a session correcting one of its own memories, and reproduced here
+against the running server.
+
+`am_update_drawer` rewrote chunk 0 of a three-chunk memory and reported success. Chunks 1 and 2
+stayed live with the old text, individually embedded — and a search for the subject returned the
+stale chunks ABOVE the correction, with nothing marking them retracted. A memory store whose
+correction competes with the text it corrects on equal footing is worse than one that refuses the
+edit, so `Update` now refuses when the drawer belongs to a multi-chunk memory and says what to do
+instead.
+
+Refusing is the safe half of the fix, not the whole one. Two things are still open:
+
+- **Re-chunking on update.** The right behaviour is to replace the whole memory, but that changes
+  how many rows exist and which ids they carry, which silently invalidates every anchor, tunnel and
+  knowledge-graph fact pointing at the old ones. Doing it properly means deciding what happens to
+  those references, which is an ADR rather than a bug fix.
+- **`Delete` has the same shape.** `Service.Delete` removes one row and one vector; deleting a
+  parent leaves its children orphaned, still embedded, still searchable, and now with a dangling
+  `parent_id`. Not yet reproduced, but the code is one row deep in exactly the same way.
+- **`am_update_drawer` cannot set `code_anchors` at all**, so a memory whose content is corrected
+  keeps its old anchor and stays flagged STALE even once the text is right. Reported alongside the
+  chunk defect.
+

@@ -501,6 +501,31 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		return current, nil
 	}
 
+	// A memory over ChunkSize is several rows sharing a parent, and this function
+	// updates ONE row. Rewriting the content of one chunk leaves the others live,
+	// individually embedded, and still returning the retracted claim — observed
+	// in production, with the stale chunks ranking ABOVE the correction, and the
+	// call reporting success throughout. Refuse instead of half-doing it.
+	//
+	// Refusing rather than re-chunking is deliberate for now: re-chunking changes
+	// how many rows exist and which ids they carry, which silently invalidates
+	// every anchor, tunnel and knowledge-graph fact pointing at the old ones.
+	// That is a bigger change than a bug fix and it is recorded in the backlog.
+	if patch.Content != nil {
+		chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+		if err != nil {
+			return Drawer{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
+		}
+		if len(chunks) > 1 {
+			return Drawer{}, fmt.Errorf(
+				"%w: drawer %s is chunk %d of a %d-chunk memory, and updating its content would leave "+
+					"the other %d chunk(s) live with the old text — still embedded, still returned by "+
+					"search, and with nothing marking them retracted. Delete the memory and file the "+
+					"correction as a new one",
+				ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks), len(chunks)-1)
+		}
+	}
+
 	// Compute the post-patch state and refresh the derived index first.
 	finalContent, finalWing, finalRoom := current.Content, current.Wing, current.Room
 	if patch.Content != nil {
@@ -1245,4 +1270,12 @@ func distanceFromScore(score float32) float64 {
 		return 2
 	}
 	return d
+}
+
+// short12 trims an id for an error message.
+func short12(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }

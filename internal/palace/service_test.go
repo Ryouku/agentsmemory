@@ -676,3 +676,63 @@ func TestRerankPresenceSurvivesAZeroScore(t *testing.T) {
 		t.Fatal("a hit scored 0.0 by a logit backend must still report Reranked — otherwise the gate's data silently loses it")
 	}
 }
+
+// TestUpdateRefusesToHalfRewriteAMultiChunkMemory pins the failure a live
+// session hit: an update that reports success while half the memory keeps
+// contradicting it.
+//
+// A memory over ChunkSize is stored as several rows sharing a parent. Update
+// rewrites ONE row, so patching the parent's content left the children live,
+// individually embedded, and still returning the retracted claim — ranked ABOVE
+// the correction, with nothing marking them superseded. The call returned the
+// updated drawer and reported success throughout.
+//
+// A memory store whose correction competes with the text it corrects is worse
+// than one that refuses the edit, so it refuses and says what to do instead.
+func TestUpdateRefusesToHalfRewriteAMultiChunkMemory(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	long := strings.Repeat("The retention window is THIRTY days and this sentence forces chunking. ", 40)
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy", Content: long})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(res.Drawers) < 2 {
+		t.Fatalf("fixture: need a multi-chunk memory, got %d chunk(s)", len(res.Drawers))
+	}
+	parent := res.Drawers[0].ID
+
+	corrected := "CORRECTED: the retention window is NINETY days."
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Content: &corrected}); err == nil {
+		t.Fatal("updating one chunk of a multi-chunk memory was accepted — the other chunks stay " +
+			"live with the old text and outrank the correction in search")
+	} else if !strings.Contains(err.Error(), "chunk") {
+		t.Errorf("the refusal must say why: %v", err)
+	}
+
+	// And the memory must be untouched: a refused edit that partially applied
+	// would be the worst of both.
+	after, err := svc.repo.MemoryChunks(ctx, team, parent)
+	if err != nil {
+		t.Fatalf("MemoryChunks: %v", err)
+	}
+	if len(after) != len(res.Drawers) {
+		t.Errorf("the memory has %d chunk(s) after the refusal, want %d", len(after), len(res.Drawers))
+	}
+	for _, c := range after {
+		if strings.Contains(c.Content, "CORRECTED") {
+			t.Error("the refused update still wrote to a chunk")
+		}
+	}
+
+	// A single-chunk memory still updates, or the fix has broken the common case.
+	one, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "short", Content: "a short memory"})
+	if err != nil {
+		t.Fatalf("add short: %v", err)
+	}
+	if _, err := svc.Update(ctx, team, one.Drawers[0].ID, DrawerPatch{Content: &corrected}); err != nil {
+		t.Errorf("a single-chunk memory must still be updatable: %v", err)
+	}
+}
