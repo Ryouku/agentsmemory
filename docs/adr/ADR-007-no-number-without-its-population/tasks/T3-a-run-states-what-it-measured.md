@@ -53,6 +53,15 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestGeneratedRunSaysSoBesideBest` | `cmd/server/eval_test.go` | a generated run labels `BEST` with its case-set origin | — |
 | `TestRunRecordCarriesTheCaseSet` | `cmd/server/eval_test.go` | the id reaches `.cells.json`, not only the terminal | — |
 
+## Reachability
+
+| Rung | How this task shows it |
+|------|------------------------|
+| 1 — exists | `TestCaseSetIDIsContentDerived` |
+| 2 — something selects it | `TestRunRecordCarriesTheCaseSet` — stamped in the record AND in the table, or the two disagree |
+| 3 — the caller can discover it | the `BEST` label is where a reader looks, so the origin is printed there rather than in a header they skip |
+| 4 — it is used | four runs were compared across different question sets before this existed; the id is what makes that visible next time |
+
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |

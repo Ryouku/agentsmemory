@@ -51,6 +51,15 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestGenuineNullIsStillReported` | `internal/palace/evalstats_test.go` | closets present but none within the cap still reports `no effect` with its interval | — |
 | `TestClosetStatusReachesTheTable` | `cmd/server/eval_test.go` | the status is printed, not merely computed | — |
 
+## Reachability
+
+| Rung | How this task shows it |
+|------|------------------------|
+| 1 — exists | `TestVacuousClosetComparisonIsNotMeasured` and `TestGenuineNullIsStillReported` |
+| 2 — something selects it | `TestClosetStatusReachesTheTable` — a status computed and not printed changes nothing |
+| 3 — the caller can discover it | the printed cell IS the interface; a reader who sees `Δ +0.000` with no status cannot tell a null from an unrun experiment |
+| 4 — it is used | the closet row has been printed on seven tables and read as a null every time — that is the usage this task changes |
+
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |

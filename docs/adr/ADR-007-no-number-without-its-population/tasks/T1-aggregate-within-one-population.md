@@ -46,6 +46,15 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestNoAggregateMixesScopes` | `cmd/server/pooldiag_test.go` | every multi-arm reduction filters on ArmScope | — |
 
+## Reachability
+
+| Rung | How this task shows it |
+|------|------------------------|
+| 1 — exists | `TestNoAggregateMixesScopes` drives the reduction directly |
+| 2 — something selects it | the aggregate reads `palace.ArmScope`; removing the filter turns the test red |
+| 3 — the caller can discover it | n/a: no declared interface — this is an internal reduction, not a caller-facing surface |
+| 4 — it is used | the pool-diagnosis line is printed on every eval run, so a wrong partition is visible in the next table anybody reads |
+
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |
