@@ -198,3 +198,33 @@ Three of these are worth acting on, in order:
    incident that taught it, so a rule that gets challenged can be traced to its evidence. The
    protocol tells agents tunnels exist and never says when to weave one, which is why the count is
    zero on the explicit side too.
+
+## Verified defects in the portability paths (found 2026-08-20, not yet fixed)
+
+Found while asking a plainer question — *where does the palace's content actually live, and could we
+get it back?* Both were reproduced, not inferred.
+
+**A wing bundle restored beside its original duplicates every diary entry.** `cmd/server/wing.go`
+states the feature as "a bundle is contents, not a place, so the same file can be restored beside its
+original". It cannot. A diary drawer's id comes from `diaryEntryID`, which mixes in a per-write seed;
+export drops the id and import re-mints it with `DrawerID`, a different hash over different inputs,
+so the restored row never matches the original. Reproduced on a scratch wing: one entry written
+normally, exported, imported back into the same wing — two rows, distinct ids, one distinct content.
+Against the live palace that is 52 diary drawers doubling. Re-importing the same bundle into a
+*fresh* wing is idempotent, which is why this was never noticed.
+
+A second edge sits behind the same seam: `DrawerID` drops agent and topic, so two diary entries with
+byte-identical content in one wing collapse to a single row on import — the opposite failure, and it
+silently violates the append-only journal guarantee `diaryEntryID`'s own doc comment states.
+
+**On a self-hosted server, no export path reaches skills, the knowledge graph, anchors, or
+cross-wing tunnels.** `wing export` structurally cannot carry them — they are not bundle record
+kinds. The one path that does, the data-subject archive, is mounted only on the multi-tenant
+dashboard route; `serveLocal` mounts `/mcp`, `/import`, `/stats` and `/healthz` and nothing else. So
+the four centralised skills, which are user-authored and seeded by no repo file, are reachable by no
+backup the operator can run. `~/.claude/bin/palace-backup` works around it by copying the database
+directly, which is a workaround and not the fix.
+
+Related, and the repo's own named defect: `internal/importer` already handles a `kg` record kind,
+preserving the validity window — and `wingbundle` has no such kind and never emits one. Half of KG
+portability is finished and unreachable.

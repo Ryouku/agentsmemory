@@ -1,10 +1,15 @@
 package dataexport
 
 import (
+	"context"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // credentialColumn matches the names this project gives to secret material. It
@@ -114,6 +119,94 @@ func TestPublicByReviewIsJustified(t *testing.T) {
 		}
 		if !strings.Contains(qualified, ".") {
 			t.Errorf("publicByReview key %q must be table.column", qualified)
+		}
+	}
+}
+
+// omittedByReview lists tables the archive deliberately does not carry, each
+// with the reason. It is the mirror of publicByReview: that one justifies
+// including something credential-shaped, this one justifies excluding something
+// the subject might expect.
+var omittedByReview = map[string]string{
+	// Second factors. Exporting them would hand over the credential the account
+	// is protected BY — the same reasoning that redacts users.totp_secret.
+	"totp_recovery_codes":  "one-time second-factor codes; exporting them defeats the second factor",
+	"webauthn_credentials": "passkey credentials; the subject's authenticators, not their data",
+	// Schema bookkeeping and the global playbook, neither workspace data.
+	"goose_db_version": "migration bookkeeping, meaningless outside this database",
+	"skillset":         "global default playbook, identical for every workspace",
+}
+
+// TestArchiveCarriesOnlyTablesItFills reads the archive that actually ships and
+// fails when it contains a table the export never fills.
+//
+// This is the credentials test's other direction, and it hides the worse
+// failure. replaySchema used to copy the DDL of every table in the source while
+// copyRows fills only the manifest, so any table added by a later migration and
+// never added to the manifest arrived — empty. A subject running COUNT(*) on it
+// reads 0 as "I had none", which is a false answer given under a data-protection
+// request rather than a missing feature.
+//
+// Four tables were in that state and nothing failed: drawer_anchors,
+// search_events, totp_recovery_codes and webauthn_credentials. The last two must
+// never be exported at all, so shipping their empty shells was doubly wrong — it
+// advertised second factors the archive is right not to contain.
+//
+// The check reads the produced file rather than the manifest, because the
+// manifest is the thing that was wrong.
+func TestArchiveCarriesOnlyTablesItFills(t *testing.T) {
+	ctx := context.Background()
+	src := newMigratedSource(t)
+	const team, user = "team-a", "user-a"
+	exec(t, src, `INSERT INTO teams (id,name,slug,created_at,kind) VALUES (?,?,?,?,?)`,
+		team, "Alpha", "alpha", "2026-01-01T00:00:00Z", "personal")
+	exec(t, src, `INSERT INTO users (id,email,password_hash,display_name,created_at) VALUES (?,?,?,?,?)`,
+		user, "a@example.com", "hash", "A", "2026-01-01T00:00:00Z")
+	exec(t, src, `INSERT INTO memberships (id,team_id,user_id,role,created_at) VALUES (?,?,?,?,?)`,
+		"m-a", team, user, "admin", "2026-01-01T00:00:00Z")
+
+	path, cleanup, err := New(src).BuildTeamArchive(ctx, team, user)
+	if err != nil {
+		t.Fatalf("build archive: %v", err)
+	}
+	defer func() { _ = cleanup() }()
+
+	arc, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open archive: %v", err)
+	}
+	type row struct {
+		Name string `gorm:"column:name"`
+	}
+	var got []row
+	if err := arc.Raw(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).
+		Scan(&got).Error; err != nil {
+		t.Fatalf("read archive schema: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the archive has no tables at all — this check has stopped checking anything")
+	}
+
+	filled := map[string]bool{}
+	for _, spec := range manifest {
+		filled[spec.table] = true
+	}
+	for _, tb := range got {
+		if !filled[tb.Name] {
+			t.Errorf("the archive contains table %q, which the export never fills — an empty "+
+				"table reads as \"you had none\" rather than \"this was not exported\"", tb.Name)
+		}
+	}
+
+	// And the sensitive ones must be absent outright, not present-and-empty.
+	present := map[string]bool{}
+	for _, tb := range got {
+		present[tb.Name] = true
+	}
+	for table, why := range omittedByReview {
+		if present[table] {
+			t.Errorf("the archive contains %q, which is excluded because %s — its shell should "+
+				"not ship either", table, why)
 		}
 	}
 }
