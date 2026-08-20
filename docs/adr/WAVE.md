@@ -39,6 +39,21 @@ edit. Both are correct within the model they were written for, and both are the 
 under ADR-010's. That is recorded in ADR-010's `Invalidates` header rather than discovered later:
 an ADR that quietly reverses last week's fix is how a team stops trusting its own record.
 
+**One route closed, with numbers.** [ADR-011](ADR-011-anchor-prompting.md) is Withdrawn before
+implementation. It proposed prompting an agent to anchor a memory that makes a repository-settleable
+claim — the mechanism that enforces "code is the state of record". Three designs, a judge, and two
+adversarial passes later, the measurement says no: it would fire on 58% of writes and be wrong 61%
+of the time, a third of what it flags is **unanchorable in principle** (absence, counts, branch
+state, live measurements, other repositories), and the cheapest way to satisfy it produces a
+declaration-line anchor that verifies forever while the behaviour moves underneath it. A
+present-but-irrelevant anchor is worse than none, because it prints `verified` beside a claim nobody
+checked.
+
+The gap it aimed at is real and stays open: **179 of 270 drawers (66%) make a claim the repository
+could settle, and 165 of those carry no anchor** — against 14 anchored drawers in total. The
+standing instruction in the tool description produced that 5%. Recorded rather than deleted, because
+a proposal this reasonable gets made again.
+
 **Not in this wave.** Session-to-session and agent-to-agent continuity — the handoff and real-time
 collaboration question — is `/spec-write`, not an ADR: the requirements are undecided, and there is
 a measured tradeoff to open on (the diary has fragmented into 11 threads over 89 entries, while
