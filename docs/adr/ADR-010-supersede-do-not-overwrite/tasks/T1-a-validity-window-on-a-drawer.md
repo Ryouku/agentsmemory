@@ -4,7 +4,7 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `drawers.valid_to`, `drawers.superseded_by`, and the repo predicates that read them
+**Produces:** `drawers.valid_to`, `superseded_by`, `ended_reason`, `ended_at`, and the repo predicates that read them
 **Consumes:** none
 **Data dependency:** hermetic for the tests; the migration is additionally checked against a copy of a real database
 
@@ -16,7 +16,7 @@ A drawer can be current or ended, ending never deletes, and every existing row r
 
 | File | Change | Why |
 |------|--------|-----|
-| `db/migrations/00023_drawer_validity.sql` | add | `valid_to TEXT NOT NULL DEFAULT ''`, `superseded_by TEXT NOT NULL DEFAULT ''`, and an index on (team_id, wing, valid_to) since every default read filters on it |
+| `db/migrations/00023_drawer_validity.sql` | add | `valid_to`, `superseded_by`, `ended_reason`, `ended_at` — all `TEXT NOT NULL DEFAULT ''` — and an index on (team_id, wing, valid_to) since every default read filters on it |
 | `internal/palace/repo.go` | edit | a `current()` scope predicate; every read that should see live records only routes through it |
 | `internal/palace/repo_test.go` | edit | the predicate, and that an ended row is still fetchable when asked for |
 
@@ -49,6 +49,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestExistingRowsReadAsCurrent` | `internal/palace/repo_test.go` | rows written before the migration are current, with no backfill | — |
 | `TestEndingARecordDoesNotDeleteIt` | `internal/palace/repo_test.go` | an ended row is absent from current reads and present when history is asked for | — |
+| `TestAnEndingAlwaysCarriesAReason` | `internal/palace/repo_test.go` | the store cannot represent an ending with no reason | — |
 
 ## Mutants
 
@@ -57,6 +58,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `valid_to` defaults non-empty | yes | `TestExistingRowsReadAsCurrent` |
 | `current()` matches ended rows too | yes | `TestEndingARecordDoesNotDeleteIt` |
 | ending a record deletes the row | yes | `TestEndingARecordDoesNotDeleteIt` |
+| a row can be ended with an empty `ended_reason` | yes | `TestAnEndingAlwaysCarriesAReason` |
 
 ## Out of Scope
 
@@ -66,6 +68,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 ## Invariants
 
 - Empty `valid_to` means current, in drawers exactly as in KG facts.
+- A row with a non-empty `valid_to` always has a non-empty `ended_reason`; an ending with no reason is the defect this ADR exists to remove, so the schema must not be able to express one.
 - Ending a record never removes a row or a vector.
 
 ## Risks

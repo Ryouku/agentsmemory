@@ -1,10 +1,16 @@
-# Task ADR-010-T3: Recall returns what is current, and history only when asked
+# Task ADR-010-T3: Recall returns what is current — and carries the reason forward
+
+> **Amended 2026-08-20 before execution.** The first version hid history behind a flag AND expected
+> retractions to stop a future session re-litigating a settled decision. Those cannot both hold: a
+> session about to redo a rejected thing does not know to ask for history — not knowing is the whole
+> problem. So the CURRENT record carries what it superseded and why, and the reason reaches the
+> default recall path while the stale text does not.
 
 **Depends-on:** T2
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** current-only recall across every default route, plus the explicit history flag
+**Produces:** current-only recall across every default route; the superseded reason carried on the live record; the explicit history flag
 **Consumes:** supersede semantics (T2)
 **Data dependency:** hermetic
 
@@ -49,6 +55,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` | `internal/mcptest/scoping_audit_test.go` | search, list and get all exclude retracted text | — |
 | `TestHistoryIsReachableWhenAsked` | `internal/mcptest/scoping_audit_test.go` | `include_history` returns the chain, newest first | — |
+| `TestTheReasonReachesDefaultRecall` | `internal/mcptest/scoping_audit_test.go` | a default search for the CURRENT record surfaces why its predecessor was ended — without the stale text | — |
 
 ## Mutants
 
@@ -57,6 +64,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | filter search but not list | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
 | filter list but not get | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
 | `include_history` defaults true | yes | `TestSupersededRecordIsUnreachableByEveryDefaultRoute` |
+| the live record drops the ended reason | yes | `TestTheReasonReachesDefaultRecall` |
 | `include_history` read but not declared | yes | `TestEveryArgumentAHandlerReadsIsDeclared` |
 
 ## Out of Scope
@@ -66,7 +74,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Invariants
 
-- A superseded record is invisible to every default route, not merely to search.
+- A superseded record's TEXT is invisible to every default route, not merely to search.
+- Its REASON is visible on the live record without asking for history.
 - `include_history` is declared on every tool that reads it.
 
 ## Risks

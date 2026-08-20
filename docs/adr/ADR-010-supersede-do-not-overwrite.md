@@ -26,7 +26,11 @@ There is a second, sharper problem hiding under the word *delete*, and it is why
 - **Retraction** — an agent decides a memory is no longer true. The old text is *evidence*: "we used Kafka until March, then replaced it because rebalancing stalled" is a better record than either half alone, and the rejected alternative is what makes the current decision legible.
 - **Erasure** — an operator decides data must not exist. A secret was filed, a customer asked, a retention policy applies. Here the old text must genuinely go, vectors included.
 
-`am_delete_drawer` is exposed to **agents** and performs **erasure**. An agent doing the first gets the second, irreversibly, and the palace's own protocol tells it to correct memories that turn out wrong.
+`am_delete_drawer` is exposed to **agents** and performs **erasure**. An agent doing the first gets the second, irreversibly, and the palace's own protocol tells it to correct memories that turn out wrong. It is not alone: five agent-facing tools destroy — `delete_drawer`, `delete_tunnel`, `delete_hallway`, `delete_wing`, `merge_wing`.
+
+**And there is a third gap, which is the one that actually costs money.** Nothing anywhere records *why* something stopped applying. `am_kg_invalidate` takes `subject`, `predicate`, `object` and `ended` — a date, and no reason; the KG schema has `valid_to` and no column for one. So even the half of the store that keeps its history keeps only *that* a fact ended, never *why*.
+
+That is the rediscovery tax wearing a different hat. A session that finds an ended record with no reason is in the same position as one that finds nothing: it re-derives, reaches the same idea, and re-litigates a decision the team already took. The maintainer put it exactly — *a mechanism so that invalidation also knows a decision was already taken not to apply it, and why.* An invalidation is not an absence. It is a decision, and it is Class-B knowledge of precisely the kind §5 of the paper argues is irrecoverable.
 
 ## Existing Primitives Audit
 
@@ -40,19 +44,33 @@ There is a second, sharper problem hiding under the word *delete*, and it is why
 
 Drawers gain a validity window, and the two operations are separated at the tool surface.
 
-**Retraction (agent-facing).** Correcting a memory writes a NEW record and ends the old one by setting `valid_to`. The superseded text stays, searchable only when history is asked for. `am_update_drawer`'s content edit becomes a supersede: the returned id is the new record's, and the response names the one it replaced.
+**Retraction (agent-facing), and it carries a reason.** Two shapes, one mechanism:
+
+- `am_invalidate_drawer(id, reason)` — this memory no longer applies, and here is why. Nothing replaces it.
+- Correcting a memory writes a NEW record and ends the old one. `am_update_drawer`'s content edit becomes a supersede: the returned id is the new record's, and the response names the one it replaced.
+
+**`reason` is required on both.** An invalidation without one records that something ended and destroys the only thing worth keeping about the ending. A required free-text field is a weak guarantee — an agent can write "obsolete" — but it is the difference between a field nobody fills and a field somebody can be asked about, and it costs one argument.
+
+**The reason travels with the CURRENT record, not only with the ended one.** This corrects a mistake in the first draft of this ADR: it hid history behind an explicit flag and also expected retractions to prevent re-litigation, and those two cannot both be true. A session about to redo a rejected thing does not know to ask for history — that is precisely what it does not know. So the live record carries what it superseded and why, and the reason reaches the default recall path while the stale TEXT does not.
 
 **Erasure (operator-facing).** Genuine removal — row and vector — moves behind the operator surface where `delete_wing` already lives. It remains possible, because a store that cannot forget a leaked secret is not deployable, but it stops being something a confused agent reaches for while trying to be helpful.
 
-**Recall is unchanged by default.** Search returns current records only. History is reachable explicitly, which is the property ADR-004 needs: a superseded record must not compete with its own correction, and that failure is already documented here — an update rewrote chunk 0 while chunk 1 stayed live with its own embedding, still answering with the retracted text.
+**Recall returns current records; the reason rides along.** Superseded TEXT does not compete with its correction — that failure is documented here already, where an update rewrote chunk 0 while chunk 1 stayed live with its own embedding, still answering with the retracted claim. But the current record names what it replaced and why, so a reader of the live memory learns the decision was taken and does not re-take it. Full history stays behind an explicit flag for the cases that want the whole chain.
 
-**Pre-registered falsification.** The claim is that superseded records are worth keeping. If, after this ships, history is never read — no `include_history` call in telemetry over a meaningful window, and no eval case answerable only from a superseded record — then the ADR bought storage cost and complexity for nothing, and the honest response is to retract it rather than to argue the feature needs promotion. The measurement must be declared before the code lands, because afterwards every unread feature has an advocate.
+**Pre-registered falsification, two parts.** The claim has two halves and each can fail on its own.
+
+*History is worth keeping.* If `include_history` is never called over a meaningful window and no eval case is answerable only from a superseded record, the chain bought storage for nothing.
+
+*Reasons are worth requiring.* If the median `reason` is under ~20 characters, or a sample reads as "obsolete", "wrong", "outdated", then the field is being satisfied rather than used, and a required argument that teaches nothing is a tax on every retraction.
+
+Either half failing retracts that half rather than weakening the bar. Both are declared before the code lands, because afterwards every unread feature has an advocate.
 
 ## Alternatives Considered
 
 - **Leave it; agents can file a new drawer and delete the old.** Rejected: that is the current behaviour, and it destroys the rejected alternative — the specific thing §5 of the maintainer's own paper argues is irrecoverable at any price.
 - **Soft-delete with a `deleted_at` tombstone.** Rejected as insufficient rather than wrong: it records THAT a record died and not what replaced it. "Kafka until March, then NATS, because rebalancing" needs the link, and a tombstone has nowhere to put it.
 - **Full event sourcing — an append-only log as the source of truth, state as a projection.** Rejected for now, and it is the maintainer's framing so the reason matters: the store already has a working row model with vectors, chunking and anchors hanging off drawer identity, and rebuilding that as a projection is a rewrite whose risk is not justified by the benefit a validity window already delivers. A validity window IS the append-only property for the one thing that needs it. Revisit if a second consumer of the history appears.
+- **Only supersede; no standalone invalidate verb.** Rejected on the maintainer's objection, which is right: plenty of retractions replace nothing. "We are not doing this after all" has no successor record, and forcing one would make an agent invent a placeholder memory to express an absence.
 - **Version everything, keep every revision.** Rejected: a typo fix would then create a revision, and the history that matters — a decision changing — would be buried in noise. Supersession is a deliberate act; a correction to spelling is not.
 
 ## Component / Boundary Impact
@@ -65,7 +83,10 @@ Drawers gain a validity window, and the two operations are separated at the tool
 |---------|--------|----------|-------------|
 | `drawers.valid_to`, `drawers.superseded_by` | add (migration) | `db/migrations` | `internal/palace` |
 | `am_update_drawer` content edit | change — supersedes instead of overwriting; returns the new id and names the ended one | `internal/mcpserver/drawers.go` | every agent that corrects a memory |
-| `am_delete_drawer` | change — leaves the agent surface | `internal/mcpserver` | agents (removed), operators (retained) |
+| `am_invalidate_drawer(id, reason)` | add | `internal/mcpserver/drawers.go` | any agent retracting a memory |
+| `drawers.ended_reason`, `drawers.ended_at` | add (migration) | `db/migrations` | recall, and the current record's provenance |
+| `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` | change — leave the agent surface | `internal/mcpserver` | agents (removed), operators (retained) |
+| `am_kg_invalidate` `reason` | add — required, mirroring the drawer verb | `internal/mcpserver/kg.go` | anyone reading why a fact ended |
 | `am_search` / `am_list_drawers` | change — current records only, with an explicit history flag | `internal/mcpserver` | every recall |
 | operator erasure path | add | `cmd/server` | operators, retention policy |
 
@@ -93,11 +114,14 @@ Drawers gain a validity window, and the two operations are separated at the tool
 - Versioning wing/room moves (permanent: a move is not a claim about the world, so ending and re-filing would record noise as history)
 - Retention or automatic pruning of superseded records (deferred: docs/adr/BACKLOG.md — needs the falsification measurement below to say what history is worth first)
 - Applying the same model to diary entries (deferred: docs/adr/BACKLOG.md — a diary is already append-only by construction; nothing overwrites an entry)
+- Removing `merge_wing` and `delete_wing` from the OPERATOR surface (permanent: they are the erasure path this ADR requires to exist; the decision is that agents cannot reach them, not that nobody can)
+- Structured reasons — a taxonomy of why something ended (deferred: docs/adr/BACKLOG.md — free text first, because a taxonomy chosen before there are reasons to classify is a guess, and the falsification below will show what people actually write)
 
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
+| A required `reason` gets filled with "obsolete" and buys nothing | High | Med | Accepted and measured rather than designed around: T2 records reason length and the falsification below reads it. A taxonomy imposed now would be a guess about reasons nobody has written yet |
 | Superseded records leak back into default recall | Med | High | T3's falsification: a superseded record must be unreachable by every default route — search, list, and get — checked from an end-to-end scenario rather than a unit test, since this exact failure shipped once already as a live chunk 1 |
 | Agents cannot erase a wrongly-filed secret and file it anyway | Med | High | The operator erasure path lands in the same task, and the refusal text names it |
 | The store grows without bound | High | Low | Accepted deliberately; pruning is deferred until the falsification says what history is worth |
