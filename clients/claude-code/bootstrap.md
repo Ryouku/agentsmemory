@@ -205,7 +205,13 @@ calls in parallel where you can; each answers a different question.
     don't reconstruct from code what memory already explains. Emit
     `palace searched ✓`.
   - **Then load the team's skills** — call `am_list_skills`, and
-    `am_load_skill(<name>)` for any that bear on the task. These are the team's
+    `am_load_skill(<name>)` for any that bear on the task. Two are about the
+    palace itself and are worth loading in almost any session that will touch
+    memory: **`memory-orchestration`** (which of the forty-one tools answers
+    which question — the graph, the knowledge graph, tunnels and anchors that
+    the wake-up playbook does not cover) and **`writing-memories`** (what to
+    file where, and the test for what does not belong). The wake-up playbook
+    teaches the loop; those two teach the rest of the instrument. These are the team's
     **centralised** conventions, authored once and shared by every agent, so they
     outrank whatever you would otherwise infer. This is also the Step 0 backstop:
     if the idiom skill was not in your local list, it is very likely here. Emit
