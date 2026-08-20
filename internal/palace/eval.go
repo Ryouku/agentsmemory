@@ -1234,7 +1234,7 @@ func (s *Service) DatedDrawers(ctx context.Context, teamID, wing string, limit i
 // question "what is newer" cannot be answered about an unparseable date.
 // ok=false means the corpus holds no such neighbour — the caller skips the
 // drawer rather than fabricating a pair.
-func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, poolSize int) (Drawer, bool, error) {
+func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, poolSize int, maxDistance float64) (Drawer, bool, error) {
 	if d.ContentDate == "" {
 		// "Older than nothing" has no answer; the caller sampled the wrong
 		// population (DatedDrawers is the right one), so say so rather than
@@ -1282,6 +1282,14 @@ func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, po
 		}
 		candDate := findDate(cand.ContentDate)
 		if candDate == "" || candDate >= dDate {
+			continue
+		}
+		// The ceiling, and the only filter here that is a claim about the two
+		// memories rather than about what they are not. Without it a sparse wing
+		// hands the judge its least unrelated older memory and calls it a
+		// supersession. 0 disables it, which is what the callers that predate it
+		// pass.
+		if maxDistance > 0 && distanceFromScore(h.Score) > maxDistance {
 			continue
 		}
 		return cand, true, nil

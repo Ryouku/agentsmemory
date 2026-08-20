@@ -67,6 +67,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
 			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted providers, ignored by a local one"},
 			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
+			&cli.Float64Flag{Name: "pair-max-distance", Value: 0.55, Usage: "how close a temporal pair must be before it is offered to the judge (cosine distance; 0 disables the ceiling). Without it, 'nearest older neighbour' is a claim about how sparse the wing is rather than about the two memories"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
@@ -260,7 +261,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 	proven := false
 	for i, d := range drawers {
 		started := time.Now()
-		older, ok, err := svc.drawers.OlderNeighbor(ctx, team.ID, d, c.Int("pool"))
+		older, ok, err := svc.drawers.OlderNeighbor(ctx, team.ID, d, c.Int("pool"), c.Float64("pair-max-distance"))
 		if err != nil {
 			// Pair discovery uses the embedder and the vector store — the same
 			// dependencies the eval itself cannot run without — so a failure here

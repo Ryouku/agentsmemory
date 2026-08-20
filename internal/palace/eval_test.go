@@ -45,7 +45,7 @@ func TestOlderNeighborPicksOlderDifferentSourceHit(t *testing.T) {
 	want := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "notes/old.md", ContentDate: "2025-06-10",
 		Content: "cache ttl was thirty seconds"})
 
-	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50)
+	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50, 0)
 	if err != nil {
 		t.Fatalf("OlderNeighbor: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestOlderNeighborReportsNoPairInsteadOfFabricating(t *testing.T) {
 	mustAddOne(t, svc, team, AddInput{Wing: "wing_beta", Room: "decisions", SourceFile: "notes/future.md", ContentDate: "2026-07-01",
 		Content: "request limit is five hundred per minute"})
 
-	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50)
+	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50, 0)
 	if err != nil {
 		t.Fatalf("OlderNeighbor: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestOlderNeighborRejectsUndatedTarget(t *testing.T) {
 
 	d := mustAddOne(t, svc, team, AddInput{Wing: "wing_beta", Room: "decisions", SourceFile: "notes/x.md",
 		Content: "the retry budget is three attempts"})
-	if _, _, err := svc.OlderNeighbor(ctx, team, d, 50); err == nil {
+	if _, _, err := svc.OlderNeighbor(ctx, team, d, 50, 0); err == nil {
 		t.Fatalf("expected an error for an undated target drawer, got none")
 	}
 }
@@ -139,7 +139,7 @@ func TestOlderNeighborStaysInWing(t *testing.T) {
 	inWing := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "notes/old.md", ContentDate: "2025-03-03",
 		Content: "deploys used to run from the trunk branch"})
 
-	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50)
+	got, ok, err := svc.OlderNeighbor(ctx, team, newer, 50, 0)
 	if err != nil {
 		t.Fatalf("OlderNeighbor: %v", err)
 	}
@@ -939,5 +939,42 @@ func TestRecencyArmReordersThroughEvalCase(t *testing.T) {
 			"reordering: collapsing the band to zero makes this arm a byte-identical copy of "+
 			"hybrid under a different name, and only this assertion can see that",
 			recency, oc.Ranks[recency])
+	}
+}
+
+// TestOlderNeighborFloorRejectsDistantPair pins the filter the other three lack.
+//
+// The three existing filters say what a pair must NOT be — not itself, not the
+// same source, not newer. None says what it must BE. So "nearest older
+// neighbour" degrades into "the least unrelated older memory in this wing", and
+// on a sparse wing that is a pair of unrelated memories presented to a judge as a
+// supersession. The ceiling makes the claim positive: close enough that one
+// plausibly restates the other.
+//
+// A distance of 0 keeps the old behaviour, so the existing tests pass a
+// permissive value and stay meaningful rather than being silently re-scoped.
+func TestOlderNeighborFloorRejectsDistantPair(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	newer := mustAddOne(t, svc, team, AddInput{Wing: "w", Room: "r", SourceFile: "current",
+		Content: "The retention window is ninety days for every tenant.", ContentDate: "2026-01-01"})
+	// Strictly older, different source, and about something else entirely.
+	mustAddOne(t, svc, team, AddInput{Wing: "w", Room: "r", SourceFile: "unrelated",
+		Content: "Kubernetes schedules pods onto nodes using taints and tolerations.", ContentDate: "2024-01-01"})
+
+	// Permissive: the old behaviour, which accepts it.
+	if _, ok, err := svc.OlderNeighbor(ctx, team, newer, 50, 0); err != nil || !ok {
+		t.Fatalf("with no ceiling the distant neighbour must still be accepted (ok=%v err=%v) — "+
+			"otherwise this test is not measuring the ceiling", ok, err)
+	}
+	// With a tight ceiling it must be rejected rather than offered as a pair.
+	if _, ok, err := svc.OlderNeighbor(ctx, team, newer, 50, 0.01); err != nil {
+		t.Fatalf("OlderNeighbor with a ceiling: %v", err)
+	} else if ok {
+		t.Error("a strictly-older, different-source neighbour about an unrelated subject was " +
+			"accepted as a supersession pair — without a ceiling, 'nearest older neighbour' is a " +
+			"claim about the corpus's sparsity, not about the two memories")
 	}
 }

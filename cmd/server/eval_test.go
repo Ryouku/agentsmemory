@@ -271,3 +271,102 @@ func TestReadCasesKeepsProvenance(t *testing.T) {
 		t.Errorf("provenance lost on replay: got %+v, want generator/style/corpus from %+v", got, want)
 	}
 }
+
+// judgeSaying stands in for the local model: it replies with the same verdict to
+// every prompt, or fails, so verifyPair can be exercised without one.
+func judgeSaying(t *testing.T, reply string, fail bool) *questionGen {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail {
+			http.Error(w, "judge is down", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"response":` + strconvQuote(reply) + `}`))
+	}))
+	t.Cleanup(srv.Close)
+	return &questionGen{url: srv.URL, model: "test", prompt: evalPromptPairCheck, http: srv.Client()}
+}
+
+func strconvQuote(s string) string { return `"` + s + `"` }
+
+// TestPairVerifiedRejectsDrift pins that a pair the judge does not confirm is
+// DROPPED rather than kept.
+//
+// OlderNeighbor's filters say what a pair is not — not itself, not the same
+// source, not newer — and the distance ceiling says the two are close. Neither
+// says the older note records an EARLIER STATE of the same fact rather than a
+// different fact that happens to be nearby. Only a judge can say that, and a
+// pair it declines is not a temporal case: scoring it would measure the ranker
+// against a supersession that never happened.
+func TestPairVerifiedRejectsDrift(t *testing.T) {
+	ctx := context.Background()
+	newer := palace.Drawer{Content: "The retention window is ninety days.", ContentDate: "2026-01-01"}
+	older := palace.Drawer{Content: "Kubernetes schedules pods using taints.", ContentDate: "2024-01-01"}
+
+	ok, err := verifyPair(ctx, newer, older, judgeSaying(t, "NO — different subjects", false))
+	if err != nil {
+		t.Fatalf("verifyPair: %v", err)
+	}
+	if ok {
+		t.Error("a pair the judge declined was accepted — the ranker would then be scored against " +
+			"a supersession that never happened")
+	}
+
+	ok, err = verifyPair(ctx, newer, older, judgeSaying(t, "YES", false))
+	if err != nil {
+		t.Fatalf("verifyPair: %v", err)
+	}
+	if !ok {
+		t.Error("a pair the judge confirmed was rejected")
+	}
+}
+
+// TestPairVerifiedJudgeErrorDropsPair pins that a judge that cannot answer drops
+// the pair rather than keeping it.
+//
+// The failure mode this avoids is the one verifyAbsent already learned: an
+// unreachable checker that silently returns "fine" fills the case file with
+// unverified cases that look identical to verified ones. Unknown is not
+// confirmed.
+func TestPairVerifiedJudgeErrorDropsPair(t *testing.T) {
+	ctx := context.Background()
+	newer := palace.Drawer{Content: "a", ContentDate: "2026-01-01"}
+	older := palace.Drawer{Content: "b", ContentDate: "2024-01-01"}
+
+	ok, err := verifyPair(ctx, newer, older, judgeSaying(t, "", true))
+	if err == nil {
+		t.Error("a judge that could not answer returned no error — the caller cannot tell an " +
+			"unverified pair from a confirmed one")
+	}
+	if ok {
+		t.Error("a pair was accepted while its check failed")
+	}
+}
+
+// TestPairVerifiedMetaSurvivesRead pins that how a case file's pairs were made
+// survives a replay: how many candidates were considered, how many the judge
+// confirmed, and which judge it was.
+//
+// Without it a replayed temporal run cannot tell a file whose pairs were verified
+// from one generated before verification existed, and the two produce different
+// numbers from the same command.
+func TestPairVerifiedMetaSurvivesRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pairs.jsonl")
+	want := caseFileMeta{
+		Generator: "qwen2.5-coder:7b", Style: "temporal", Wing: "wing_acme",
+		PairCandidates: 40, VerifiedPairs: 11, Judge: "qwen2.5-coder:7b",
+	}
+	if err := writeCases(path, []palace.EvalCase{{Query: "q", Expect: "d1", Distractor: "d0"}}, want); err != nil {
+		t.Fatalf("writeCases: %v", err)
+	}
+	_, got, err := readCasesWithMeta(path)
+	if err != nil {
+		t.Fatalf("readCasesWithMeta: %v", err)
+	}
+	if got.PairCandidates != want.PairCandidates || got.VerifiedPairs != want.VerifiedPairs || got.Judge != want.Judge {
+		t.Errorf("pair provenance lost on replay: got %+v, want candidates=%d verified=%d judge=%q",
+			got, want.PairCandidates, want.VerifiedPairs, want.Judge)
+	}
+}
