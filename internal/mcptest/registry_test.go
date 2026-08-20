@@ -109,6 +109,139 @@ var scenarios = []mcptest.Scenario{
 			}
 		},
 	},
+	{
+		// REGRESSION — the chunk-0-only update.
+		//
+		// A memory over ChunkSize is several drawers sharing a parent, each with
+		// its own embedding. am_update_drawer rewrote chunk 0 and left chunk 1
+		// live, still returning the OLD text from search with nothing marking it
+		// retracted. The update reported success while a false half of the memory
+		// kept competing on equal footing with the correction.
+		Name:  "regression: an updated memory has no stale half left in search",
+		Tools: []string{"am_add_drawer", "am_update_drawer", "am_search"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			// Over ChunkSize (1600) so the memory really is several drawers; a
+			// fixture below the threshold cannot reproduce this at all.
+			old := "SUPERSEDED-MARKER never brief from the index file. " + filler(1900)
+			out := h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_chunked", "room": "decisions", "content": old,
+			})
+			if n := drawerCount(t, h, out); n < 2 {
+				t.Fatalf("fixture produced %d drawer(s); this scenario needs a multi-chunk memory "+
+					"or it cannot see the defect it exists for", n)
+			}
+			id := firstDrawerID(t, h, out)
+
+			// The fix REFUSES rather than rewriting every chunk, and the refusal
+			// is the contract: a partial rewrite is what produced a false half
+			// competing with its own correction, so the tool declines and says
+			// what to do instead.
+			msg := h.MustRefuse(t, "am_update_drawer", map[string]any{
+				"id": id, "content": "CORRECTED-MARKER always brief from the index file.",
+			})
+			if !contains(msg, "chunk") {
+				t.Errorf("the refusal does not explain that this is a multi-chunk memory:\n%s", msg)
+			}
+
+			// And nothing may have half-landed: the original must still be whole,
+			// with no corrected fragment beside it.
+			got := h.MustCall(t, "am_search", map[string]any{
+				"query": "brief from the index file", "wing": "wing_chunked", "limit": 20,
+			})
+			if !contains(got, "SUPERSEDED-MARKER") {
+				t.Errorf("the refused update removed the original text anyway:\n%s", got)
+			}
+			if contains(got, "CORRECTED-MARKER") {
+				t.Errorf("a refused multi-chunk update wrote one chunk anyway — that is the exact "+
+					"defect this scenario exists for:\n%s", got)
+			}
+		},
+	},
+	{
+		// REGRESSION — the delete that orphaned child chunks.
+		//
+		// Deleting a multi-chunk memory by its parent id removed the parent and
+		// left the children embedded and searchable, pointing at a parent that no
+		// longer existed. A get said it was gone; only a search could see it.
+		Name:  "regression: deleting a memory leaves no chunk behind, by any route",
+		Tools: []string{"am_add_drawer", "am_delete_drawer", "am_search", "am_get_drawer"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			// The marker must land in the LAST chunk, not the first. The defect
+			// leaves the CHILDREN behind, so a marker in chunk 0 is removed by the
+			// buggy delete too and the scenario passes while the orphan survives.
+			// Measured: with the marker at the front, truncating the delete to the
+			// parent row left this scenario green.
+			body := filler(1900) + " ORPHAN-MARKER the rollback procedure for the queue worker."
+			out := h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_orphan", "room": "decisions", "content": body,
+			})
+			if n := drawerCount(t, h, out); n < 2 {
+				t.Fatalf("fixture produced %d drawer(s); the orphaning defect only exists for a "+
+					"multi-chunk memory", n)
+			}
+			id := firstDrawerID(t, h, out)
+
+			h.MustCall(t, "am_delete_drawer", map[string]any{"id": id})
+
+			// Checked by BOTH routes, and the pair is the point: a get of the
+			// parent said "gone" while the children were still embedded and
+			// searchable. Either route alone would have reported this fixed.
+			if out, isErr, err := h.Call(t, "am_get_drawer", map[string]any{"id": id}); err != nil {
+				t.Fatalf("am_get_drawer: %v", err)
+			} else if !isErr && contains(out, "rollback procedure") {
+				t.Errorf("the deleted parent is still fetchable by id:\n%s", out)
+			}
+			if got := h.MustCall(t, "am_search", map[string]any{
+				"query": "rollback procedure for the queue worker", "wing": "wing_orphan", "limit": 20,
+			}); contains(got, "ORPHAN-MARKER") {
+				t.Errorf("a deleted memory is still searchable, so a chunk outlived the delete — "+
+					"the marker sits in the LAST chunk precisely so this can see it:\n%s", got)
+			}
+		},
+	},
+	{
+		// REGRESSION — the anchor list that cleared instead of refusing.
+		Name:  "regression: an all-unreadable anchor list refuses and keeps the old anchors",
+		Tools: []string{"am_add_drawer", "am_update_drawer", "am_list_anchors"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			out := h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_keepanchor", "room": "decisions",
+				"content": "the cache is invalidated on write",
+				"code_anchors": []any{map[string]any{
+					"path": "internal/cache/cache.go", "snippet": "func Invalidate() {",
+				}},
+			})
+			id := firstDrawerID(t, h, out)
+
+			h.MustRefuse(t, "am_update_drawer", map[string]any{
+				"id":           id,
+				"code_anchors": []any{map[string]any{"paht": "internal/cache/cache.go", "snippet": "x"}},
+			})
+
+			if got := h.MustCall(t, "am_list_anchors", map[string]any{"wing": "wing_keepanchor"}); !contains(got, "func Invalidate() {") {
+				t.Errorf("a refused anchor list cleared the anchors it refused to replace:\n%s", got)
+			}
+		},
+	},
+}
+
+// filler pads a memory past ChunkSize so it is stored as several drawers.
+func filler(n int) string {
+	const s = "The queue worker drains in batches and retries with backoff. "
+	out := ""
+	for len(out) < n {
+		out += s
+	}
+	return out
+}
+
+// drawerCount reports how many drawers an add produced, so a multi-chunk
+// scenario can prove its fixture is actually multi-chunk before asserting
+// anything about chunks.
+func drawerCount(t *testing.T, h *mcptest.Harness, out string) int {
+	t.Helper()
+	rows, _ := h.JSON(t, out)["drawers"].([]any)
+	return len(rows)
 }
 
 // firstDrawerID pulls the id of the first drawer an add returned.

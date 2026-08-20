@@ -140,9 +140,17 @@ func NewWithWing(t *testing.T, wing string) *Harness {
 func Parties(t *testing.T, wings ...string) []*Harness {
 	t.Helper()
 	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
+	// ONE server, N clients. An earlier version built a server per party and
+	// shared only the database, which a review caught: production runs one
+	// process serving everybody, so per-process state that leaks between clients
+	// — a cached search key that omits the wing, a latched "current wing" field —
+	// is invisible when each client has a server to itself. Each party would
+	// latch its own correct wing and isolation would look perfect while the real
+	// deployment served B as A.
+	srv, drawers := newServer(t, gdb)
 	out := make([]*Harness, len(wings))
 	for i, w := range wings {
-		out[i] = newOn(t, gdb, w)
+		out[i] = newClient(t, srv, drawers, w)
 	}
 	return out
 }
@@ -176,6 +184,13 @@ func openDB(t *testing.T, path string) *gorm.DB {
 
 func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
 	t.Helper()
+	srv, drawers := newServer(t, gdb)
+	return newClient(t, srv, drawers, wing)
+}
+
+// newServer builds one MCP server over one palace, exactly as the process does.
+func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
+	t.Helper()
 
 	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
 	mcpSrv := mcpserver.New(mcpserver.Deps{
@@ -206,6 +221,12 @@ func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
 		stream.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	t.Cleanup(srv.Close)
+	return srv, drawers
+}
+
+// newClient dials an existing server as one registration.
+func newClient(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing string) *Harness {
+	t.Helper()
 
 	// The wing rides on the registration as a header, exactly as `install` writes
 	// it — see auth.WingHeader. A harness that stored the wing without sending it

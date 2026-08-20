@@ -62,7 +62,7 @@ func TestEveryToolIsExercisedEndToEnd(t *testing.T) {
 	// the ceiling drifts upward silently and the ratchet stops ratcheting. Every
 	// scenario added takes this number down; ADR-008 T3 takes it to 0, and the
 	// constant is deleted with the last one.
-	const uncoveredCeiling = 35
+	const uncoveredCeiling = 34
 
 	switch {
 	case len(missing) > uncoveredCeiling:

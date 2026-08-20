@@ -1,6 +1,13 @@
 # Task ADR-008-T3: Create, read, update, delete — proven by reading back, per area
 
 **Depends-on:** T2
+
+> **Amended 2026-08-20 during execution.** Scenarios live in `internal/mcptest` (import cycle —
+> same amendment as T2 and T4). The three regression scenarios are named as registry entries rather
+> than `Scenario*` Go functions, so the acceptance fence greps the gate's own test names instead.
+> One scenario also had to be rewritten against the real contract: the chunk-0 defect was fixed by
+> REFUSING a multi-chunk content edit, not by rewriting every chunk, so the regression asserts the
+> refusal and that nothing half-landed.
 **Covers:** none — no spec
 **Estimated scope:** L (cross-boundary)
 **Owner:** unassigned
@@ -16,8 +23,8 @@ Every mutable area round-trips through the tool surface, and a delete is proven 
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/mcpserver/scenarios_test.go` | edit | the scenarios themselves, per area: drawers, anchors, tunnels, skills, KG, wings, diary, closets |
-| `internal/mcpserver/e2e_test.go` | edit | the three regression scenarios named after the defects they cover |
+| `internal/mcptest/registry_test.go` | edit | the scenarios themselves, per area: drawers, anchors, tunnels, skills, KG, wings, diary, closets |
+| `internal/mcptest/registry_test.go` | edit | the three regression scenarios named after the defects they cover |
 
 ## Ordered Steps
 
@@ -35,11 +42,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcpserver/ -run "TestEveryToolIsExercisedEndToEnd|Scenario" -count=1 -v 2>&1 | tee /tmp/e3.out
+  go test ./internal/mcptest/ -run "TestEveryToolIsExercisedEndToEnd|TestScenarios" -count=1 -v 2>&1 | tee /tmp/e3.out
   grep -q -- "--- PASS: TestEveryToolIsExercisedEndToEnd" /tmp/e3.out
-  grep -q -- "ScenarioUpdateRewritesEveryChunk" /tmp/e3.out
-  grep -q -- "ScenarioDeleteLeavesNoChunkBehind" /tmp/e3.out
-  grep -q -- "ScenarioMalformedAnchorsDoNotClear" /tmp/e3.out
+  grep -q -- "--- PASS: TestScenariosObserveAnEffect" /tmp/e3.out
+  grep -q -- "--- PASS: TestScenariosOnlyClaimToolsTheyCall" /tmp/e3.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/e3.out
   go test ./... -count=1'
 ```
@@ -48,19 +54,31 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `ScenarioUpdateRewritesEveryChunk` | `internal/mcpserver/e2e_test.go` | a multi-chunk update leaves no stale chunk competing in search | — |
-| `ScenarioDeleteLeavesNoChunkBehind` | `internal/mcpserver/e2e_test.go` | delete removes every chunk, checked by get AND search | — |
-| `ScenarioMalformedAnchorsDoNotClear` | `internal/mcpserver/e2e_test.go` | an all-unreadable anchor list refuses instead of clearing | — |
-| per-area round trips | `internal/mcpserver/scenarios_test.go` | create/read/update/delete observable for each area | — |
+| regression: no stale half after update | `internal/mcptest/registry_test.go` | a multi-chunk update leaves no stale chunk competing in search | — |
+| regression: delete leaves no chunk | `internal/mcptest/registry_test.go` | delete removes every chunk, checked by get AND search | — |
+| regression: malformed anchors do not clear | `internal/mcptest/registry_test.go` | an all-unreadable anchor list refuses instead of clearing | — |
+| per-area round trips | `internal/mcptest/registry_test.go` | create/read/update/delete observable for each area | — |
 
 ## Mutants
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| restore the chunk-0-only update | yes | `ScenarioUpdateRewritesEveryChunk` |
-| restore the delete that orphans child chunks | yes | `ScenarioDeleteLeavesNoChunkBehind` |
-| restore the anchor parse that clears on an all-malformed list | yes | `ScenarioMalformedAnchorsDoNotClear` |
-| make delete remove the parent only, checked by get alone | yes | `ScenarioDeleteLeavesNoChunkBehind` |
+| multi-chunk update guard disarmed (`len(chunks) > 1 && false`) | yes | regression: no stale half after update |
+| delete truncated to the parent row (`ids = ids[:1]`) | yes | regression: delete leaves no chunk |
+| all-unreadable anchor refusal disarmed | yes | regression: malformed anchors do not clear |
+
+**The adoption bar was not met on the first attempt, and the check is why.** The delete mutation
+SURVIVED: the scenario put its marker at the START of the content, so it landed in chunk 0 — which
+the buggy delete removes anyway — while the orphaned child held only filler. The scenario could not
+see the defect it existed for. Moving the marker into the LAST chunk fixed it, and the mutation now
+dies. This is the "fixture too small to expose the defect" risk in this task's own Risks section,
+and it would have shipped as coverage.
+
+**A review also found the harness unfaithful in a way that mattered.** `Parties` built a SERVER PER
+PARTY and shared only the database. Production runs one process serving everybody, so per-process
+state that leaks between clients — a cached search key omitting the wing, a latched "current wing"
+field — was invisible: each party latched its own correct wing and isolation looked perfect. It is
+now one server, N clients.
 
 ## Out of Scope
 
@@ -82,4 +100,4 @@ Stop and report if any of the three regression scenarios cannot be made to fail 
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · 62d7c38* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
