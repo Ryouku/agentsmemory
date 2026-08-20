@@ -160,12 +160,15 @@ func (c EvalCase) category() string {
 // while the reciprocal rank moves whenever an arm shifts the right answer up or
 // down at all — which is exactly what a ranking change does.
 type EvalMetrics struct {
-	Arm      EvalArm
-	Cases    int
-	Recall1  int
-	Recall5  int
-	MRR      float64
-	NotFound int // the expected drawer was not in the candidate pool at all
+	Arm EvalArm
+	// Supersession is this arm's stale-above measurement, with the scope naming
+	// the population it was taken over.
+	Supersession SupersessionCell
+	Cases        int
+	Recall1      int
+	Recall5      int
+	MRR          float64
+	NotFound     int // the expected drawer was not in the candidate pool at all
 
 	// Ranks are the per-case 1-based ranks (0 = miss), aligned with the case
 	// order, so intervals and paired comparisons can be computed after the fact —
@@ -337,10 +340,12 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	degradedCases := 0
 	for i, c := range cases {
 		started := time.Now()
-		ranks, topDistance, topRerank, scored, poolRank, degraded, err := s.evalCase(ctx, teamID, c, arms, poolSize)
+		oc, err := s.evalCaseResult(ctx, teamID, c, arms, poolSize)
 		if err != nil {
 			return EvalReport{}, err
 		}
+		ranks, topDistance, topRerank := oc.Ranks, oc.TopDistance, oc.TopRerank
+		scored, poolRank, degraded := oc.RerankScored, oc.PoolRank, oc.Degraded
 		if degraded {
 			degradedCases++
 		}
@@ -419,6 +424,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		}
 		report.Arms = append(report.Arms, *m)
 	}
+	fillSupersession(&report)
 	return report, nil
 }
 
@@ -572,6 +578,54 @@ func armBoosts(arm EvalArm, closet []float64) []float64 {
 	}
 }
 
+// SupersessionScope names the population an arm's supersession number was
+// measured over. Three arms answer different questions by construction, and
+// printing their numbers in one column would be the same error as reading an
+// arm's zero as "outside the pool".
+type SupersessionScope string
+
+const (
+	// ScopePool: the arm re-orders the shared candidate set, so every pooled
+	// candidate is in its ordering.
+	ScopePool SupersessionScope = "pool"
+	// ScopePage: the arm is scored over the page Search actually returns —
+	// at most DefaultSearchLimit long, after the distance gate — so "the
+	// distractor was not above the gold" can mean "it was not on the page".
+	ScopePage SupersessionScope = "page"
+	// ScopeOwnIndex: the arm retrieves from its own namespace, so its pool is
+	// not the shared one at all.
+	ScopeOwnIndex SupersessionScope = "own-index"
+)
+
+// supersessionScope classifies an arm. It is exhaustive by construction: a new
+// arm with no scope fails TestSupersessionRanksScopePerArm rather than having
+// its number printed beside arms measuring something else.
+func supersessionScope(arm EvalArm) SupersessionScope {
+	switch arm {
+	case ArmProduction:
+		return ScopePage
+	case ArmContextual:
+		return ScopeOwnIndex
+	default:
+		return ScopePool
+	}
+}
+
+// caseOutcome is everything one case produced. It is a struct because evalCase
+// returned seven values including two bools and this task needed two more; a
+// review asked for the struct on the grounds that it makes the next return value
+// free, which it now is.
+type caseOutcome struct {
+	Ranks              map[EvalArm]int
+	DistractorRanks    map[EvalArm]int
+	TopDistance        float64
+	TopRerank          float64
+	RerankScored       bool
+	PoolRank           int
+	DistractorPoolRank int
+	Degraded           bool
+}
+
 // evalCase runs one query through every arm and returns the 1-based rank of the
 // expected drawer per arm (0 = absent).
 //
@@ -580,14 +634,14 @@ func armBoosts(arm EvalArm, closet []float64) []float64 {
 // the score's zero is only "unscored" by convention: a sigmoid backend never
 // emits exactly 0, but a logit backend can, and the abstention data must not
 // quietly drop the case that lands there.
-func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored bool, poolRankOut int, degraded bool, errOut error) {
+func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (caseOutcome, error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
-		return nil, -1, 0, false, 0, false, fmt.Errorf("embed eval query: %w", err)
+		return caseOutcome{TopDistance: -1}, fmt.Errorf("embed eval query: %w", err)
 	}
 	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 	if err != nil {
-		return nil, -1, 0, false, 0, false, fmt.Errorf("eval vector search: %w", err)
+		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval vector search: %w", err)
 	}
 	ids := make([]string, len(hits))
 	for i, h := range hits {
@@ -595,7 +649,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	rows, err := s.repo.GetMany(ctx, teamID, ids)
 	if err != nil {
-		return nil, -1, 0, false, 0, false, fmt.Errorf("load eval candidates: %w", err)
+		return caseOutcome{TopDistance: -1}, fmt.Errorf("load eval candidates: %w", err)
 	}
 
 	// The gold is a MEMORY, not a chunk of one.
@@ -607,6 +661,32 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// one) is penalised precisely for doing its job. In this corpus every sampled
 	// gold was a chunk of a multi-chunk memory, so the bias applied to every
 	// number measured before this.
+	// memoryOf resolves a drawer id to the id the POOL is keyed by. The pool
+	// stores p.memory, which is the parent for a chunk of a multi-chunk memory,
+	// so an unresolved drawer id matches nothing and scores as never-retrieved.
+	// The gold has always gone through this; the distractor must too, or every
+	// multi-chunk distractor looks unreachable, Vacuous inflates, and every
+	// stale-above rate comes out better than it is — with nothing failing.
+	memoryOf := func(id string) (string, bool) {
+		if id == "" {
+			return "", false
+		}
+		switch d, err := s.repo.Get(ctx, teamID, id); {
+		case err == nil:
+			if d.ParentID != "" {
+				return d.ParentID, true
+			}
+			return d.ID, true
+		default:
+			return "", false
+		}
+	}
+
+	distractorSet := map[string]bool{}
+	if m, ok := memoryOf(c.Distractor); ok {
+		distractorSet[m] = true
+	}
+
 	goldSet := make(map[string]bool, 1+len(c.ExpectAny))
 	for _, id := range append([]string{c.Expect}, c.ExpectAny...) {
 		if id == "" { // CatAbsent cases have no gold to resolve
@@ -626,10 +706,10 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			// operator to raise --pool, misdiagnosing stale case data as a
 			// retrieval failure. Found by adversarial review, minutes after a
 			// full re-mine had made it live.
-			return nil, -1, 0, false, 0, false, fmt.Errorf(
+			return caseOutcome{TopDistance: -1}, fmt.Errorf(
 				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
 		default:
-			return nil, -1, 0, false, 0, false, fmt.Errorf("load eval gold %s: %w", id, err)
+			return caseOutcome{TopDistance: -1}, fmt.Errorf("load eval gold %s: %w", id, err)
 		}
 	}
 
@@ -727,6 +807,8 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 
 	out := map[EvalArm]int{}
+	distractorOut := map[EvalArm]int{}
+	var distractorPoolRank int
 	// The abstention gate's calibration data, taken from the production arm and
 	// nowhere else.
 	prodRerank, prodScored := 0.0, false
@@ -745,6 +827,13 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			poolIDs[i] = p.memory
 		}
 		poolRank = rankOf(poolIDs, byDistance, goldSet)
+		if len(distractorSet) > 0 {
+			// Once per CASE, from the same dense ordering: whether the superseded
+			// version was retrievable at all is not something two arms can disagree
+			// about, and reading it per arm makes a vacuous case look like a
+			// success for every arm at once.
+			distractorPoolRank = rankOf(poolIDs, byDistance, distractorSet)
+		}
 	}
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
@@ -760,6 +849,9 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				poolIDs[i] = p.memory
 			}
 			out[arm] = rankOf(poolIDs, ordered, goldSet)
+			if len(distractorSet) > 0 {
+				distractorOut[arm] = rankOf(poolIDs, ordered, distractorSet)
+			}
 			continue
 		}
 		switch arm {
@@ -818,7 +910,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if err != nil {
 				// A store failure is not "index not built", and scoring it as a
 				// miss would let a dead backend read as a bad embedding.
-				return nil, -1, 0, false, 0, false, fmt.Errorf("contextual index search: %w", err)
+				return caseOutcome{TopDistance: -1}, fmt.Errorf("contextual index search: %w", err)
 			}
 			if len(ctxHits) == 0 {
 				break // index not built (or empty) for this scope: reported NotFound
@@ -829,7 +921,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
 			if err != nil {
-				return nil, -1, 0, false, 0, false, fmt.Errorf("load contextual candidates: %w", err)
+				return caseOutcome{TopDistance: -1}, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			var ctxDocs []string
 			var ctxDists []float64
@@ -892,13 +984,20 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			poolIDs[i] = p.memory
 		}
 		out[arm] = rankOf(poolIDs, ordered, goldSet)
+		if len(distractorSet) > 0 {
+			distractorOut[arm] = rankOf(poolIDs, ordered, distractorSet)
+		}
 	}
 	// Production's score, or nothing. There is deliberately no fallback to the
 	// fixed-weight reranked arm: substituting it would refill the distribution
 	// with the very mismatch this measurement exists to avoid — that arm blends
 	// at a constant weight and can top out on a different document. A case where
 	// production returned no scored hit contributes nothing, which is honest.
-	return out, topDistance, prodRerank, prodScored, poolRank, rerankFailed, nil
+	return caseOutcome{
+		Ranks: out, DistractorRanks: distractorOut,
+		TopDistance: topDistance, TopRerank: prodRerank, RerankScored: prodScored,
+		PoolRank: poolRank, DistractorPoolRank: distractorPoolRank, Degraded: rerankFailed,
+	}, nil
 }
 
 // rankOf returns the 1-based position of the expected id in an ordering, or 0

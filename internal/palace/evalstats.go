@@ -187,6 +187,10 @@ func ClosetDelta(report EvalReport, category string) ClosetCell {
 // SupersessionCell is one arm's stale-above measurement over one population,
 // with every case it declined to use accounted for.
 type SupersessionCell struct {
+	// Scope names the population this arm's number was measured over. Without it
+	// a pool-scoped arm and a page-scoped one print side by side as if they had
+	// answered the same question.
+	Scope SupersessionScope
 	// Cases is the denominator: non-vacuous cases only.
 	Cases int
 	// StaleAbove is how many of those put the superseded version above the
@@ -277,4 +281,19 @@ func WilsonInterval(successes, n int) Interval {
 		hi = 1
 	}
 	return Interval{Lo: lo, Hi: hi}
+}
+
+// fillSupersession attaches each arm's stale-above measurement, scoped, once the
+// per-case details are complete.
+//
+// It runs after the per-case loop rather than inside it because the metric's
+// denominator is a property of the whole population — the non-vacuous cases —
+// and a running total cannot exclude a case it has not seen yet.
+func fillSupersession(report *EvalReport) {
+	for i := range report.Arms {
+		arm := report.Arms[i].Arm
+		cell := StaleAboveRate(report.Details, arm)
+		cell.Scope = supersessionScope(arm)
+		report.Arms[i].Supersession = cell
+	}
 }

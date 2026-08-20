@@ -238,10 +238,11 @@ func TestClosetArmMeasuresClosetsWhenServedPriorIsOff(t *testing.T) {
 
 	query, gold := closetFixture(t, svc, team)
 	arms := []EvalArm{ArmHybrid, ArmHybridCloset}
-	ranks, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+	oc, err := svc.evalCaseResult(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
 	if err != nil {
 		t.Fatalf("evalCase: %v", err)
 	}
+	ranks := oc.Ranks
 	if ranks[ArmHybrid] == 0 {
 		t.Fatal("fixture: the gold never made the pool, so no arm can separate")
 	}
@@ -263,11 +264,11 @@ func TestProductionArmFollowsServedClosetScale(t *testing.T) {
 		t.Helper()
 		svc := newTestService(t).WithClosetBoost(scale)
 		query, gold := closetFixture(t, svc, team)
-		ranks, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+		oc, err := svc.evalCaseResult(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
 		if err != nil {
 			t.Fatalf("evalCase at scale %v: %v", scale, err)
 		}
-		return ranks
+		return oc.Ranks
 	}
 
 	off, on := run(0), run(1)
@@ -545,10 +546,11 @@ func TestRerankedArmsUseThePoolTheirNameClaims(t *testing.T) {
 
 	query, gold := closetFixture(t, svc, team)
 	arms := []EvalArm{ArmHybridRerank, ArmReranked}
-	ranks, _, _, _, _, degraded, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+	oc, err := svc.evalCaseResult(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
 	if err != nil {
 		t.Fatalf("evalCase: %v", err)
 	}
+	ranks, degraded := oc.Ranks, oc.Degraded
 	if degraded {
 		t.Fatal("the fake reranker failed; this test would then be comparing two copies of the fused order")
 	}
@@ -649,7 +651,7 @@ func TestEvalCaseFetchesOnlyThePoolsItsArmsRead(t *testing.T) {
 			rr := &fakeReranker{}
 			svc := newTestService(t).WithClosetBoost(0).WithReranker(rr, DefaultRerankPool)
 			query, gold := closetFixture(t, svc, team)
-			if _, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, tc.arms, 20); err != nil {
+			if _, err := svc.evalCaseResult(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, tc.arms, 20); err != nil {
 				t.Fatalf("evalCase: %v", err)
 			}
 			if rr.called != tc.wants {

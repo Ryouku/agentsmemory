@@ -25,7 +25,7 @@ gate unable to ask whether a date preference already closes the gap.
 
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
-| T1 | Score where the superseded version landed | pending | — | `go test ./internal/palace/ -run "TestSupersessionRanks\|TestStaleAboveRate"` |
+| T1 | Score where the superseded version landed | done | — | `go test ./internal/palace/ -run "TestSupersessionRanks\|TestStaleAboveRate"` |
 | T2 | Harden and grow the temporal pairs | pending | — | `go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor\|TestPairVerified"` |
 | T3 | Keep supersession out of the headline and give it its own table | pending | — | `go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal\|TestSupersessionTable"` |
 | T4 | Add the recency arm — the cheap fix the graph must beat | pending | — | `go test ./internal/palace/ -run "TestRecencyArm"` |
