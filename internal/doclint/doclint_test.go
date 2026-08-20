@@ -28,6 +28,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"unicode"
@@ -86,7 +87,10 @@ func TestDocCommentsMatchTheirDeclaration(t *testing.T) {
 				continue
 			}
 			first := firstWord(d.doc)
-			if first == "" || first == d.name || first == "Deprecated:" {
+			// "Deprecated" without the colon: firstWord already trims trailing
+			// punctuation, so the old comparison against "Deprecated:" could
+			// never match and read as load-bearing while doing nothing.
+			if first == "" || first == d.name || first == "Deprecated" {
 				continue
 			}
 			// A comment opening with a PREFIX of the name is describing the same
@@ -142,6 +146,29 @@ func documented(file *ast.File) []documentedDecl {
 		name, doc, pos := declInfo(decl)
 		if name != "" {
 			out = append(out, documentedDecl{name: name, doc: doc, pos: pos})
+		}
+		// Grouped const/var/type blocks: each spec's OWN comment is checked
+		// against that spec. declInfo deliberately skips the block, and the
+		// reason it gives — per-spec comments belong to the spec — is the
+		// argument for walking the specs, not for skipping them. This is the
+		// likeliest position for the defect to occur at all: inserting an entry
+		// above an existing one is exactly how a comment ends up over the wrong
+		// declaration, and a grouped block is where entries get inserted.
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || len(gd.Specs) < 2 {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			switch spec := sp.(type) {
+			case *ast.ValueSpec:
+				if spec.Doc != nil && len(spec.Names) > 0 {
+					out = append(out, documentedDecl{name: spec.Names[0].Name, doc: spec.Doc, pos: spec.Pos()})
+				}
+			case *ast.TypeSpec:
+				if spec.Doc != nil {
+					out = append(out, documentedDecl{name: spec.Name.Name, doc: spec.Doc, pos: spec.Pos()})
+				}
+			}
 		}
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -239,7 +266,24 @@ func firstWord(doc *ast.CommentGroup) string {
 	if len(doc.List) == 0 {
 		return ""
 	}
-	line := strings.TrimSpace(strings.TrimPrefix(doc.List[0].Text, "//"))
+	// Both comment forms. Stripping only "//" left a block comment's first word
+	// as "/*", which is neither a declared name nor CamelCase, so every
+	// /* Foo does x */ hijack fell out through the prose exemption.
+	raw := doc.List[0].Text
+	raw = strings.TrimPrefix(raw, "//")
+	raw = strings.TrimPrefix(raw, "/*")
+	raw = strings.TrimSuffix(raw, "*/")
+	line := strings.TrimSpace(raw)
+	if line == "" && len(doc.List) == 1 {
+		// A `/*` on its own line: the text starts on the next one.
+		for _, l := range strings.Split(doc.List[0].Text, "\n")[1:] {
+			l = strings.TrimSpace(strings.TrimSuffix(l, "*/"))
+			if l != "" {
+				line = l
+				break
+			}
+		}
+	}
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return ""
@@ -291,4 +335,123 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// hijacked runs the same detection the repo-wide check runs, over one parsed
+// file, and returns the names it flags. It exists so the gate's own coverage can
+// be tested against a fixture instead of against whatever the tree happens to
+// contain today.
+func hijacked(t *testing.T, src string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fixture.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	declared := declaredNames(file)
+	var out []string
+	for _, d := range documented(file) {
+		if d.name == "" || d.doc == nil {
+			continue
+		}
+		if !d.field && !ast.IsExported(d.name) {
+			continue
+		}
+		first := firstWord(d.doc)
+		if first == "" || first == d.name || first == "Deprecated" {
+			continue
+		}
+		if strings.HasPrefix(d.name, first) {
+			continue
+		}
+		if !declared[first] && !looksLikeIdentifier(first) {
+			continue
+		}
+		out = append(out, d.name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestGateSeesGroupedSpecsAndBlockComments pins the two positions this check was
+// blind to, both reported by review and both since shipped into.
+//
+// `declInfo` returned an empty name for any GenDecl with more than one spec, and
+// `documented`'s walk descended only into struct and interface bodies — so a
+// grouped `const (…)` or `var (…)` block was visited by nothing. That is the
+// likeliest place for the defect to occur at all: inserting a new entry above an
+// existing one is exactly how a comment ends up over the wrong declaration, and a
+// grouped block is where entries get inserted.
+//
+// `firstWord` stripped only `//`, so `/* Foo does x */` yielded `"/*"`, which is
+// neither a declared name nor CamelCase and fell out through the prose exemption.
+//
+// The fixture is the reviewer's, kept verbatim in shape: four hijacks, one per
+// position. Before the fix this returned one of the four.
+func TestGateSeesGroupedSpecsAndBlockComments(t *testing.T) {
+	const src = `package probe
+
+const (
+	// RealConst is the constant everyone reads.
+	InsertedConst = 5
+	RealConst     = 60
+)
+
+var (
+	// RealVar is the shared registry.
+	InsertedVar = map[string]bool{}
+	RealVar     = map[string]bool{}
+)
+
+/*
+ExportedFn does the thing.
+*/
+func BlockCommentVictim() {}
+
+// ExportedFn is the real one.
+func ExportedFn() {}
+
+type Holder struct {
+	// ExportedFn is the drifted field comment.
+	Inserted int
+	Real     int
+}
+`
+	got := hijacked(t, src)
+	want := []string{"BlockCommentVictim", "Inserted", "InsertedConst", "InsertedVar"}
+	if len(got) != len(want) {
+		t.Fatalf("flagged %v, want %v — a position the check cannot see is a position the defect can live in", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("flagged %v, want %v", got, want)
+			break
+		}
+	}
+}
+
+// TestGateLeavesCorrectGroupedCommentsAlone is the other half: the fix must not
+// start flagging the ordinary case, where a grouped block's per-spec comments
+// each name their own spec. A gate with false alarms is one people delete.
+func TestGateLeavesCorrectGroupedCommentsAlone(t *testing.T) {
+	const src = `package probe
+
+const (
+	// ArmVector is the baseline.
+	ArmVector = "vector"
+	// ArmHybrid adds fusion.
+	ArmHybrid = "hybrid"
+)
+
+var (
+	// Registry holds the arms.
+	Registry = map[string]bool{}
+)
+
+// Prose about the package that happens to start with a capital word.
+const Threshold = 3
+`
+	if got := hijacked(t, src); len(got) != 0 {
+		t.Errorf("flagged %v on a file where every comment names its own declaration", got)
+	}
 }
