@@ -381,41 +381,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		}
 		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks, PoolRank: poolRank})
 		cat := c.category()
-		for _, a := range arms {
-			m := byArm[a]
-			cm := m.ByCategory[cat]
-			if cm == nil {
-				cm = &CategoryMetrics{}
-				m.ByCategory[cat] = cm
-			}
-			cm.Cases++
-
-			// An absent case has no gold to rank; its distance evidence is taken
-			// once per CASE below, not here — appending inside this loop copied it
-			// once per arm and silently weighted the separation medians.
-			if cat == CatAbsent {
-				continue
-			}
-
-			m.Cases++
-			m.Ranks = append(m.Ranks, ranks[a])
-			switch r := ranks[a]; {
-			case r == 0:
-				m.NotFound++
-				cm.NotFound++
-			default:
-				m.MRR += 1 / float64(r)
-				cm.MRR += 1 / float64(r)
-				if r == 1 {
-					m.Recall1++
-					cm.Recall1++
-				}
-				if r <= 5 {
-					m.Recall5++
-					cm.Recall5++
-				}
-			}
-		}
+		s.accumulate(byArm, &report, EvalCaseResult{Category: cat, Ranks: ranks}, arms)
 		if cat != CatAbsent {
 			report.PoolRanks = append(report.PoolRanks, poolRank)
 		}
@@ -1303,4 +1269,78 @@ func (s *Service) withoutReranker() *Service {
 	clone := *s
 	clone.rerank = nil
 	return &clone
+}
+
+// accumulate folds one case's ranks into the per-arm totals.
+//
+// Extracted so the population rule can be tested without a corpus, and because
+// the rule is easy to get wrong in a way no arm's number reveals: a temporal
+// case must reach ByCategory and the supersession counts but NOT the headline.
+// It asks a different question and is scored against a deliberately hard
+// distractor, so folding it in makes every arm look worse as more temporal cases
+// are generated, with no ranking having changed — and the headline then depends
+// on how many were generated rather than on how well anything ranks.
+//
+// Ranks follows the headline for the same reason: BootstrapMRR and PairedDelta
+// resample it, and an interval taken over a different population than the point
+// estimate describes neither of them.
+func (s *Service) accumulate(byArm map[EvalArm]*EvalMetrics, report *EvalReport, res EvalCaseResult, arms []EvalArm) {
+	cat := res.Category
+	if cat == "" {
+		cat = CatSingle
+	}
+	for _, a := range arms {
+		m := byArm[a]
+		if m == nil {
+			continue
+		}
+		if m.ByCategory == nil {
+			m.ByCategory = map[string]*CategoryMetrics{}
+		}
+		cm := m.ByCategory[cat]
+		if cm == nil {
+			cm = &CategoryMetrics{}
+			m.ByCategory[cat] = cm
+		}
+		cm.Cases++
+
+		// An absent case has no gold to rank; its distance evidence is taken once
+		// per CASE by the caller, not here — appending inside this loop copied it
+		// once per arm and silently weighted the separation medians.
+		if cat == CatAbsent {
+			continue
+		}
+
+		r := res.Ranks[a]
+		if r == 0 {
+			cm.NotFound++
+		} else {
+			cm.MRR += 1 / float64(r)
+			if r == 1 {
+				cm.Recall1++
+			}
+			if r <= 5 {
+				cm.Recall5++
+			}
+		}
+
+		// The headline population excludes temporal cases. They keep their
+		// category row above and their supersession numbers in their own table.
+		if cat == CatTemporal {
+			continue
+		}
+		m.Cases++
+		m.Ranks = append(m.Ranks, r)
+		if r == 0 {
+			m.NotFound++
+		} else {
+			m.MRR += 1 / float64(r)
+			if r == 1 {
+				m.Recall1++
+			}
+			if r <= 5 {
+				m.Recall5++
+			}
+		}
+	}
 }

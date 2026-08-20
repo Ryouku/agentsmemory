@@ -1050,9 +1050,14 @@ func TestSupersessionTableSeparatesPageScopedArms(t *testing.T) {
 	if !strings.Contains(got, string(ScopePool)) || !strings.Contains(got, string(ScopePage)) {
 		t.Errorf("both scopes must be named in the table:\n%s", got)
 	}
+	// The scope LABEL line, not the bare word: "in page" is a column header in
+	// every block, so searching for "page" finds the pool block's own header.
 	pool := strings.Index(got, string(ArmHybrid))
 	page := strings.Index(got, string(ArmProduction))
-	scopeLabel := strings.Index(got, string(ScopePage))
+	scopeLabel := strings.Index(got, "scope "+string(ScopePage))
+	if scopeLabel < 0 {
+		t.Fatalf("no labelled block for the page scope:\n%s", got)
+	}
 	if !(pool < scopeLabel && scopeLabel < page) {
 		t.Errorf("the page-scoped arm is not under its own labelled block — a reader summing the "+
 			"column would add two different measurements together:\n%s", got)

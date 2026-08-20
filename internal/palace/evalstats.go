@@ -2,6 +2,7 @@ package palace
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"sort"
@@ -296,4 +297,63 @@ func fillSupersession(report *EvalReport) {
 		cell.Scope = supersessionScope(arm)
 		report.Arms[i].Supersession = cell
 	}
+}
+
+// PrintSupersessionTable renders the stale-above measurement, grouped by scope.
+//
+// Grouped because the three scopes answer different questions and a reader who
+// sums the column has added them together: a pool-scoped arm re-orders every
+// candidate, ArmProduction sees at most a page after the distance gate, and the
+// contextual arm retrieves from its own namespace. The denominator differs with
+// the scope, so it is printed rather than assumed.
+//
+// The interval is beside every rate for the same reason it exists: on a corpus
+// with a handful of verified pairs the point estimate is mostly noise, and a
+// rate printed alone invites a conclusion the sample cannot support.
+func PrintSupersessionTable(out io.Writer, report EvalReport) {
+	printSupersessionTable(out, report)
+}
+
+// printSupersessionTable is the unexported body, kept so the tests in this
+// package can render a table without going through the exported name.
+func printSupersessionTable(out io.Writer, report EvalReport) {
+	byScope := map[SupersessionScope][]EvalMetrics{}
+	var order []SupersessionScope
+	for _, m := range report.Arms {
+		sc := m.Supersession.Scope
+		if sc == "" {
+			continue
+		}
+		if _, seen := byScope[sc]; !seen {
+			order = append(order, sc)
+		}
+		byScope[sc] = append(byScope[sc], m)
+	}
+	if len(order) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "\nsupersession — how often the arm put the SUPERSEDED memory above the correction:\n")
+	for _, sc := range order {
+		switch sc {
+		case ScopePool:
+			fmt.Fprintf(out, "  scope %s — re-orders the shared candidate pool; denominator is the non-vacuous cases\n", sc)
+		case ScopePage:
+			fmt.Fprintf(out, "  scope %s — scored over the page Search returns after the distance gate, so a distractor\n"+
+				"    absent from the page is not the same finding as one ranked below the gold\n", sc)
+		default:
+			fmt.Fprintf(out, "  scope %s — retrieves from its own namespace, so its pool is not the shared one\n", sc)
+		}
+		fmt.Fprintf(out, "    %-26s %6s %10s %16s %10s %12s %8s\n",
+			"arm", "cases", "stale@1+", "95% Wilson", "in page", "unreachable", "vacuous")
+		for _, m := range byScope[sc] {
+			c := m.Supersession
+			fmt.Fprintf(out, "    %-26s %6d %9.1f%% %16s %10d %12d %8d\n",
+				m.Arm, c.Cases, 100*c.Rate(), WilsonInterval(c.StaleAbove, c.Cases),
+				c.StaleInPage, c.CurrentUnreachable, c.Vacuous)
+		}
+	}
+	fmt.Fprintln(out, "  'vacuous' cases never retrieved the superseded version at all, so no arm could have")
+	fmt.Fprintln(out, "  ranked it above anything; 'unreachable' never retrieved the CORRECTION, which counts as")
+	fmt.Fprintln(out, "  a stale-above because the stale one came back and its replacement did not.")
 }

@@ -24,13 +24,14 @@ func TestEvalOutputsAreReachableFromTheCommand(t *testing.T) {
 	// Each entry is a producer of run output and the function that must reach
 	// it. A new one goes here when it is written, or it can ship unreachable.
 	mustCall := map[string]string{
-		"printEvalTable":    "runEval",
-		"printClosetBlock":  "runEval",
-		"writeResults":      "runEval",
-		"writeCells":        "runEval",
-		"cellsPath":         "runEval",
-		"resultsPath":       "runEval",
-		"readCasesWithMeta": "loadOrGenerateCases",
+		"printEvalTable":         "runEval",
+		"printClosetBlock":       "runEval",
+		"PrintSupersessionTable": "runEval",
+		"writeResults":           "runEval",
+		"writeCells":             "runEval",
+		"cellsPath":              "runEval",
+		"resultsPath":            "runEval",
+		"readCasesWithMeta":      "loadOrGenerateCases",
 	}
 
 	fset := token.NewFileSet()
@@ -51,8 +52,17 @@ func TestEvalOutputsAreReachableFromTheCommand(t *testing.T) {
 			if !ok {
 				return true
 			}
-			if id, ok := call.Fun.(*ast.Ident); ok {
-				names[id.Name] = true
+			// Both call shapes. Collecting only bare identifiers made the check
+			// blind to any producer living in another package —
+			// palace.PrintSupersessionTable is called from runEval and this gate
+			// reported it as unreachable, which is the same class of blind spot
+			// doclint had for grouped declarations: the check was right about the
+			// rule and wrong about where the rule applies.
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				names[fn.Name] = true
+			case *ast.SelectorExpr:
+				names[fn.Sel.Name] = true
 			}
 			return true
 		})

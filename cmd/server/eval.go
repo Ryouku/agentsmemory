@@ -145,6 +145,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	}
 	printEvalTable(out, report)
 	printClosetBlock(out, report)
+	palace.PrintSupersessionTable(out, report)
 
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
