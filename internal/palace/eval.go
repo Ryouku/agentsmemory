@@ -407,13 +407,6 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	return report, nil
 }
 
-// evalCase runs one query through every arm and returns the 1-based rank of the
-// expected drawer per arm (0 = absent).
-// The rerankScored return says whether a cross-encoder actually scored the top
-// candidate. It is a separate boolean rather than a test on the score, because
-// the score's zero is only "unscored" by convention: a sigmoid backend never
-// emits exactly 0, but a logit backend can, and the abstention data must not
-// quietly drop the case that lands there.
 // anchoredNorms are the lexical normalisers the eval compares against page-max,
 // each paired with the label that appears in the arm's name.
 //
@@ -564,6 +557,14 @@ func armBoosts(arm EvalArm, closet []float64) []float64 {
 	}
 }
 
+// evalCase runs one query through every arm and returns the 1-based rank of the
+// expected drawer per arm (0 = absent).
+//
+// The rerankScored return says whether a cross-encoder actually scored the top
+// candidate. It is a separate boolean rather than a test on the score, because
+// the score's zero is only "unscored" by convention: a sigmoid backend never
+// emits exactly 0, but a logit backend can, and the abstention data must not
+// quietly drop the case that lands there.
 func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored bool, poolRankOut int, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {

@@ -286,10 +286,23 @@ func TestProductionArmFollowsServedClosetScale(t *testing.T) {
 // normaliser does not. If the two normalisers cannot disagree here they cannot
 // disagree anywhere.
 func anchorFixture() (query string, docs []string, dists []float64) {
+	// Two constraints, and the first version of this fixture met only one.
+	//
+	// The normalisers must differ: page-max divides by the best score on the
+	// page and the anchored ones by what the query could have scored, so any
+	// page whose winner falls short of the ceiling separates them.
+	//
+	// AND the adaptive arms need lexical coverage to work with. Coverage counts
+	// query terms present in at least one candidate but not all; the earlier
+	// fixture put "eviction" in every candidate and "cache" in none, so coverage
+	// was zero, the adaptive weight collapsed to zero, and the lexical term was
+	// multiplied away — making page-max and anchored identical for a reason that
+	// had nothing to do with the normaliser. Here "cache" is in one candidate
+	// and "eviction" in two of three, so both terms count.
 	return "cache eviction", []string{
-		"eviction eviction happens twice here",
+		"cache eviction happens twice here eviction",
 		"eviction happens once here",
-		"eviction here",
+		"unrelated prose about something else entirely",
 	}, []float64{0.55, 0.5, 0.45}
 }
 
@@ -303,32 +316,51 @@ func anchorFixture() (query string, docs []string, dists []float64) {
 // predecessor asserted only that both modes returned results and passed happily
 // while the flag was read by nothing at all.
 func TestAnchoredArmsRankDifferentlyFromPageMax(t *testing.T) {
-	query, docs, dists := anchorFixture()
-
-	plain := fusionRankerFor(bm25Arm(0.4), hybridBM25Weight)
-	if plain == nil {
-		t.Fatal("fusion bm25=0.40 has no ranker; the dispatch does not cover it")
+	// Every anchored arm, not just one. The first version of this test built only
+	// anchoredArm(bm25Arm(0.4), …), so the four adaptive-anchored arms had no
+	// behavioural check at all — and pointing their branches back at the
+	// page-max rankers left the whole suite green. Found by review.
+	bases := []EvalArm{ArmAdaptive, ArmAdaptiveIDF}
+	for _, w := range bm25Sweep {
+		if w != 0 {
+			bases = append(bases, bm25Arm(w))
+		}
 	}
+	for _, base := range bases {
+		plain := fusionRankerFor(base, hybridBM25Weight)
+		if plain == nil {
+			t.Fatalf("%s has no ranker; the dispatch does not cover it", base)
+			continue
+		}
+		checkAnchoredDiffers(t, base, plain)
+	}
+}
+
+// checkAnchoredDiffers asserts each anchored counterpart of base scores the
+// fixture differently from base itself.
+func checkAnchoredDiffers(t *testing.T, base EvalArm, plain func(string, []string, []float64, []float64) []HybridScore) {
+	t.Helper()
+	query, docs, dists := anchorFixture()
 	for _, norm := range anchoredNorms {
-		arm := anchoredArm(bm25Arm(0.4), norm.name)
+		arm := anchoredArm(base, norm.name)
 		ranker := fusionRankerFor(arm, hybridBM25Weight)
 		if ranker == nil {
 			t.Errorf("%s has no ranker; it would fall through to the page-max branch", arm)
 			continue
 		}
-		base := plain(query, docs, dists, nil)
+		pageMax := plain(query, docs, dists, nil)
 		got := ranker(query, docs, dists, nil)
-		if len(got) != len(base) {
-			t.Fatalf("%s returned %d scores, page-max returned %d", arm, len(got), len(base))
+		if len(got) != len(pageMax) {
+			t.Fatalf("%s returned %d scores, page-max returned %d", arm, len(got), len(pageMax))
 		}
 		same := true
 		for i := range got {
-			if got[i].Fused != base[i].Fused {
+			if got[i].Fused != pageMax[i].Fused {
 				same = false
 			}
 		}
 		if same {
-			t.Errorf("%s produced the same fused scores as %s on a fixture built to separate them — the arm is named but not wired", arm, bm25Arm(0.4))
+			t.Errorf("%s produced the same fused scores as %s on a fixture built to separate them — the arm is named but not wired", arm, base)
 		}
 	}
 }
@@ -605,6 +637,13 @@ func TestEvalCaseFetchesOnlyThePoolsItsArmsRead(t *testing.T) {
 		{"closet-on arm reads the closet pool only", []EvalArm{ArmReranked}, 1},
 		{"a sweep arm reads the plain pool", []EvalArm{rerankArm(rerankSweep[0])}, 1},
 		{"both arms read both pools", []EvalArm{ArmHybridRerank, ArmReranked}, 2},
+		// rrf+rerank takes its OWN pass, because RRF changes the order the head
+		// is taken in. It is a third call this table did not cover, and its
+		// failure is not folded into rerankFailed — so replacing it with a nil
+		// slice made rrf+rerank print as plain rrf under a reranker's name, with
+		// no degraded warning and nothing red. Found by review.
+		{"rrf+rerank reads its own pool", []EvalArm{ArmRRFReranked}, 1},
+		{"rrf+rerank does not borrow the fusion pools", []EvalArm{ArmRRFReranked, ArmReranked}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := &fakeReranker{}

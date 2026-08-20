@@ -37,7 +37,7 @@ Every eval arm carries the closet prior only if its name says so, and measures w
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestArmBoostsDimension|TestClosetArmMeasuresClosetsWhenServedPriorIsOff|TestProductionArmFollowsServedClosetScale|TestEveryDeclaredArmIsRegistered|TestSearchAppliesClosetBoost" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestArmBoostsDimension|TestClosetArmMeasuresClosetsWhenServedPriorIsOff|TestProductionArmFollowsServedClosetScale|TestEveryDeclaredArmIsRegistered|TestSearchAppliesClosetBoost|TestRerankedArmsUseThePoolTheirNameClaims|TestEvalCaseFetchesOnlyThePoolsItsArmsRead" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
 ```
 
 ## Tests
@@ -49,6 +49,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestProductionArmFollowsServedClosetScale` | `internal/palace/eval_test.go` | `ArmProduction` reflects the configured scale, not the arms' full-strength one | — |
 | `TestEveryDeclaredArmIsRegistered` | `internal/palace/armreach_test.go` | the new `ArmHybridRerank` is actually appended to the arms list | — |
 | `TestSearchAppliesClosetBoost` | `internal/palace/rank_test.go` | the search path is unchanged by the split | — |
+| `TestEvalCaseFetchesOnlyThePoolsItsArmsRead` | `internal/palace/eval_test.go` | **added after review.** Counts cross-encoder passes in both directions — a pool no requested arm reads is not fetched, one that is read is. A skipped pass degrades silently to the fused order and still prints a row headed by the reranker's name | — |
 | `TestRerankedArmsUseThePoolTheirNameClaims` | `internal/palace/eval_test.go` | **added after review, and it was blocking.** Each reranked arm reads the pool its name claims. Inverting that one condition, so every reranked arm read the wrong pool, previously turned zero tests red — no fixture in the package configured a reranker, so the branch was dead to the suite. The classifier had a test; its consumer did not | — |
 
 ## Invariants
