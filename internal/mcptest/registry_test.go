@@ -223,6 +223,119 @@ var scenarios = []mcptest.Scenario{
 			}
 		},
 	},
+	{
+		// A tunnel is the only way a scoped recall can cross wings, so an unwoven
+		// or unreadable one is a cross-project relationship that is invisible
+		// forever. Audited 2026-08-20: every tunnel in the live palace had
+		// access_count 0, and nothing had ever tested that they can be read back.
+		Name:  "a tunnel woven between two wings is findable from either end",
+		Tools: []string{"am_add_drawer", "am_create_tunnel", "am_list_tunnels", "am_find_tunnels"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			for _, w := range []string{"wing_app", "wing_infra"} {
+				h.MustCall(t, "am_add_drawer", map[string]any{
+					"wing": w, "room": "decisions", "content": "a decision filed in " + w,
+				})
+			}
+			h.MustCall(t, "am_create_tunnel", map[string]any{
+				"source_wing": "wing_app", "source_room": "decisions",
+				"target_wing": "wing_infra", "target_room": "decisions",
+				"label": "the deploy behaviour is explained by the infra decision",
+			})
+
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "wing_app"}); !contains(got, "wing_infra") {
+				t.Errorf("the tunnel is not listed from its source wing:\n%s", got)
+			}
+			// Tunnels are symmetric, so the far end must see it too — a link only
+			// its author can find is not a link.
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "wing_infra"}); !contains(got, "wing_app") {
+				t.Errorf("the tunnel is not listed from its TARGET wing; a link only its author "+
+					"can find is not a link:\n%s", got)
+			}
+			// am_find_tunnels answers a different question — which ROOMS span two
+			// wings, a passive connector rather than the woven link above. Asserted
+			// against what it promises, not against what its name suggests.
+			if got := h.MustCall(t, "am_find_tunnels", map[string]any{
+				"wing_a": "wing_infra", "wing_b": "wing_app",
+			}); !contains(got, "decisions") {
+				t.Errorf("am_find_tunnels does not report the room both wings share:\n%s", got)
+			}
+		},
+	},
+	{
+		// The knowledge graph is the only structure that can say a fact STOPPED
+		// being true; search returns the best match and never the most current.
+		Name:  "a fact added to the graph is queryable by its subject",
+		Tools: []string{"am_kg_add", "am_kg_query", "am_kg_stats"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_kg_add", map[string]any{
+				"subject": "queue-worker", "predicate": "deploys_to", "object": "batch-node-3",
+				"valid_from": "2026-08-01",
+			})
+			if got := h.MustCall(t, "am_kg_query", map[string]any{"entity": "queue-worker"}); !contains(got, "batch-node-3") {
+				t.Errorf("a fact added to the graph is not returned by a query for its subject:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_kg_stats", map[string]any{}); contains(got, "\"triples\":0") {
+				t.Errorf("the graph reports no triples after one was added:\n%s", got)
+			}
+		},
+	},
+	{
+		// The diary is the cross-session thread, and it is read by exact agent
+		// name — measured 2026-08-20, 89 entries had already fragmented across 11
+		// names, so a session picking a different one reads none of the others.
+		Name:  "a diary entry is readable by the agent that wrote it",
+		Tools: []string{"am_diary_write", "am_diary_read"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_diary_write", map[string]any{
+				"agent_name": "scenario-agent", "wing": "wing_diary",
+				"entry": "tried the batch path first; it deadlocked on the locked table",
+			})
+			if got := h.MustCall(t, "am_diary_read", map[string]any{
+				"agent_name": "scenario-agent", "wing": "wing_diary",
+			}); !contains(got, "deadlocked on the locked table") {
+				t.Errorf("an agent cannot read back its own diary entry:\n%s", got)
+			}
+			// A different name must read nothing — that IS the fragmentation, and
+			// pinning it means the behaviour is a decision rather than a surprise.
+			if got := h.MustCall(t, "am_diary_read", map[string]any{
+				"agent_name": "a-different-agent", "wing": "wing_diary",
+			}); contains(got, "deadlocked on the locked table") {
+				t.Errorf("one agent's diary answered another agent's read:\n%s", got)
+			}
+		},
+	},
+	{
+		Name:  "the palace can describe its own shape",
+		Tools: []string{"am_add_drawer", "am_list_wings", "am_list_rooms", "am_get_taxonomy"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_shape", "room": "gotchas", "content": "a gotcha worth keeping",
+			})
+			for tool, want := range map[string]string{
+				"am_list_wings": "wing_shape", "am_get_taxonomy": "wing_shape",
+			} {
+				if got := h.MustCall(t, tool, map[string]any{}); !contains(got, want) {
+					t.Errorf("%s does not report %s:\n%s", tool, want, got)
+				}
+			}
+			if got := h.MustCall(t, "am_list_rooms", map[string]any{"wing": "wing_shape"}); !contains(got, "gotchas") {
+				t.Errorf("am_list_rooms does not report the room just written to:\n%s", got)
+			}
+		},
+	},
+	{
+		Name:  "a near-duplicate is reported before it is filed twice",
+		Tools: []string{"am_add_drawer", "am_check_duplicate"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			const text = "the reranker pool is taken off the fused head, so fusion decides what it sees"
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_dup", "room": "decisions", "content": text,
+			})
+			if got := h.MustCall(t, "am_check_duplicate", map[string]any{"content": text}); !contains(got, "reranker pool") {
+				t.Errorf("filing the same text twice is not reported as a duplicate:\n%s", got)
+			}
+		},
+	},
 }
 
 // filler pads a memory past ChunkSize so it is stored as several drawers.
