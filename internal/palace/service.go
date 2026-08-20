@@ -1325,3 +1325,8 @@ func (s *Service) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, e
 func (s *Service) WingNames(ctx context.Context, teamID string) ([]string, error) {
 	return s.repo.WingNames(ctx, teamID)
 }
+
+// InboxCount counts the drawers in one wing's room.
+func (s *Service) InboxCount(ctx context.Context, teamID, wing, room string) (int, error) {
+	return s.repo.InboxCount(ctx, teamID, wing, room)
+}

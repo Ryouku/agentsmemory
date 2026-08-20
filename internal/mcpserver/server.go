@@ -265,6 +265,15 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// writes are landing in the right place.
 		defaultWing := auth.DefaultWingFrom(ctx)
 
+		// What is waiting in this session's own wing. Best-effort like the blocks
+		// around it: a counting failure reports as unknown rather than as a zero,
+		// and never fails the wake-up call.
+		inboxCount, inboxErr := 0, error(nil)
+		if defaultWing != "" {
+			inboxCount, inboxErr = drawers.InboxCount(ctx, t.TeamID, defaultWing, inboxRoom)
+		}
+		inbox := inboxStatus(defaultWing, inboxCount, inboxErr)
+
 		var workspace map[string]any
 		if workspaces != nil {
 			if team, err := workspaces.TeamByID(ctx, t.TeamID); err == nil {
@@ -286,13 +295,16 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			"default_wing":  defaultWing,
 			"total_drawers": total,
 			"wings":         tax.Wings, // [{wing, drawers, rooms:[{wing, room, drawers}]}]
+			"inbox":         inbox,
 			"usage": map[string]any{
 				"used_this_month": st.Used,
 				"monthly_cap":     st.Cap,
 				"remaining":       st.Remaining(),
 			},
-			// Point the agent at the rest of the wake-up loop.
-			"hint": "Call am_get_aaak_spec for the write dialect and am_search to recall before acting; persist with am_diary_write, am_kg_add, and am_add_drawer.",
+			// Point the agent at the rest of the wake-up loop — and, when something
+			// is waiting, at that first. The hint changes with the inbox because a
+			// line that is always there is a line nobody reads.
+			"hint": statusHint(inbox),
 		})
 		return mcp.NewToolResultText(string(out)), nil
 	})

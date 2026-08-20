@@ -1,0 +1,63 @@
+package mcpserver
+
+import "fmt"
+
+// inboxView is the am_status block naming what is waiting in the session's own
+// wing. It carries Known separately from Count because zero and unknown are
+// different answers and an agent cannot tell them apart from a bare number: a
+// session with no registration wing has no inbox to report, and a count that
+// failed is not an all-clear.
+type inboxView struct {
+	Wing  string `json:"wing,omitempty"`
+	Count int    `json:"count"`
+	Known bool   `json:"known"`
+	Note  string `json:"note"`
+}
+
+// inboxStatus builds that block from the session's wing, the count, and whatever
+// went wrong getting it.
+//
+// The count is taken at wake-up and does not update mid-session — an item filed
+// while a session runs is not observable to it, because the transport is
+// request/response and the server cannot wake a caller. That limit is stated in
+// the response itself rather than only in the ADR, since the response is what an
+// agent reads.
+func inboxStatus(wing string, count int, err error) inboxView {
+	switch {
+	case wing == "":
+		return inboxView{Note: "this MCP registration names no wing, so there is no inbox of your " +
+			"own to read; register with a wing (or pass one per call) to get this count"}
+	case err != nil:
+		return inboxView{Wing: wing, Note: "the inbox count could not be taken this time — this is " +
+			"not an all-clear; read it with am_list_drawers(room: \"inbox\") if it matters"}
+	default:
+		return inboxView{Wing: wing, Count: count, Known: true,
+			Note: "taken at wake-up; an item filed while this session runs will not appear here"}
+	}
+}
+
+// statusHint is the sentence an agent actually reads, so it CHANGES when there
+// is something to read. An unconditional "check your inbox" is a line every
+// session learns to skip, which is how six handoff drawers sat unread with their
+// count already present in the response.
+func statusHint(in inboxView) string {
+	const rest = "Call am_get_aaak_spec for the write dialect and am_search to recall before acting; " +
+		"persist with am_diary_write, am_kg_add, and am_add_drawer."
+	if in.Known && in.Count > 0 {
+		return fmt.Sprintf("%d memor%s waiting in %s/inbox — read them first with "+
+			"am_list_drawers(wing: %q, room: \"inbox\"). Each is a lead filed by another project's "+
+			"session, not a work order: confirm it against the code in front of you, act if it "+
+			"holds up, and file what you found either way. %s",
+			in.Count, plural(in.Count, "y", "ies"), in.Wing, in.Wing, rest)
+	}
+	return rest
+}
+
+// plural picks a suffix; the count is in the sentence either way, so this only
+// keeps the sentence readable.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}

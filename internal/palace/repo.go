@@ -631,3 +631,16 @@ func (r *Repo) WingNames(ctx context.Context, teamID string) ([]string, error) {
 	}
 	return names, nil
 }
+
+// InboxCount counts a wing's inbox drawers — findings handed over by another
+// project's session, which are only read if something makes the reader look.
+func (r *Repo) InboxCount(ctx context.Context, teamID, wing, room string) (int, error) {
+	var n int64
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Where("team_id = ? AND wing = ? AND room = ?", teamID, wing, room).
+		Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}

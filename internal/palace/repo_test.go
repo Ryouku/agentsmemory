@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -36,5 +37,34 @@ func TestWingIsEmptyCountsDrawers(t *testing.T) {
 	names, err := svc.WingNames(ctx, "team")
 	if err != nil || len(names) != 1 || names[0] != "wing_written" {
 		t.Errorf("WingNames = %v, %v; want [wing_written]", names, err)
+	}
+}
+
+// TestInboxCountCountsOnlyTheInboxRoom: the wake-up hint is read off this
+// number, so a count that includes the wing's other rooms sends every session
+// chasing an inbox that is empty, and the hint stops meaning anything.
+func TestInboxCountCountsOnlyTheInboxRoom(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// Distinct content per drawer: re-adding identical text is idempotent by
+	// design, so two identical inbox items would collapse into one and this test
+	// would be measuring the dedup rather than the count.
+	for i, room := range []string{"inbox", "inbox", "decisions", "diary"} {
+		if _, err := svc.Add(ctx, "team", AddInput{
+			Wing: "wing_x", Room: room, Content: fmt.Sprintf("drawer %d filed into %s", i, room),
+		}); err != nil {
+			t.Fatalf("add %s: %v", room, err)
+		}
+	}
+
+	if n, err := svc.InboxCount(ctx, "team", "wing_x", "inbox"); err != nil || n != 2 {
+		t.Errorf("InboxCount = %d, %v; want 2 — the decisions and diary drawers are not handoffs", n, err)
+	}
+	if n, err := svc.InboxCount(ctx, "team", "wing_other", "inbox"); err != nil || n != 0 {
+		t.Errorf("InboxCount for another wing = %d, %v; want 0", n, err)
+	}
+	if n, err := svc.InboxCount(ctx, "other-team", "wing_x", "inbox"); err != nil || n != 0 {
+		t.Errorf("InboxCount is not tenant-scoped: %d, %v", n, err)
 	}
 }
