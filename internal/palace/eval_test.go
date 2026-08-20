@@ -578,3 +578,44 @@ func TestAnchoredNormNamesMatchTheirTransforms(t *testing.T) {
 		t.Errorf("anchoredNorms holds %d transforms; add its distinguishing property above before registering it", len(anchoredNorms))
 	}
 }
+
+// TestEvalCaseFetchesOnlyThePoolsItsArmsRead counts cross-encoder passes,
+// because nothing else can see one going missing.
+//
+// BlendRerank returns the fused order unchanged when handed no scores, which is
+// the right thing at runtime and the reason a skipped pass is invisible: the arm
+// still produces an ordering, still gets a rank, and still prints a row headed
+// by the reranker's name. This palace has already published one full table of
+// "reranked" numbers that were the hybrid order.
+//
+// So the assertion is on the call count, not on the ranking. It pins both
+// directions of the fetch rule at once — a pool that no requested arm reads is
+// not fetched, and a pool that one does read is.
+func TestEvalCaseFetchesOnlyThePoolsItsArmsRead(t *testing.T) {
+	ctx := context.Background()
+	const team = "team-1"
+
+	for _, tc := range []struct {
+		name  string
+		arms  []EvalArm
+		wants int
+	}{
+		{"no reranked arm asks for nothing", []EvalArm{ArmHybrid, ArmHybridCloset}, 0},
+		{"closet-off arm reads the plain pool only", []EvalArm{ArmHybridRerank}, 1},
+		{"closet-on arm reads the closet pool only", []EvalArm{ArmReranked}, 1},
+		{"a sweep arm reads the plain pool", []EvalArm{rerankArm(rerankSweep[0])}, 1},
+		{"both arms read both pools", []EvalArm{ArmHybridRerank, ArmReranked}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := &fakeReranker{}
+			svc := newTestService(t).WithClosetBoost(0).WithReranker(rr, DefaultRerankPool)
+			query, gold := closetFixture(t, svc, team)
+			if _, _, _, _, _, _, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, tc.arms, 20); err != nil {
+				t.Fatalf("evalCase: %v", err)
+			}
+			if rr.called != tc.wants {
+				t.Errorf("the cross-encoder ran %d time(s), want %d — a pass that is skipped degrades to the fused order and still prints a reranked row", rr.called, tc.wants)
+			}
+		})
+	}
+}
