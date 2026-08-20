@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -498,13 +499,14 @@ func TestEvalArmNamesAreUnique(t *testing.T) {
 // own case. A new arm that is neither fails here.
 func TestEveryRegisteredArmIsScorable(t *testing.T) {
 	notFusion := map[EvalArm]string{
-		ArmVector:       "nearest-neighbour order, no fusion at all",
-		ArmRRF:          "reciprocal rank fusion, its own case",
-		ArmRRFReranked:  "RRF then the cross-encoder, its own case and its own scores",
-		ArmContextual:   "scores a different candidate set, not a different ranker",
-		ArmProduction:   "goes through Search, which is the point of it",
-		ArmHybridRerank: "fusion then the cross-encoder, scored in the rerank branch",
-		ArmReranked:     "fusion then the cross-encoder, scored in the rerank branch",
+		ArmVector:         "nearest-neighbour order, no fusion at all",
+		ArmRRF:            "reciprocal rank fusion, its own case",
+		ArmRRFReranked:    "RRF then the cross-encoder, its own case and its own scores",
+		ArmContextual:     "scores a different candidate set, not a different ranker",
+		ArmProduction:     "goes through Search, which is the point of it",
+		ArmProductionDeep: "the same Search at a deeper page, which is the point of it",
+		ArmHybridRerank:   "fusion then the cross-encoder, scored in the rerank branch",
+		ArmReranked:       "fusion then the cross-encoder, scored in the rerank branch",
 	}
 	for _, w := range rerankSweep {
 		notFusion[rerankArm(w)] = "a rerank blend weight, scored in the rerank branch"
@@ -1164,6 +1166,58 @@ func TestSupersessionTableSaysWhyItIsEmpty(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the empty-table line never mentions %q, so a reader cannot tell an empty run "+
 				"from a broken one:\n%s", want, got)
+		}
+	}
+}
+
+// TestProductionArmsAskForDifferentDepths pins the entire content of the
+// difference between the two production arms.
+//
+// ArmProductionDeep exists to answer one question the table could not: an agent
+// that wants more context asks for ten results, and every production number in
+// the table was a page of five. If the arm asks for five anyway, it produces a
+// row identical to ArmProduction under a name claiming otherwise — and nothing
+// about the table looks wrong. That is the shape this file already guards for
+// the anchored arms ("a row identical to its counterpart, which reads as 'the
+// normaliser makes no difference' rather than as a bug"), and it applies here
+// for exactly the same reason.
+func TestProductionArmsAskForDifferentDepths(t *testing.T) {
+	if got := productionLimit(ArmProduction); got != DefaultSearchLimit {
+		t.Errorf("ArmProduction asks for %d, want DefaultSearchLimit (%d) — it exists to measure "+
+			"what a caller passing no limit gets", got, DefaultSearchLimit)
+	}
+	if got := productionLimit(ArmProductionDeep); got != productionDeepLimit {
+		t.Errorf("ArmProductionDeep asks for %d, want %d", got, productionDeepLimit)
+	}
+	if productionLimit(ArmProduction) == productionLimit(ArmProductionDeep) {
+		t.Fatal("both production arms ask for the same depth, so the second is a duplicate row " +
+			"under a name that claims a depth it never requested")
+	}
+
+	// The name must carry the number it actually requests, or a reader compares
+	// rows by a label that is not what ran.
+	if want := "limit=" + strconv.Itoa(productionDeepLimit); !strings.Contains(string(ArmProductionDeep), want) {
+		t.Errorf("%q does not name the depth it asks for (%s)", ArmProductionDeep, want)
+	}
+
+	// Deeper, not shallower: a page smaller than the default would answer a
+	// question nobody asked and quietly lower every recall number in the row.
+	if productionDeepLimit <= DefaultSearchLimit {
+		t.Errorf("productionDeepLimit (%d) is not deeper than DefaultSearchLimit (%d)",
+			productionDeepLimit, DefaultSearchLimit)
+	}
+}
+
+// TestBothProductionArmsArePageScoped: their NotFound counts are page misses, not
+// pool misses. printPoolDiagnosis filters on ArmScope, so an unclassified
+// production arm would be summed into the retrieval-failure count and reported as
+// a pool miss — the exact bug that made a run print "8 of 30 outside the pool"
+// under a ceiling saying 93% were in it.
+func TestBothProductionArmsArePageScoped(t *testing.T) {
+	for _, arm := range []EvalArm{ArmProduction, ArmProductionDeep} {
+		if got := ArmScope(arm); got != ScopePage {
+			t.Errorf("ArmScope(%s) = %s, want %s — a page-scoped arm summed into the pool "+
+				"diagnosis reports ranking misses as retrieval failures", arm, got, ScopePage)
 		}
 	}
 }

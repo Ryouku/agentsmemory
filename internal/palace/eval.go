@@ -70,6 +70,38 @@ const (
 	ArmProduction EvalArm = "production (Search)"
 )
 
+// productionDeepLimit is the second page size the production path is measured at.
+//
+// ArmProduction asks for DefaultSearchLimit, which is what a caller that passes no
+// limit gets. That is one page size out of the range agents actually use, and it
+// is the small end: an agent that wants more context asks for ten. Whether the
+// answer is THERE at ten is a production question the table could not answer,
+// because every production number in it was a page of five.
+//
+// It is deliberately a second arm rather than a change to the first. The two
+// measure different things and both are real, and the abstention gate calibrates
+// on the default page — moving that would recalibrate the gate as a side effect
+// of adding a row.
+const productionDeepLimit = 10
+
+// ArmProductionDeep is Service.Search at productionDeepLimit. The name carries the
+// number so a row can never claim a depth it did not request.
+var ArmProductionDeep = EvalArm(fmt.Sprintf("production (Search) limit=%d", productionDeepLimit))
+
+// productionLimit is the page size an arm asks Search for.
+//
+// It is a function rather than a literal at each call site because that is the
+// whole content of the difference between these two arms: an arm named limit=10
+// that asks for five is a duplicate row wearing a misleading name, and nothing
+// about the table would look wrong. TestProductionArmsAskForDifferentDepths
+// drives this directly.
+func productionLimit(arm EvalArm) int {
+	if arm == ArmProductionDeep {
+		return productionDeepLimit
+	}
+	return DefaultSearchLimit
+}
+
 // rerankSweep are the blend weights the eval tries alongside production, so how
 // much the cross-encoder should decide is answered by measurement rather than by
 // whoever last had an opinion. 1.0 is the old behaviour: the cross-encoder
@@ -544,7 +576,7 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
 	// missing once already — built, documented, and never appended — which an
 	// adversarial review caught and no table did.
-	arms = append(arms, ArmProduction)
+	arms = append(arms, ArmProduction, ArmProductionDeep)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -608,7 +640,7 @@ const (
 // after the embedding when nothing was ever missing from the pool.
 func ArmScope(arm EvalArm) SupersessionScope {
 	switch arm {
-	case ArmProduction:
+	case ArmProduction, ArmProductionDeep:
 		return ScopePage
 	case ArmContextual:
 		return ScopeOwnIndex
@@ -818,7 +850,17 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	var distractorPoolRank int
 	// The abstention gate's calibration data, taken from the production arm and
 	// nowhere else.
-	prodRerank, prodScored := 0.0, false
+	// Keyed by arm, deliberately, rather than a pair of variables the loop
+	// overwrites. Two arms now run Service.Search at different page sizes, and
+	// with last-write-wins the abstention gate would calibrate on whichever ran
+	// last — a value that changes if someone reorders the arms list, with nothing
+	// to notice. Keying it means the deeper arm CANNOT overwrite the default
+	// page's number: there is no guard to forget, because there is no shared slot.
+	type prodTop struct {
+		rerank float64
+		scored bool
+	}
+	prodTops := map[EvalArm]prodTop{}
 
 	// Where the gold sits in the RETRIEVAL channel's own ordering, before any
 	// arm re-orders it. This is the ceiling every arm plays under.
@@ -891,7 +933,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			}
 			sort.SliceStable(idx, func(a, b int) bool { return pool[idx[a]].distance < pool[idx[b]].distance })
 			ordered = idx
-		case ArmProduction:
+		case ArmProduction, ArmProductionDeep:
 			// The real path, telemetry suppressed so an eval does not pollute the
 			// palace's own recall statistics.
 			page, err := s.Search(ctx, teamID, SearchQuery{
@@ -903,7 +945,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				// two different architectures, and the arm that exists to catch
 				// "the eval looks fine while production is broken" was measuring
 				// the one nobody runs.
-				Query: c.Query, Wing: c.Wing, Limit: DefaultSearchLimit,
+				Query: c.Query, Wing: c.Wing, Limit: productionLimit(arm),
 				// Production callers pass the default distance gate; omitting it
 				// here would measure a search nobody actually runs.
 				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
@@ -917,7 +959,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			// arm always blends at a fixed weight — and a threshold calibrated on
 			// one and applied to the other is calibrated on nothing.
 			if len(page) > 0 {
-				prodRerank, prodScored = page[0].RerankScore, page[0].Reranked
+				prodTops[arm] = prodTop{page[0].RerankScore, page[0].Reranked}
 			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
@@ -1024,7 +1066,12 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// production returned no scored hit contributes nothing, which is honest.
 	return caseOutcome{
 		Ranks: out, DistractorRanks: distractorOut,
-		TopDistance: topDistance, TopRerank: prodRerank, RerankScored: prodScored,
+		// The DEFAULT page is what the abstention gate will run on in production,
+		// so it is what the gate's calibration data has to come from. The deeper
+		// arm sees a wider candidate pool and its top-1 can be a document the
+		// default page never had.
+		TopDistance: topDistance,
+		TopRerank:   prodTops[ArmProduction].rerank, RerankScored: prodTops[ArmProduction].scored,
 		PoolRank: poolRank, DistractorPoolRank: distractorPoolRank, Degraded: rerankFailed,
 	}, nil
 }
