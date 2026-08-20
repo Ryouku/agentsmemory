@@ -53,9 +53,16 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| register no tools on the harness server | yes | `TestHarnessFailsOnAnEmptyCatalogue` |
-| have the harness call handlers directly instead of over HTTP | yes | `TestHarnessObservesAWriteThroughARead` (admit/metering skipped) |
-| drop the observing read and assert only that add succeeded | yes | `TestHarnessObservesAWriteThroughARead` |
+| no tenant on the request context (auth path bypassed) | yes | `TestHarnessObservesAWriteThroughARead` |
+| catalogue guard disarmed (`len(tools) < 0`) | yes | `TestCatalogueGuardRejectsAnEmptyServer` |
+| `ScopeSearchToWing: false` | yes | **SURVIVED — not covered here.** T4 owns scoping; T1's tests do not observe it, and claiming otherwise would be the coverage lie this table exists to prevent |
+
+**What the mutants changed about the design.** The catalogue guard was originally inlined in the
+constructor and disarming it left the whole package green: no test can stand a toolless server up,
+so an inlined guard is unfalsifiable. Extracted as `UsableCatalogue(tools, err) error`, taking the
+result rather than producing it, the rule became drivable and the mutant now dies. The first
+compiling attempt at that mutant did not build (`declared and not used`), which is not a caught
+mutant — it is a skipped one — so it was rewritten until it built AND failed.
 
 ## Out of Scope
 
@@ -77,4 +84,4 @@ Stop and ask if the transport cannot be driven in-process — an out-of-process 
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · c92e2ab* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

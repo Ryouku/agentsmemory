@@ -1,0 +1,291 @@
+// Package mcptest stands a real agentsmemory MCP server up in a test and drives
+// it with a real MCP client.
+//
+// It exists because of a gap this repository measured on 2026-08-20: 41 tools
+// registered, 39 named in no test file, and no test anywhere that drove a tool
+// handler. The palace services underneath were well covered; the surface every
+// agent actually calls was not covered at all — and those are not the same
+// thing, as four shipped-but-unreachable capabilities in this tree already
+// demonstrate.
+//
+// Two design choices are load-bearing.
+//
+// It goes through the TRANSPORT rather than calling handlers directly. admit(),
+// usage metering, tenant resolution and argument decoding all live between the
+// wire and the handler, and three of the defects found by hand this week lived
+// in that layer. A harness that calls the closure directly proves something
+// about a path nobody runs.
+//
+// It is hermetic: migrated SQLite, a deterministic fake embedder, no network and
+// no model. A gate that needs a compose stack does not run in the loop where
+// defects are introduced, and a gate that does not run there is one people learn
+// to work around.
+package mcptest
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/db"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
+
+	"github.com/glebarez/sqlite"
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/pressly/goose/v3"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+// fakeDim matches the palace's test embedder so a migrated schema and a seeded
+// vector index agree on width.
+const fakeDim = 8
+
+// TeamID is the workspace every harness client authenticates as. Exported
+// because a scenario asserting isolation needs to name the other side.
+const TeamID = "team-mcptest"
+
+// fakeEmbedder is deterministic and content-derived: two identical texts embed
+// identically and different texts do not, which is all a round-trip scenario
+// needs. It is not a model and makes no claim to rank like one.
+type fakeEmbedder struct{}
+
+func (fakeEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	out := make([][]float32, len(inputs))
+	for i, s := range inputs {
+		v := make([]float32, fakeDim)
+		for j, r := range s {
+			v[j%fakeDim] += float32(r%17) / 16
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func (f fakeEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, error) {
+	v, err := f.Embed(ctx, []string{input})
+	if err != nil {
+		return nil, err
+	}
+	return v[0], nil
+}
+
+// caps grants every workspace an effectively unlimited monthly allowance. The
+// cap path itself is metered and exercised — admit() still calls Allow — but a
+// scenario failing because it was the 501st call would be a test about the cap,
+// not about the tool.
+type caps struct{}
+
+func (caps) MonthlyCap(_ context.Context, _ string) (int, error) { return -1, nil }
+
+// Harness is a running server, a client that speaks to it, and the palace
+// underneath. Wing is the default wing this client's registration declares,
+// which is what makes two-party scoping observable.
+type Harness struct {
+	Drawers *palace.Service
+	Wing    string
+
+	cli *client.Client
+	srv *httptest.Server
+}
+
+// New returns a harness whose client authenticates as TeamID with no default
+// wing, mirroring a registration that named no project.
+func New(t *testing.T) *Harness { return NewWithWing(t, "") }
+
+// NewWithWing returns a harness whose registration declares wing. Two harnesses
+// over one database with different wings are how a scenario observes scoping
+// from both sides.
+func NewWithWing(t *testing.T, wing string) *Harness {
+	t.Helper()
+	return newOn(t, openDB(t, filepath.Join(t.TempDir(), "mcptest.db")), wing)
+}
+
+// Pair returns two clients over ONE database, so what one writes the other can
+// be asked to find. Isolation and delivery are one property seen from two sides,
+// and a single client cannot observe either.
+func Pair(t *testing.T, wingA, wingB string) (*Harness, *Harness) {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
+	return newOn(t, gdb, wingA), newOn(t, gdb, wingB)
+}
+
+func openDB(t *testing.T, path string) *gorm.DB {
+	t.Helper()
+	gdb, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatalf("sql handle: %v", err)
+	}
+	goose.SetBaseFS(db.Migrations)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("dialect: %v", err)
+	}
+	if err := goose.Up(sqlDB, "migrations"); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return gdb
+}
+
+func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
+	t.Helper()
+
+	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+	mcpSrv := mcpserver.New(mcpserver.Deps{
+		Skills:   skill.NewService(skill.NewRepo(gdb)),
+		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
+		Usage:    usage.NewService(usage.NewRepo(gdb), caps{}),
+		Drawers:  drawers,
+		// Wing-scoped reads are the production default (config.SearchScope), and
+		// a harness that quietly widened them would prove scoping works while
+		// testing a configuration nobody runs.
+		ScopeSearchToWing: true,
+		Local:             true,
+	})
+
+	stream := server.NewStreamableHTTPServer(mcpSrv,
+		server.WithHTTPContextFunc(auth.Bridge),
+		server.WithStateLess(true),
+	)
+
+	// The OAuth gate's job, minus OAuth: put a resolved tenant on the request
+	// context so auth.Bridge can forward it. Token validation is exercised by
+	// internal/oauth; standing it up here would test that package again and add
+	// a way for every scenario to fail for an unrelated reason.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.WithTenant(r.Context(), tenant.Tenant{
+			TeamID: TeamID, UserID: "user-mcptest", Role: tenant.RoleAdmin,
+		})
+		stream.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(srv.Close)
+
+	cli, err := client.NewStreamableHttpClient(srv.URL)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	if err := cli.Start(context.Background()); err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	if _, err := cli.Initialize(context.Background(), mcp.InitializeRequest{}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	h := &Harness{Drawers: drawers, Wing: wing, cli: cli, srv: srv}
+
+	// A harness serving an empty catalogue would let every scenario pass by
+	// calling nothing, so it refuses to be handed out in that state.
+	if err := UsableCatalogue(h.ListTools(t)); err != nil {
+		t.Fatalf("harness: %v", err)
+	}
+	return h
+}
+
+// usableCatalogue rejects a catalogue that cannot support a scenario.
+//
+// It is a function taking the result rather than a check inlined at the call
+// site, for a reason worth stating: no test can stand up a toolless server, so
+// an inlined guard is unfalsifiable — disarming it leaves the suite green, which
+// was measured before this was extracted. Given the list, the rule is drivable.
+func UsableCatalogue(tools []string, err error) error {
+	if err != nil {
+		return fmt.Errorf("could not list tools: %w", err)
+	}
+	if len(tools) == 0 {
+		return errors.New("served no tools — every scenario built on this harness would pass vacuously")
+	}
+	return nil
+}
+
+// ListTools returns the tool names the running server advertises.
+func (h *Harness) ListTools(t *testing.T) ([]string, error) {
+	t.Helper()
+	res, err := h.cli.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(res.Tools))
+	for _, tool := range res.Tools {
+		names = append(names, tool.Name)
+	}
+	return names, nil
+}
+
+// Call invokes a tool and returns its text content plus whether the tool
+// reported an error. A tool error is a RESULT, not a transport failure, so it is
+// returned rather than failing the test: refusing is correct behaviour for
+// several tools and a scenario needs to assert it.
+func (h *Harness) Call(t *testing.T, name string, args map[string]any) (string, bool, error) {
+	t.Helper()
+	req := mcp.CallToolRequest{}
+	req.Params.Name = name
+	req.Params.Arguments = args
+	res, err := h.cli.CallTool(context.Background(), req)
+	if err != nil {
+		return "", false, err
+	}
+	var sb string
+	for _, c := range res.Content {
+		if tc, ok := mcp.AsTextContent(c); ok {
+			sb += tc.Text
+		}
+	}
+	return sb, res.IsError, nil
+}
+
+// MustCall calls a tool and fails the test unless it succeeded.
+func (h *Harness) MustCall(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
+	out, isErr, err := h.Call(t, name, args)
+	if err != nil {
+		t.Fatalf("%s: transport: %v", name, err)
+	}
+	if isErr {
+		t.Fatalf("%s: tool reported an error: %s", name, out)
+	}
+	return out
+}
+
+// MustRefuse calls a tool and fails unless it reported an error, returning the
+// message so a scenario can assert WHAT it refused rather than only that it did.
+func (h *Harness) MustRefuse(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
+	out, isErr, err := h.Call(t, name, args)
+	if err != nil {
+		t.Fatalf("%s: transport: %v", name, err)
+	}
+	if !isErr {
+		t.Fatalf("%s: expected a refusal, got success: %s", name, out)
+	}
+	return out
+}
+
+// JSON decodes a tool's text payload, for scenarios asserting structure rather
+// than substrings.
+func (h *Harness) JSON(t *testing.T, out string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("decode tool output: %v\n%s", err, out)
+	}
+	return m
+}

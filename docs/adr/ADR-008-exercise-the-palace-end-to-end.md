@@ -1,6 +1,6 @@
 # ADR-008: Every tool the palace exposes must be exercised end to end, or the build fails
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-20
 **Owner:** unassigned
 **Spec:** None — no spec stage

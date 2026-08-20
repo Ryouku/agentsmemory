@@ -1,6 +1,6 @@
 # ADR-006: A setting an operator changes must change something, or say why not
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-20
 **Owner:** unassigned
 **Spec:** None — no spec stage

@@ -1,6 +1,6 @@
 # ADR-007: The eval may not print a number that means something other than what it says
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-20
 **Owner:** unassigned
 **Spec:** None — no spec stage
