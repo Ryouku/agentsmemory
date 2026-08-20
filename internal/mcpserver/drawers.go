@@ -26,7 +26,7 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
 	registerListWings(reg, drawers, usageSvc)
-	registerListRooms(reg, drawers, usageSvc)
+	registerListRooms(reg, drawers, usageSvc, scopeSearchToWing)
 	registerGetTaxonomy(reg, drawers, usageSvc)
 	registerGetAAAKSpec(reg, drawers, usageSvc)
 	registerReconnect(reg, drawers, usageSvc)
@@ -573,7 +573,7 @@ func registerListWings(reg *registrar, drawers *palace.Service, usageSvc *usage.
 }
 
 // registerListRooms: per-room drawer counts, optionally within one wing.
-func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_rooms",
 		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing."),
 		mcp.WithString("wing", mcp.Description("Only rooms within this wing.")),
@@ -583,7 +583,16 @@ func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if !ok {
 			return errResult, nil
 		}
-		rooms, err := drawers.Rooms(ctx, t.TeamID, req.GetString("wing", ""))
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's room names and drawer counts were disclosed to another. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		rooms, err := drawers.Rooms(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

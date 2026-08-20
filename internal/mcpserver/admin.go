@@ -17,10 +17,10 @@ import (
 // memories about — it runs in a container, the repository is on someone's laptop.
 // Whoever CAN read the working tree (the `aiagentmemory verify` command) does the
 // checking; the server only keeps score.
-func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	list := newTool("list_anchors",
 		mcp.WithDescription("List code anchors — the (file, snippet) pairs memories are pinned to — so a client that can read the working tree can verify them. Filter by wing, repo label, or status (unchecked|verified|drifted|missing)."),
-		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing.")),
+		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing. Omitted, scoped to this registration's wing; pass \"*\" for every wing.")),
 		mcp.WithString("repo", mcp.Description("Only anchors carrying this repo label.")),
 		mcp.WithString("status", mcp.Description("Only anchors in this state.")),
 		mcp.WithNumber("limit", mcp.Description("Max anchors to return (default 500).")),
@@ -30,8 +30,17 @@ func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		if !ok {
 			return errResult, nil
 		}
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's anchors — and the verbatim source lines they carry — were handed to another. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		anchors, err := drawers.ListAnchors(ctx, t.TeamID, palace.AnchorFilter{
-			Wing:   req.GetString("wing", ""),
+			Wing:   wing,
 			Repo:   req.GetString("repo", ""),
 			Status: req.GetString("status", ""),
 			Limit:  req.GetInt("limit", 0),

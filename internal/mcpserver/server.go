@@ -136,7 +136,7 @@ func registerAll(reg *registrar, deps Deps) {
 	// Mining: text -> chunked drawers + closet index (mine).
 	registerMine(reg, deps.Drawers, deps.Usage)
 	// The navigable graph: hallways, tunnels, traverse, recompute_graph.
-	registerGraph(reg, deps.Drawers, deps.Usage)
+	registerGraph(reg, deps.Drawers, deps.Usage, deps.ScopeSearchToWing)
 	// The temporal knowledge graph: kg_add/invalidate/query/stats/timeline.
 	registerKG(reg, deps.Drawers, deps.Usage)
 	// Palace maintenance: merge_wing, memories_filed_away, and delete_wing when local.
@@ -144,7 +144,7 @@ func registerAll(reg *registrar, deps Deps) {
 	// Recall measurement: how well the memory answers, per wing.
 	registerRecallStats(reg, deps.Drawers, deps.Usage)
 	// Staleness: pin memories to code, and record what verification found.
-	registerAnchors(reg, deps.Drawers, deps.Usage)
+	registerAnchors(reg, deps.Drawers, deps.Usage, deps.ScopeSearchToWing)
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)

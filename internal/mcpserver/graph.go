@@ -13,10 +13,10 @@ import (
 // registerGraph wires the navigable-graph tools: tunnels (cross-wing links),
 // hallways (within-wing entity co-occurrence), the passive graph views (traverse,
 // find_tunnels, graph_stats), and recompute_graph. All are tenant-scoped via admit.
-func registerGraph(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerGraph(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	registerCreateTunnel(reg, drawers, usageSvc)
 	registerDeleteTunnel(reg, drawers, usageSvc)
-	registerListTunnels(reg, drawers, usageSvc)
+	registerListTunnels(reg, drawers, usageSvc, scopeSearchToWing)
 	registerFindTunnels(reg, drawers, usageSvc)
 	registerFollowTunnels(reg, drawers, usageSvc)
 	registerListHallways(reg, drawers, usageSvc)
@@ -151,7 +151,7 @@ func registerDeleteTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 	})
 }
 
-func registerListTunnels(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListTunnels(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_tunnels",
 		mcp.WithDescription("List explicit and derived tunnels, optionally filtered to those touching a wing."),
 		mcp.WithString("wing", mcp.Description("Only tunnels with this wing as source or target.")),
@@ -161,7 +161,16 @@ func registerListTunnels(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if !ok {
 			return errResult, nil
 		}
-		tunnels, err := drawers.ListTunnels(ctx, t.TeamID, req.GetString("wing", ""))
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's tunnel labels — free text written by another project's session — were disclosed. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		tunnels, err := drawers.ListTunnels(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
