@@ -23,7 +23,7 @@ func registerKG(reg *registrar, drawers *palace.Service, usageSvc *usage.Service
 
 func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_add",
-		mcp.WithDescription("Add a fact (subject → predicate → object) to the temporal knowledge graph, optionally with a validity window. Re-adding an identical current fact is a no-op; to replace a fact, invalidate the old one first."),
+		mcp.WithDescription("Add a fact (subject → predicate → object) to the temporal knowledge graph, optionally with a validity window. Re-adding an identical current fact is a no-op; to replace a fact, invalidate the old one first. SCOPE: graph facts are WORKSPACE-wide, not scoped to a wing — unlike drawers, anchors and search, a fact filed from one project is returned to every project in this workspace. File a fact here when it is true of the workspace; put project-specific detail in a drawer, which is wing-scoped."),
 		mcp.WithString("subject", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's subject entity. A SHORT LABEL (max %d characters), not a sentence — the entity is a node the graph is queried by, so put explanation in a drawer and point at it with source_drawer_id.", palace.MaxKGValueLen))),
 		mcp.WithString("predicate", mcp.Required(), mcp.Description(fmt.Sprintf("The relationship (e.g. \"works_at\"). A safe name: max %d characters, and no \"/\", \"\\\\\" or \"..\" — it is validated like a name, not stored like a value, so \"uses/abuses\" is rejected.", palace.MaxNameLength))),
 		mcp.WithString("object", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's object entity. A SHORT LABEL (max %d characters), not a sentence — evidence, commit ids and repro steps belong in a drawer referenced by source_drawer_id, never smuggled in here.", palace.MaxKGValueLen))),
@@ -95,7 +95,7 @@ func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usa
 
 func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_query",
-		mcp.WithDescription("Query an entity's relationships in the knowledge graph, optionally as of a point in time and in a chosen direction."),
+		mcp.WithDescription("Query an entity's relationships in the knowledge graph, optionally as of a point in time and in a chosen direction. Facts are workspace-wide: this returns facts filed by any project in the workspace, not only this registration's."),
 		mcp.WithString("entity", mcp.Required(), mcp.Description("The entity to look up.")),
 		mcp.WithString("as_of", mcp.Description("Only facts in effect at this instant (YYYY-MM-DD or datetime).")),
 		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default).")),
@@ -141,7 +141,7 @@ func registerKGStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 
 func registerKGTimeline(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_timeline",
-		mcp.WithDescription("Chronological timeline of facts (validity start order), for one entity or — with no entity — across the whole graph."),
+		mcp.WithDescription("Chronological timeline of facts (validity start order), for one entity or — with no entity — across the whole graph. Facts are workspace-wide, so a timeline may include facts filed by another project in this workspace."),
 		mcp.WithString("entity", mcp.Description("Restrict to facts touching this entity (default: all).")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
