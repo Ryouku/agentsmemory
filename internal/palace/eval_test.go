@@ -978,3 +978,83 @@ func TestOlderNeighborFloorRejectsDistantPair(t *testing.T) {
 			"claim about the corpus's sparsity, not about the two memories")
 	}
 }
+
+// TestHeadlineExcludesTemporalCases pins that a temporal case does not move the
+// headline number.
+//
+// A temporal case asks a different question — "did the correction come back, or
+// the thing it corrected" — and it is scored against a deliberately hard
+// distractor. Folding it into the headline MRR means adding temporal cases makes
+// every arm look worse without any ranking having changed, and the number a
+// reader quotes silently depends on how many were generated. It belongs in
+// ByCategory and in the supersession table, and nowhere else.
+func TestHeadlineExcludesTemporalCases(t *testing.T) {
+	svc := newTestService(t)
+	report := EvalReport{}
+	byArm := map[EvalArm]*EvalMetrics{ArmHybrid: {Arm: ArmHybrid, ByCategory: map[string]*CategoryMetrics{}}}
+
+	// Two ordinary cases at rank 1, one temporal case at rank 4.
+	svc.accumulate(byArm, &report, EvalCaseResult{Category: CatSingle, PoolRank: 1,
+		Ranks: map[EvalArm]int{ArmHybrid: 1}}, []EvalArm{ArmHybrid})
+	svc.accumulate(byArm, &report, EvalCaseResult{Category: CatSingle, PoolRank: 1,
+		Ranks: map[EvalArm]int{ArmHybrid: 1}}, []EvalArm{ArmHybrid})
+	svc.accumulate(byArm, &report, EvalCaseResult{Category: CatTemporal, PoolRank: 1,
+		Ranks: map[EvalArm]int{ArmHybrid: 4}}, []EvalArm{ArmHybrid})
+
+	m := byArm[ArmHybrid]
+	if m.Cases != 2 {
+		t.Errorf("headline counted %d cases, want 2 — a temporal case moved the headline population", m.Cases)
+	}
+	if len(m.Ranks) != 2 {
+		t.Errorf("Ranks holds %d entries, want 2 — BootstrapMRR and PairedDelta resample this, so "+
+			"an interval over a different population than the point estimate describes neither", len(m.Ranks))
+	}
+	if m.MRR != 2 {
+		t.Errorf("headline MRR sum %.4f, want 2 (two cases at rank 1)", m.MRR)
+	}
+	if cm := m.ByCategory[CatTemporal]; cm == nil || cm.Cases != 1 {
+		t.Error("the temporal case must still reach ByCategory — excluded from the headline is not excluded from the run")
+	}
+}
+
+// TestSupersessionTablePrintsPerArm pins that the table names what a reader
+// needs to weigh a rate: the interval, and the two exclusions.
+func TestSupersessionTablePrintsPerArm(t *testing.T) {
+	var buf strings.Builder
+	printSupersessionTable(&buf, EvalReport{Arms: []EvalMetrics{
+		{Arm: ArmHybrid, Supersession: SupersessionCell{Scope: ScopePool, Cases: 8, StaleAbove: 3,
+			CurrentUnreachable: 1, Vacuous: 2, StaleInPage: 3}},
+	}})
+	got := buf.String()
+	for _, want := range []string{string(ArmHybrid), "vacuous", "unreachable", "95%"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the supersession table never mentions %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestSupersessionTableSeparatesPageScopedArms pins that arms measuring
+// different populations are not printed as one block.
+//
+// A pool-scoped arm re-orders every candidate; ArmProduction sees at most a
+// five-long page after the distance gate. "The distractor was not above the
+// gold" means different things in the two, and a reader who sums the column has
+// added two different measurements together.
+func TestSupersessionTableSeparatesPageScopedArms(t *testing.T) {
+	var buf strings.Builder
+	printSupersessionTable(&buf, EvalReport{Arms: []EvalMetrics{
+		{Arm: ArmHybrid, Supersession: SupersessionCell{Scope: ScopePool, Cases: 8, StaleAbove: 3}},
+		{Arm: ArmProduction, Supersession: SupersessionCell{Scope: ScopePage, Cases: 10, StaleAbove: 1}},
+	}})
+	got := buf.String()
+	if !strings.Contains(got, string(ScopePool)) || !strings.Contains(got, string(ScopePage)) {
+		t.Errorf("both scopes must be named in the table:\n%s", got)
+	}
+	pool := strings.Index(got, string(ArmHybrid))
+	page := strings.Index(got, string(ArmProduction))
+	scopeLabel := strings.Index(got, string(ScopePage))
+	if !(pool < scopeLabel && scopeLabel < page) {
+		t.Errorf("the page-scoped arm is not under its own labelled block — a reader summing the "+
+			"column would add two different measurements together:\n%s", got)
+	}
+}
