@@ -772,6 +772,71 @@ type services struct {
 	merges    *mergejob.Service // background wing-merge queue (GUI enqueue/list/detect)
 }
 
+// configureRanking applies the search-ranking settings to svc and returns the
+// lines describing what it resolved.
+//
+// It is a function rather than a block inside buildServices so a test can drive
+// flag values through to behaviour without standing a server up: ADR-006 T2
+// sweeps these knobs to discover which are inert under which mode, and a block
+// reachable only from the composition root cannot be swept. newReranker is the
+// cross-encoder factory — tei.New in production — so the wiring is exercisable
+// with no network.
+//
+// The returned lines are the ONLY observable of this wiring; each setter emits
+// one. That is what lets an extraction be checked as a move rather than trusted
+// as one.
+func configureRanking(svc *palace.Service, cfg config.Config,
+	newReranker func(url string, timeout time.Duration) palace.Reranker) (*palace.Service, []string) {
+
+	var lines []string
+	say := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	drawers := svc
+
+	if cfg.ClosetBoost != 1 {
+		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
+		say("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
+	}
+	// An unrecognized value is reported rather than silently ignored, the same way
+	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
+	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
+	// served the linear blend instead, they would read the eval's rrf column and
+	// their production ordering as the same configuration when they are not.
+	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
+		if strings.EqualFold(f, "rrf") {
+			drawers = drawers.WithFusion("rrf")
+			say("fusion: reciprocal-rank (bm25 weight does not apply)")
+		} else {
+			say("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
+		drawers = drawers.WithLexicalIDF(true)
+		say("bm25 weight: auto (IDF-weighted coverage)")
+	} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
+		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
+			drawers = drawers.WithBM25Weight(false, fixed)
+			say("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
+		} else {
+			say("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
+		}
+	}
+	if cfg.RerankURL != "" {
+		// A rerank call does real inference, unlike the millisecond calls
+		// HTTPTimeout was sized for, so it gets its own budget.
+		timeout := cfg.RerankTimeout
+		if timeout <= 0 {
+			timeout = cfg.HTTPTimeout
+		}
+		drawers = drawers.
+			WithReranker(newReranker(cfg.RerankURL, timeout), cfg.RerankPool).
+			WithRerankWeight(cfg.RerankWeight)
+		say("reranker: %s (pool %d, weight %.2f, timeout %s)",
+			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
+	}
+
+	return drawers, lines
+}
+
 // buildServices opens and migrates the database, then wires the bounded-context
 // services against it. It deliberately does NOT seed (the serve path seeds; a
 // read-only CLI invocation must not create data) and starts no transport, so it
@@ -815,46 +880,11 @@ func buildServices(cfg config.Config) (*services, error) {
 	// vector+BM25 fusion it has always been. Building it here keeps the
 	// composition root the only place that knows which rerank server is deployed.
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
-	if cfg.ClosetBoost != 1 {
-		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
-		log.Printf("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
-	}
-	// An unrecognized value is reported rather than silently ignored, the same way
-	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
-	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
-	// served the linear blend instead, they would read the eval's rrf column and
-	// their production ordering as the same configuration when they are not.
-	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
-		if strings.EqualFold(f, "rrf") {
-			drawers = drawers.WithFusion("rrf")
-			log.Printf("fusion: reciprocal-rank (bm25 weight does not apply)")
-		} else {
-			log.Printf("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
-		}
-	}
-	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
-		drawers = drawers.WithLexicalIDF(true)
-		log.Printf("bm25 weight: auto (IDF-weighted coverage)")
-	} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
-		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
-			drawers = drawers.WithBM25Weight(false, fixed)
-			log.Printf("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
-		} else {
-			log.Printf("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
-		}
-	}
-	if cfg.RerankURL != "" {
-		// A rerank call does real inference, unlike the millisecond calls
-		// HTTPTimeout was sized for, so it gets its own budget.
-		timeout := cfg.RerankTimeout
-		if timeout <= 0 {
-			timeout = cfg.HTTPTimeout
-		}
-		drawers = drawers.
-			WithReranker(tei.New(cfg.RerankURL, timeout), cfg.RerankPool).
-			WithRerankWeight(cfg.RerankWeight)
-		log.Printf("reranker: %s (pool %d, weight %.2f, timeout %s)",
-			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
+	drawers, rankingLines := configureRanking(drawers, cfg, func(url string, timeout time.Duration) palace.Reranker {
+		return tei.New(url, timeout)
+	})
+	for _, line := range rankingLines {
+		log.Printf("%s", line)
 	}
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant

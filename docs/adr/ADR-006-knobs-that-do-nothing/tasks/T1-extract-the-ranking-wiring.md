@@ -16,14 +16,14 @@ The block in `newServices` that applies closet boost, fusion, BM25 weight and th
 
 | File | Change | Why |
 |------|--------|-----|
-| `cmd/server/main.go` | edit | extract the wiring; `newServices` calls it and prints the returned lines |
+| `cmd/server/main.go` | edit | extract the wiring; `buildServices` calls it and prints the returned lines |
 | `cmd/server/configureranking_test.go` | add | the extraction is behaviour-preserving, and the reranker factory is injectable |
 
 ## Ordered Steps
 
 1. Write the failing test first (TDD red): `TestConfigureRankingEmitsTheSameLines` — build a `config.Config` from `config.Default()`, call `configureRanking`, and compare the returned lines against the literal strings `newServices` prints today. Commit it red.
-2. Extract the block. Take the reranker factory as a parameter (`func(url string, timeout time.Duration) palace.Reranker`) so the wiring can be driven with a fake and no network.
-3. `newServices` calls it and `log.Printf`s each returned line, preserving today's text and order exactly.
+2. Extract the block. Take the reranker factory as a parameter (`func(url string, timeout time.Duration) palace.Reranker`) so the wiring can be driven with a fake and no network. **Route the construction through it** — leaving `tei.New` inline compiles and passes the line-comparison test while the factory parameter goes unused, which is the extraction looking done and not being.
+3. `buildServices` calls it and `log.Printf`s each returned line, preserving today's text and order exactly.
 4. Add `TestConfigureRankingHonoursTheRerankURLGuard`: with `RerankURL` empty the factory must not be called at all — that guard is what makes three rerank knobs inert at baseline, and T2's predicate depends on it being where we think it is.
 5. Falsify: reorder two emitted lines; change one line's text; call the factory unconditionally. Each mutant must compile and turn a test red.
 6. Run the acceptance command.
@@ -53,9 +53,19 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| swap two emitted log lines | yes | `TestConfigureRankingEmitsTheSameLines` |
-| change one line's wording | yes | `TestConfigureRankingEmitsTheSameLines` |
-| call the reranker factory unconditionally | yes | `TestConfigureRankingHonoursTheRerankURLGuard` |
+| the reranker is built unconditionally | yes | `TestConfigureRankingHonoursTheRerankURLGuard` |
+| the rrf line changes wording | yes | `TestConfigureRankingEmitsTheSameLines` |
+| a fusion typo is silently ignored | yes | `TestConfigureRankingEmitsTheSameLines` |
+
+**The guard test caught the extraction being incomplete**, which is the reason it exists. The
+reranker was still constructed with `tei.New` inline while the factory parameter went unused: the
+line-comparison test passed, the build passed, and the extraction had not actually made the wiring
+drivable. Only counting factory calls saw it.
+
+**A note on the fixture.** The test drives `configureRanking` with `palace.NewService(nil, nil, nil, 0)`
+— the `With*` setters only assign fields, so a Service with no backends is enough to observe which
+ones ran. Passing a literal `nil` panics, and the panic is the useful signal: the setters are methods
+on the value, so there is no version of this test that works without one.
 
 ## Out of Scope
 
@@ -77,4 +87,4 @@ Stop and ask if the block turns out to depend on state built later in `newServic
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · 067d6ee* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
