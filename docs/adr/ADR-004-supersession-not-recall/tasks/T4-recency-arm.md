@@ -50,6 +50,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
 | `TestRecencyArmPrefersNewerWithinBand` | `internal/palace/eval_test.go` | inside the band the newer dated drawer outranks the older one, and the baseline arm does not | — |
+| `TestRecencyArmReordersThroughEvalCase` | `internal/palace/eval_test.go` | **added during execution.** The ARM reorders, not just the helper. Collapsing the band to zero inside the dispatch made the arm a byte-identical copy of hybrid under a different name and left the whole suite green — the helper's own tests pass whether or not evalCase calls it | — |
 | `TestRecencyArmLeavesUndatedInPlace` | `internal/palace/eval_test.go` | an undated candidate is neither promoted nor demoted | — |
 
 ## Invariants

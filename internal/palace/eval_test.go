@@ -509,6 +509,10 @@ func TestEveryRegisteredArmIsScorable(t *testing.T) {
 	for _, w := range rerankSweep {
 		notFusion[rerankArm(w)] = "a rerank blend weight, scored in the rerank branch"
 	}
+	for _, b := range recencySweep {
+		notFusion[recencyArm(b)] = "fusion plus a date reorder, scored in its own branch — the " +
+			"fusion seam carries no date and must not grow one for a single arm"
+	}
 
 	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
 		if fusionRankerFor(arm, hybridBM25Weight) != nil {
@@ -811,8 +815,8 @@ func TestSupersessionRanksScopePerArm(t *testing.T) {
 func TestRecencyArmPrefersNewerWithinBand(t *testing.T) {
 	query := "retention window"
 	docs := []string{
-		"the retention window is thirty days",  // older
-		"the retention window is ninety days",  // newer, near-identical score
+		"the retention window is thirty days", // older
+		"the retention window is ninety days", // newer, near-identical score
 		"retention window retention window retention window unrelated filler",
 	}
 	dists := []float64{0.30, 0.31, 0.90}
@@ -875,5 +879,65 @@ func TestRecencyArmLeavesUndatedInPlace(t *testing.T) {
 	// An unparseable date behaves the same as none.
 	if got := reorderByRecency(base, []string{"not-a-date", "2026-01-01"}, 0.05); !reflect.DeepEqual(orderOf(got), orderOf(base)) {
 		t.Errorf("an unparseable date was treated as old: %v", orderOf(got))
+	}
+}
+
+// TestRecencyArmReordersThroughEvalCase pins the ARM, not the helper.
+//
+// reorderByRecency has unit tests, and they pass whether or not evalCase ever
+// calls it. Collapsing the band to zero inside the dispatch branch — so the arm
+// is registered, scored, and prints a row that is byte-identical to plain
+// hybrid — left the whole suite green. That is the same shape as an anchored arm
+// falling through to the page-max branch: the component is tested, the selection
+// is not, and the table reports one arm's numbers under another's name.
+//
+// The fixture puts the correction and the superseded version close enough in
+// fused score to sit inside the band, and dates them a year apart.
+func TestRecencyArmReordersThroughEvalCase(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// The OLDER memory is the better lexical match — it repeats the query's terms
+	// — so plain hybrid ranks it first. That is the case the arm exists for, and a
+	// fixture where hybrid already puts the newer one on top cannot separate the
+	// two arms at all: the first version of this test did exactly that and passed
+	// with the reorder disabled.
+	old, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy-v1",
+		Content:     "retention window policy retention window policy thirty days",
+		ContentDate: "2024-01-01"})
+	if err != nil {
+		t.Fatalf("add old: %v", err)
+	}
+	newer, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy-v2",
+		Content: "retention window policy ninety days", ContentDate: "2026-01-01"})
+	if err != nil {
+		t.Fatalf("add new: %v", err)
+	}
+
+	band := recencySweep[len(recencySweep)-1]
+	arms := []EvalArm{ArmHybrid, recencyArm(band)}
+	oc, err := svc.evalCaseResult(ctx, team, EvalCase{
+		Query: "retention window policy", Expect: newer.Drawers[0].ID,
+		Distractor: old.Drawers[0].ID, Wing: "w", Category: CatTemporal,
+	}, arms, 20)
+	if err != nil {
+		t.Fatalf("evalCase: %v", err)
+	}
+
+	recency := arms[1]
+	if oc.Ranks[ArmHybrid] == 0 || oc.Ranks[recency] == 0 {
+		t.Fatalf("fixture: both arms must rank the gold (hybrid %d, recency %d)", oc.Ranks[ArmHybrid], oc.Ranks[recency])
+	}
+	if oc.Ranks[ArmHybrid] != 2 {
+		t.Fatalf("fixture: plain hybrid must rank the NEWER gold second, or there is nothing for "+
+			"the recency arm to fix — got %d", oc.Ranks[ArmHybrid])
+	}
+	if oc.Ranks[recency] != 1 {
+		t.Errorf("%s ranked the newer gold at %d, want 1 — two candidates inside the band, and the "+
+			"arm did not prefer the newer one. Registered and dispatched is not the same as "+
+			"reordering: collapsing the band to zero makes this arm a byte-identical copy of "+
+			"hybrid under a different name, and only this assertion can see that",
+			recency, oc.Ranks[recency])
 	}
 }

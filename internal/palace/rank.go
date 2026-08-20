@@ -661,3 +661,61 @@ func Snippet(content, query string, maxChars int) string {
 	}
 	return out
 }
+
+// reorderByRecency is a stable tie-break, not a ranker: within a band of fused
+// score it prefers the memory with the newer content date, and outside that band
+// it changes nothing.
+//
+// The band is the whole design. A recency prior applied across large score gaps
+// promotes a recent irrelevance over an older exact answer, which is a different
+// ranking function wearing a tie-break's name. Bounding it to near-ties means the
+// arm can only decide cases the fused score already called close.
+//
+// Absence of a date is not evidence of being old. An undated or unparseable
+// candidate is never promoted and never demoted — most memories in a real palace
+// carry no content date, and treating "" as very old would push all of them down
+// on no evidence.
+//
+// dates[i] belongs to the candidate at index i, matching docs/distances
+// elsewhere in this file. It lives here rather than in Search on purpose: ADR-004
+// puts a production recency prior explicitly out of scope, and a helper in the
+// ranking file is one import away from being inherited by accident.
+func reorderByRecency(page []HybridScore, dates []string, band float64) []HybridScore {
+	if band <= 0 || len(page) < 2 {
+		return page
+	}
+	out := make([]HybridScore, len(page))
+	copy(out, page)
+
+	dateOf := func(h HybridScore) string {
+		if h.Index < 0 || h.Index >= len(dates) {
+			return ""
+		}
+		return findDate(dates[h.Index])
+	}
+
+	// A stable bubble over adjacent pairs: swapping only neighbours keeps the
+	// reorder inside the band by construction, because a candidate can never
+	// overtake one it is not within band of.
+	for pass := 0; pass < len(out); pass++ {
+		moved := false
+		for i := 0; i+1 < len(out); i++ {
+			a, b := out[i], out[i+1]
+			if a.Fused-b.Fused > band {
+				continue // outside the band: the score decides, not the date
+			}
+			da, db := dateOf(a), dateOf(b)
+			if da == "" || db == "" {
+				continue // nothing to compare; neither is evidence about the other
+			}
+			if db > da { // ISO dates compare lexicographically
+				out[i], out[i+1] = b, a
+				moved = true
+			}
+		}
+		if !moved {
+			break
+		}
+	}
+	return out
+}

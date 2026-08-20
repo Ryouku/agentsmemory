@@ -93,6 +93,33 @@ const ArmAdaptive EvalArm = "fusion bm25=auto"
 // to this one.
 const ArmAdaptiveIDF EvalArm = "fusion bm25=auto-idf"
 
+// recencySweep is the band widths the recency arm is measured at, as a fraction
+// of fused score. A FIXED list declared here and never derived from a run: T5
+// corrects its interval family-wise over the number of bands, and a k that
+// depends on the data is not a k anyone can pre-register.
+//
+// Swept rather than picked because picking one band by hand is the
+// constant-nobody-measured mistake this repo has already swept its way out of
+// twice — the lexical weight and the rerank blend.
+var recencySweep = []float64{0.02, 0.05, 0.10}
+
+// recencyBandOf reports the band a recency arm was registered at, and whether
+// the arm is one at all. It is the counterpart of recencyArm, kept beside it so
+// the two cannot drift.
+func recencyBandOf(arm EvalArm) (float64, bool) {
+	for _, band := range recencySweep {
+		if arm == recencyArm(band) {
+			return band, true
+		}
+	}
+	return 0, false
+}
+
+// recencyArm names a swept recency arm.
+func recencyArm(band float64) EvalArm {
+	return EvalArm(fmt.Sprintf("fusion+recency band=%.2f", band))
+}
+
 // bm25Arm names a swept fusion arm.
 func bm25Arm(w float64) EvalArm { return EvalArm(fmt.Sprintf("fusion bm25=%.2f", w)) }
 
@@ -522,6 +549,12 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 		arms = append(arms, bm25Arm(w))
 	}
 	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
+	// The recency arms: the cheap fix the knowledge graph has to beat. If a
+	// stable tie-break on content date already fixes supersession, a graph is a
+	// large answer to a small question.
+	for _, band := range recencySweep {
+		arms = append(arms, recencyArm(band))
+	}
 	// The anchored counterparts, one family and unboosted. ADR-002 T2 originally
 	// called for a boosted family plus a no-closet control; ADR-003 T1 made the
 	// closet prior opt-in by name and put closet variants of the sweep arms
@@ -721,6 +754,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		content  string
 		distance float64
 		source   string
+		date     string // ContentDate, for the recency arm; "" when the memory has none
 	}
 	var pool []candidate
 	for _, h := range hits {
@@ -732,7 +766,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		if d.ParentID != "" {
 			memory = d.ParentID
 		}
-		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile})
+		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile, date: d.ContentDate})
 	}
 
 	docs := make([]string, len(pool))
@@ -840,6 +874,28 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		// Score fusion goes through one seam, so an arm cannot be scored by a
 		// ranker no test can reach. Everything else — vector, RRF, contextual,
 		// production, the reranked family — is not fusion and keeps its own case.
+		// The recency arms are fusion PLUS a reorder, so they cannot go through
+		// fusionRankerFor: its signature carries no date, and widening it for one
+		// arm would put a date-shaped hole in the seam every other arm relies on.
+		// The date rides on the candidate instead and the reorder happens here.
+		if band, isRecency := recencyBandOf(arm); isRecency {
+			dates := make([]string, len(pool))
+			for i, p := range pool {
+				dates[i] = p.date
+			}
+			for _, r := range reorderByRecency(rankHybrid(c.Query, docs, dists, armBoosts(arm, closet)), dates, band) {
+				ordered = append(ordered, r.Index)
+			}
+			poolIDs := make([]string, len(pool))
+			for i, p := range pool {
+				poolIDs[i] = p.memory
+			}
+			out[arm] = rankOf(poolIDs, ordered, goldSet)
+			if len(distractorSet) > 0 {
+				distractorOut[arm] = rankOf(poolIDs, ordered, distractorSet)
+			}
+			continue
+		}
 		if ranker := fusionRankerFor(arm, hybridBM25Weight); ranker != nil {
 			for _, r := range ranker(c.Query, docs, dists, armBoosts(arm, closet)) {
 				ordered = append(ordered, r.Index)
