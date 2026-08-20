@@ -2,6 +2,7 @@ package palace
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 )
@@ -181,4 +182,99 @@ func ClosetDelta(report EvalReport, category string) ClosetCell {
 	cell.DeltaRecall1 /= float64(cell.Admitted)
 	cell.Interval = PairedDelta(withCloset, without)
 	return cell
+}
+
+// SupersessionCell is one arm's stale-above measurement over one population,
+// with every case it declined to use accounted for.
+type SupersessionCell struct {
+	// Cases is the denominator: non-vacuous cases only.
+	Cases int
+	// StaleAbove is how many of those put the superseded version above the
+	// correction — including the cases where the correction was never retrieved
+	// at all, which is the worst outcome and the one a bare `<` scores as a win.
+	StaleAbove int
+	// StaleAboveReachable is the same count restricted to cases whose correction
+	// WAS retrieved, so a ranking failure can be told from a retrieval one.
+	StaleAboveReachable int
+	// CurrentUnreachable is how many cases never retrieved the correction.
+	CurrentUnreachable int
+	// StaleInPage is how many put the superseded version at rank 5 or better —
+	// the cutoff Recall5 uses, and the page an agent actually sees.
+	StaleInPage int
+	// Vacuous is how many cases the superseded version never entered the pool
+	// in, so no arm could have ranked it above anything.
+	Vacuous int
+}
+
+// Rate is StaleAbove over the non-vacuous cases, or 0 when there are none.
+func (c SupersessionCell) Rate() float64 {
+	if c.Cases == 0 {
+		return 0
+	}
+	return float64(c.StaleAbove) / float64(c.Cases)
+}
+
+// StaleAboveRate measures how often one arm put a superseded memory above the
+// correction that replaced it.
+//
+// Two things it deliberately does not do. It does not read vacuity from the
+// arm's own zero — that is a case-level property, taken from DistractorPoolRank,
+// because an arm's 0 means "not in this ordering" and a vacuous case would then
+// score as a success for every arm at once. And it does not treat a gold rank of
+// 0 as a good position: 0 is the miss sentinel, so `distractor < gold` would
+// score "the stale one came back and the correction did not" as a win, which is
+// the exact failure the metric exists to catch.
+func StaleAboveRate(cases []EvalCaseResult, arm EvalArm) SupersessionCell {
+	var cell SupersessionCell
+	for _, c := range cases {
+		if c.DistractorRanks == nil {
+			continue // the case names no superseded version
+		}
+		if c.DistractorPoolRank <= 0 {
+			cell.Vacuous++
+			continue
+		}
+		cell.Cases++
+		gold, stale := c.Ranks[arm], c.DistractorRanks[arm]
+		if gold == 0 {
+			cell.CurrentUnreachable++
+		}
+		if stale > 0 && (gold == 0 || stale < gold) {
+			cell.StaleAbove++
+			if gold != 0 {
+				cell.StaleAboveReachable++
+			}
+		}
+		if stale > 0 && stale <= 5 {
+			cell.StaleInPage++
+		}
+	}
+	return cell
+}
+
+// WilsonInterval is the 95% score interval for a proportion.
+//
+// Not a bootstrap. Resampling a proportion by percentile returns [0,0] at zero
+// successes and [1,1] at all of them — the two values a small corpus produces
+// most often, and the two places a zero-width interval claims a certainty the
+// sample cannot support. Wilson stays open at both ends and widens as n falls,
+// which is the only reason to report an interval at all.
+func WilsonInterval(successes, n int) Interval {
+	if n <= 0 {
+		return Interval{}
+	}
+	const z = 1.959963984540054 // 95%
+	p := float64(successes) / float64(n)
+	nf := float64(n)
+	denom := 1 + z*z/nf
+	centre := (p + z*z/(2*nf)) / denom
+	spread := z * math.Sqrt(p*(1-p)/nf+z*z/(4*nf*nf)) / denom
+	lo, hi := centre-spread, centre+spread
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > 1 {
+		hi = 1
+	}
+	return Interval{Lo: lo, Hi: hi}
 }

@@ -166,20 +166,29 @@ func TestStaleAboveRateExcludesVacuous(t *testing.T) {
 		// vacuous: the superseded version never made the pool
 		{Category: CatTemporal, PoolRank: 1, DistractorPoolRank: 0,
 			Ranks: map[EvalArm]int{ArmHybrid: 1}, DistractorRanks: map[EvalArm]int{ArmHybrid: 0}},
+		// NOT vacuous, though this arm ranked it 0: the superseded version was in
+		// the pool and simply did not make this arm's page. Only a page-scoped
+		// arm can produce this, and it is the case that separates "read vacuity
+		// from the case" from "read it from the arm" — the two agree everywhere
+		// else, so without this row the distinction is untested and reading the
+		// arm's own zero silently drops a case the arm should be answerable for.
+		{Category: CatTemporal, PoolRank: 1, DistractorPoolRank: 7,
+			Ranks: map[EvalArm]int{ArmHybrid: 1}, DistractorRanks: map[EvalArm]int{ArmHybrid: 0}},
 	}
 
 	got := StaleAboveRate(cases, ArmHybrid)
 	if got.Vacuous != 1 {
 		t.Errorf("counted %d vacuous, want 1 — an exclusion nobody can see is one nobody can check", got.Vacuous)
 	}
-	if got.Cases != 2 {
-		t.Errorf("denominator %d, want 2 (the non-vacuous cases)", got.Cases)
+	if got.Cases != 3 {
+		t.Errorf("denominator %d, want 3 — the non-vacuous cases, including the one this arm "+
+			"ranked 0 because it fell outside its page rather than outside the pool", got.Cases)
 	}
 	if got.StaleAbove != 1 {
 		t.Errorf("counted %d stale-above, want 1", got.StaleAbove)
 	}
-	if math.Abs(got.Rate()-0.5) > 1e-9 {
-		t.Errorf("rate %.4f, want 0.5", got.Rate())
+	if math.Abs(got.Rate()-1.0/3.0) > 1e-9 {
+		t.Errorf("rate %.4f, want 1/3 (one stale-above out of three non-vacuous)", got.Rate())
 	}
 }
 

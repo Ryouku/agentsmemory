@@ -140,6 +140,10 @@ type EvalCase struct {
 	ExpectAny []string `json:",omitempty"`
 	Wing      string   // optional scope, mirroring how the query would really be run
 	Category  string   // one of the Cat* values; empty is treated as CatSingle
+	// Distractor is the drawer id of the version this case's gold SUPERSEDES —
+	// the older, now-wrong memory that a temporal question must not surface
+	// above the correction. Empty when the case has no superseded version.
+	Distractor string `json:",omitempty"`
 }
 
 // category returns the case's category, defaulting to single-hop.
@@ -246,6 +250,17 @@ type EvalCaseResult struct {
 	Category string
 	Ranks    map[EvalArm]int
 
+	// DistractorRanks is where the SUPERSEDED version landed, per arm, in the
+	// same ordering that produced Ranks. Nil when the case names no distractor.
+	DistractorRanks map[EvalArm]int
+	// DistractorPoolRank is where the superseded version sat by vector distance,
+	// or 0 when it never entered the pool.
+	//
+	// It is per CASE and not per arm on purpose: two arms may order a distractor
+	// differently, but they cannot disagree about whether it was retrievable, and
+	// reading each arm's own 0 as "outside the pool" is the mistake that makes a
+	// vacuous case look like a success for every arm at once.
+	DistractorPoolRank int
 	// PoolRank is where the gold sat in the pool ordered by vector distance, or
 	// 0 when the dense channel never surfaced it. It duplicates what
 	// EvalReport.PoolRanks carries and it has to: PoolRanks skips absent cases
