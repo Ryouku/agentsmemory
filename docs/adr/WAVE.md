@@ -8,6 +8,7 @@ suggested: prove the palace is exercised before trusting anything measured about
 | 1 | [ADR-008](ADR-008-exercise-the-palace-end-to-end.md) | Does every tool actually work, end to end, for one party, two, and three? | nothing |
 | 2 | [ADR-006](ADR-006-knobs-that-do-nothing.md) | Does a setting an operator changes reach an active code path and change behaviour? | nothing |
 | 3 | [ADR-007](ADR-007-no-number-without-its-population.md) | Does the eval print numbers that mean what they say? | nothing technically; third by priority |
+| 4 | [ADR-009](ADR-009-tune-against-your-own-corpus.md) | Is the configuration an operator actually runs the right one for their corpus? | ADR-007 T3 (a tuner must not read a number it cannot trust) |
 
 **Why this order.** The standard we are held to is not "a test exists that names this" but "there is
 an active code path, it is exercised, and here is the evidence". Measured 2026-08-20 against that
@@ -24,6 +25,12 @@ turns a test red, or an exit code. Every task in this wave carries a `## Mutants
 edit that reintroduces the defect, whether that edit compiled, and which test caught it — because on
 a task measured this week, three of five mutants survived the tests written for them and all three
 read as covered until the mutation was actually run.
+
+**Why ADR-009 exists, in one line.** The maintainer, who wrote the system, runs it on defaults —
+and the default is measurably the worst arm on every corpus anyone has run: `fusion bm25=auto`
+scores 0.226 and 0.279 on the two n=100 tables where turning the lexical leg off scores 0.367 and
+0.445. The default is the product, and nobody tunes it. It sits fourth rather than first because a
+tuner that reads a table it cannot trust (ADR-007) automates the wrong answer at scale.
 
 **Not in this wave.** Session-to-session and agent-to-agent continuity — the handoff and real-time
 collaboration question — is `/spec-write`, not an ADR: the requirements are undecided, and there is
