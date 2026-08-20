@@ -23,4 +23,4 @@ cannot be written before T1 exists.
 |------|------|----------|----------|--------|
 | [T1](T1-refuse-an-undeliverable-handoff.md) | Refuse a handoff into a wing nobody will resolve to | `WingIsEmpty`, `confirm_new_wing`, the refusal | none | done |
 | [T2](T2-surface-a-waiting-inbox.md) | Name a waiting inbox in the call every session already makes | `InboxCount`, the `am_status` `inbox` field | none | done |
-| [T3](T3-teach-the-convention-and-reconcile.md) | Put the convention where agents read it, and rescue the six orphans | corrected bootstrap + both centralised skills; reconciled wings | `confirm_new_wing` (T1) | todo |
+| [T3](T3-teach-the-convention-and-reconcile.md) | Put the convention where agents read it, and rescue the six orphans | corrected bootstrap + both centralised skills; reconciled wings | `confirm_new_wing` (T1) | done |

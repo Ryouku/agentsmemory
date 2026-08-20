@@ -97,3 +97,45 @@ func dedupe(in []string) []string {
 	}
 	return out
 }
+
+// TestProtocolTextTeachesTheInboxConvention.
+//
+// The handoff convention lived only in the locally-installed bootstrap, and its
+// wing placeholder read `wing_<target>`. Two sessions substituted the direction
+// of travel for the project name and filed six drawers into wings nothing
+// resolves to. The convention has to state how the wing is named, in a file that
+// ships, or the next session repeats it.
+//
+// It checks bootstrap.md specifically rather than "any protocol doc": bootstrap
+// is the always-on baseline that applies whether or not a command is typed, and
+// a rule that reached only the slash-command files would still be missing from
+// every session that does not type one.
+func TestProtocolTextTeachesTheInboxConvention(t *testing.T) {
+	root := filepath.Join("..", "..")
+	body, err := os.ReadFile(filepath.Join(root, "clients", "claude-code", "bootstrap.md"))
+	if err != nil {
+		t.Fatalf("read bootstrap.md: %v", err)
+	}
+	text := string(body)
+
+	for what, want := range map[string]string{
+		"the room a handoff is filed into":            `room ` + "`inbox`",
+		"that the wing is named for the project":      "named for the PROJECT",
+		"that it is NOT named for where it is going":  "never for the direction of travel",
+		"the argument the server's refusal names":     "confirm_new_wing",
+		"a concrete wing name rather than a template": "wing_acme-billing",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("bootstrap.md does not state %s (looked for %q). A placeholder without the "+
+				"naming rule is what produced two undeliverable handoffs", what, want)
+		}
+	}
+
+	// The template that was mis-substituted must be gone, not merely explained
+	// beside its replacement — a reader who copies the first thing that looks
+	// like a call copies the template.
+	if strings.Contains(text, `wing: "wing_<target>"`) {
+		t.Error(`bootstrap.md still shows wing: "wing_<target>" as the call to copy — that is the ` +
+			"exact string both failing sessions substituted into")
+	}
+}

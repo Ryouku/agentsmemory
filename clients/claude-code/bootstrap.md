@@ -186,9 +186,22 @@ The corollary of the rule above: the palace is a good place to PASS work between
 because it decouples noticing from doing. The finding travels; the execution happens in the
 repository that owns it, in a session that has loaded that repository's context.
 
-To hand something over, file a drawer into the **target project's** wing, room `inbox`:
+To hand something over, file a drawer into the receiving project's wing, room `inbox`.
 
-    am_add_drawer(wing: "wing_<target>", room: "inbox", content: "…")
+**Name that wing the way that project's own sessions name it** — the same rungs and the same
+normalisation as Step 0c, applied to the receiving repository. The wing is named for the PROJECT,
+never for the direction of travel. This is not a hypothetical: two sessions read a `wing_<target>`
+placeholder here and wrote `wing_to-<project>`, and six drawers of real findings went into wings no
+session will ever resolve to. Nobody noticed, because the write succeeded.
+
+So for a repository whose remote is `git@…/acme-billing.git`, the wing is `wing_acme-billing`:
+
+    am_add_drawer(wing: "wing_acme-billing", room: "inbox", content: "…")
+
+The server now refuses an inbox item filed into a wing that holds nothing, since that is what the
+mistake looks like from the outside, and it suggests the name minus the direction. If the project
+genuinely has no memories yet, pass `confirm_new_wing: true` and it files as sent. Read the refusal
+as "check this name", not "you may not do this".
 
 Write it as a finding, not an order, and make it self-contained — the session that reads it will not
 have your conversation. Say what was observed, where, how it was noticed, and what is uncertain. If
@@ -197,10 +210,14 @@ project's context, say that too; the reader is better placed to judge than you a
 
 Then weave a tunnel from the source, so the item keeps its provenance instead of arriving anonymous:
 
-    am_create_tunnel(source_wing: "wing_<yours>", source_room: "…",
-                     target_wing: "wing_<target>", target_room: "inbox", label: "…")
+    am_create_tunnel(source_wing: "wing_<the one you are in>", source_room: "…",
+                     target_wing: "wing_acme-billing", target_room: "inbox", label: "…")
 
-**Reading your own inbox is part of waking up.** Step 1c's recall should include it: an item filed
+**Reading your own inbox is part of waking up.** `am_status` names what is waiting in your wing and
+its hint changes when there is something there — a count of zero and a session that cannot tell are
+reported differently, so an unknown never reads as an all-clear. That count is taken at wake-up:
+an item filed while you are running will not appear, because the server cannot wake a session.
+Step 1c's recall should include it: an item filed
 there is a lead to evaluate with the code in front of you, not a queue to work through. Act on it if
 it holds up, close it out by filing what you found, and say plainly when it does not apply any more
 — a stale inbox item that nobody contradicts gets rediscovered every month.
