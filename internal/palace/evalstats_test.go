@@ -146,3 +146,96 @@ func TestClosetDeltaCountsCasesNeitherArmScored(t *testing.T) {
 		t.Errorf("counted %d unpairable, want 1", cell.NoGold)
 	}
 }
+
+// TestStaleAboveRateExcludesVacuous pins the denominator.
+//
+// A case is vacuous when the superseded version never entered the pool at all:
+// no arm could have ranked it above anything, so counting it as a success would
+// credit every arm for a retrieval accident. Vacuity is a property of the CASE —
+// two arms may order a distractor differently, but they cannot disagree about
+// whether it was retrievable — which is why it is read from DistractorPoolRank
+// and not from each arm's own zero.
+func TestStaleAboveRateExcludesVacuous(t *testing.T) {
+	cases := []EvalCaseResult{
+		// stale above current: distractor at 1, gold at 3 → counts, and is a hit
+		{Category: CatTemporal, PoolRank: 3, DistractorPoolRank: 1,
+			Ranks: map[EvalArm]int{ArmHybrid: 3}, DistractorRanks: map[EvalArm]int{ArmHybrid: 1}},
+		// current above stale → counts, not a hit
+		{Category: CatTemporal, PoolRank: 1, DistractorPoolRank: 2,
+			Ranks: map[EvalArm]int{ArmHybrid: 1}, DistractorRanks: map[EvalArm]int{ArmHybrid: 2}},
+		// vacuous: the superseded version never made the pool
+		{Category: CatTemporal, PoolRank: 1, DistractorPoolRank: 0,
+			Ranks: map[EvalArm]int{ArmHybrid: 1}, DistractorRanks: map[EvalArm]int{ArmHybrid: 0}},
+	}
+
+	got := StaleAboveRate(cases, ArmHybrid)
+	if got.Vacuous != 1 {
+		t.Errorf("counted %d vacuous, want 1 — an exclusion nobody can see is one nobody can check", got.Vacuous)
+	}
+	if got.Cases != 2 {
+		t.Errorf("denominator %d, want 2 (the non-vacuous cases)", got.Cases)
+	}
+	if got.StaleAbove != 1 {
+		t.Errorf("counted %d stale-above, want 1", got.StaleAbove)
+	}
+	if math.Abs(got.Rate()-0.5) > 1e-9 {
+		t.Errorf("rate %.4f, want 0.5", got.Rate())
+	}
+}
+
+// TestStaleAboveRateCountsUnreachableCurrent pins the sentinel that a bare `<`
+// would get backwards.
+//
+// A gold rank of 0 means the CURRENT version was never retrieved. The distractor
+// being retrieved while the correction is missing is the worst outcome this
+// metric exists to measure, and `distractor < gold` scores it as a success
+// because 0 sorts first. It counts as stale-above, and separately as
+// CurrentUnreachable so the two are distinguishable.
+func TestStaleAboveRateCountsUnreachableCurrent(t *testing.T) {
+	cases := []EvalCaseResult{
+		{Category: CatTemporal, PoolRank: 0, DistractorPoolRank: 2,
+			Ranks: map[EvalArm]int{ArmHybrid: 0}, DistractorRanks: map[EvalArm]int{ArmHybrid: 2}},
+	}
+	got := StaleAboveRate(cases, ArmHybrid)
+	if got.StaleAbove != 1 {
+		t.Errorf("stale retrieved with the correction missing must count as stale-above, got %d", got.StaleAbove)
+	}
+	if got.CurrentUnreachable != 1 {
+		t.Errorf("counted %d unreachable-current, want 1", got.CurrentUnreachable)
+	}
+	if got.StaleAboveReachable != 0 {
+		t.Errorf("the reachable-only rate must exclude it, got %d", got.StaleAboveReachable)
+	}
+}
+
+// TestStaleAboveRateWilsonNotBootstrap pins the interval's shape.
+//
+// This is a proportion, not a mean of reciprocal ranks, and resampling a
+// proportion by percentile returns [0,0] at a rate of 0 and [1,1] at 1 — which
+// are exactly the values a small corpus produces most often, and exactly where a
+// zero-width interval is a lie. The Wilson score interval stays open at both
+// ends.
+func TestStaleAboveRateWilsonNotBootstrap(t *testing.T) {
+	zero := WilsonInterval(0, 20)
+	if zero.Lo != 0 {
+		t.Errorf("Wilson lower bound at 0/20 = %.4f, want 0", zero.Lo)
+	}
+	if zero.Hi <= 0 {
+		t.Errorf("Wilson upper bound at 0/20 = %.4f — a zero-width interval at zero successes "+
+			"claims certainty 20 samples cannot support", zero.Hi)
+	}
+	one := WilsonInterval(20, 20)
+	if one.Hi != 1 {
+		t.Errorf("Wilson upper bound at 20/20 = %.4f, want 1", one.Hi)
+	}
+	if one.Lo >= 1 {
+		t.Errorf("Wilson lower bound at 20/20 = %.4f — same lie at the other end", one.Lo)
+	}
+	// A wider interval for less data is the property that makes it worth having.
+	if WilsonInterval(1, 5).Hi-WilsonInterval(1, 5).Lo <= WilsonInterval(20, 100).Hi-WilsonInterval(20, 100).Lo {
+		t.Error("1/5 must yield a wider interval than 20/100 at the same point estimate")
+	}
+	if WilsonInterval(0, 0).Hi != 0 {
+		t.Error("no samples must not produce an interval claiming anything")
+	}
+}
