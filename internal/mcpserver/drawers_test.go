@@ -18,9 +18,31 @@ import (
 // repository has already fixed at the read end; this is it at the write end.
 func TestParseAnchorListSeparatesEmptyFromUnreadable(t *testing.T) {
 	deliberate := []any{}
-	if got, readable := parseAnchorList(deliberate); !readable || len(got) != 0 {
-		t.Errorf("a genuine empty list must read as readable-and-empty, got readable=%v len=%d — "+
-			"otherwise a deliberate clear becomes impossible", readable, len(got))
+	if got, readable, sent := parseAnchorList(deliberate); !readable || len(got) != 0 || sent != 0 {
+		t.Errorf("a genuine empty list must read as readable, empty and sent=0, got readable=%v "+
+			"len=%d sent=%d — otherwise a deliberate clear becomes impossible", readable, len(got), sent)
+	}
+
+	// A non-empty list whose entries are ALL malformed is not a clear. It parses
+	// to readable-and-empty and would otherwise delete the memory's anchors — and
+	// since most callers send exactly one anchor, this is the likeliest way to get
+	// an entry wrong at all: the single anchor sent had a typo. sent is what
+	// separates it from [].
+	for name, raw := range map[string]any{
+		"one entry, key typo":     []any{map[string]any{"paht": "a.go", "snippet": "x"}},
+		"one entry, no snippet":   []any{map[string]any{"path": "a.go"}},
+		"several, all unreadable": []any{map[string]any{"paht": "a.go"}, "not an object"},
+	} {
+		got, readable, sent := parseAnchorList(raw)
+		if !readable {
+			t.Errorf("%s: a list is still a list", name)
+		}
+		if sent == 0 {
+			t.Errorf("%s: sent=0, so this is indistinguishable from [] and clears the anchors", name)
+		}
+		if len(got) != 0 {
+			t.Errorf("%s: parsed %d entries, want 0", name, len(got))
+		}
 	}
 
 	for name, raw := range map[string]any{
@@ -29,7 +51,7 @@ func TestParseAnchorListSeparatesEmptyFromUnreadable(t *testing.T) {
 		"nil":                      nil,
 		"number":                   float64(3),
 	} {
-		if _, readable := parseAnchorList(raw); readable {
+		if _, readable, _ := parseAnchorList(raw); readable {
 			t.Errorf("%s read as a valid list — at the replace site that clears the memory's "+
 				"anchors and reports success", name)
 		}
@@ -42,7 +64,10 @@ func TestParseAnchorListSeparatesEmptyFromUnreadable(t *testing.T) {
 		map[string]any{"path": "", "snippet": "no path"},
 		"not an object",
 	}
-	got, readable := parseAnchorList(mixed)
+	got, readable, sent := parseAnchorList(mixed)
+	if sent != 3 {
+		t.Errorf("sent=%d, want 3", sent)
+	}
 	if !readable {
 		t.Fatal("a list with some bad entries is still a list")
 	}
@@ -51,20 +76,50 @@ func TestParseAnchorListSeparatesEmptyFromUnreadable(t *testing.T) {
 	}
 }
 
-// TestReplacePathUsesTheStrictParser pins the SELECTION, which is what a
-// mutation of this code actually breaks.
+// TestAnchorReplacementRefusesRatherThanClears drives the decision itself.
 //
-// TestParseAnchorListSeparatesEmptyFromUnreadable pins the parser, and passes
-// happily whether or not the destructive call site uses it — swapping
-// parseAnchorList back for parseAnchors at that one line left the whole package
-// green. The parser is the component; which parser the replace path calls is the
-// selection, and only the selection can turn a malformed argument into a
-// deleted anchor.
-//
-// No test here drives an MCP handler, so this reads the call site instead: the
-// function that replaces anchors must consult the parser that can say "this was
-// not a list", and must refuse rather than proceed when it says so.
-func TestReplacePathUsesTheStrictParser(t *testing.T) {
+// The earlier version of this check read drawers.go and grepped the twenty
+// lines above the ReplaceAnchors call for the guard's text. That passes against
+// a guard disarmed with "&& false" — the string is still there and the refusal
+// never fires — which is the same shape as every other defect this file has
+// fixed: the component was pinned, the behaviour was not. So the decision moved
+// into anchorReplacement, and this drives it.
+func TestAnchorReplacementRefusesRatherThanClears(t *testing.T) {
+	for name, raw := range map[string]any{
+		"an object where a list belongs": map[string]any{"path": "a.go", "snippet": "x"},
+		"a string":                       "a.go:1",
+		"one entry, key typo":            []any{map[string]any{"paht": "a.go", "snippet": "x"}},
+		"one entry, no snippet":          []any{map[string]any{"path": "a.go"}},
+		"several, all unreadable":        []any{map[string]any{"paht": "a.go"}, "not an object"},
+	} {
+		anchors, refusal := anchorReplacement(raw)
+		if refusal == "" {
+			t.Errorf("%s: accepted, and would REPLACE the memory's anchors with %d — a caller who "+
+				"got the argument wrong must not lose the anchors they already had", name, len(anchors))
+		}
+	}
+
+	// A deliberate clear must still work, or the anchors become unremovable.
+	if anchors, refusal := anchorReplacement([]any{}); refusal != "" || len(anchors) != 0 {
+		t.Errorf("[] must clear: refusal=%q len=%d", refusal, len(anchors))
+	}
+
+	// One bad row among several is not the refusal case: something survived.
+	mixed := []any{
+		map[string]any{"path": "a.go", "snippet": "func A() {}"},
+		map[string]any{"path": "", "snippet": "no path"},
+	}
+	if anchors, refusal := anchorReplacement(mixed); refusal != "" || len(anchors) != 1 {
+		t.Errorf("a list with one good row must succeed and drop the bad one: refusal=%q len=%d",
+			refusal, len(anchors))
+	}
+}
+
+// TestReplacePathConsultsTheDecision pins the SELECTION: anchorReplacement can
+// be correct and unreached. No test here drives an MCP handler, so this reads
+// the call site — but everything behavioural now lives in the function above,
+// so this only has to answer "is it called, and is its refusal honoured".
+func TestReplacePathConsultsTheDecision(t *testing.T) {
 	src, err := os.ReadFile("drawers.go")
 	if err != nil {
 		t.Fatalf("read drawers.go: %v", err)
@@ -75,22 +130,19 @@ func TestReplacePathUsesTheStrictParser(t *testing.T) {
 	if i < 0 {
 		t.Fatal("no ReplaceAnchors call in drawers.go — this check has stopped checking anything")
 	}
-	// The twenty lines above the destructive call are where the argument is read.
 	start := i
-	for n := 0; n < 20 && start > 0; n++ {
+	for n := 0; n < 10 && start > 0; n++ {
 		if j := strings.LastIndex(body[:start], "\n"); j >= 0 {
 			start = j
 		}
 	}
 	window := body[start:i]
 
-	if !strings.Contains(window, "parseAnchorList(") {
-		t.Error("the ReplaceAnchors call site does not use parseAnchorList — the tolerant parser " +
-			"cannot tell an unreadable argument from a deliberate empty list, and at a REPLACE " +
-			"that difference is the difference between refusing and deleting the anchors")
+	if !strings.Contains(window, "anchorReplacement(") {
+		t.Error("the ReplaceAnchors call site does not consult anchorReplacement — the refusals are " +
+			"tested but unreached, and a malformed argument clears the memory's anchors")
 	}
-	if !strings.Contains(window, "!readable") && !strings.Contains(window, "readable {") {
-		t.Error("the ReplaceAnchors call site never branches on readability, so the strict parser's " +
-			"answer is computed and ignored")
+	if !strings.Contains(window, `refusal != ""`) {
+		t.Error("the ReplaceAnchors call site computes the refusal and does not return on it")
 	}
 }
