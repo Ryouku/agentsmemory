@@ -56,14 +56,23 @@ func handoffRefusal(ctx context.Context, wings wingReader, teamID, wing, room st
 		existing = strings.Join(names, ", ")
 	}
 
+	// Only suggest a correction when there is one. strippedDirection returns the
+	// name unchanged for a wing that carries no direction prefix, which produced
+	// "wing_alpha is almost always meant to be wing_alpha" — advice that reads as
+	// a bug and teaches the reader to stop reading the message.
+	suggestion := ""
+	if fixed := strippedDirection(wing); fixed != wing {
+		suggestion = fmt.Sprintf("%q is almost always meant to be %q. ", wing, fixed)
+	}
+
 	return fmt.Sprintf(
 		"%q holds no memories, and you are filing an inbox item into it — a handoff nobody will "+
 			"read. A target wing is named for the PROJECT, exactly as that project's own sessions "+
-			"resolve it (its repository or directory name), never for the direction of travel: "+
-			"%q is almost always meant to be %q. Wings that exist: %s. "+
+			"resolve it (its repository or directory name), never for the direction of travel. "+
+			"%sWings that exist: %s. "+
 			"If %q really is the project's wing and this is genuinely the first memory filed for "+
 			"it, pass confirm_new_wing: true and this will file as sent.",
-		wing, wing, strippedDirection(wing), existing, wing)
+		wing, suggestion, existing, wing)
 }
 
 // strippedDirection is the correction to suggest: the wing minus a leading "to-"

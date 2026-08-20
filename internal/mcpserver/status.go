@@ -32,7 +32,8 @@ func inboxStatus(wing string, count int, err error) inboxView {
 			"own to read; register with a wing (or pass one per call) to get this count"}
 	case err != nil:
 		return inboxView{Wing: wing, Note: "the inbox count could not be taken this time — this is " +
-			"not an all-clear; read it with am_list_drawers(room: \"inbox\") if it matters"}
+			"not an all-clear; read it with am_list_drawers(room: \"inbox\"), which is scoped to this " +
+			"registration's wing, if it matters"}
 	default:
 		return inboxView{Wing: wing, Count: count, Known: true,
 			Note: "taken at wake-up; an item filed while this session runs will not appear here"}

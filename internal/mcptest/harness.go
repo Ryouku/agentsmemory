@@ -56,9 +56,21 @@ import (
 // vector index agree on width.
 const fakeDim = 8
 
-// TeamID is the workspace every harness client authenticates as. Exported
-// because a scenario asserting isolation needs to name the other side.
-const TeamID = "team-mcptest"
+// teamHeader is how a harness client states which workspace it is, standing in
+// for the bearer token the real gate resolves.
+const teamHeader = "X-Mcptest-Team"
+
+// TeamID is the workspace a harness client authenticates as by default.
+//
+// OtherTeamID is a SECOND workspace over the same database, and it exists
+// because a review pointed out that one team by construction makes a whole class
+// of defect unobservable: with a single tenant, no assertion can tell "scoped to
+// my workspace" from "scoped to the whole database", and dropping the team
+// filter from a repository query leaves every scenario green.
+const (
+	TeamID      = "team-mcptest"
+	OtherTeamID = "team-mcptest-other"
+)
 
 // fakeEmbedder is deterministic and content-derived: two identical texts embed
 // identically and different texts do not, which is all a round-trip scenario
@@ -99,6 +111,7 @@ func (caps) MonthlyCap(_ context.Context, _ string) (int, error) { return -1, ni
 type Harness struct {
 	Drawers *palace.Service
 	Wing    string
+	Team    string
 
 	cli *client.Client
 	srv *httptest.Server
@@ -153,6 +166,16 @@ func Parties(t *testing.T, wings ...string) []*Harness {
 		out[i] = newClient(t, srv, drawers, w)
 	}
 	return out
+}
+
+// Tenants returns two clients on ONE server and ONE database belonging to
+// DIFFERENT workspaces — the outer trust boundary, which wings sit inside.
+func Tenants(t *testing.T, wing string) (*Harness, *Harness) {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
+	srv, drawers := newServer(t, gdb)
+	return newClientAs(t, srv, drawers, wing, TeamID),
+		newClientAs(t, srv, drawers, wing, OtherTeamID)
 }
 
 // Pair is Parties for the common two-sided case.
@@ -215,8 +238,15 @@ func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 	// internal/oauth; standing it up here would test that package again and add
 	// a way for every scenario to fail for an unrelated reason.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Resolved PER REQUEST from a header, as the real gate resolves a bearer.
+		// Pinning one workspace for the process would have made two tenants on one
+		// server impossible to express, which is how the missing team filter hid.
+		team := r.Header.Get(teamHeader)
+		if team == "" {
+			team = TeamID
+		}
 		ctx := auth.WithTenant(r.Context(), tenant.Tenant{
-			TeamID: TeamID, UserID: "user-mcptest", Role: tenant.RoleAdmin,
+			TeamID: team, UserID: "user-mcptest", Role: tenant.RoleAdmin,
 		})
 		stream.ServeHTTP(w, r.WithContext(ctx))
 	}))
@@ -227,16 +257,24 @@ func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 // newClient dials an existing server as one registration.
 func newClient(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing string) *Harness {
 	t.Helper()
+	return newClientAs(t, srv, drawers, wing, TeamID)
+}
+
+// newClientAs dials as a named workspace, so a scenario can put two tenants on
+// one server and one database.
+func newClientAs(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing, team string) *Harness {
+	t.Helper()
 
 	// The wing rides on the registration as a header, exactly as `install` writes
 	// it — see auth.WingHeader. A harness that stored the wing without sending it
 	// would show every registration as unscoped, and the first version of this
 	// file did: the positive half of the scoping pair passed and the negative half
 	// caught it, which is why the pair exists.
-	var opts []transport.StreamableHTTPCOption
+	headers := map[string]string{teamHeader: team}
 	if wing != "" {
-		opts = append(opts, transport.WithHTTPHeaders(map[string]string{auth.WingHeader: wing}))
+		headers[auth.WingHeader] = wing
 	}
+	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
 	cli, err := client.NewStreamableHttpClient(srv.URL, opts...)
 	if err != nil {
 		t.Fatalf("client: %v", err)
@@ -250,7 +288,7 @@ func newClient(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing
 		t.Fatalf("initialize: %v", err)
 	}
 
-	h := &Harness{Drawers: drawers, Wing: wing, cli: cli, srv: srv}
+	h := &Harness{Drawers: drawers, Wing: wing, Team: team, cli: cli, srv: srv}
 
 	// A harness serving an empty catalogue would let every scenario pass by
 	// calling nothing, so it refuses to be handed out in that state.

@@ -22,7 +22,7 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerGetDrawer(reg, drawers, usageSvc)
 	registerUpdateDrawer(reg, drawers, usageSvc)
 	registerDeleteDrawer(reg, drawers, usageSvc)
-	registerListDrawers(reg, drawers, usageSvc)
+	registerListDrawers(reg, drawers, usageSvc, scopeSearchToWing)
 	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
 	registerListWings(reg, drawers, usageSvc)
@@ -374,10 +374,10 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 }
 
 // registerListDrawers: paginate a team's drawers, optionally filtered by wing/room.
-func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
-		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging."),
-		mcp.WithString("wing", mcp.Description("Only drawers in this wing.")),
+		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Naming no wing lists the wing this MCP registration was created for; pass \"*\" to list every wing."),
+		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, the listing is scoped to the wing this registration was created for, exactly as a recall is — enumeration and recall must agree, or one of them leaks. Pass \"*\" to list every wing.")),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
 		mcp.WithNumber("offset", mcp.Description("Number of drawers to skip (default 0).")),
@@ -387,8 +387,17 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if !ok {
 			return errResult, nil
 		}
+		// Resolved exactly as a recall is. am_search has scoped to the
+		// registration's wing since scoping landed and this did not, so a listing
+		// that named no wing enumerated EVERY wing — including other projects'
+		// inboxes, which is the call am_status recommends to a waking agent. A
+		// scope one enumeration route ignores is not a scope.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		list, err := drawers.List(ctx, t.TeamID,
-			req.GetString("wing", ""), req.GetString("room", ""),
+			wing, req.GetString("room", ""),
 			req.GetInt("limit", 50), req.GetInt("offset", 0))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
