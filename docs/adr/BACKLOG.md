@@ -511,3 +511,30 @@ without the exit-code trap the first version had.
   reader's calibration rather than leaving it absent. ADR-011 found it, and it is the one carve-out from
   that ADR's permanent "no change to how anchors are checked or reported". Not known whether a declaration
   is cheaply distinguishable across languages, nor whether the fix is a weaker verdict or a fifth status.
+
+## From ADR-006 review (findings filed rather than fixed, 2026-08-20)
+
+- **The mode-scope sweep notices an empty pair set, not a short one** — `TestDiscoveredPairsAdmitTheirCondition`
+  fails when the sweep discovers zero pairs, and `TestModeScopedKnobsAreDiscovered` pins the one known
+  bm25/rrf pair. Any OTHER pair going missing is unnoticed. Four concrete ways it can shorten silently:
+  the fixture's rerank factory returns nil so the three rerank knobs are inert in every cell and never
+  produce a pair; `RerankTimeout` is not in `sweptKnobs` at all; `values[0]` is assumed to be the
+  effective default and never checked against `config.Default()`; and only pairwise cells are run, so a
+  three-way interaction cannot appear. Worth doing when a knob's inertness matters more than the two
+  already found: give each knob an enabling baseline plus an observable fake, and assert the expected
+  inventory rather than a non-zero count.
+- **Nothing stops `unobservableKnobs` from excusing an observable knob** — the exemption list requires a
+  non-empty reason, no simultaneous sweep entry, and no stale field name. It does not require the knob to
+  actually be unobservable. Removing `ClosetBoost` from `sweptKnobs` and adding it to the exemption list
+  with any sentence passes. Two of the three current entries are questionable on the same ground:
+  `RerankURL` is observable through the injected factory (`configureranking_test.go` already observes it)
+  and `RerankTimeout` reaches the factory as an argument, so neither needs a live backend. The fix that
+  would hold is mechanical rather than editorial: reject an exemption when varying its field changes the
+  returned lines, the factory calls, or the ordering — the same test `TestFlagAliasesAreNecessary` applies
+  to the alias table, where an alias is admissible only where no mechanical counterpart exists.
+- **`fieldsReadBy` sees direct selectors only** — `cfg.RerankPool` is found; `c := cfg; c.RerankPool` and
+  a field read inside a helper the config is passed to are not, so the universe under-reports and the
+  gate goes quiet for that field. Type-checking the receiver, or failing when the Config parameter
+  escapes direct field access, would close it. Not urgent while `configureRanking` reads every field
+  directly, and that is exactly the condition that will change without anyone noticing.
+
