@@ -150,9 +150,27 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 // objects. It is tolerant by design — an unparseable entry is skipped rather than
 // failing the write, because the memory itself is worth more than its anchor.
 func parseAnchors(raw any) []palace.AnchorInput {
+	out, _ := parseAnchorList(raw)
+	return out
+}
+
+// parseAnchorList is parseAnchors with the one distinction the tolerant version
+// cannot make: whether the argument was a LIST at all.
+//
+// Tolerance is right where it was written — an unreadable entry means "no
+// anchors added" and the memory is worth more than its anchor. It is wrong at a
+// REPLACE, where the same empty result means "delete the anchors this memory
+// already has". `code_anchors: {…}` instead of `[{…}]` is an ordinary mistake for
+// an LLM caller, and without this the write path would treat it as a deliberate
+// clear and report success — an unknown recorded as a definite negative,
+// destroying what it was built to protect. This repository has fixed that exact
+// shape at the read end already.
+//
+// A genuine `[]` still reads fine, so a deliberate clear is unaffected.
+func parseAnchorList(raw any) ([]palace.AnchorInput, bool) {
 	list, ok := raw.([]any)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	out := make([]palace.AnchorInput, 0, len(list))
 	for _, item := range list {
@@ -168,7 +186,7 @@ func parseAnchors(raw any) []palace.AnchorInput {
 		}
 		out = append(out, palace.AnchorInput{Repo: repo, Path: path, Snippet: snippet})
 	}
-	return out
+	return out, true
 }
 
 // pendingEmbeddingWarning is the one sentence a caller must pass on when a write
@@ -245,7 +263,17 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		// old text — so the staleness check meant to protect the memory is what
 		// marks the correction out of date. Merging would leave both live.
 		if raw, sent := args["code_anchors"]; sent {
-			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, parseAnchors(raw))
+			anchors, readable := parseAnchorList(raw)
+			if !readable {
+				// Refuse rather than clear. An empty result here would delete the
+				// anchors this memory already has, and the caller most likely sent
+				// an object where a list belongs rather than asking for that.
+				return mcp.NewToolResultError(
+					"code_anchors must be a LIST of {path, snippet, repo?} objects; the value sent could not be " +
+						"read as one. Refusing rather than clearing, because an unreadable argument and a " +
+						"deliberate \"remove the anchors\" look identical once parsed — send [] if you meant to clear them"), nil
+			}
+			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, anchors)
 			if aerr != nil {
 				return mcp.NewToolResultError(aerr.Error()), nil
 			}

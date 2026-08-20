@@ -282,3 +282,19 @@ Refusing is the safe half of the fix, not the whole one. Two things are still op
 Still open from this cluster: re-chunking on update (above), which stays an ADR rather than a bug
 fix because it changes which ids exist.
 
+## The ADR evidence chain depends on a tool outside the repository
+
+Raised by review, and worth stating plainly rather than leaving implicit.
+
+`adr-verify` lives in a personal harness directory, not in this tree. It is what runs each task's
+Acceptance fence, writes the Verification Log entry, and — since the per-task guards were removed —
+it is the only thing that fails a run whose `-run` filter matched no tests. CI cannot run it, and a
+reviewer checking out this PR cannot read it.
+
+So the acceptance commands recorded in the task files are reproducible by anyone, but the RULE that
+makes a passing one meaningful is not in the artifact it certifies. Two ways out, neither taken yet
+because both are a decision rather than a fix: vendor the checker into the repo so CI and reviewers
+share it, or put the nothing-ran assertion back into the fences in a form that does not misfire on
+multi-package runs — `go test -v` plus a check that at least one `=== RUN` appeared would do it
+without the exit-code trap the first version had.
+
