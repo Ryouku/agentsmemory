@@ -131,6 +131,35 @@ Normalize to lowercase, with `-`/`_` kept and anything else replaced by `_`. Emi
 `wing: wing_<name> ✓` so the choice is visible, and use that wing for
 `am_add_drawer`, `am_mine`, and the `wing` argument of `am_diary_write`.
 
+### The shared craft wing
+
+Two kinds of memory need opposite scoping, and conflating them is what makes a
+palace either noisy or useless.
+
+**Project facts** belong to their project's wing. "This service launched on that
+date, prod is that host, that ADR hid the feature" is true of exactly one
+codebase, and surfacing it elsewhere is not merely noise — it is an agent acting
+on a decision nobody made about the code in front of it. Scoped recall is the
+default for this reason, and it grows more right as the corpus grows: a larger,
+more heterogeneous corpus measurably retrieves worse, because unrelated projects
+do not remove the answer, they add competitors ahead of it.
+
+**Craft** belongs in `wing_craft`, which every project reads. "Do not trust a
+test that cannot fail", "a gate must read the real artifact rather than a list
+kept beside it" — none of these are about the repository that learned them, and
+scoping them means every project pays to rediscover them.
+
+The test to apply before filing: *would this sentence still be true and useful in
+a repository that shares no code with this one?* If yes, `wing_craft`. If it
+names a service, a deploy, a schema, a customer or an ADR number, it belongs to
+that project. A craft wing filled with project facts is worse than no craft wing
+at all, because every session reads it and every wrong entry is wrong everywhere
+at once.
+
+Recall defaults to your own wing. Pass `wing: "wing_craft"` for a craft question
+and `wing: "*"` to search every wing when a question is genuinely cross-project.
+Reading two named wings in one call is not supported yet; make two calls.
+
 Two wings are deliberately different axes, and mixing them is the mistake to
 avoid: **`wing_<project>` is what a memory is about; `wing_<agent-name>` is who
 wrote it.** A diary entry may live in either — journal it in the project's wing

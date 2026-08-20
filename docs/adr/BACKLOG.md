@@ -139,3 +139,24 @@ canary → promote or roll back. Offline eval sits inside that loop; it does not
 And "every capability exercised" should not mean equal traffic — `am_status` should outrank
 `am_delete_wing` by orders of magnitude. It should mean every enabled component proves it ran,
 exposes its cost and its effect, and can be turned off when it adds neither.
+
+## Unused core capabilities — what the palace offers and nobody calls
+
+Audited 2026-08-20 against a live palace of 49 drawers across 8 wings, one day after a full reset.
+The server registers 41 tools; roughly eight are in regular use. What is built, working, and idle:
+
+| capability | live count | why it is idle |
+|---|---|---|
+| closets | **0** | Built by `am_mine` only, and mining is retired for now — the prior it feeds measured harmful on mined corpora (~0.10 MRR) and `CLOSET_BOOST` defaults to 0. The summary index itself is untested against a curated corpus, which is a different question from the ranking prior and has never been asked. |
+| hallways | **0** | Never used once. `am_recompute_graph` derives them and no session has called it. Nothing in the protocol tells an agent when a hallway would help, so the feature is undiscoverable rather than rejected. |
+| tunnels | **0** | Never used — and now the most obviously wanted of the three, because the craft/project wing split creates exactly the cross-wing links tunnels exist for. |
+| skills (centralised) | **0** | Every session this week reported `am_list_skills` empty and fell back to generic conventions. The bootstrap tells agents to load team skills as a hard gate; the catalogue has never had an entry, so the gate passes vacuously. This is the largest gap between what the protocol promises and what the palace holds. |
+| anchors | 5 | Used, and the cross-repo verdict bug that deleted memories is fixed. Adoption is still incidental rather than routine. |
+| knowledge graph | 27 triples / 50 entities | Genuinely in use by sessions since the reset, but its job is undecided — ADR-004 exists to make supersession its acceptance criterion rather than recall. |
+| `am_merge_wing` | first use 2026-08-20 | Folded two derived wings into one after registrations corrected. Worked exactly as documented; simply nobody had needed it before. |
+
+Three of these are worth acting on, in order:
+
+1. **Populate the skills catalogue.** Sessions ask for it every single time and get nothing. The house conventions currently live in per-repo `CLAUDE.md` files, which is precisely the duplication a central catalogue removes.
+2. **Give tunnels a reason to exist in the protocol.** They are the mechanism for "this craft lesson came from that project's incident", and the split makes that link worth having.
+3. **Decide whether hallways are a feature or dead weight.** Zero uses since the project began is a finding, not a backlog item: either the protocol should teach them or they should be retired.
