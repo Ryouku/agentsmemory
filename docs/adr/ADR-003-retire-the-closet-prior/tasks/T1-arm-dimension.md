@@ -75,3 +75,4 @@ Stop if the closet arm cannot be made to differ from `hybrid` in a test without 
 
 ## Verification Log
 - 2026-08-20 · 8a3ab6b* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestArmBoostsDimension|TestClosetArmMeasuresClosetsWhenServedPriorIsOff|TestProductionArmFollowsServedClosetScale|TestEveryDeclaredArmIsRegistered|TestSearchAppliesClosetBoost" -count=1'`
+- 2026-08-20 · 13b92c8 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestArmBoostsDimension|TestClosetArmMeasuresClosetsWhenServedPriorIsOff|TestProductionArmFollowsServedClosetScale|TestEveryDeclaredArmIsRegistered|TestSearchAppliesClosetBoost" -count=1'`
