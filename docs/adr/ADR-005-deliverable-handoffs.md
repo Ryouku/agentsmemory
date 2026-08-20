@@ -35,7 +35,7 @@ The discriminator was chosen because a bare "this wing is new" warning is a fals
 
 **Read side.** `am_status` gains a top-level `inbox` block — the count in the session's own wing — and a `hint` that changes when there is something waiting. The count exists today only inside the `wings` array, where it is one number among sixty.
 
-`am_status` is the site because it is the one call the protocol mandates first and it is server-side, so it cannot drift per-harness. It is explicitly **not** continuous: `am_status` fires at wake-up, and an item arriving mid-session is not observable to a running session. This ADR does not promise otherwise.
+`am_status` is the site because it is the one call the protocol mandates first and it is server-side, so it cannot drift per-harness. It is explicitly **not** continuous: `am_status` fires at wake-up, so an item arriving mid-session is not visible to that session *through this mechanism*. That is a property of the mechanism chosen here, not of the transport — see Out of Scope, where the original wording claimed the transport could not carry a push and was wrong. This ADR does not promise a mid-session nudge; it also does not establish that one is impossible.
 
 ## Alternatives Considered
 
@@ -79,11 +79,27 @@ The discriminator was chosen because a bare "this wing is new" warning is a fals
 
 ## Out of Scope
 
-- Mid-session inbox delivery — notifying a running session that an item arrived (permanent: MCP is request/response here; a server cannot wake a session, and promising a nudge the transport cannot deliver is worse than the wake-up-only one)
+- Mid-session inbox delivery — notifying a running session that an item arrived (deferred: docs/adr/BACKLOG.md)
 - Fixing the anchored-BM25 wiring, the closet default, or any retrieval config (permanent: unrelated decision, ADR-002/ADR-003 own it)
 - Auto-correcting a wrong wing name to a guessed right one (permanent: the server cannot know the target project's name, and a silent rewrite is a worse failure than a refusal)
 - Reconciling the six existing orphaned drawers (deferred: T3 does it by hand via `am_merge_wing`; no code change, so no gate can hold it)
 - An inbox count for wings other than the session's own (deferred: docs/adr/BACKLOG.md — nobody has asked, and every extra count dilutes the one that matters)
+
+### Amendment 2026-08-20 — the mid-session bullet was tagged `permanent` on a false premise
+
+It read "permanent: MCP is request/response here; a server cannot wake a session". That is wrong.
+This server runs `server.NewStreamableHTTPServer` (`cmd/server/main.go:293`), and mcp-go v0.55.1
+exposes `SendNotificationToClient`, `SendNotificationToAllClients` and
+`SendNotificationToSpecificClient` (`server/session.go:301-377`). This repository calls none of
+them. The transport can carry a push; we simply do not send one.
+
+What is genuinely unknown is the client half — whether a given agent harness surfaces an
+unsolicited notification to the model mid-turn — and that is a question you answer by testing a
+harness, not a property of the protocol.
+
+The correction matters beyond the wording. `permanent` is the one disposition `adr-debt` never
+resurfaces, so a wrong reason there does not merely mislead a reader: it removes the item from
+every future sweep. It is now `deferred`.
 
 ## Risks
 

@@ -216,7 +216,8 @@ Then weave a tunnel from the source, so the item keeps its provenance instead of
 **Reading your own inbox is part of waking up.** `am_status` names what is waiting in your wing and
 its hint changes when there is something there — a count of zero and a session that cannot tell are
 reported differently, so an unknown never reads as an all-clear. That count is taken at wake-up:
-an item filed while you are running will not appear, because the server cannot wake a session.
+an item filed while you are running will not appear, because nothing pushes it — call `am_status`
+again if you want a fresher answer.
 Step 1c's recall should include it: an item filed
 there is a lead to evaluate with the code in front of you, not a queue to work through. Act on it if
 it holds up, close it out by filing what you found, and say plainly when it does not apply any more

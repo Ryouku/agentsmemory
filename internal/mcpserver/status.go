@@ -17,10 +17,13 @@ type inboxView struct {
 // inboxStatus builds that block from the session's wing, the count, and whatever
 // went wrong getting it.
 //
-// The count is taken at wake-up and does not update mid-session — an item filed
-// while a session runs is not observable to it, because the transport is
-// request/response and the server cannot wake a caller. That limit is stated in
-// the response itself rather than only in the ADR, since the response is what an
+// The count is taken at wake-up and does not update mid-session: nothing here
+// pushes, so a session sees whatever was true when it called. That is a property
+// of this mechanism and not of the transport — we serve streamable HTTP and
+// mcp-go exposes SendNotificationToClient, neither of which this server uses.
+// Saying "the transport cannot" would be false, and a false reason is worse than
+// no reason: it closes a question that is still open. The limit is stated in the
+// response itself rather than only in the ADR, since the response is what an
 // agent reads.
 func inboxStatus(wing string, count int, err error) inboxView {
 	switch {

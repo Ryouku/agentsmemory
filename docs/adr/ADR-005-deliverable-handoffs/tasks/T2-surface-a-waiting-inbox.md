@@ -54,7 +54,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- Notifying a session mid-run that an item arrived (permanent: the transport is request/response; the server cannot wake a session)
+- Notifying a session mid-run that an item arrived (deferred: docs/adr/BACKLOG.md — corrected 2026-08-20: the transport CAN carry it, mcp-go exposes SendNotificationToClient and we serve streamable HTTP; the unknown is whether a harness surfaces it to the model, which is testable)
 - Inbox counts for wings other than the session's own (deferred: docs/adr/BACKLOG.md — every extra count dilutes the one that matters)
 - Marking an inbox item read or closed (deferred: docs/adr/BACKLOG.md — needs per-drawer state this ADR does not introduce)
 
