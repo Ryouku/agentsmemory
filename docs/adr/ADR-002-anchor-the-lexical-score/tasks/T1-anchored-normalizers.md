@@ -82,3 +82,4 @@ Stop and ask if `κ = 0.5` in the saturating transform turns out to need per-cor
 
 ## Verification Log
 - 2026-08-20 · a2483fc* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ -run "TestLexNorm|TestRankHybrid|TestRankRRF|TestBM25Scores|TestLexicalCoverage|TestAdaptiveWeight" -count=1'`
+- 2026-08-20 · 9195d7c · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ -run "TestLexNorm|TestRankHybrid|TestRankRRF|TestBM25Scores|TestLexicalCoverage|TestAdaptiveWeight" -count=1'`
