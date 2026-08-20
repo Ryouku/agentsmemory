@@ -154,8 +154,8 @@ The server registers 41 tools; roughly eight are in regular use. What is built, 
 | capability | live count | why it is idle |
 |---|---|---|
 | closets | **0** | Built by `am_mine` only, and mining is retired for now — the prior it feeds measured harmful on mined corpora (~0.10 MRR) and `CLOSET_BOOST` defaults to 0. The summary index itself is untested against a curated corpus, which is a different question from the ranking prior and has never been asked. |
-| hallways | **0** | Never used once. `am_recompute_graph` derives them and no session has called it. Nothing in the protocol tells an agent when a hallway would help, so the feature is undiscoverable rather than rejected. |
-| tunnels | **0** | Never used — and now the most obviously wanted of the three, because the craft/project wing split creates exactly the cross-wing links tunnels exist for. |
+| hallways | **0**, and structurally so | Not "nobody ran the build step" — `am_recompute_graph` was run across all 8 wings on 2026-08-20 and returned `hallways: 0, entity_tunnels: 0`. Hallways are entity co-occurrence, and 82 of 82 drawers have an empty `entities` column: `Service.Add` (`internal/palace/service.go:305`) builds its `Drawer` literal without one, and the only code that ever calls `extractEntities` is `internal/palace/mine.go`. Mining is retired, so nothing writes the input. |
+| tunnels | **0** | Explicit tunnels have never been created by a session, and derived ones cannot exist: `entityTunnelsForWing` (`internal/palace/tunnel.go:180`) takes hallways as its input, so it inherits the zero above. The craft/project wing split is exactly what explicit tunnels are for, and that half is available today. |
 | skills (centralised) | 2 | Was **0** for the project's whole life: every session reported `am_list_skills` empty and fell back to generic conventions while the bootstrap called loading them a hard gate, so the gate passed vacuously. `memory-orchestration` and `writing-memories` were published 2026-08-20 and sessions began loading them the same hour. `effective-go` and `cqrs` — the two this repo's protocol names by name — were published the same day, so the catalogue holds 4 and the promise in `AGENTS.md` and `CLAUDE.md` is true for the first time. |
 | anchors | 5 | Used, and the cross-repo verdict bug that deleted memories is fixed. Adoption is still incidental rather than routine. |
 | knowledge graph | 41 triples | Genuinely in use by sessions since the reset, but its job is undecided — ADR-004 exists to make supersession its acceptance criterion rather than recall. |
@@ -171,5 +171,30 @@ Three of these are worth acting on, in order:
    missing is a seed path (skill bodies in the repo tree, pushed at install) plus the gate that
    naturally follows: a test failing when the protocol names a skill the tree does not carry.
 
-2. **Give tunnels a reason to exist in the protocol.** They are the mechanism for "this craft lesson came from that project's incident", and the split makes that link worth having.
-3. **Decide whether hallways are a feature or dead weight.** Zero uses since the project began is a finding, not a backlog item: either the protocol should teach them or they should be retired.
+2. **Decide the entity graph: feed it or retire it.** This is the repository's own named defect,
+   and the largest instance of it yet. Hallways, derived entity tunnels and the entity half of
+   `am_traverse` are written, tested and reachable by tool call — three MCP tools and a rebuild
+   command — and all of them return nothing, because their single input is written by one retired
+   code path. `am_mine` calls `extractEntities`; `Service.Add` does not, so every drawer filed by
+   `am_add_drawer` or `am_diary_write` carries an empty `entities` column, 82 of 82 today. The tests
+   pass because they exercise the component (given entities, compute hallways) rather than the
+   selection (does anything ever produce entities), which is the same shape as the eval arm that
+   won four tables while being unreachable from production.
+
+   Two honest options, and the measurement should pick between them. **Feed it:** call the existing
+   entity extractor on the normal write path, so hallways and derived tunnels describe the curated
+   corpus rather than a mined one — cheap, since `closetEntities` already exists and runs on
+   content we already hold. **Retire it:** delete the hallway/entity-tunnel derivation and the two
+   tools that expose it, and keep explicit tunnels only. What is not an option is leaving three
+   tools in a catalogue of 41 that answer every call with an empty list, because an agent reading
+   the catalogue cannot tell that apart from a palace that simply has no links yet.
+
+   Whichever way it goes needs a gate that fails when the input dries up again — a test asserting
+   that a drawer written through the normal path carries entities, which fails today and is
+   therefore the right red test to open the ADR with.
+
+3. **Use explicit tunnels for the craft/project split.** Independent of the entity graph above and
+   available now: a craft lesson learned in a project incident should carry a tunnel back to the
+   incident that taught it, so a rule that gets challenged can be traced to its evidence. The
+   protocol tells agents tunnels exist and never says when to weave one, which is why the count is
+   zero on the explicit side too.
