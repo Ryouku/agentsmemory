@@ -1063,3 +1063,81 @@ func TestSupersessionTableSeparatesPageScopedArms(t *testing.T) {
 			"column would add two different measurements together:\n%s", got)
 	}
 }
+
+// TestArmNamesFitTheTableColumn turns a silent re-break into a red test.
+//
+// The arm column is 40 characters and the longest registered name is exactly 40
+// today, with zero slack. The registry is swept — bm25Sweep by anchoredNorms by
+// recencySweep — so the next name is GENERATED rather than typed, and nothing
+// fails when one exceeds the width: the columns simply stop lining up again,
+// which is the defect the widening was for.
+func TestArmNamesFitTheTableColumn(t *testing.T) {
+	const column = 40 // must match the %-40s in printEvalTable and the supersession table
+	longest, worst := 0, EvalArm("")
+	for _, a := range evalArms(EvalOptions{Contextual: true}, true) {
+		if len(a) > longest {
+			longest, worst = len(a), a
+		}
+	}
+	if longest > column {
+		t.Errorf("the longest registered arm name is %d characters (%q) and the table column is %d — "+
+			"every row past it pushes the numbers out of their columns, which is what makes a table "+
+			"of numbers unreadable. Widen the column in printEvalTable and printSupersessionTable "+
+			"together, or shorten the name", longest, worst, column)
+	}
+}
+
+// TestAdaptiveArmsAreNotInterchangeable pins the base adaptive pair to their own
+// rankers.
+//
+// Swapping the ArmAdaptive and ArmAdaptiveIDF branches in fusionRankerFor — so
+// the `auto` row prints `auto-idf`'s numbers and vice versa — left the whole
+// suite green. The two arms were mentioned in eval_test.go only as base names
+// for constructing anchored arm names; nothing compared them behaviourally and
+// nothing bound either name to its ranker.
+//
+// It matters for the same reason the anchored mislabels did:
+// T4-retire-or-ratify-adaptive selects the stronger of these two as `m*`, and an
+// IRREVERSIBLE deletion is decided by which one wins. A table that prints them
+// under each other's names decides it backwards.
+//
+// The two differ by construction — binary lexical coverage against IDF-weighted
+// coverage — so a page whose query terms differ sharply in IDF separates them.
+func TestAdaptiveArmsAreNotInterchangeable(t *testing.T) {
+	// "the" is in every candidate (near-zero IDF); "quorum" in one (high IDF).
+	// Binary coverage counts both terms equally; IDF-weighted coverage does not.
+	query := "the quorum"
+	docs := []string{
+		"the quorum replica shard index",
+		"the cache the policy the index",
+		"the shard the replica the vector",
+	}
+	dists := []float64{0.40, 0.42, 0.44}
+
+	auto := fusionRankerFor(ArmAdaptive, hybridBM25Weight)
+	idf := fusionRankerFor(ArmAdaptiveIDF, hybridBM25Weight)
+	if auto == nil || idf == nil {
+		t.Fatal("both adaptive arms must have rankers")
+	}
+	a := auto(query, docs, dists, nil)
+	b := idf(query, docs, dists, nil)
+
+	same := true
+	for i := range a {
+		if a[i].Fused != b[i].Fused || a[i].Index != b[i].Index {
+			same = false
+		}
+	}
+	if same {
+		t.Errorf("%s and %s produced identical fused scores on a page built to separate them — "+
+			"nothing binds either arm name to its ranker, so swapping the two branches would "+
+			"publish each one's numbers under the other's name", ArmAdaptive, ArmAdaptiveIDF)
+	}
+
+	// And the weights themselves must differ, or the fixture is not separating
+	// what the test claims it is.
+	if LexicalCoverage(query, docs) == LexicalCoverageIDF(query, docs) {
+		t.Error("the fixture's binary and IDF-weighted coverage are equal, so this test would pass " +
+			"under a swap for a reason unrelated to the arms")
+	}
+}

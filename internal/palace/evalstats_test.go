@@ -353,3 +353,34 @@ func TestSupersessionGateVetoNeedsNonInferiority(t *testing.T) {
 			"counts must veto; got %q", got.Status)
 	}
 }
+
+// TestRecencyVetoExplainsACostRejection pins the explanation, not just the
+// verdict.
+//
+// The middle branch of ApplyRecencyVeto is the interesting one: a band that DOES
+// close the supersession failure but whose ranking cost is not bounded. It
+// returns the base status unchanged with a Reason saying why — and every other
+// test here asserts only on Status, so replacing that whole branch with
+// `return base` left the suite green while the explanation vanished.
+//
+// "A band nearly closed this and was rejected on cost" is the sentence that
+// stops someone re-running the sweep next month, and the gate's own doc comment
+// promises that each refusal names its cause.
+func TestRecencyVetoExplainsACostRejection(t *testing.T) {
+	base := SupersessionVerdict(SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 30}, supersessionBar)
+	closes := SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 0}
+
+	got := ApplyRecencyVeto(base, closes, Interval{Lo: -0.20, Hi: -0.10}, len(recencySweep))
+	if got.Status != base.Status {
+		t.Fatalf("a band whose cost is unbounded must not change the verdict, got %q", got.Status)
+	}
+	if got.Reason == "" {
+		t.Fatal("the rejection produced no explanation — the operator sees a bare verdict and " +
+			"cannot tell that a cheap fix nearly closed it")
+	}
+	for _, want := range []string{"cost", "-0.05"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("the explanation never mentions %q, so it does not say why the band was rejected: %s", want, got.Reason)
+		}
+	}
+}

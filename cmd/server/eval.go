@@ -978,7 +978,7 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 	}
 
 	fmt.Fprintf(out, "%-40s %8s %8s %8s %14s %10s   %s\n", "arm", "R@1", "R@5", "MRR", "95% CI", "not found", "vs best")
-	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 92))
+	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 110))
 	for i, m := range report.Arms {
 		ci := palace.BootstrapMRR(m.Ranks)
 		verdict := ""
@@ -1500,15 +1500,27 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 	verdict := palace.SupersessionVerdict(cell, palace.SupersessionBar())
 	// The veto is selection-aware: the best of the swept bands is compared at
 	// alpha/k, and only vetoes if it also costs no general ranking.
+	// Near-misses are collected, not discarded. A band that closes the failure
+	// and is rejected on ranking cost produces an explanation the veto has
+	// already computed, and it is exactly the sentence that stops someone
+	// re-running the sweep next month — but the first version of this loop
+	// adopted the outcome only when the STATUS changed, so that explanation was
+	// computed and thrown away every time. Found by review, measured: 246
+	// characters produced, 0 printed.
+	var nearMiss []string
 	for _, m := range report.Arms {
 		band, ok := palace.RecencyBandCell(m)
 		if !ok {
 			continue
 		}
 		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report))
-		if v := palace.ApplyRecencyVeto(verdict, band, delta, palace.RecencyBandCount()); v.Status != verdict.Status {
+		v := palace.ApplyRecencyVeto(verdict, band, delta, palace.RecencyBandCount())
+		if v.Status != verdict.Status {
 			verdict = v
 			break
+		}
+		if v.Reason != "" {
+			nearMiss = append(nearMiss, fmt.Sprintf("%s: %s", m.Arm, v.Reason))
 		}
 	}
 
@@ -1519,6 +1531,9 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 		100*verdict.Rate, verdict.Interval, palace.SupersessionBar(), 100*verdict.RateReachable)
 	if verdict.Reason != "" {
 		fmt.Fprintf(out, "  %s\n", verdict.Reason)
+	}
+	for _, nm := range nearMiss {
+		fmt.Fprintf(out, "  near-miss — %s\n", nm)
 	}
 	return nil
 }

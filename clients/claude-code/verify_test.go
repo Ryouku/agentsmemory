@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,47 @@ func TestCurrentRepoLabelReadsTheRemote(t *testing.T) {
 	if got := currentRepoLabel(dir); got != "expected-name" {
 		t.Errorf("currentRepoLabel = %q, want %q — the label must come from the remote, not the "+
 			"directory, or the same repo cloned into two folders disagrees with itself", got, "expected-name")
+	}
+}
+
+// TestUnknownTreeRecordsNoVerdictEndToEnd drives runVerify itself.
+//
+// The existing regression test recomputes a hand-copied duplicate of the guard's
+// condition and asserts on that, so deleting the guard from verify.go left the
+// suite green — a test of the code's shape rather than of the code. This one
+// reads the report runVerify writes, which is the behaviour that matters: the
+// defect it guards already deleted three memories once.
+//
+// Both destructive verdicts are covered, because both write a verdict that leads
+// to a memory being removed. A file that is ABSENT here might live in the other
+// repository; a file that is PRESENT here might be an unrelated file at the same
+// path — README.md, main.go and go.mod collide across repositories constantly —
+// so a snippet that fails to match is not evidence of staleness either.
+func TestUnknownTreeRecordsNoVerdictEndToEnd(t *testing.T) {
+	root := t.TempDir() // no git, so currentRepoLabel is "" — an unknown tree
+	// A file that EXISTS here, whose content does not contain the anchor snippet.
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("unrelated content\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	anchors := []anchor{
+		{ID: "a1", Path: "missing/from/here.go", Snippet: "func Gone() {}", Repo: "some-other-repo", DrawerID: "d1"},
+		{ID: "a2", Path: "README.md", Snippet: "a line that is not in this README", Repo: "some-other-repo", DrawerID: "d2"},
+	}
+
+	var buf strings.Builder
+	verdicts, counts := verifyAnchors(root, anchors, &buf)
+	report := buf.String()
+
+	if len(verdicts) != 0 {
+		t.Errorf("an unknown tree recorded %d verdict(s); it cannot tell this repository from the "+
+			"one the anchors name, and a verdict here is what deletes a memory:\n%s", len(verdicts), report)
+	}
+	if counts.missing != 0 || counts.drifted != 0 {
+		t.Errorf("missing=%d drifted=%d, want 0 and 0 — both are destructive verdicts and neither "+
+			"is supportable without knowing which repository this is:\n%s", counts.missing, counts.drifted, report)
+	}
+	if counts.elsewhere != 2 {
+		t.Errorf("elsewhere=%d, want 2 — the anchors must be accounted for, not silently dropped", counts.elsewhere)
 	}
 }
