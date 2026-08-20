@@ -332,7 +332,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max results, 1-100 (default 5).")),
-		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for, so one project's memories do not answer another's; pass a wing explicitly to look elsewhere, or run the server with SEARCH_SCOPE=workspace to search everything by default.")),
+		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for, so one project's memories do not answer another's. Pass another wing to look there instead, or \"*\" to search EVERY wing — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour. SEARCH_SCOPE=workspace makes searching everything the default.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
 		mcp.WithNumber("snippet_chars", mcp.Description(

@@ -182,6 +182,14 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 // only look alike.
 func searchWingFor(ctx context.Context, passed string, scoped bool) (string, error) {
 	if w := strings.TrimSpace(passed); w != "" {
+		// "*" asks for every wing the caller can see. Scoping made the empty
+		// argument mean "my project", which silently removed the only way to ask
+		// a cross-project question — and those are real: an infrastructure
+		// decision explains a deploy failure in the application it hosts. A
+		// default is only defensible when it can be overridden per call.
+		if w == "*" {
+			return "", nil
+		}
 		return palace.SanitizeName(w, "wing")
 	}
 	if !scoped {
