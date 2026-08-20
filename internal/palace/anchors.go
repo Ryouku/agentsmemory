@@ -249,3 +249,30 @@ func (s *Service) AnchorsForDrawers(ctx context.Context, teamID string, ids []st
 	}
 	return out, nil
 }
+
+// ReplaceAnchors swaps a drawer's anchors for a new set, returning how many were
+// written.
+//
+// Replace rather than append, because it exists for the case where a memory's
+// CONTENT changed: the old anchor pins the old text, and appending would leave it
+// beside the new one, still checked, still able to mark the corrected memory
+// STALE. A memory whose text is right and whose anchor is dead reads as
+// out-of-date to every future session, which is the opposite of what correcting
+// it was for.
+//
+// An empty set clears the anchors, which is the honest option when a rewrite no
+// longer points at any particular code.
+func (s *Service) ReplaceAnchors(ctx context.Context, teamID, drawerID string, in []AnchorInput) (int, error) {
+	if drawerID == "" {
+		return 0, fmt.Errorf("%w: drawer id is required", ErrInvalidInput)
+	}
+	if err := s.repo.db.WithContext(ctx).
+		Where("team_id = ? AND drawer_id = ?", teamID, drawerID).
+		Delete(&anchorRow{}).Error; err != nil {
+		return 0, fmt.Errorf("clear the drawer's old anchors: %w", err)
+	}
+	if len(in) == 0 {
+		return 0, nil
+	}
+	return s.AddAnchors(ctx, teamID, drawerID, in)
+}

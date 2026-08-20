@@ -268,10 +268,17 @@ Refusing is the safe half of the fix, not the whole one. Two things are still op
   must agree on. Worth recording because this release sharpened the consequence — recall now
   defaults to the registration's wing, so after a split neither wing returns the whole memory and
   nothing marks what you get as a fragment.
-- **`Delete` has the same shape.** `Service.Delete` removes one row and one vector; deleting a
-  parent leaves its children orphaned, still embedded, still searchable, and now with a dangling
-  `parent_id`. Not yet reproduced, but the code is one row deep in exactly the same way.
-- **`am_update_drawer` cannot set `code_anchors` at all**, so a memory whose content is corrected
-  keeps its old anchor and stays flagged STALE even once the text is right. Reported alongside the
-  chunk defect.
+- ~~**`Delete` has the same shape.**~~ **Fixed.** Reproduced — deleting the parent of a two-chunk
+  memory left chunk 1 live, embedded, searchable and pointing at a parent that no longer existed —
+  then fixed to remove the whole memory from either end, parent or child. A delete has no reference
+  ambiguity to weigh, unlike an update: the caller is removing the memory, so removing all of it is
+  what they asked for. The tool now reports how many chunks went.
+- ~~**`am_update_drawer` cannot set `code_anchors`.**~~ **Fixed.** `ReplaceAnchors` swaps rather than
+  appends, because the case it exists for is a memory being corrected: the old anchor pins the OLD
+  text, so the staleness check meant to protect the memory is what marks the correction out of date.
+  An empty array clears them, which is the honest option when a rewrite no longer points at any
+  particular code.
+
+Still open from this cluster: re-chunking on update (above), which stays an ADR rather than a bug
+fix because it changes which ids exist.
 

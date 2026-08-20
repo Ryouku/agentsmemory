@@ -240,7 +240,7 @@ func TestServiceGetUpdateDelete(t *testing.T) {
 		t.Fatalf("update did not persist: %q", got.Content)
 	}
 
-	if err := svc.Delete(ctx, team, id); err != nil {
+	if _, err := svc.Delete(ctx, team, id); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := svc.Get(ctx, team, id); err != ErrNotFound {
@@ -758,5 +758,61 @@ func TestUpdateRefusesToHalfRewriteAMultiChunkMemory(t *testing.T) {
 	}
 	if _, err := svc.Update(ctx, team, one.Drawers[0].ID, DrawerPatch{Content: &corrected}); err != nil {
 		t.Errorf("a single-chunk memory must still be updatable: %v", err)
+	}
+}
+
+// TestDeleteRemovesTheWholeMemory pins that a delete takes every chunk.
+//
+// It used to take one row. Deleting the parent of a multi-chunk memory left the
+// children live — still embedded, still returned by search, and pointing at a
+// parent that no longer existed. Same shape as the update defect one door over:
+// an operation that treats one row as the whole memory and reports success.
+//
+// A delete has no reference ambiguity to weigh, unlike an update: the caller is
+// removing the memory, so removing all of it is what they asked for.
+func TestDeleteRemovesTheWholeMemory(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	long := strings.Repeat("The retention window is thirty days and this forces chunking. ", 40)
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "p", Content: long})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(res.Drawers) < 2 {
+		t.Fatalf("fixture: need a multi-chunk memory, got %d", len(res.Drawers))
+	}
+
+	n, err := svc.Delete(ctx, team, res.Drawers[0].ID)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != len(res.Drawers) {
+		t.Errorf("delete reported %d chunk(s) removed, want %d — the count is what lets a caller "+
+			"say how much went instead of echoing the one id it was handed", n, len(res.Drawers))
+	}
+	left, err := svc.List(ctx, team, "w", "r", 100, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("%d chunk(s) survived the delete — orphaned, still embedded, still searchable, and "+
+			"pointing at a parent that no longer exists", len(left))
+	}
+
+	// Deleting by a CHILD's id must take the memory too, or the same orphaning
+	// happens from the other end.
+	res2, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "p2", Content: long})
+	if err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+	if _, err := svc.Delete(ctx, team, res2.Drawers[len(res2.Drawers)-1].ID); err != nil {
+		t.Fatalf("delete by child: %v", err)
+	}
+	if left, err := svc.List(ctx, team, "w", "r", 100, 0); err != nil {
+		t.Fatal(err)
+	} else if len(left) != 0 {
+		t.Errorf("deleting by a child's id left %d chunk(s)", len(left))
 	}
 }

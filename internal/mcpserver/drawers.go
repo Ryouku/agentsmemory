@@ -240,6 +240,17 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		// Anchors are REPLACED, not merged. This exists for the case that
+		// motivated it: a memory is corrected, and its old anchor still pins the
+		// old text — so the staleness check meant to protect the memory is what
+		// marks the correction out of date. Merging would leave both live.
+		if raw, sent := args["code_anchors"]; sent {
+			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, parseAnchors(raw))
+			if aerr != nil {
+				return mcp.NewToolResultError(aerr.Error()), nil
+			}
+			return jsonResult(map[string]any{"drawer": toView(d), "code_anchors": n}), nil
+		}
 		return jsonResult(toView(d)), nil
 	})
 }
@@ -247,7 +258,7 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 // registerDeleteDrawer: remove a drawer (row + vector) by id.
 func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("delete_drawer",
-		mcp.WithDescription("Delete a drawer by id (removes both its metadata and its embedding)."),
+		mcp.WithDescription("Delete a memory by the id of any of its drawers (removes every chunk's metadata and embedding). A memory over the chunk size is several drawers sharing a parent, and deleting one of them would leave the rest live and searchable with nothing to belong to, so all of them go."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to delete.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -259,10 +270,11 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		if err := drawers.Delete(ctx, t.TeamID, id); err != nil {
+		n, err := drawers.Delete(ctx, t.TeamID, id)
+		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"ok": true, "deleted": id}), nil
+		return jsonResult(map[string]any{"ok": true, "deleted": id, "chunks_deleted": n}), nil
 	})
 }
 

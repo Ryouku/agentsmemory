@@ -577,14 +577,37 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 // Delete removes a drawer's metadata row and its vector. The row goes first so
 // the authoritative record is gone before the derived index; a failed vector
 // delete leaves an orphan the next search harmlessly skips.
-func (s *Service) Delete(ctx context.Context, teamID, id string) error {
-	if err := s.repo.Delete(ctx, teamID, id); err != nil {
-		return fmt.Errorf("delete drawer row: %w", err)
+func (s *Service) Delete(ctx context.Context, teamID, id string) (int, error) {
+	// The memory is the unit, not the row. A memory over ChunkSize is several
+	// rows sharing a parent, and deleting one of them left the rest orphaned —
+	// still embedded, still returned by search, and now pointing at a parent that
+	// no longer exists. Reproduced: deleting the parent of a two-chunk memory
+	// left chunk 1 live.
+	//
+	// Unlike an update, a delete has no reference ambiguity to weigh: the caller
+	// is removing the memory, so removing all of it is what they asked for. The
+	// count is returned so the caller can say how much went, rather than
+	// reporting the one id it was given.
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if err != nil {
+		return 0, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
 	}
-	if err := s.vectors.Delete(ctx, teamID, []string{id}); err != nil {
-		return fmt.Errorf("delete drawer vector: %w", err)
+	ids := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		ids = append(ids, c.ID)
 	}
-	return nil
+	if len(ids) == 0 {
+		ids = []string{id} // no row to resolve; delete what we were given
+	}
+	for _, cid := range ids {
+		if err := s.repo.Delete(ctx, teamID, cid); err != nil {
+			return 0, fmt.Errorf("delete drawer row: %w", err)
+		}
+	}
+	if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
+		return 0, fmt.Errorf("delete drawer vectors: %w", err)
+	}
+	return len(ids), nil
 }
 
 // List paginates a team's drawers, optionally narrowed to a wing and/or room.
