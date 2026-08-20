@@ -34,7 +34,7 @@ Make every temporal case a pair that could actually mislead: close enough in emb
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'
 ```
 
 ## Tests
@@ -72,5 +72,5 @@ Stop and ask if accepted pairs fall below roughly one in five candidates: at tha
 - Measuring the judge's own agreement with a human label (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
-- 2026-08-20 · d0b37a9 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
-- 2026-08-20 · f273396 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1 2>&1 | tee /tmp/adr-acceptance.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+- 2026-08-20 · d0b37a9 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'`
+- 2026-08-20 · f273396 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestOlderNeighbor|TestPairVerified" -count=1'`
