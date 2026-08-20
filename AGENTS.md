@@ -171,6 +171,42 @@ Only then may you start the task, and only in a degraded mode you keep visible:
 
 ---
 
+## Reachability — the defect this repo keeps shipping
+
+The characteristic failure here is not a bug. It is a capability that is
+**finished and unreachable**: the code works, the tests pass, and the one line
+that lets anything select it was never written. In one week this shipped four
+times — an eval arm declared and never registered, an IDF coverage function with
+no branch in `Search`, an embedding backend whose selector existed only in a
+package comment, and a config field nothing consumed. Every one of them had
+tests. Every test exercised the component rather than the selection.
+
+Two rules follow, and both are enforced mechanically rather than trusted:
+
+- **A test for "X is now available" must fail when X is removed.** Prove it:
+  delete the wiring, watch the test go red, put it back. A test asserting that a
+  call still returns something passes happily while the feature does nothing —
+  that is exactly how the IDF arm survived four winning eval tables without ever
+  being reachable from production.
+- **Documentation is load-bearing.** A variable shown with a value in a comment
+  or an env example is a promise; `TestDocumentedEnvVarsAreRead` fails when the
+  program reads no such variable. On its first run it found a shipped compose
+  file advertising a rerank pool of 20 that the server had never read.
+
+- **A setting is wired only when both halves exist.** `TestEveryConfigFieldIsPopulatedAndRead`
+  fails when a `config.Config` field is never assigned from the command line (a
+  setting an operator cannot set) or never read by anything (a setting that
+  changes nothing when they do). `TestEveryFlagIsRead` fails when a flag is
+  declared and never consulted — `--help` is documentation like any other.
+
+The same principle covers the gates already in the tree: `internal/doclint`
+(a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`
+(an eval arm that no code path registers appears in no table, silently), and
+`TestCatalogSizeIsWhatTheReadmeClaims` (the README's tool count must be the real one).
+
+Prose belongs where a human reads it and nowhere else. Anything that must stay
+true gets a command whose exit code says so.
+
 ## Exception — read-only review
 
 The gate above exists to protect WORK: an agent changing this repo without

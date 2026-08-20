@@ -9,7 +9,8 @@ memory** (who did what, and why). Then plan, work, and — before you stop — w
 back what you learned so the next session starts ahead of where this one did.
 
 This command is **generic**: it wires up three sources — the **agentsmemory MCP**
-(`am_*` tools), the **codebase-memory** code graph, and the **eidos:spec** skill —
+(`am_*` tools), the **codebase-memory** code graph, and — when registered — the
+**eidos:spec** skill —
 and assumes no particular language, framework, or UI stack.
 
 ## Task
@@ -20,9 +21,15 @@ $ARGUMENTS
 
 Fire these in parallel where you can; each answers a different question.
 
-- **1a. Specs — `eidos:spec`.** Invoke the `eidos:spec` skill to load the
-  project's source-of-truth specs (`eidos/*.md`): what the system is *supposed* to
-  do. If the project has no specs, say so and move on.
+- **1a. Specs — the intent layer, however this project keeps it.** If an
+  `eidos:spec` skill is registered, invoke it to load `eidos/*.md`. It often is
+  not: most repositories have no spec layer of that shape, and naming a skill
+  that does not exist has sent sessions looking for a directory that was never
+  there. When it is absent, say so in one line and name what actually carries
+  intent here — an OpenAPI document, an ADR corpus, `docs/`, a business-rules
+  file, `CLAUDE.md`. Report the substitute rather than reporting nothing; "no
+  specs" and "the specs are 84 ADRs and an OpenAPI contract" are different
+  situations and only one of them means you are working blind.
 
 - **1b. Code reality — codebase-memory.** Reindex first, then search — never
   search a stale graph:
@@ -62,9 +69,10 @@ the next session recalls it.
 
 ## Step 2 — Plan
 
-Invoke **`eidos:plan`** to turn the loaded context into a structured, multi-step
-plan grounded in the specs (1a) and the code graph (1b). Cite concrete
-`file:line`. Surface unresolved conflicts as decision points, not silent choices.
+Turn the loaded context into a structured, multi-step plan grounded in the specs
+(1a) and the code graph (1b) — via the **`eidos:plan`** skill when it is
+registered, and directly when it is not. Cite concrete `file:line`. Surface
+unresolved conflicts as decision points, not silent choices.
 
 ## Step 2b — Todo list
 

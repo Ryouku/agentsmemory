@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,43 +110,30 @@ func runVerify(ctx context.Context, c *cli.Command, out io.Writer) error {
 
 	// Read each file once: several memories usually pin the same file, and a
 	// re-read per anchor turns a fast check into a slow one on a large palace.
-	files := map[string]*sourceFile{}
-	var verdicts []verdict
-	var drifted, missing, verified int
-	for _, a := range anchors {
-		src, ok := files[a.Path]
-		if !ok {
-			src = readSource(filepath.Join(root, a.Path))
-			files[a.Path] = src
-		}
-		v := verdict{ID: a.ID}
-		switch {
-		case !src.exists:
-			v.Status, missing = statusMissing, missing+1
-			fmt.Fprintf(out, "  MISSING  %s — file is gone (memory %s)\n", a.Path, short(a.DrawerID))
-		default:
-			if line, ok := src.find(a.Snippet); ok {
-				v.Status, v.Line, verified = statusVerified, line, verified+1
-			} else {
-				v.Status, drifted = statusDrifted, drifted+1
-				fmt.Fprintf(out, "  DRIFTED  %s — the pinned code is no longer there (memory %s)\n", a.Path, short(a.DrawerID))
-				fmt.Fprintf(out, "           was: %s\n", firstLine(a.Snippet, 88))
-			}
-		}
-		verdicts = append(verdicts, v)
-	}
+	verdicts, counts := verifyAnchors(root, anchors, out)
+	here := currentRepoLabel(root)
+	drifted, missing, verified, elsewhere := counts.drifted, counts.missing, counts.verified, counts.elsewhere
+	_ = verified
 
+	if elsewhere > 0 {
+		if here == "" {
+			fmt.Fprintf(out, "  %d anchor(s) name a repository and this tree does not name itself (no git remote), "+
+				"so a file not found here is not evidence the memory is stale — left unrecorded\n", elsewhere)
+		} else {
+			fmt.Fprintf(out, "  %d anchor(s) belong to another repository and were not checked from here (this tree is %q)\n", elsewhere, here)
+		}
+	}
 	if c.Bool("dry-run") {
-		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing (dry run — nothing recorded)\n",
-			len(anchors), wingLabel(wing), verified, drifted, missing)
+		fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing, %d elsewhere (dry run — nothing recorded)\n",
+			len(anchors), wingLabel(wing), verified, drifted, missing, elsewhere)
 		return nil
 	}
 	marked, err := markAnchors(ctx, cli, verdicts)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing — %d verdict(s) recorded\n",
-		len(anchors), wingLabel(wing), verified, drifted, missing, marked)
+	fmt.Fprintf(out, "\n%d anchor(s)%s: %d verified, %d drifted, %d missing, %d elsewhere — %d verdict(s) recorded\n",
+		len(anchors), wingLabel(wing), verified, drifted, missing, elsewhere, marked)
 	if drifted+missing > 0 {
 		fmt.Fprintf(out, "Search now flags those memories as STALE. Re-read the code and re-file whichever are wrong.\n")
 	}
@@ -299,6 +287,35 @@ func resolveProjectWing(dir string) string {
 	return firstNonEmpty(local.wing, shared.wing)
 }
 
+// currentRepoLabel names the repository the working tree belongs to, using the
+// same rule anchors are labelled with: the git remote's basename, or the
+// directory name when there is no remote. An empty result means "unknown", and
+// an unknown repository checks every anchor rather than skipping them — a
+// verifier that silently checked nothing would be worse than one that
+// occasionally checks too much.
+func currentRepoLabel(root string) string {
+	if out, err := exec.Command("git", "-C", root, "remote", "get-url", "origin").Output(); err == nil {
+		url := strings.TrimSpace(string(out))
+		url = strings.TrimSuffix(url, ".git")
+		if i := strings.LastIndexAny(url, "/:"); i >= 0 && i+1 < len(url) {
+			return url[i+1:]
+		}
+	}
+	// Unknown, deliberately — NOT the directory name.
+	//
+	// The skip above reads an empty label as "unknown" and checks every anchor
+	// rather than skipping them, because a verifier that silently checked
+	// nothing would be worse than one that occasionally checks too much. That
+	// path was unreachable while this returned filepath.Base(root), which is
+	// non-empty for any real path — so in a tree with no origin remote (a
+	// tarball, a vendored copy, a clone whose remote is named differently, a
+	// worktree in a differently-named folder) the label became the folder name,
+	// every anchor from a named repository looked like it belonged elsewhere,
+	// and the report read "0 verified, 0 drifted, 0 missing, N elsewhere". A
+	// clean-looking report from a verifier that had checked nothing.
+	return ""
+}
+
 // wingLabel renders the scope for the report, or nothing when unscoped.
 func wingLabel(wing string) string {
 	if wing == "" {
@@ -313,4 +330,75 @@ func short(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// anchorCounts is what one verification pass concluded, by kind.
+type anchorCounts struct{ verified, drifted, missing, elsewhere int }
+
+// verifyAnchors checks every anchor against the tree at root and returns the
+// verdicts worth RECORDING plus the counts worth reporting.
+//
+// Split out of runVerify so the rule can be driven end to end in a test. That
+// matters more here than usual: the regression this protects against already
+// deleted three memories, and the test that was supposed to guard it recomputed
+// a hand-copied duplicate of the condition instead of calling this — so removing
+// the guard from the code left the suite green.
+func verifyAnchors(root string, anchors []anchor, out io.Writer) ([]verdict, anchorCounts) {
+	here := currentRepoLabel(root)
+	files := map[string]*sourceFile{}
+	var verdicts []verdict
+	var drifted, missing, verified, elsewhere int
+	for _, a := range anchors {
+		// An anchor labelled with another repository cannot be checked from
+		// here, and calling it MISSING is not a small inaccuracy: the honest
+		// response to "the file is gone" is to delete the memory, so a check
+		// that cannot see a file destroys the memory pinned to it. A session
+		// did exactly that — deleted three chunks whose file lives in a sibling
+		// repository — before this existed. Unknown is not absent.
+		if a.Repo != "" && here != "" && !strings.EqualFold(a.Repo, here) {
+			elsewhere++
+			continue
+		}
+		src, ok := files[a.Path]
+		if !ok {
+			src = readSource(filepath.Join(root, a.Path))
+			files[a.Path] = src
+		}
+		v := verdict{ID: a.ID}
+		switch {
+		case !src.exists && here == "" && a.Repo != "":
+			// We cannot tell whether this tree IS a.Repo, so we cannot tell an
+			// absent file from a file that lives somewhere else. Reporting
+			// MISSING here would be the destructive reading of an unknown: the
+			// honest response to "the file is gone" is to delete the memory, and
+			// a session once deleted three chunks that way. Anything we CAN
+			// confirm below is still confirmed — an unknown tree verifies what it
+			// finds and stays silent about what it does not.
+			elsewhere++
+			continue
+		case !src.exists:
+			v.Status, missing = statusMissing, missing+1
+			fmt.Fprintf(out, "  MISSING  %s — file is gone (memory %s)\n", a.Path, short(a.DrawerID))
+		default:
+			if line, ok := src.find(a.Snippet); ok {
+				v.Status, v.Line, verified = statusVerified, line, verified+1
+			} else if here == "" && a.Repo != "" {
+				// The same reasoning as the not-found branch, and the branch
+				// that actually writes the destructive verdict. In an unknown
+				// tree we cannot tell this file from an unrelated file at the
+				// same path — README.md, main.go and go.mod collide across
+				// repositories constantly — so a snippet that does not match is
+				// not evidence the memory is stale. A match above IS strong
+				// evidence and stays `verified`; a non-match records nothing.
+				elsewhere++
+				continue
+			} else {
+				v.Status, drifted = statusDrifted, drifted+1
+				fmt.Fprintf(out, "  DRIFTED  %s — the pinned code is no longer there (memory %s)\n", a.Path, short(a.DrawerID))
+				fmt.Fprintf(out, "           was: %s\n", firstLine(a.Snippet, 88))
+			}
+		}
+		verdicts = append(verdicts, v)
+	}
+	return verdicts, anchorCounts{verified: verified, drifted: drifted, missing: missing, elsewhere: elsewhere}
 }

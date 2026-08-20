@@ -90,6 +90,11 @@ type Deps struct {
 	// simply omits the workspace block, so the wake-up call never depends on it.
 	Workspaces WorkspaceLookup
 
+	// ScopeSearchToWing narrows a recall that names no wing to the wing this
+	// registration was created for. See config.SearchScope for why the default
+	// binds reads as well as writes.
+	ScopeSearchToWing bool
+
 	// Local is true when this process serves the single self-hosted workspace
 	// (server --local). am_status reports it as the session's mode, which is what
 	// lets an agent tell "my own machine" from "the hosted server" without
@@ -110,12 +115,22 @@ func New(deps Deps) *server.MCPServer {
 		server.WithToolCapabilities(true), // advertise the tools/list capability
 	)
 	reg := &registrar{srv: srv}
+	registerAll(reg, deps)
+	return srv
+}
+
+// registerAll wires every tool onto a registrar. It is split out of New so a
+// test can hold the registrar afterwards and read the catalogue it built:
+// registration only constructs tools and closures, so this runs with nil
+// services and no database, which is what makes the tool surface itself
+// assertable rather than something a reader has to count by hand.
+func registerAll(reg *registrar, deps Deps) {
 	registerStatus(reg, deps.Drawers, deps.Usage, deps.Workspaces, deps.Local)
 	registerLoadSkill(reg, deps.Skills, deps.Usage)
 	// Skill-registry management: list + update (write is role-gated).
 	registerSkills(reg, deps.Skills, deps.Usage)
 	// The core memory loop: drawer CRUD, semantic recall, and palace taxonomy.
-	registerDrawers(reg, deps.Drawers, deps.Usage)
+	registerDrawers(reg, deps.Drawers, deps.Usage, deps.ScopeSearchToWing)
 	// The agent diary: append-only journal entries (diary_write/diary_read).
 	registerDiary(reg, deps.Drawers, deps.Usage)
 	// Mining: text -> chunked drawers + closet index (mine).
@@ -133,7 +148,6 @@ func New(deps Deps) *server.MCPServer {
 	// The wakeup playbook: how to use everything above. Registered last so its
 	// catalogue is complete.
 	registerSkillset(reg, deps.Skillset, deps.Usage)
-	return srv
 }
 
 // wingFor resolves the wing a write belongs to: the one the caller passed, or —
@@ -156,6 +170,37 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 			"(header %s) so every write from this project files itself", auth.WingHeader)
 	}
 	return palace.SanitizeName(passed, "wing")
+}
+
+// searchWingFor resolves the wing a RECALL is scoped to. An explicit argument
+// always wins; otherwise the registration's default applies when the deployment
+// asked for wing-scoped search, and an empty string (every wing) when it did not.
+//
+// It is deliberately separate from wingFor, which serves writes: a write with no
+// wing is an ERROR because a memory must land somewhere nameable, while a search
+// with no wing is a legitimate request to look everywhere. The two questions
+// only look alike.
+func searchWingFor(ctx context.Context, passed string, scoped bool) (string, error) {
+	if w := strings.TrimSpace(passed); w != "" {
+		// "*" asks for every wing the caller can see. Scoping made the empty
+		// argument mean "my project", which silently removed the only way to ask
+		// a cross-project question — and those are real: an infrastructure
+		// decision explains a deploy failure in the application it hosts. A
+		// default is only defensible when it can be overridden per call.
+		if w == "*" {
+			return "", nil
+		}
+		return palace.SanitizeName(w, "wing")
+	}
+	if !scoped {
+		return "", nil
+	}
+	if def := auth.DefaultWingFrom(ctx); def != "" {
+		return palace.SanitizeName(def, "wing")
+	}
+	// Registered without a wing: there is nothing to narrow to, and refusing
+	// would break every caller that never had one.
+	return "", nil
 }
 
 // admit resolves the tenant and meters one request against the workspace's

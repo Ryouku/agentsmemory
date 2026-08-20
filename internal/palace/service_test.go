@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -239,7 +240,7 @@ func TestServiceGetUpdateDelete(t *testing.T) {
 		t.Fatalf("update did not persist: %q", got.Content)
 	}
 
-	if err := svc.Delete(ctx, team, id); err != nil {
+	if _, err := svc.Delete(ctx, team, id); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := svc.Get(ctx, team, id); err != ErrNotFound {
@@ -576,5 +577,242 @@ func TestWithFusionRRFChangesOrder(t *testing.T) {
 	}
 	if svc.WithFusion("linear").fusionRRF {
 		t.Fatal("WithFusion(\"linear\") must turn rank fusion off")
+	}
+}
+
+// TestLexicalIDFChangesWhatSearchReturns pins reachability the only way that
+// works: by requiring the two modes to produce DIFFERENT scores through Search.
+//
+// The previous version of this test asserted that both modes returned a result,
+// which passed while the flag was read by nothing at all — Search had no IDF
+// branch, so BM25_WEIGHT=auto-idf set a field and changed no behaviour. A test
+// that cannot fail when the feature is absent is not a test of the feature.
+//
+// The fixture is built so the two coverage measures must disagree: "deploy"
+// appears in nearly every candidate, which the binary count reads as full
+// lexical signal and the IDF weighting reads as almost none.
+func TestLexicalIDFChangesWhatSearchReturns(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-idf"
+
+	for i, content := range []string{
+		"deploy the batching service to the cluster tonight",
+		"deploy notes for the batching rollout and its owner",
+		"deploy checklist for the batching gateway and alarms",
+		"deploy runbook covering the batching queue drain",
+	} {
+		mustAdd(t, svc, team, AddInput{
+			Wing: "wing_acme", Room: "decisions",
+			SourceFile: fmt.Sprintf("note-%d.md", i),
+			Content:    content,
+		})
+	}
+
+	scores := func(idf bool) []float64 {
+		hits, err := svc.WithLexicalIDF(idf).Search(ctx, team, SearchQuery{
+			Query: "deploy batching", Wing: "wing_acme", Limit: 10, SkipTelemetry: true,
+		})
+		if err != nil {
+			t.Fatalf("search (idf=%v): %v", idf, err)
+		}
+		if len(hits) < 2 {
+			t.Fatalf("search (idf=%v) returned %d hits, need several to compare", idf, len(hits))
+		}
+		out := make([]float64, len(hits))
+		for i, h := range hits {
+			out[i] = h.Score
+		}
+		return out
+	}
+
+	binary, idf := scores(false), scores(true)
+	same := len(binary) == len(idf)
+	if same {
+		for i := range binary {
+			if binary[i] != idf[i] {
+				same = false
+				break
+			}
+		}
+	}
+	if same {
+		t.Fatalf("auto-idf changed nothing through Search: binary=%v idf=%v — the flag is set but the search path does not read it", binary, idf)
+	}
+
+	// And the default must stay binary: a ranking default changes what every
+	// existing palace returns.
+	if newTestService(t).bm25IDF {
+		t.Error("the binary count must remain the default")
+	}
+}
+
+// TestRerankPresenceSurvivesAZeroScore pins the distinction a value cannot
+// carry. TEI is asked for sigmoid scores in (0,1); llama.cpp's server returns
+// bare logits, where 0.0 is an ordinary result — so "did a cross-encoder score
+// this?" cannot be answered by comparing the score against zero. The abstention
+// gate's calibration data depends on getting this right: a case wrongly read as
+// unscored silently leaves the distribution.
+func TestRerankPresenceSurvivesAZeroScore(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-zero"
+	mustAdd(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
+		Content: "the queue drains every five minutes"})
+
+	// A reranker that scores everything exactly 0.0 — legal for a logit backend.
+	svc = svc.WithReranker(&staticReranker{scores: []float64{0}}, 10).WithRerankWeight(0.5)
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "queue drain", Wing: "wing_acme", Limit: 5, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("search returned nothing")
+	}
+	if hits[0].RerankScore != 0 {
+		t.Fatalf("fixture expects a zero score, got %v", hits[0].RerankScore)
+	}
+	if !hits[0].Reranked {
+		t.Fatal("a hit scored 0.0 by a logit backend must still report Reranked — otherwise the gate's data silently loses it")
+	}
+}
+
+// TestUpdateRefusesToHalfRewriteAMultiChunkMemory pins the failure a live
+// session hit: an update that reports success while half the memory keeps
+// contradicting it.
+//
+// A memory over ChunkSize is stored as several rows sharing a parent. Update
+// rewrites ONE row, so patching the parent's content left the children live,
+// individually embedded, and still returning the retracted claim — ranked ABOVE
+// the correction, with nothing marking them superseded. The call returned the
+// updated drawer and reported success throughout.
+//
+// A memory store whose correction competes with the text it corrects is worse
+// than one that refuses the edit, so it refuses and says what to do instead.
+func TestUpdateRefusesToHalfRewriteAMultiChunkMemory(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	long := strings.Repeat("The retention window is THIRTY days and this sentence forces chunking. ", 40)
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "policy", Content: long})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(res.Drawers) < 2 {
+		t.Fatalf("fixture: need a multi-chunk memory, got %d chunk(s)", len(res.Drawers))
+	}
+	parent := res.Drawers[0].ID
+
+	corrected := "CORRECTED: the retention window is NINETY days."
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Content: &corrected}); err == nil {
+		t.Fatal("updating one chunk of a multi-chunk memory was accepted — the other chunks stay " +
+			"live with the old text and outrank the correction in search")
+	} else if !strings.Contains(err.Error(), "chunk") {
+		t.Errorf("the refusal must say why: %v", err)
+	}
+
+	// And the memory must be untouched: a refused edit that partially applied
+	// would be the worst of both.
+	after, err := svc.repo.MemoryChunks(ctx, team, parent)
+	if err != nil {
+		t.Fatalf("MemoryChunks: %v", err)
+	}
+	if len(after) != len(res.Drawers) {
+		t.Errorf("the memory has %d chunk(s) after the refusal, want %d", len(after), len(res.Drawers))
+	}
+	for _, c := range after {
+		if strings.Contains(c.Content, "CORRECTED") {
+			t.Error("the refused update still wrote to a chunk")
+		}
+	}
+
+	// A wing or room MOVE splits the same memory instead of contradicting it: one
+	// chunk leaves and the rest stay. This release sharpens the consequence,
+	// because recall now defaults to the registration's wing — after a split
+	// neither wing returns the whole memory, and nothing marks what you get as a
+	// fragment. Found by review, one field over from the reported defect.
+	other := "other-wing"
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Wing: &other}); err == nil {
+		t.Error("moving one chunk of a multi-chunk memory to another wing was accepted — the memory " +
+			"is now split and no single scope returns all of it")
+	}
+	otherRoom := "other-room"
+	if _, err := svc.Update(ctx, team, parent, DrawerPatch{Room: &otherRoom}); err == nil {
+		t.Error("moving one chunk of a multi-chunk memory to another room was accepted")
+	}
+	if chunks, err := svc.repo.MemoryChunks(ctx, team, parent); err != nil {
+		t.Fatalf("MemoryChunks: %v", err)
+	} else {
+		for _, c := range chunks {
+			if c.Wing != "w" || c.Room != "r" {
+				t.Errorf("a refused move still relocated chunk %d to %s/%s", c.ChunkIndex, c.Wing, c.Room)
+			}
+		}
+	}
+
+	// A single-chunk memory still updates, or the fix has broken the common case.
+	one, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "short", Content: "a short memory"})
+	if err != nil {
+		t.Fatalf("add short: %v", err)
+	}
+	if _, err := svc.Update(ctx, team, one.Drawers[0].ID, DrawerPatch{Content: &corrected}); err != nil {
+		t.Errorf("a single-chunk memory must still be updatable: %v", err)
+	}
+}
+
+// TestDeleteRemovesTheWholeMemory pins that a delete takes every chunk.
+//
+// It used to take one row. Deleting the parent of a multi-chunk memory left the
+// children live — still embedded, still returned by search, and pointing at a
+// parent that no longer existed. Same shape as the update defect one door over:
+// an operation that treats one row as the whole memory and reports success.
+//
+// A delete has no reference ambiguity to weigh, unlike an update: the caller is
+// removing the memory, so removing all of it is what they asked for.
+func TestDeleteRemovesTheWholeMemory(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	long := strings.Repeat("The retention window is thirty days and this forces chunking. ", 40)
+	res, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "p", Content: long})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(res.Drawers) < 2 {
+		t.Fatalf("fixture: need a multi-chunk memory, got %d", len(res.Drawers))
+	}
+
+	n, err := svc.Delete(ctx, team, res.Drawers[0].ID)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n != len(res.Drawers) {
+		t.Errorf("delete reported %d chunk(s) removed, want %d — the count is what lets a caller "+
+			"say how much went instead of echoing the one id it was handed", n, len(res.Drawers))
+	}
+	left, err := svc.List(ctx, team, "w", "r", 100, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("%d chunk(s) survived the delete — orphaned, still embedded, still searchable, and "+
+			"pointing at a parent that no longer exists", len(left))
+	}
+
+	// Deleting by a CHILD's id must take the memory too, or the same orphaning
+	// happens from the other end.
+	res2, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", SourceFile: "p2", Content: long})
+	if err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+	if _, err := svc.Delete(ctx, team, res2.Drawers[len(res2.Drawers)-1].ID); err != nil {
+		t.Fatalf("delete by child: %v", err)
+	}
+	if left, err := svc.List(ctx, team, "w", "r", 100, 0); err != nil {
+		t.Fatal(err)
+	} else if len(left) != 0 {
+		t.Errorf("deleting by a child's id left %d chunk(s)", len(left))
 	}
 }

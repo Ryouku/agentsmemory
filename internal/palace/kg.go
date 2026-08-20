@@ -21,7 +21,13 @@ import (
 // normalized to a datetime (start of day for lower bounds, end of day for upper)
 // so a bare date and a precise datetime compare correctly.
 
-const maxKGValueLen = 128 // frozen MAX_NAME_LENGTH, shared by KG values
+// MaxKGValueLen caps a knowledge-graph subject or object. It is exported so the
+// MCP tool descriptions can be BUILT from it rather than restating it: an agent
+// that does not know the cap discovers it by failing, which is how one session
+// spent four calls learning that a paragraph of evidence cannot be smuggled into
+// an object. A number stated in prose beside the number that enforces it is a
+// drift waiting to happen; a number the prose is generated from cannot drift.
+const MaxKGValueLen = 128 // frozen MAX_NAME_LENGTH, shared by KG values
 const kgTimelineLimit = 100
 
 var (
@@ -41,8 +47,8 @@ func sanitizeKGValue(value, field string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("%w: %s must be a non-empty string", ErrInvalidInput, field)
 	}
-	if len([]rune(value)) > maxKGValueLen {
-		return "", fmt.Errorf("%w: %s exceeds maximum length of %d characters", ErrInvalidInput, field, maxKGValueLen)
+	if len([]rune(value)) > MaxKGValueLen {
+		return "", fmt.Errorf("%w: %s exceeds maximum length of %d characters", ErrInvalidInput, field, MaxKGValueLen)
 	}
 	if strings.ContainsRune(value, 0) {
 		return "", fmt.Errorf("%w: %s contains null bytes", ErrInvalidInput, field)

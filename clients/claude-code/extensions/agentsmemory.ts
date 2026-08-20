@@ -67,13 +67,19 @@ class McpClient {
   private sessionId?: string;
   private readonly url: string;
   private readonly token: string;
+  // The project this pi install files into. It rides as a header on every call
+  // so writes land in the right wing even when the agent passes none — the same
+  // guarantee `--wing` gives the Claude registration, which carries it via
+  // `claude mcp add --header`. Empty means unscoped, and no header is sent.
+  private readonly wing: string;
 
   // Plain assignments rather than TypeScript parameter properties: pi loads this
   // file through jiti, but a strip-only TS loader (node --experimental-strip-types,
   // and anything else that erases types without transforming) rejects that sugar.
-  constructor(url: string, token: string) {
+  constructor(url: string, token: string, wing: string) {
     this.url = url;
     this.token = token;
+    this.wing = wing;
   }
 
   /** initialize performs the MCP handshake and returns the server's tool list. */
@@ -137,6 +143,9 @@ class McpClient {
     // header is sent at all rather than an empty bearer that reads like auth.
     if (this.token) {
       headers.authorization = `Bearer ${this.token}`;
+    }
+    if (this.wing) {
+      headers["x-agentsmemory-wing"] = this.wing;
     }
     if (this.sessionId) {
       headers["mcp-session-id"] = this.sessionId;
@@ -230,7 +239,8 @@ export default async function (pi: ExtensionAPI) {
     return;
   }
 
-  const client = new McpClient(url, token ?? "");
+  const wing = process.env.AGENTSMEMORY_WING?.trim() ?? "";
+  const client = new McpClient(url, token ?? "", wing);
   let tools: McpTool[];
   try {
     tools = await client.initialize();

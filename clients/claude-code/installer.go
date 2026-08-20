@@ -755,6 +755,19 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 	// A socket has no URL, so the agent cannot speak HTTP to it: it spawns the
 	// server's own mcp-stdio bridge instead. This is checked before the per-agent
 	// split because the stdio registration is identical for Claude and codex.
+	// --wing is a promise about the CONNECTION: every call carries the header, so
+	// writes land in the right project even when the agent forgets to pass one.
+	// Two registrations cannot keep it — codex has no static-header flag, and a
+	// stdio bridge has no headers at all — and a promise silently unkept is worse
+	// than one refused, because the memories still land, just in the wrong wing.
+	if i.wing != "" && (i.socket != "" || i.kit.name == agentCodex) {
+		how := "codex has no static-header flag for MCP servers"
+		if i.socket != "" {
+			how = "a stdio bridge carries no HTTP headers"
+		}
+		i.warn("--wing %q cannot ride this connection (%s): calls arrive UNSCOPED, and each write lands in whatever wing the agent names", i.wing, how)
+		i.warn("  keep the wing by naming it in the agent's own protocol (the memory bootstrap resolves one per project), or register over HTTP with an agent whose client sends headers")
+	}
 	if i.socket != "" {
 		return i.registerSocketMCP()
 	}
@@ -885,6 +898,14 @@ func (i *Installer) registerPiMCP(token string) error {
 	env := fmt.Sprintf("%s=%s\n%s=%s\n", tokenEnvVar, token, mcpURLEnvVar, i.mcpURL)
 	if token == "" {
 		env = fmt.Sprintf("%s=%s\n%s=1\n", mcpURLEnvVar, i.mcpURL, localEnvVar)
+	}
+	// The wing rides in the same file the extension already reads, because pi's
+	// bridge builds its own headers — so --wing means the same thing here as it
+	// does for Claude rather than being quietly dropped. wingEnvVar is the
+	// variable the memory protocol already reads, so a pi session and the
+	// protocol agree on one name for one thing.
+	if i.wing != "" {
+		env += fmt.Sprintf("%s=%s\n", wingEnvVar, i.wing)
 	}
 	if err := i.writeFile(i.tokenPath(), []byte(env), 0o600); err != nil {
 		return err

@@ -96,6 +96,34 @@ func tokenize(text string) []string {
 // so a term in every candidate cannot drive a score below zero. Returned scores
 // are raw (unbounded) and in docs order; the caller normalizes.
 func bm25Scores(query string, docs []string) []float64 {
+	scores, _ := bm25ScoresAndCeiling(query, docs)
+	return scores
+}
+
+// bm25ScoresAndCeiling returns each candidate's raw BM25 score and C, the least
+// upper bound on what this query could score against any document at all.
+//
+// C is a supremum and not a maximum: the per-term factor f·(k1+1)/(f + k1·L)
+// rises toward (k1+1) as term frequency grows but never reaches it, and the
+// smoothed IDF is strictly positive even for a term in every candidate. So every
+// real document scores strictly below C, and the anchored normalisers built on
+// it return values strictly below 1 rather than reaching it.
+//
+// The two are computed together because they share the same smoothed IDF: a
+// candidate's score is a sum of idf(t)·tf-saturation over the query terms, and
+// that saturation approaches (k1+1) as term frequency grows without bound, so
+// C = (k1+1)·Σ idf(t). Document length drops out: the length factor
+// L = 1 − b + b·dl/avgdl is bounded below by 1 − b = 0.25 and never zero, so the
+// supremum over frequency and length jointly is (k1+1) whatever dl is — which is
+// why dl does not appear in the formula. Computing the ceiling anywhere else would mean a second
+// copy of the IDF formula, and the identity the anchored normalisers rest on is
+// exact only while both use the same one.
+//
+// C is a property of the query AND the candidate set, not of the query alone:
+// the smoothed IDF reads N and df from the page. Anchoring therefore removes the
+// dependence on WHICH candidate won, not the dependence on which candidates are
+// present.
+func bm25ScoresAndCeiling(query string, docs []string) ([]float64, float64) {
 	n := len(docs)
 	scores := make([]float64, n)
 
@@ -106,7 +134,7 @@ func bm25Scores(query string, docs []string) []float64 {
 		queryTerms[t] = struct{}{}
 	}
 	if len(queryTerms) == 0 || n == 0 {
-		return scores
+		return scores, 0
 	}
 
 	tokenized := make([][]string, n)
@@ -116,7 +144,15 @@ func bm25Scores(query string, docs []string) []float64 {
 		totalLen += len(tokenized[i])
 	}
 	if totalLen == 0 {
-		return scores // every candidate is text-less; nothing to rank lexically
+		// Every candidate is text-less: nothing to rank lexically, and no
+		// candidate set to compute df over. The ceiling is reported as 0 rather
+		// than as the IDF sum the formula would give, because there is nothing
+		// to anchor AGAINST — every raw score is zero, so both the 0 and the
+		// formula's value produce the same all-zero lexical term through every
+		// normaliser's guard. Reported as 0 so the caller sees "no lexical
+		// signal here" rather than a large number describing a page that has
+		// none.
+		return scores, 0
 	}
 	avgdl := float64(totalLen) / float64(n)
 
@@ -134,9 +170,14 @@ func bm25Scores(query string, docs []string) []float64 {
 		}
 	}
 	idf := make(map[string]float64, len(queryTerms))
+	var idfSum float64
 	for t := range queryTerms {
 		idf[t] = math.Log((float64(n-df[t])+0.5)/(float64(df[t])+0.5) + 1)
+		idfSum += idf[t]
 	}
+	// The per-term factor f·(k1+1)/(f + k1·(…)) rises toward (k1+1) as f grows,
+	// so no candidate can exceed this however often it repeats the query.
+	ceiling := (bm25K1 + 1) * idfSum
 
 	for i, toks := range tokenized {
 		dl := len(toks)
@@ -159,7 +200,7 @@ func bm25Scores(query string, docs []string) []float64 {
 		}
 		scores[i] = score
 	}
-	return scores
+	return scores, ceiling
 }
 
 // vecSimFromDistance maps a cosine distance in [0,2] (0 = identical) to a
@@ -240,12 +281,27 @@ type HybridScore struct {
 	Fused float64 // 0.6*vecSim + 0.4*bm25Norm + closetBoost, higher is better
 	BM25  float64 // raw Okapi-BM25 score (pre-normalization)
 	Boost float64 // closet boost added to this candidate (0 when none)
-	// Rerank is the cross-encoder's relevance score in (0,1), set only for the
-	// candidates a configured reranker actually scored. Zero therefore means "not
-	// reranked" — either no reranker is wired, the call failed, or this candidate
-	// fell outside the pool — which is safe to read as such because a sigmoid
-	// score is never exactly zero.
+	// Rerank is the cross-encoder's raw relevance score for this candidate, set
+	// only for the ones a configured reranker actually scored.
+	//
+	// Its SCALE depends on the backend and must not be assumed. TEI is asked for
+	// sigmoid-squashed scores in (0,1); llama.cpp's server returns bare logits,
+	// which are routinely negative — a measured absent-query median came back at
+	// −3.8. Any threshold read off this number is therefore specific to one
+	// backend, model and version, and a value comparable across two deployments
+	// does not exist.
+	//
+	// Zero is used as "not scored" (no reranker wired, the call failed, or this
+	// candidate fell outside the pool). That sentinel was justified by the
+	// sigmoid range and is only ALMOST safe on a logit backend, where a genuine
+	// score can land arbitrarily close to zero — a candidate scoring exactly 0.0
+	// reads as unscored. Prefer an explicit signal where the distinction
+	// matters; this is documented rather than silently relied upon.
 	Rerank float64
+	// Reranked says whether a cross-encoder scored this candidate, which the
+	// value alone cannot: zero is a legitimate logit. Callers deciding whether
+	// they HAVE a score must read this, not compare Rerank against zero.
+	Reranked bool
 
 	// Blended is the weighted combination of the normalized fused and rerank
 	// scores that actually decided this hit's position. It is what sorts the page
@@ -277,6 +333,19 @@ func rankHybrid(query string, docs []string, distances, boosts []float64) []Hybr
 // be actively wrong for another, which is an argument for a knob and an eval, not
 // for a better constant.
 func rankHybridWeighted(query string, docs []string, distances, boosts []float64, bm25Weight float64) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, bm25Weight, lexNormPageMax)
+}
+
+// rankHybridWeightedNorm is rankHybridWeighted with the lexical normaliser named
+// too, so an eval arm can hold the weight fixed and vary only the divisor.
+//
+// Weight and normaliser are not independent knobs, which is the reason both are
+// swept together rather than one being folded into the other: with no boost an
+// anchored normaliser at weight w orders a page exactly as page-max does at
+// w·a/(1 − w + w·a), so comparing them at the SAME w compares two points on one
+// curve. What separates them is everything that breaks the convex blend — an
+// additive boost, or a weight that moves per query.
+func rankHybridWeightedNorm(query string, docs []string, distances, boosts []float64, bm25Weight float64, norm lexNorm) []HybridScore {
 	if bm25Weight < 0 {
 		bm25Weight = 0
 	}
@@ -284,7 +353,7 @@ func rankHybridWeighted(query string, docs []string, distances, boosts []float64
 		bm25Weight = 1
 	}
 	vectorWeight := 1 - bm25Weight
-	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight)
+	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight, norm)
 }
 
 // LexicalCoverage reports what share of a query's terms carry usable lexical
@@ -390,37 +459,132 @@ func adaptiveBM25Weight(query string, docs []string, base float64) float64 {
 
 // rankHybridAdaptive fuses with the lexical weight chosen per query.
 func rankHybridAdaptive(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
-	return rankHybridWeighted(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base))
+	return rankHybridAdaptiveNorm(query, docs, distances, boosts, base, lexNormPageMax)
+}
+
+// rankHybridAdaptiveNorm is rankHybridAdaptive with the normaliser named.
+//
+// The adaptive arms are where the two normalisers can genuinely diverge without
+// a boost in play: the identity that makes anchoring a rescaling of the weight
+// holds at a FIXED weight, and here the weight moves per query, so the rescaling
+// would have to move with it.
+func rankHybridAdaptiveNorm(query string, docs []string, distances, boosts []float64, base float64, norm lexNorm) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base), norm)
 }
 
 // rankHybridAdaptiveIDF is rankHybridAdaptive with the IDF-weighted coverage.
 // It exists as a separate eval arm rather than a replacement: the binary
 // coverage is the shipping default until the IDF variant beats it on a table.
 func rankHybridAdaptiveIDF(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
-	return rankHybridWeighted(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs))
+	return rankHybridAdaptiveIDFNorm(query, docs, distances, boosts, base, lexNormPageMax)
 }
 
-// rankFused is the shared implementation.
-func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64) []HybridScore {
-	raw := bm25Scores(query, docs)
-	var maxBM25 float64
+// rankHybridAdaptiveIDFNorm is rankHybridAdaptiveIDF with the normaliser named.
+func rankHybridAdaptiveIDFNorm(query string, docs []string, distances, boosts []float64, base float64, norm lexNorm) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs), norm)
+}
+
+// lexNorm maps a page's raw BM25 scores to the [0,1] lexical term the fusion
+// adds, given ceiling — the largest score this query could attain (see
+// bm25ScoresAndCeiling). Implementations must return a slice as long as raw, and
+// must yield zero rather than NaN when there is no lexical signal to normalise.
+//
+// It is a named type because the choice of divisor is a ranking decision worth
+// measuring, not an implementation detail: page-max and the anchored transforms
+// disagree about what a good lexical score IS, and that disagreement is what
+// ADR-002 is about.
+type lexNorm func(raw []float64, ceiling float64) []float64
+
+// lexNormPageMax divides by the best raw score on the page. It is what this
+// code has always done and stays the default.
+//
+// Its weakness is structural rather than a matter of tuning: the winner scores
+// 1.0 by definition, so the lexical term says where a candidate stands relative
+// to its neighbours and nothing about whether any of them matched well. A page
+// of uniformly poor matches and a page with one excellent match produce the same
+// top-candidate contribution.
+func lexNormPageMax(raw []float64, _ float64) []float64 {
+	out := make([]float64, len(raw))
+	var max float64
 	for _, s := range raw {
-		if s > maxBM25 {
-			maxBM25 = s
+		if s > max {
+			max = s
 		}
 	}
+	if max <= 0 {
+		return out
+	}
+	for i, s := range raw {
+		out[i] = s / max
+	}
+	return out
+}
+
+// lexNormCeiling divides by C, the score the query could have attained, so a
+// weak match reports as weak however weak its neighbours are.
+//
+// What it buys is winner-independence: which candidate happens to top the page
+// no longer moves everyone else's lexical contribution. What it does NOT buy is
+// candidate-set independence — N, df, idf and avgdl are all pool quantities, so
+// dropping or adding a sibling still moves both raw and C. Anything stronger
+// needs corpus-wide term statistics, which this does not have.
+//
+// Because C is the supremum over all documents and no real candidate reaches it,
+// the result is strictly below 1 whenever any query term carries IDF; the
+// anchored lexical weight is therefore always smaller than the nominal one.
+func lexNormCeiling(raw []float64, ceiling float64) []float64 {
+	out := make([]float64, len(raw))
+	if ceiling <= 0 {
+		return out
+	}
+	for i, s := range raw {
+		out[i] = s / ceiling
+	}
+	return out
+}
+
+// lexNormSaturatingKappa places the half-way point of the saturating transform
+// at kappa·C: a candidate scoring that much of the query's ceiling contributes
+// 0.5. It is a second free constant, which is exactly what anchoring set out to
+// remove, so it stays at one value until an eval says otherwise.
+const lexNormSaturatingKappa = 0.5
+
+// lexNormSaturating maps raw to raw/(raw + kappa·C), a soft version of the
+// ceiling transform that compresses the top of the range instead of clipping it.
+//
+// It exists as a separate arm because the two anchored transforms disagree about
+// strong matches, not weak ones: the ceiling transform keeps them proportional
+// while this one flattens the difference between very good and excellent, on the
+// argument that past some point more lexical overlap stops meaning more
+// relevance.
+func lexNormSaturating(raw []float64, ceiling float64) []float64 {
+	out := make([]float64, len(raw))
+	if ceiling <= 0 {
+		return out
+	}
+	half := lexNormSaturatingKappa * ceiling
+	for i, s := range raw {
+		if s <= 0 {
+			continue
+		}
+		out[i] = s / (s + half)
+	}
+	return out
+}
+
+// rankFused is the shared implementation. norm decides how raw BM25 becomes the
+// lexical term; pass lexNormPageMax for the shipping behaviour.
+func rankFused(query string, docs []string, distances, boosts []float64, vectorWeight, bm25Weight float64, norm lexNorm) []HybridScore {
+	raw, ceiling := bm25ScoresAndCeiling(query, docs)
+	lexical := norm(raw, ceiling)
 
 	out := make([]HybridScore, len(docs))
 	for i := range docs {
-		norm := 0.0
-		if maxBM25 > 0 {
-			norm = raw[i] / maxBM25
-		}
 		boost := 0.0
 		if boosts != nil {
 			boost = boosts[i]
 		}
-		fused := vectorWeight*vecSimFromDistance(distances[i]) + bm25Weight*norm + boost
+		fused := vectorWeight*vecSimFromDistance(distances[i]) + bm25Weight*lexical[i] + boost
 		out[i] = HybridScore{Index: i, Fused: fused, BM25: raw[i], Boost: boost}
 	}
 	// Stable so equal-fused candidates keep their incoming (vector) order.
@@ -494,6 +658,64 @@ func Snippet(content, query string, maxChars int) string {
 	}
 	if end < len(runes) {
 		out += "…"
+	}
+	return out
+}
+
+// reorderByRecency is a stable tie-break, not a ranker: within a band of fused
+// score it prefers the memory with the newer content date, and outside that band
+// it changes nothing.
+//
+// The band is the whole design. A recency prior applied across large score gaps
+// promotes a recent irrelevance over an older exact answer, which is a different
+// ranking function wearing a tie-break's name. Bounding it to near-ties means the
+// arm can only decide cases the fused score already called close.
+//
+// Absence of a date is not evidence of being old. An undated or unparseable
+// candidate is never promoted and never demoted — most memories in a real palace
+// carry no content date, and treating "" as very old would push all of them down
+// on no evidence.
+//
+// dates[i] belongs to the candidate at index i, matching docs/distances
+// elsewhere in this file. It lives here rather than in Search on purpose: ADR-004
+// puts a production recency prior explicitly out of scope, and a helper in the
+// ranking file is one import away from being inherited by accident.
+func reorderByRecency(page []HybridScore, dates []string, band float64) []HybridScore {
+	if band <= 0 || len(page) < 2 {
+		return page
+	}
+	out := make([]HybridScore, len(page))
+	copy(out, page)
+
+	dateOf := func(h HybridScore) string {
+		if h.Index < 0 || h.Index >= len(dates) {
+			return ""
+		}
+		return findDate(dates[h.Index])
+	}
+
+	// A stable bubble over adjacent pairs: swapping only neighbours keeps the
+	// reorder inside the band by construction, because a candidate can never
+	// overtake one it is not within band of.
+	for pass := 0; pass < len(out); pass++ {
+		moved := false
+		for i := 0; i+1 < len(out); i++ {
+			a, b := out[i], out[i+1]
+			if a.Fused-b.Fused > band {
+				continue // outside the band: the score decides, not the date
+			}
+			da, db := dateOf(a), dateOf(b)
+			if da == "" || db == "" {
+				continue // nothing to compare; neither is evidence about the other
+			}
+			if db > da { // ISO dates compare lexicographically
+				out[i], out[i+1] = b, a
+				moved = true
+			}
+		}
+		if !moved {
+			break
+		}
 	}
 	return out
 }

@@ -1,6 +1,6 @@
 {
   "_generated_by": "internal/palace/testdata/parity/gen_golden.py",
-  "_frozen_reference": "/Users/mind/.claude/mempalace-frozen/mempalace",
+  "_frozen_reference": "~/.claude/mempalace-frozen/mempalace",
   "_note": "golden output of the frozen Python ranking funcs; regenerate via gen_golden.py",
   "cases": [
     {

@@ -27,7 +27,7 @@
 #
 # WHAT THE CROSS-ENCODER BUYS
 # The embedder scores a drawer against a query it never saw; a cross-encoder reads
-# the pair together. It only runs over the top RERANK_TOP_K candidates hybrid
+# the pair together. It only runs over the top RERANK_POOL candidates hybrid
 # ranking already surfaced, so the cost is bounded per search rather than per
 # palace. If the reranker is down, search silently falls back to the fused
 # vector+BM25 ranking — it refines recall, it is never required for it.
@@ -53,12 +53,14 @@ services:
       # silently falls back to the hybrid order — which is exactly how it read in
       # an eval run before the fallback started logging why.
       RERANK_URL: http://reranker:8080/v1
-      RERANK_MODEL: bge-reranker-v2-m3
       # 20, not 50: the cross-encoder scores every pair in a full forward pass, so
       # cost is linear here. On CPU a drawer-sized pair takes ~0.2-0.5s, and 50 of
       # them overran a 30s budget during an eval run — which degrades silently to
       # the hybrid order, the worst possible way to lose a feature.
-      RERANK_TOP_K: "20"
+      # How many fused candidates the cross-encoder scores. This used to say
+      # RERANK_TOP_K, which the server has never read — so the stack advertised a
+      # pool of 20 while actually running the default 50. The knob is RERANK_POOL.
+      RERANK_POOL: "50"
       # How much the cross-encoder decides versus the hybrid score it refines.
       # 1.0 lets it overwrite the lexical evidence entirely, which measurably
       # ranks worse; see `agentsmemory eval` and its weight sweep.

@@ -107,6 +107,46 @@ type Config struct {
 	// QdrantAPIKey is an optional Qdrant API key; empty for unauthenticated dev.
 	QdrantAPIKey string
 
+	// SearchScope decides what a recall that names no wing searches: "wing" (the
+	// default) narrows it to the wing this MCP registration was created for,
+	// "workspace" searches every wing the caller can see.
+	//
+	// Wings exist so one palace can hold many projects without them bleeding
+	// together, and the registration already states which project it is (header
+	// X-Agentsmemory-Wing). Until this knob existed that statement bound WRITES
+	// only: a search omitting the wing scanned every project, so recall in one
+	// repository could answer with another repository's memories — measured in
+	// our own telemetry, where a query about one project returned another's
+	// drawers. Scoping by default is what makes per-project separation true on
+	// both halves.
+	//
+	// "workspace" is a real use, not a fallback: asking across projects is
+	// sometimes exactly the intent, and an explicit wing argument always wins
+	// over either setting.
+	SearchScope string
+
+	// EmbedBackend selects what embeds text: "ollama" (the default) or "tei" (a
+	// HuggingFace text-embeddings-inference server at EmbedURL).
+	//
+	// It exists because Ollama's embedding API returns DENSE vectors only. bge-m3
+	// natively produces three representations — dense, learned sparse, and a
+	// ColBERT-style multi-vector — and two of them are unreachable through
+	// Ollama, so a whole class of retrieval work cannot even be measured while it
+	// is the only backend. TEI is also what already serves our cross-encoder, so
+	// choosing it removes a service rather than adding one.
+	EmbedBackend string
+
+	// EmbedURL is the embedding server's base URL when EmbedBackend is "tei".
+	// Required in that case: there is no fallback, because an operator who asked
+	// for TEI and silently got Ollama would have a palace embedded by a model
+	// they did not choose, and vectors from two models in one index are not
+	// comparable. Startup refuses instead.
+	//
+	// The sentence this replaces described a fallback to OllamaURL's host that
+	// the code has never had — a design that was considered and rejected, left
+	// documented as if it shipped.
+	EmbedURL string
+
 	// OllamaURL is the base URL of the Ollama server used for embeddings.
 	OllamaURL string
 
@@ -262,6 +302,8 @@ func Default() Config {
 		DBPath:           "agentsmemory.db",
 		VectorBackend:    VectorBackendSQLite,
 		QdrantURL:        "http://localhost:6333",
+		EmbedBackend:     "ollama",
+		SearchScope:      "wing",
 		OllamaURL:        "http://localhost:11434",
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,

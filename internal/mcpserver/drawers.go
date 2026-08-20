@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -16,13 +17,13 @@ import (
 // server. Every handler shares the admit() preamble (auth + monthly metering) and
 // is scoped to the resolved tenant's TeamID, so a token can only ever touch its
 // own workspace's memories.
-func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	registerAddDrawer(reg, drawers, usageSvc)
 	registerGetDrawer(reg, drawers, usageSvc)
 	registerUpdateDrawer(reg, drawers, usageSvc)
 	registerDeleteDrawer(reg, drawers, usageSvc)
 	registerListDrawers(reg, drawers, usageSvc)
-	registerSearch(reg, drawers, usageSvc)
+	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
 	registerListWings(reg, drawers, usageSvc)
 	registerListRooms(reg, drawers, usageSvc)
@@ -150,9 +151,35 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 // objects. It is tolerant by design — an unparseable entry is skipped rather than
 // failing the write, because the memory itself is worth more than its anchor.
 func parseAnchors(raw any) []palace.AnchorInput {
+	out, _, _ := parseAnchorList(raw)
+	return out
+}
+
+// parseAnchorList is parseAnchors with the one distinction the tolerant version
+// cannot make: whether the argument was a LIST at all.
+//
+// Tolerance is right where it was written — an unreadable entry means "no
+// anchors added" and the memory is worth more than its anchor. It is wrong at a
+// REPLACE, where the same empty result means "delete the anchors this memory
+// already has". `code_anchors: {…}` instead of `[{…}]` is an ordinary mistake for
+// an LLM caller, and without this the write path would treat it as a deliberate
+// clear and report success — an unknown recorded as a definite negative,
+// destroying what it was built to protect. This repository has fixed that exact
+// shape at the read end already.
+//
+// A genuine `[]` still reads fine, so a deliberate clear is unaffected.
+//
+// It also reports how many entries were SENT, which is the other half of the
+// same distinction. A non-empty list whose entries are all malformed parses to
+// readable-and-empty and would otherwise read as a deliberate clear — and since
+// most callers send exactly one anchor, "every entry malformed" is usually just
+// "the one anchor I sent had a typo", the likeliest way to get an entry wrong at
+// all. The caller asked to SET anchors, none could be read, and deleting the
+// existing ones is the opposite of the intent.
+func parseAnchorList(raw any) ([]palace.AnchorInput, bool, int) {
 	list, ok := raw.([]any)
 	if !ok {
-		return nil
+		return nil, false, 0
 	}
 	out := make([]palace.AnchorInput, 0, len(list))
 	for _, item := range list {
@@ -168,7 +195,40 @@ func parseAnchors(raw any) []palace.AnchorInput {
 		}
 		out = append(out, palace.AnchorInput{Repo: repo, Path: path, Snippet: snippet})
 	}
-	return out
+	return out, true, len(list)
+}
+
+// anchorReplacement decides what a code_anchors argument means at a REPLACE,
+// returning either the anchors to write or a non-empty refusal to send back.
+//
+// It exists as a function rather than inline at the call site because the two
+// refusals are the whole behaviour: a source-grep check that the call site
+// "looks right" passes happily against a guard disarmed with && false, which is
+// the same component-tested/selection-untested shape this file already fixed
+// once. A function can be driven by a test; a call site can only be read.
+//
+// Both refusals protect the same thing — an argument the caller got wrong must
+// not delete the anchors a memory already has. An unreadable VALUE (an object
+// where a list belongs) and an unreadable LIST (every entry malformed, which is
+// most often the single anchor sent having a typo) both parse to nothing, and
+// nothing is indistinguishable from a deliberate []. A list with one bad row
+// among several is not this case: it is readable, something survived, and the
+// bad row is dropped.
+func anchorReplacement(raw any) ([]palace.AnchorInput, string) {
+	anchors, readable, sent := parseAnchorList(raw)
+	if !readable {
+		return nil, "code_anchors must be a LIST of {path, snippet, repo?} objects; the value sent could not be " +
+			"read as one. Refusing rather than clearing, because an unreadable argument and a " +
+			"deliberate \"remove the anchors\" look identical once parsed — send [] if you meant to clear them"
+	}
+	if sent > 0 && len(anchors) == 0 {
+		return nil, fmt.Sprintf(
+			"code_anchors carried %d entr(ies) and none could be read — each needs a non-empty "+
+				"\"path\" and \"snippet\". Refusing rather than clearing: you asked to set anchors, "+
+				"so deleting the ones this memory has would be the opposite of that. Send [] if you "+
+				"meant to remove them", sent)
+	}
+	return anchors, ""
 }
 
 // pendingEmbeddingWarning is the one sentence a caller must pass on when a write
@@ -240,6 +300,21 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		// Anchors are REPLACED, not merged. This exists for the case that
+		// motivated it: a memory is corrected, and its old anchor still pins the
+		// old text — so the staleness check meant to protect the memory is what
+		// marks the correction out of date. Merging would leave both live.
+		if raw, present := args["code_anchors"]; present {
+			anchors, refusal := anchorReplacement(raw)
+			if refusal != "" {
+				return mcp.NewToolResultError(refusal), nil
+			}
+			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, anchors)
+			if aerr != nil {
+				return mcp.NewToolResultError(aerr.Error()), nil
+			}
+			return jsonResult(map[string]any{"drawer": toView(d), "code_anchors": n}), nil
+		}
 		return jsonResult(toView(d)), nil
 	})
 }
@@ -247,7 +322,7 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 // registerDeleteDrawer: remove a drawer (row + vector) by id.
 func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("delete_drawer",
-		mcp.WithDescription("Delete a drawer by id (removes both its metadata and its embedding)."),
+		mcp.WithDescription("Delete a memory by the id of any of its drawers (removes every chunk's metadata and embedding). A memory over the chunk size is several drawers sharing a parent, and deleting one of them would leave the rest live and searchable with nothing to belong to, so all of them go."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to delete.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -259,10 +334,11 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		if err := drawers.Delete(ctx, t.TeamID, id); err != nil {
+		n, err := drawers.Delete(ctx, t.TeamID, id)
+		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"ok": true, "deleted": id}), nil
+		return jsonResult(map[string]any{"ok": true, "deleted": id, "chunks_deleted": n}), nil
 	})
 }
 
@@ -327,12 +403,12 @@ type anchorView struct {
 
 // registerSearch: hybrid recall over a team's drawers — vector candidates
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
-func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max results, 1-100 (default 5).")),
-		mcp.WithString("wing", mcp.Description("Restrict to this wing.")),
+		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for, so one project's memories do not answer another's. Pass another wing to look there instead, or \"*\" to search EVERY wing — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour. SEARCH_SCOPE=workspace makes searching everything the default.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
 		mcp.WithNumber("snippet_chars", mcp.Description(
@@ -350,9 +426,13 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		hits, err := drawers.Search(ctx, t.TeamID, palace.SearchQuery{
 			Query:       query,
-			Wing:        req.GetString("wing", ""),
+			Wing:        wing,
 			Room:        req.GetString("room", ""),
 			Limit:       req.GetInt("limit", palace.DefaultSearchLimit),
 			MaxDistance: req.GetFloat("max_distance", palace.DefaultMaxDistance),

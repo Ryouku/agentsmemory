@@ -135,6 +135,16 @@ type Service struct {
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
 	bm25Auto bool
 	bm25Base float64
+	// bm25IDF weights each query term by how much it discriminates instead of
+	// counting it once, when bm25Auto is on.
+	//
+	// It is reachable from configuration rather than eval-only because a measured
+	// arm nobody can run is not a finding: four tables across two unrelated
+	// corpora put it ahead of the binary count (0.377 vs 0.257, 0.370 vs 0.290,
+	// 0.246 vs 0.183, 0.726 vs 0.673), and every one of them measured a code path
+	// production could not select. The default stays binary until the maintainer
+	// of the second corpus has seen the case for moving it.
+	bm25IDF bool
 	// fusionRRF makes search fuse vector and lexical evidence by RANK
 	// (reciprocal-rank fusion) instead of by weighted score. It exists because a
 	// linear blend lets one bad signal drag a good candidate down: on a large,
@@ -215,7 +225,8 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 
 // WithFusion selects how vector and lexical evidence combine: "rrf" for
 // reciprocal-rank fusion, anything else for the weighted-score blend. Same
-// post-construction-setter contract as WithReranker.
+// post-construction-setter contract as WithReranker: call it before the service
+// is shared across goroutines.
 func (s *Service) WithFusion(mode string) *Service {
 	s.fusionRRF = strings.EqualFold(strings.TrimSpace(mode), "rrf")
 	return s
@@ -242,6 +253,14 @@ func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
 	if base >= 0 && base <= 1 {
 		s.bm25Base = base
 	}
+	return s
+}
+
+// WithLexicalIDF selects the IDF-weighted coverage feature for auto weighting.
+// Same post-construction-setter contract as WithReranker: call it before the
+// service is shared across goroutines.
+func (s *Service) WithLexicalIDF(on bool) *Service {
+	s.bm25IDF = on
 	return s
 }
 
@@ -482,6 +501,44 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		return current, nil
 	}
 
+	// A memory over ChunkSize is several rows sharing a parent, and this function
+	// updates ONE row. Rewriting the content of one chunk leaves the others live,
+	// individually embedded, and still returning the retracted claim — observed
+	// in production, with the stale chunks ranking ABOVE the correction, and the
+	// call reporting success throughout. Refuse instead of half-doing it.
+	//
+	// Refusing rather than re-chunking is deliberate for now: re-chunking changes
+	// how many rows exist and which ids they carry, which silently invalidates
+	// every anchor, tunnel and knowledge-graph fact pointing at the old ones.
+	// That is a bigger change than a bug fix and it is recorded in the backlog.
+	// Every patchable field is one the chunks of a memory must agree on, so the
+	// guard covers all of them rather than content alone.
+	//
+	// Content was the reported case: rewriting one chunk left the others live with
+	// the old text, ranking above the correction. Wing and room split the memory
+	// instead — one chunk moves and the rest stay — and this release makes that
+	// worse than it was, because recall now defaults to the registration's wing:
+	// after a split neither wing returns the whole memory, and nothing tells the
+	// reader that what they got is a fragment.
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if err != nil {
+		return Drawer{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
+	}
+	if len(chunks) > 1 {
+		what := "content"
+		harm := "leave the other chunk(s) live with the old text — still embedded, still returned " +
+			"by search, and with nothing marking them retracted"
+		if patch.Content == nil {
+			what = "wing or room"
+			harm = "move this chunk away from the rest of the memory, so no single scope returns " +
+				"all of it and a scoped search answers with a fragment that does not say it is one"
+		}
+		return Drawer{}, fmt.Errorf(
+			"%w: drawer %s is chunk %d of a %d-chunk memory, and changing its %s would %s. "+
+				"Delete the memory and file it again as one piece",
+			ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks), what, harm)
+	}
+
 	// Compute the post-patch state and refresh the derived index first.
 	finalContent, finalWing, finalRoom := current.Content, current.Wing, current.Room
 	if patch.Content != nil {
@@ -520,14 +577,37 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 // Delete removes a drawer's metadata row and its vector. The row goes first so
 // the authoritative record is gone before the derived index; a failed vector
 // delete leaves an orphan the next search harmlessly skips.
-func (s *Service) Delete(ctx context.Context, teamID, id string) error {
-	if err := s.repo.Delete(ctx, teamID, id); err != nil {
-		return fmt.Errorf("delete drawer row: %w", err)
+func (s *Service) Delete(ctx context.Context, teamID, id string) (int, error) {
+	// The memory is the unit, not the row. A memory over ChunkSize is several
+	// rows sharing a parent, and deleting one of them left the rest orphaned —
+	// still embedded, still returned by search, and now pointing at a parent that
+	// no longer exists. Reproduced: deleting the parent of a two-chunk memory
+	// left chunk 1 live.
+	//
+	// Unlike an update, a delete has no reference ambiguity to weigh: the caller
+	// is removing the memory, so removing all of it is what they asked for. The
+	// count is returned so the caller can say how much went, rather than
+	// reporting the one id it was given.
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if err != nil {
+		return 0, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
 	}
-	if err := s.vectors.Delete(ctx, teamID, []string{id}); err != nil {
-		return fmt.Errorf("delete drawer vector: %w", err)
+	ids := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		ids = append(ids, c.ID)
 	}
-	return nil
+	if len(ids) == 0 {
+		ids = []string{id} // no row to resolve; delete what we were given
+	}
+	for _, cid := range ids {
+		if err := s.repo.Delete(ctx, teamID, cid); err != nil {
+			return 0, fmt.Errorf("delete drawer row: %w", err)
+		}
+	}
+	if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
+		return 0, fmt.Errorf("delete drawer vectors: %w", err)
+	}
+	return len(ids), nil
 }
 
 // List paginates a team's drawers, optionally narrowed to a wing and/or room.
@@ -694,6 +774,8 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// Rank fusion ignores bm25Base entirely — the weight question does not
 		// arise when neither signal contributes a magnitude, only a position.
 		ranked = rankRRF(query, docs, dists, boosts)
+	case s.bm25Auto && s.bm25IDF:
+		ranked = rankHybridAdaptiveIDF(query, docs, dists, boosts, s.bm25Base)
 	case s.bm25Auto:
 		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
 	default:
@@ -717,7 +799,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		hit.RerankScore = r.Rerank
+		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
 		results = append(results, hit)
 	}
 
@@ -841,7 +923,7 @@ func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []Hybri
 	head := make([]HybridScore, pool)
 	for i := range head {
 		head[i] = ranked[i]
-		head[i].Rerank = scores[i]
+		head[i].Rerank, head[i].Reranked = scores[i], true
 		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
 	}
 	// Stable so equal blended scores keep the fused order as the tie-break,
@@ -1224,4 +1306,12 @@ func distanceFromScore(score float32) float64 {
 		return 2
 	}
 	return d
+}
+
+// short12 trims an id for an error message.
+func short12(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }

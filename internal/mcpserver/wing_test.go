@@ -70,3 +70,30 @@ func indexOf(h, n string) int {
 	}
 	return -1
 }
+
+// TestSearchWingStarSearchesEverything pins the escape hatch. Scoping made the
+// EMPTY wing argument mean "my project", which silently removed the only way to
+// ask a cross-project question — and those are legitimate: an infrastructure
+// decision explains an application's deploy behaviour, and a craft lesson
+// learned in one repo applies in all of them. A default nobody can override per
+// call is not a default, it is a restriction.
+func TestSearchWingStarSearchesEverything(t *testing.T) {
+	ctx := auth.WithDefaultWing(context.Background(), "wing_acme")
+
+	got, err := searchWingFor(ctx, "*", true)
+	if err != nil {
+		t.Fatalf("star: %v", err)
+	}
+	if got != "" {
+		t.Errorf(`wing "*" must search every wing (empty filter), got %q`, got)
+	}
+
+	// The default is unchanged by the escape existing.
+	if got, err := searchWingFor(ctx, "", true); err != nil || got != "wing_acme" {
+		t.Errorf("an omitted wing must still scope to the registration, got %q (%v)", got, err)
+	}
+	// And an explicit wing still wins over both.
+	if got, err := searchWingFor(ctx, "wing_beta", true); err != nil || got != "wing_beta" {
+		t.Errorf("an explicit wing must win, got %q (%v)", got, err)
+	}
+}

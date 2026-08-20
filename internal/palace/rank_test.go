@@ -2,7 +2,10 @@ package palace
 
 import (
 	"context"
+	"math"
+	"math/rand"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -339,5 +342,456 @@ func TestLexicalCoverageIDFCrossLanguageStaysZero(t *testing.T) {
 	docs := []string{"reservation flow and payment gate", "payment provider timeout handling"}
 	if c := LexicalCoverageIDF("lietuviškas klausimas apie mokėjimus", docs); c != 0 {
 		t.Errorf("all-absent terms must yield coverage 0, got %.3f", c)
+	}
+}
+
+// orderOf returns just the candidate indices from a ranked page, which is what
+// the identity tests compare: two fusions agree when they order the page the
+// same way, not when they produce the same numbers.
+func orderOf(page []HybridScore) []int {
+	out := make([]int, len(page))
+	for i, h := range page {
+		out[i] = h.Index
+	}
+	return out
+}
+
+// TestLexNormPageMaxGivesTheWinnerFullWeight pins the defect ADR-002 exists for.
+//
+// Dividing by the page maximum means the best candidate on the page scores a
+// perfect 1.0 lexically however weak its match actually is — the normaliser has
+// no idea what a good BM25 score looks like, only what the best one here was. On
+// a page where every candidate matches one common term and misses the rare one,
+// page-max still awards full lexical weight; an anchored normaliser, which
+// divides by what the query COULD have scored, does not.
+func TestLexNormPageMaxGivesTheWinnerFullWeight(t *testing.T) {
+	// "cache" appears in no candidate, so it contributes nothing to any raw
+	// score while still counting toward the ceiling. "eviction" is in all three,
+	// so its IDF is near the floor. Every match here is weak by construction.
+	query := "cache eviction"
+	docs := []string{
+		"eviction eviction happens twice here",
+		"eviction happens once here",
+		"eviction here",
+	}
+
+	raw, ceiling := bm25ScoresAndCeiling(query, docs)
+	pm := lexNormPageMax(raw, ceiling)
+	an := lexNormCeiling(raw, ceiling)
+
+	if pm[0] != 1.0 {
+		t.Fatalf("page-max should hand the winner exactly 1.0, got %.6f", pm[0])
+	}
+	if an[0] >= 0.1 {
+		t.Fatalf("anchored norm should report this weak winner as weak, got %.6f", an[0])
+	}
+	// The winner is weak in absolute terms: that is the whole point.
+	if raw[0] >= 0.5 {
+		t.Fatalf("fixture no longer has a weak winner: raw %.6f", raw[0])
+	}
+}
+
+// TestLexNormAnchoredIgnoresWhichCandidateWon pins the narrow property anchoring
+// actually buys: winner-independence, not candidate-set independence.
+//
+// The fixture holds every pool statistic fixed by construction. The edited
+// candidate keeps the same query-term SET and the same token count and changes
+// only term frequency, so N, every df, every idf and avgdl are untouched — which
+// makes the other candidates' raw scores bit-identical across the edit. Their
+// anchored contributions must therefore be bit-identical too, while their
+// page-max contributions shrink, because the divisor moved under them.
+func TestLexNormAnchoredIgnoresWhichCandidateWon(t *testing.T) {
+	const query = "cache eviction"
+	// before[0] and after[0] both contain {cache, eviction} and both hold four
+	// tokens; only the frequencies differ.
+	before := []string{
+		"cache eviction alpha beta",
+		"cache cache eviction eviction gamma delta",
+		"eviction only here",
+	}
+	after := []string{
+		"cache cache cache eviction",
+		"cache cache eviction eviction gamma delta",
+		"eviction only here",
+	}
+
+	rawBefore, ceilBefore := bm25ScoresAndCeiling(query, before)
+	rawAfter, ceilAfter := bm25ScoresAndCeiling(query, after)
+
+	// The fixture is only meaningful if the edit actually moved the winner, and
+	// only valid if it moved nothing else. Assert both before trusting anything.
+	if rawBefore[1] <= rawBefore[0] {
+		t.Fatalf("fixture: candidate 1 should start as the lexical winner (%.6f vs %.6f)", rawBefore[1], rawBefore[0])
+	}
+	if rawAfter[0] <= rawAfter[1] {
+		t.Fatalf("fixture: the edit should make candidate 0 the winner (%.6f vs %.6f)", rawAfter[0], rawAfter[1])
+	}
+	if ceilBefore != ceilAfter {
+		t.Fatalf("fixture: the ceiling moved (%.9f -> %.9f); the edit changed a pool statistic", ceilBefore, ceilAfter)
+	}
+	for _, i := range []int{1, 2} {
+		if rawBefore[i] != rawAfter[i] {
+			t.Fatalf("fixture: sibling %d's raw score moved (%.9f -> %.9f); the edit changed df or avgdl", i, rawBefore[i], rawAfter[i])
+		}
+	}
+
+	anBefore := lexNormCeiling(rawBefore, ceilBefore)
+	anAfter := lexNormCeiling(rawAfter, ceilAfter)
+	pmBefore := lexNormPageMax(rawBefore, ceilBefore)
+	pmAfter := lexNormPageMax(rawAfter, ceilAfter)
+
+	for _, i := range []int{1, 2} {
+		if anBefore[i] != anAfter[i] {
+			t.Errorf("anchored contribution of sibling %d changed when another candidate won: %.9f -> %.9f", i, anBefore[i], anAfter[i])
+		}
+		if !(pmAfter[i] < pmBefore[i]) {
+			t.Errorf("page-max contribution of sibling %d should shrink when a stronger winner arrives: %.9f -> %.9f", i, pmBefore[i], pmAfter[i])
+		}
+	}
+}
+
+// lexVocab is the small shared vocabulary the property tests draw pages from.
+// It is deliberately small so query terms land in some candidates and miss
+// others, which is the regime where the normalisers actually differ.
+var lexVocab = []string{"cache", "eviction", "policy", "index", "shard", "replica", "quorum", "vector"}
+
+// randomLexPage builds one candidate page: a two-term query, three to six
+// candidates of varying length, and a cosine distance for each.
+func randomLexPage(rng *rand.Rand) (query string, docs []string, distances []float64) {
+	n := 3 + rng.Intn(4)
+	docs = make([]string, n)
+	distances = make([]float64, n)
+	for i := range docs {
+		terms := make([]string, 3+rng.Intn(6))
+		for j := range terms {
+			terms[j] = lexVocab[rng.Intn(len(lexVocab))]
+		}
+		docs[i] = strings.Join(terms, " ")
+		distances[i] = rng.Float64() * 2
+	}
+	query = lexVocab[rng.Intn(len(lexVocab))] + " " + lexVocab[rng.Intn(len(lexVocab))]
+	return query, docs, distances
+}
+
+// TestLexNormCeilingEqualsPageMaxAtTheRescaledWeight pins the identity between
+// the two normalisers, and pins the WRONG one out.
+//
+// With no boost the fused score is a convex blend, so anchoring is a rescaling
+// of the lexical weight and nothing more: ceiling at w orders a page exactly as
+// page-max does at w' = w·a/(1 − w + w·a), where a = maxBM25/C. The first draft
+// of ADR-002 claimed w' = w·a, which is the same only when a = 1 or w = 0. This
+// test is what keeps the corrected algebra honest, so it asserts the equality
+// AND asserts that the naive rescaling disagrees somewhere.
+func TestLexNormCeilingEqualsPageMaxAtTheRescaledWeight(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	weights := []float64{0.15, 0.3, 0.45, 0.6, 0.8}
+
+	naiveDisagreed := false
+	pages := 0
+	for trial := 0; trial < 200; trial++ {
+		query, docs, distances := randomLexPage(rng)
+
+		raw, ceiling := bm25ScoresAndCeiling(query, docs)
+		var maxBM25 float64
+		for _, s := range raw {
+			if s > maxBM25 {
+				maxBM25 = s
+			}
+		}
+		if maxBM25 == 0 || ceiling == 0 {
+			continue // no lexical signal: both normalisers are identically zero
+		}
+		pages++
+		a := maxBM25 / ceiling
+		if a >= 1 {
+			t.Fatalf("a = maxBM25/C must be < 1, got %.6f", a)
+		}
+
+		for _, w := range weights {
+			anchored := orderOf(rankFused(query, docs, distances, nil, 1-w, w, lexNormCeiling))
+
+			wr := w * a / (1 - w + w*a)
+			if got := orderOf(rankFused(query, docs, distances, nil, 1-wr, wr, lexNormPageMax)); !reflect.DeepEqual(got, anchored) {
+				t.Fatalf("trial %d w=%.2f: page-max at the rescaled weight %.6f ordered %v, anchored ordered %v", trial, w, wr, got, anchored)
+			}
+			naive := w * a
+			if got := orderOf(rankFused(query, docs, distances, nil, 1-naive, naive, lexNormPageMax)); !reflect.DeepEqual(got, anchored) {
+				naiveDisagreed = true
+			}
+		}
+	}
+	if pages < 50 {
+		t.Fatalf("fixture generated only %d usable pages; the property is barely exercised", pages)
+	}
+	if !naiveDisagreed {
+		t.Fatal("w' = w·a never disagreed with the anchored ordering — the test cannot tell the corrected identity from the wrong one")
+	}
+}
+
+// TestLexNormBoostHasNoEquivalentPageMaxWeight pins where the identity above
+// stops holding: it needs the fused score to be a convex blend, and an additive
+// closet boost is not rescaled along with the weights.
+//
+// The claim has to be stated carefully, and the first version of this test
+// stated it wrongly. "No page-max weight reproduces the anchored ordering" is
+// false on any single small page: four candidates admit only twenty-four
+// orderings, so some w' matches by coincidence roughly two pages in three. The
+// real difference is per-page EXISTENCE. Without a boost every page has a
+// reproducing weight, and the previous test names it in closed form. With a
+// boost, pages exist for which no weight anywhere in [0,1] works — which is what
+// makes anchoring a different ranking rather than a reparametrisation of this
+// one.
+//
+// So the assertion is on both populations at once: boost-free pages always have
+// a reproducing weight, boosted pages sometimes do not.
+func TestLexNormBoostHasNoEquivalentPageMaxWeight(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	const w = 0.4
+
+	var boostedWithout, plainWithout, pages int
+	for trial := 0; trial < 300; trial++ {
+		query, docs, distances := randomLexPage(rng)
+		raw, ceiling := bm25ScoresAndCeiling(query, docs)
+		var maxBM25 float64
+		for _, s := range raw {
+			if s > maxBM25 {
+				maxBM25 = s
+			}
+		}
+		if maxBM25 == 0 || ceiling == 0 {
+			continue
+		}
+		pages++
+
+		boosts := make([]float64, len(docs))
+		for i := range boosts {
+			if rng.Intn(2) == 0 {
+				boosts[i] = rng.Float64() * 0.3
+			}
+		}
+		if !somePageMaxWeightReproduces(query, docs, distances, boosts, w) {
+			boostedWithout++
+		}
+		if !somePageMaxWeightReproduces(query, docs, distances, nil, w) {
+			plainWithout++
+		}
+	}
+
+	if pages < 100 {
+		t.Fatalf("fixture generated only %d usable pages; the property is barely exercised", pages)
+	}
+	if plainWithout != 0 {
+		t.Errorf("%d of %d boost-free pages had no reproducing page-max weight; without a boost the rescaled weight always exists", plainWithout, pages)
+	}
+	if boostedWithout == 0 {
+		t.Errorf("every one of %d boosted pages had a reproducing page-max weight; with a boost the anchored ranking is supposed to leave the page-max family", pages)
+	}
+}
+
+// somePageMaxWeightReproduces reports whether any page-max weight on a fine grid
+// orders the page exactly as the anchored normaliser does at w.
+func somePageMaxWeightReproduces(query string, docs []string, distances, boosts []float64, w float64) bool {
+	anchored := orderOf(rankFused(query, docs, distances, boosts, 1-w, w, lexNormCeiling))
+	for step := 0; step <= 1000; step++ {
+		wp := float64(step) / 1000
+		if reflect.DeepEqual(orderOf(rankFused(query, docs, distances, boosts, 1-wp, wp, lexNormPageMax)), anchored) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLexNormPageMaxIsTodaysArithmetic pins that naming the normaliser changed
+// no behaviour: page-max reproduces the raw/maxBM25 fusion this code shipped
+// before ADR-002, recomputed here by hand rather than by calling the same
+// function under a different name.
+func TestLexNormPageMaxIsTodaysArithmetic(t *testing.T) {
+	const query = "cache eviction policy"
+	docs := []string{
+		"cache eviction policy described at length in this note",
+		"cache policy",
+		"eviction eviction eviction",
+		"unrelated prose about something else entirely",
+	}
+	distances := []float64{0.8, 0.35, 0.6, 0.2}
+	boosts := []float64{0, 0.25, 0, 0.25}
+	const w = 0.4
+
+	// The pre-change arithmetic, written out.
+	raw := bm25Scores(query, docs)
+	var maxBM25 float64
+	for _, s := range raw {
+		if s > maxBM25 {
+			maxBM25 = s
+		}
+	}
+	want := make([]HybridScore, len(docs))
+	for i := range docs {
+		norm := 0.0
+		if maxBM25 > 0 {
+			norm = raw[i] / maxBM25
+		}
+		want[i] = HybridScore{Index: i, Fused: (1-w)*vecSimFromDistance(distances[i]) + w*norm + boosts[i]}
+	}
+	sort.SliceStable(want, func(a, b int) bool { return want[a].Fused > want[b].Fused })
+
+	got := rankHybridWeighted(query, docs, distances, boosts, w)
+	if !reflect.DeepEqual(orderOf(got), orderOf(want)) {
+		t.Fatalf("page-max ordering %v differs from the pre-change arithmetic %v", orderOf(got), orderOf(want))
+	}
+	for i := range got {
+		if math.Abs(got[i].Fused-want[i].Fused) > 1e-12 {
+			t.Fatalf("rank %d fused %.12f, pre-change arithmetic %.12f", i, got[i].Fused, want[i].Fused)
+		}
+	}
+}
+
+// TestLexNormSaturatingCompressesTheTop pins the saturating transform's
+// contract, which no other test reaches — it is registered as an arm by a later
+// task, so without this it would ship as code nothing asserts anything about.
+//
+// The property that distinguishes it from the ceiling transform is what it does
+// to strong matches: both agree that weak is weak, but where the ceiling stays
+// proportional all the way up, this one flattens, so the gap between a good
+// match and an excellent one narrows.
+func TestLexNormSaturatingCompressesTheTop(t *testing.T) {
+	const ceiling = 4.0
+	half := lexNormSaturatingKappa * ceiling
+	raw := []float64{0, 0.1, half, 2 * half, 8 * half}
+
+	got := lexNormSaturating(raw, ceiling)
+
+	if got[0] != 0 {
+		t.Errorf("a zero raw score must contribute zero, got %.6f", got[0])
+	}
+	if math.Abs(got[2]-0.5) > 1e-12 {
+		t.Errorf("raw == kappa*C is the half-way point by definition, got %.6f", got[2])
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i] <= got[i-1] {
+			t.Errorf("saturating must stay strictly increasing: got[%d]=%.6f <= got[%d]=%.6f", i, got[i], i-1, got[i-1])
+		}
+		if got[i] >= 1 {
+			t.Errorf("saturating must stay below 1, got[%d]=%.6f", i, got[i])
+		}
+	}
+
+	// Compression: past the half-way point the saturating transform gives less
+	// than the proportional one for the same raw score.
+	prop := lexNormCeiling(raw, ceiling)
+	for _, i := range []int{3, 4} {
+		if got[i] >= prop[i] {
+			t.Errorf("saturating should compress strong matches: got[%d]=%.6f >= ceiling[%d]=%.6f", i, got[i], i, prop[i])
+		}
+	}
+}
+
+// TestLexNormDegenerateInputsYieldZero pins the guard on every normaliser: a
+// page with no lexical signal contributes zero to the fusion, never a NaN that
+// would propagate silently into every fused score and sort the page at random.
+//
+// The guard is written against the divisor rather than against the reasoning for
+// when the divisor can vanish, because that reasoning depends on the IDF formula
+// and the formula is exactly the kind of thing a later task changes.
+func TestLexNormDegenerateInputsYieldZero(t *testing.T) {
+	norms := map[string]lexNorm{
+		"page-max":   lexNormPageMax,
+		"ceiling":    lexNormCeiling,
+		"saturating": lexNormSaturating,
+	}
+	for name, norm := range norms {
+		got := norm([]float64{0, 0, 0}, 0)
+		if len(got) != 3 {
+			t.Fatalf("%s returned %d values for 3 candidates", name, len(got))
+		}
+		for i, v := range got {
+			if v != 0 {
+				t.Errorf("%s with no lexical signal: candidate %d contributed %v, want 0", name, i, v)
+			}
+		}
+		if empty := norm(nil, 0); len(empty) != 0 {
+			t.Errorf("%s on an empty page returned %d values", name, len(empty))
+		}
+	}
+
+	// The same through the fusion: a query whose terms appear nowhere must leave
+	// the vector order untouched rather than producing NaN scores.
+	docs := []string{"alpha beta", "gamma delta"}
+	distances := []float64{0.4, 0.9}
+	for name, norm := range norms {
+		page := rankFused("nonexistent terminology", docs, distances, nil, 0.6, 0.4, norm)
+		for _, h := range page {
+			if math.IsNaN(h.Fused) {
+				t.Fatalf("%s produced NaN on a page with no lexical signal", name)
+			}
+		}
+		if page[0].Index != 0 {
+			t.Errorf("%s: with no lexical signal the vector order should stand, got %v", name, orderOf(page))
+		}
+	}
+}
+
+// TestLexNormSaturatingBoundOnAchievableInput pins the bound that actually
+// constrains the experiment, which is not the one the algebra suggests.
+//
+// TestLexNormSaturatingCompressesTheTop asserts only that the result stays below
+// 1, and it can afford that loose bound because it feeds raw = 8·kappa·C = 4C —
+// a value no real page can produce, since raw < C strictly. On achievable input
+// the supremum is 2/3: raw/(raw + 0.5·C) < C/(1.5·C).
+//
+// That is not a curiosity, it is a fairness problem for the comparison ADR-002
+// runs. Across bm25Sweep the saturating arm's lexical contribution tops out at
+// two thirds of page-max's at the same weight — 0.40 against 0.60 at w=0.6 —
+// so matching page-max at the top of the grid would need w = 0.9, outside it.
+// Best-of-family is only a fair rule if the grid spans each family comparably,
+// and for this family it is truncated at roughly two thirds of the range. On the
+// identifier-query regime, where lexical fusion measured 1.000 against vector's
+// 0.847, that is exactly the end of the range that matters.
+//
+// Recorded in ADR-002's Risks rather than fixed here: widening the sweep for one
+// arm changes the experiment's design, which is the ADR's decision, not a test's.
+func TestLexNormSaturatingBoundOnAchievableInput(t *testing.T) {
+	const ceiling = 4.0
+	// Sweep the whole achievable domain: raw ranges over (0, C).
+	var max float64
+	for i := 1; i < 1000; i++ {
+		raw := ceiling * float64(i) / 1000
+		got := lexNormSaturating([]float64{raw}, ceiling)[0]
+		if got > max {
+			max = got
+		}
+	}
+	const sup = 2.0 / 3.0
+	if max >= sup {
+		t.Errorf("saturating reached %.6f on achievable input; the supremum is %.6f", max, sup)
+	}
+	if max < sup-0.01 {
+		t.Errorf("saturating topped out at %.6f, well short of its %.6f supremum — the fixture no "+
+			"longer sweeps the achievable range and the bound is untested", max, sup)
+	}
+
+	// The gap against page-max, on a page where page-max is not 1.0 by
+	// construction. The first version compared a SINGLE-element page, where
+	// page-max divides by that element and is therefore always exactly 1.0 — so
+	// the check read "1.0 <= 0.667", which cannot hold, and detected nothing.
+	// The gap is at the TOP of the range, and only there. Saturating is concave,
+	// so it sits ABOVE the proportional curve for small raw and below it for
+	// large — asserting it is smaller everywhere was wrong, and the run said so.
+	// What truncates the sweep is the winner: page-max hands its best candidate
+	// exactly 1.0 by construction, while saturating cannot exceed 2/3 however
+	// good that candidate is.
+	multi := []float64{ceiling * 0.9, ceiling * 0.5, ceiling * 0.1}
+	pm := lexNormPageMax(multi, ceiling)
+	sat := lexNormSaturating(multi, ceiling)
+	if pm[0] != 1.0 {
+		t.Fatalf("fixture: page-max must hand its winner 1.0, got %.6f", pm[0])
+	}
+	if sat[0] >= pm[0] {
+		t.Errorf("the page winner scored %.6f under saturating and %.6f under page-max — the "+
+			"truncation this test exists to pin has gone away; check whether the sweep still needs "+
+			"its Risks note", sat[0], pm[0])
+	}
+	if sat[0] >= sup {
+		t.Errorf("the page winner scored %.6f under saturating, at or above the %.6f supremum", sat[0], sup)
 	}
 }

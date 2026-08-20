@@ -129,6 +129,15 @@ var manifest = []tableSpec{
 var redactors = map[string]map[string]func(row map[string]any) any{
 	"users": {
 		"password_hash": func(map[string]any) any { return "" },
+		// The base32 shared secret an authenticator app is seeded with. It is a
+		// LIVE credential, not a record of one: anyone holding it generates
+		// valid second-factor codes indefinitely, so exporting it hands over the
+		// second factor along with the data it protects. It reached this export
+		// by omission — copyTable selects every column, this map is maintained
+		// by hand, and migration 00017 added the column years after the map was
+		// last extended. TestExportedCredentialColumnsAreRedacted now fails when
+		// that happens again.
+		"totp_secret": func(map[string]any) any { return "" },
 	},
 	"api_keys": {
 		"token_hash": func(row map[string]any) any { return row["id"] },
@@ -206,12 +215,31 @@ func openArchive(path string) (*gorm.DB, error) {
 // schema matches the live one. sqlite_% internals and goose bookkeeping are
 // skipped; tables are created before indexes.
 func (e *Exporter) replaySchema(ctx context.Context, dst *gorm.DB) error {
+	// Only the manifest's tables, and only the indexes that belong to them.
+	//
+	// This used to replay every table in the source. The manifest is maintained
+	// by hand and copyRows fills only what it names, so any table added by a
+	// later migration and never added to the manifest still arrived in the
+	// archive — empty. A subject running SELECT COUNT(*) on it reads 0 as "I had
+	// none", which is a false answer given under a data-protection request, not a
+	// missing feature. Four tables were in that state: drawer_anchors,
+	// search_events, totp_recovery_codes and webauthn_credentials. The last two
+	// must never be exported at all, so shipping their empty shells was doubly
+	// wrong — it advertised second factors the archive is right not to contain.
+	//
+	// A table the archive does not carry is now simply absent from it, which
+	// cannot be misread.
+	want := make([]any, 0, len(manifest))
+	for _, spec := range manifest {
+		want = append(want, spec.table)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(want)), ",")
 	rows, err := e.src.WithContext(ctx).Raw(
 		`SELECT sql FROM sqlite_master
 		 WHERE sql IS NOT NULL
 		   AND name NOT LIKE 'sqlite_%'
-		   AND name <> 'goose_db_version'
-		 ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name`).Rows()
+		   AND (name IN (`+placeholders+`) OR (type = 'index' AND tbl_name IN (`+placeholders+`)))
+		 ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name`, append(append([]any{}, want...), want...)...).Rows()
 	if err != nil {
 		return fmt.Errorf("read source schema: %w", err)
 	}

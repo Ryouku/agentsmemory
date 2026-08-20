@@ -12,7 +12,7 @@ gen_golden.py  ──run──►  *.json (frozen's output)  ──read──►
 ```
 
 1. **`gen_golden.py`** loads the *real* frozen functions from
-   `/Users/mind/.claude/mempalace-frozen/mempalace/searcher.py` and runs them over a
+   `~/.claude/mempalace-frozen/mempalace/searcher.py` and runs them over a
    fixed corpus. It stubs the `mempalace.backends` / `mempalace.palace` imports (which
    would otherwise pull chromadb/qdrant/ollama) because the four ranking functions use
    only `math`/`re` — so the executed bodies are byte-for-byte frozen, not a copy.

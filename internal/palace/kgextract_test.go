@@ -95,7 +95,7 @@ func TestKGReplaceSourceCountsRejected(t *testing.T) {
 	const team = "team-1"
 
 	res, err := svc.KGReplaceSource(ctx, team, "wing_acme", "alpha.md", []ExtractedTriple{
-		{Subject: "cache", Predicate: "uses", Object: strings.Repeat("x", maxKGValueLen+1)}, // over the value cap
+		{Subject: "cache", Predicate: "uses", Object: strings.Repeat("x", MaxKGValueLen+1)}, // over the value cap
 		{Subject: "cache", Predicate: "uses/abuses", Object: "redis"},                       // predicate fails SanitizeName
 		{Subject: "queue", Predicate: "feeds", Object: "worker"},
 	})
