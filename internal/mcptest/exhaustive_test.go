@@ -93,6 +93,15 @@ func TestScenariosObserveAnEffect(t *testing.T) {
 		if len(calls) < 2 {
 			t.Errorf("scenario %q made %d call(s). A scenario must act and then OBSERVE, or it "+
 				"asserts only that a call returned", sc.Name, len(calls))
+			continue
+		}
+		// Arity is not observation. Two writes in a row satisfy a count and prove
+		// nothing about what either did, so a scenario that MUTATES must afterwards
+		// READ — the defects this repo found by hand all reported success and were
+		// wrong about what they had done.
+		if wrote, read := writeThenRead(calls); wrote && !read {
+			t.Errorf("scenario %q mutates and never reads afterwards (%v). Counting calls is not "+
+				"the rule; observing the effect is", sc.Name, calls)
 		}
 	}
 }
@@ -119,26 +128,64 @@ func TestScenariosOnlyClaimToolsTheyCall(t *testing.T) {
 // parking space. "Hard to test" is a reason to write a scenario; "needs a live
 // Qdrant" is a reason a scenario cannot exist here.
 func TestUnobservableListNamesADependency(t *testing.T) {
-	allowed := []string{"qdrant", "tei", "oauth", "ollama", "reranker", "network"}
 	for _, u := range unobservable {
-		if strings.TrimSpace(u.Needs) == "" {
-			t.Errorf("%s is exempt with no dependency named", u.Tool)
-			continue
-		}
-		ok := false
-		for _, a := range allowed {
-			if strings.Contains(strings.ToLower(u.Needs), a) {
-				ok = true
-			}
-		}
-		if !ok {
-			t.Errorf("%s is exempt for %q, which names no external dependency — that is a reason "+
-				"to write a scenario, not a reason one cannot exist", u.Tool, u.Needs)
-		}
-		if strings.TrimSpace(u.Why) == "" {
-			t.Errorf("%s is exempt with no explanation", u.Tool)
+		if why := mcptest.ValidExemption(u); why != "" {
+			t.Error(why)
 		}
 	}
+
+	// The list is empty today, so the loop above runs zero times and would pass
+	// whatever the rule said. Drive the rule itself, or it is decoration.
+	for _, bad := range []mcptest.Unobservable{
+		{Tool: "am_kg_add", Needs: "more time", Why: "awkward"},
+		{Tool: "am_kg_add", Needs: "", Why: "awkward"},
+		{Tool: "am_kg_add", Needs: "a live qdrant", Why: ""},
+	} {
+		if mcptest.ValidExemption(bad) == "" {
+			t.Errorf("an exemption that should be rejected was accepted: %+v", bad)
+		}
+	}
+	if why := mcptest.ValidExemption(mcptest.Unobservable{
+		Tool: "am_x", Needs: "a live Qdrant instance", Why: "the effect is only visible in the index",
+	}); why != "" {
+		t.Errorf("a legitimate exemption was rejected: %s", why)
+	}
+}
+
+// mutatingTools are the calls that change state. Prefix-matched rather than
+// listed by full name, so a new write tool is covered the day it is registered
+// instead of the day somebody remembers this list.
+var mutatingPrefixes = []string{
+	"am_add_", "am_update_", "am_delete_", "am_create_", "am_mark_", "am_merge_",
+	"am_kg_add", "am_kg_invalidate", "am_diary_write", "am_recompute_", "am_reconnect",
+}
+
+// writeThenRead reports whether a scenario mutated, and whether it read after
+// its last mutation.
+func writeThenRead(calls []string) (wrote, readAfter bool) {
+	last := -1
+	for i, c := range calls {
+		for _, p := range mutatingPrefixes {
+			if strings.HasPrefix(c, p) {
+				wrote, last = true, i
+			}
+		}
+	}
+	if !wrote {
+		return false, false
+	}
+	for _, c := range calls[last+1:] {
+		mutating := false
+		for _, p := range mutatingPrefixes {
+			if strings.HasPrefix(c, p) {
+				mutating = true
+			}
+		}
+		if !mutating {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 // runScenario runs one scenario against a fresh harness and returns the tools it

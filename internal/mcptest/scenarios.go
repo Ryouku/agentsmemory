@@ -1,6 +1,10 @@
 package mcptest
 
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
 
 // Scenario is one end-to-end exercise of the tool surface.
 //
@@ -12,6 +16,37 @@ type Scenario struct {
 	Name  string
 	Tools []string
 	Run   func(t *testing.T, h *Harness)
+}
+
+// ExemptionReasons are the external dependencies that make a tool genuinely
+// unobservable in an in-process harness. Anything else is a reason to write a
+// scenario, not a reason one cannot exist.
+var ExemptionReasons = []string{"qdrant", "tei", "oauth", "ollama", "reranker", "network"}
+
+// ValidExemption reports why an exemption is not acceptable, or "" when it is.
+//
+// It takes the entry rather than being inlined in a loop for the reason the
+// catalogue guard was extracted: the exemption list is EMPTY today, so a loop
+// over it executes zero times and the check passes no matter what it says. A
+// rule that cannot run is not a rule.
+func ValidExemption(u Unobservable) string {
+	if strings.TrimSpace(u.Tool) == "" {
+		return "an exemption with no tool name"
+	}
+	if strings.TrimSpace(u.Why) == "" {
+		return u.Tool + " is exempt with no explanation"
+	}
+	needs := strings.ToLower(strings.TrimSpace(u.Needs))
+	if needs == "" {
+		return u.Tool + " is exempt with no dependency named"
+	}
+	for _, a := range ExemptionReasons {
+		if strings.Contains(needs, a) {
+			return ""
+		}
+	}
+	return u.Tool + " is exempt for " + strconv.Quote(u.Needs) +
+		", which names no external dependency — that is a reason to write a scenario, not a reason one cannot exist"
 }
 
 // Unobservable names a tool whose effect this in-process harness cannot see, and
