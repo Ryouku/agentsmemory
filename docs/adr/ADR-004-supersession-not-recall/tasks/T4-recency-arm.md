@@ -76,3 +76,4 @@ Stop if the arm cannot be expressed without a tuned constant that the sweep does
 - Recency signals other than `content_date`, such as file time or last access (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+- 2026-08-20 · b5d8df1 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestRecencyArm" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
