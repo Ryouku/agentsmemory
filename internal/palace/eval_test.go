@@ -619,3 +619,50 @@ func TestEvalCaseFetchesOnlyThePoolsItsArmsRead(t *testing.T) {
 		})
 	}
 }
+
+// TestCandidateUnionPoolsTheClosetHead pins that the judged pool is blind to the
+// decision this ADR is taking.
+//
+// CandidateUnion builds the candidate set a human or a model judges to produce
+// real-query qrels. Every ranker it pooled was closet-OFF, so a memory that only
+// the curation prior would surface could never be judged relevant — and the
+// resulting qrels would then be used to show the prior does not help. That is
+// the conclusion being assumed by the instrument. Adding the closet-on head
+// costs one more ordering over the same candidates and removes the bias.
+//
+// It also pins the two properties that keep the pool honest: a drawer appears
+// exactly once however many heads nominate it, and the order carries no signal
+// about which ranker liked what.
+func TestCandidateUnionPoolsTheClosetHead(t *testing.T) {
+	ctx := context.Background()
+	const team = "team-1"
+	svc := newTestService(t).WithClosetBoost(0)
+
+	query, gold := closetFixture(t, svc, team)
+
+	pooled, err := svc.CandidateUnion(ctx, team, query, "infra", 1, 20)
+	if err != nil {
+		t.Fatalf("CandidateUnion: %v", err)
+	}
+	if len(pooled) == 0 {
+		t.Fatal("the union pooled nothing")
+	}
+
+	seen := map[string]int{}
+	for _, d := range pooled {
+		seen[d.ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("drawer %s appears %d times; the union must dedupe across heads", id, n)
+		}
+	}
+	if seen[gold] == 0 {
+		t.Errorf("the gold from the MINED source is not in the judged pool — with perArm=1 only the closet-boosted head promotes it, so a judge could never mark it relevant")
+	}
+	for i := 1; i < len(pooled); i++ {
+		if pooled[i-1].ID > pooled[i].ID {
+			t.Fatalf("the pool is not sorted by id at %d; any other order leaks which ranker proposed a candidate", i)
+		}
+	}
+}
