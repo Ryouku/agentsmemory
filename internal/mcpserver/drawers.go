@@ -89,6 +89,12 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 				"Paste the exact code, NOT a line number — line numbers move on every edit above them. When the snippet later "+
 				"disappears from the file, search marks this memory STALE instead of letting the next session act on a fact "+
 				"that stopped being true. Anchor whenever a memory explains a specific piece of code.")),
+		mcp.WithBoolean("confirm_new_wing", mcp.Description(
+			"Set true to file an inbox item into a wing that holds no memories yet. Without it that "+
+				"combination is refused, because it is what an undeliverable handoff looks like: a "+
+				"target wing named for the direction of travel (wing_to-x) instead of the project "+
+				"(wing_x) is a wing no session will ever look in. Pass it when the project really "+
+				"has no memories filed for it yet.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -106,6 +112,13 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		content, err := req.RequireString("content")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		// An inbox item into a wing that holds nothing is what an undeliverable
+		// handoff looks like — see handoffRefusal. Refuse here, while the filer
+		// still has the context to correct the name; nobody notices later.
+		if refusal := handoffRefusal(ctx, drawers, t.TeamID, wing, room,
+			req.GetBool("confirm_new_wing", false)); refusal != "" {
+			return mcp.NewToolResultError(refusal), nil
 		}
 		created, err := drawers.Add(ctx, t.TeamID, palace.AddInput{
 			Wing:        wing,

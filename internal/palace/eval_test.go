@@ -786,12 +786,12 @@ func TestSupersessionRanksScopePerArm(t *testing.T) {
 		ArmProduction:   ScopePage,
 		ArmContextual:   ScopeOwnIndex,
 	} {
-		if got := supersessionScope(arm); got != want {
-			t.Errorf("supersessionScope(%s) = %q, want %q", arm, got, want)
+		if got := ArmScope(arm); got != want {
+			t.Errorf("ArmScope(%s) = %q, want %q", arm, got, want)
 		}
 	}
 	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
-		if supersessionScope(arm) == "" {
+		if ArmScope(arm) == "" {
 			t.Errorf("%s has no supersession scope — its number would be printed beside arms "+
 				"measuring a different population", arm)
 		}

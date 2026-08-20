@@ -595,3 +595,39 @@ func (r *Repo) MemoryChunks(ctx context.Context, teamID, id string) ([]Drawer, e
 	}
 	return out, nil
 }
+
+// WingIsEmpty reports whether a wing holds no drawers at all — the question
+// behind "am I creating this wing right now?".
+//
+// It exists separately from Wings() because the caller is on the write path and
+// needs one boolean, not the whole taxonomy: LIMIT 1 on the same
+// idx_drawers_team_wing index stops at the first row rather than counting every
+// drawer in a wing that may hold thousands.
+func (r *Repo) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, error) {
+	var id string
+	err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Select("id").
+		Where("team_id = ? AND wing = ?", teamID, wing).
+		Limit(1).
+		Scan(&id).Error
+	if err != nil {
+		return false, err
+	}
+	return id == "", nil
+}
+
+// WingNames lists the wings a team has written to, for an error message that
+// has to show the caller what exists. Wings() carries counts nobody needs here.
+func (r *Repo) WingNames(ctx context.Context, teamID string) ([]string, error) {
+	var names []string
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Distinct("wing").
+		Where("team_id = ?", teamID).
+		Order("wing").
+		Pluck("wing", &names).Error; err != nil {
+		return nil, err
+	}
+	return names, nil
+}

@@ -1315,3 +1315,13 @@ func short12(id string) string {
 	}
 	return id
 }
+
+// WingIsEmpty reports whether a wing holds no drawers yet.
+func (s *Service) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, error) {
+	return s.repo.WingIsEmpty(ctx, teamID, wing)
+}
+
+// WingNames lists the wings a team has written to.
+func (s *Service) WingNames(ctx context.Context, teamID string) ([]string, error) {
+	return s.repo.WingNames(ctx, teamID)
+}
