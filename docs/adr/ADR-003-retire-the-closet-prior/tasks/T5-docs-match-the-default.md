@@ -35,7 +35,7 @@ Every place that tells an operator what recall does stops listing the closet boo
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./cmd/server/ ./internal/web/views/ -run "TestClosetDocsMatchTheShippedDefault|TestLandingConceptsDescribeClosetsHonestly" -count=1'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./cmd/server/ ./internal/web/views/ -run "TestClosetDocsMatchTheShippedDefault|TestLandingConceptsDescribeClosetsHonestly" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
 ```
 
 ## Tests

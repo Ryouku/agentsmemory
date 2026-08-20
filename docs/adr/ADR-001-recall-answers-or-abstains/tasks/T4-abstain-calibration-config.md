@@ -34,7 +34,7 @@ Let an operator point the server at a calibration file, and make the server prov
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace internal/config cmd/server | grep -q . && exit 1; go vet ./... && go test ./cmd/server/ ./internal/palace/ ./internal/config/ -run "TestAbstain" -count=1'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace internal/config cmd/server | grep -q . && exit 1; go vet ./... && go test ./cmd/server/ ./internal/palace/ ./internal/config/ -run "TestAbstain" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'
 ```
 
 ## Tests
