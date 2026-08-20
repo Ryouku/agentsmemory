@@ -259,6 +259,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 	// main loop. It cannot key off the loop index here, because pair discovery
 	// may legitimately skip any number of drawers before the first ask happens.
 	proven := false
+	var pairCandidates, verifiedPairs int
 	for i, d := range drawers {
 		started := time.Now()
 		older, ok, err := svc.drawers.OlderNeighbor(ctx, team.ID, d, c.Int("pool"), c.Float64("pair-max-distance"))
@@ -273,6 +274,21 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 				i+1, len(drawers), firstLineOf(d.Content, 40), d.ContentDate)
 			continue
 		}
+		pairCandidates++
+		// Distance says the two are close; only the judge can say the older one
+		// records an EARLIER STATE of the same fact rather than a different fact
+		// nearby. A pair it declines is not a temporal case, and an error is a
+		// drop rather than a pass — an unverified pair that looks verified is
+		// what makes the whole file unusable.
+		switch confirmed, err := verifyPair(ctx, d, older, gen); {
+		case err != nil:
+			return nil, "", fmt.Errorf("verify temporal pair: %w", err)
+		case !confirmed:
+			fmt.Fprintf(out, "  [%2d/%2d] skipped: the judge does not read %q as superseding its neighbour\n",
+				i+1, len(drawers), firstLineOf(d.Content, 40))
+			continue
+		}
+		verifiedPairs++
 		q, err := gen.ask(ctx, d.Content)
 		if err != nil {
 			if !proven {
@@ -306,6 +322,9 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 		meta := caseFileMeta{
 			Generator: gen.model, Style: "temporal", Wing: wing,
 			Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
+			PairCandidates: pairCandidates,
+			VerifiedPairs:  verifiedPairs,
+			Judge:          c.String("gen-model"),
 		}
 		if err := writeCases(path, cases, meta); err != nil {
 			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
@@ -409,6 +428,42 @@ func generateRealCases(ctx context.Context, c *cli.Command, svc *services, team 
 // correct retrieval as a false positive, and every gate calibrated on such
 // cases would be calibrated on invalid labels. Returns the id of a drawer that
 // answers the question, or "" when the top hits all fail the answer check.
+// evalPromptPairCheck asks the judge the one question distance cannot answer.
+//
+// Not "are these related" — nearby memories are related all the time. The
+// question is whether the older note records an EARLIER STATE of the same fact
+// the newer one now states differently, which is what makes returning the older
+// one a supersession failure rather than an ordinary irrelevance.
+const evalPromptPairCheck = `You are checking whether two notes describe the same fact at two points in time.
+
+Answer YES only if the OLDER note states something about the same specific subject that the NEWER note now states DIFFERENTLY — that is, the newer note supersedes or corrects it.
+
+Answer NO if they are about different subjects, if the older note is merely related, or if both can be true at once.
+
+Reply with YES or NO and nothing else.`
+
+// verifyPair reports whether the judge confirms older records an earlier state
+// of the fact newer corrects.
+//
+// An error is a DROP, not a pass. verifyAbsent learned this the expensive way: a
+// checker that cannot answer and returns "fine" fills the case file with
+// unverified cases indistinguishable from verified ones, and every number taken
+// from that file is then a claim nobody can check.
+func verifyPair(ctx context.Context, newer, older palace.Drawer, gen *questionGen) (bool, error) {
+	judge := &questionGen{
+		url: gen.url, model: gen.model, apiKey: gen.apiKey,
+		prompt: evalPromptPairCheck, http: gen.http,
+	}
+	const excerpt = 900
+	reply, err := judge.ask(ctx,
+		"NEWER NOTE ("+newer.ContentDate+"):\n"+palace.Snippet(newer.Content, "", excerpt)+
+			"\n\nOLDER NOTE ("+older.ContentDate+"):\n"+palace.Snippet(older.Content, "", excerpt))
+	if err != nil {
+		return false, fmt.Errorf("pair check: %w", err)
+	}
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES"), nil
+}
+
 func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question string, gen *questionGen) (string, error) {
 	// No distance gate: absence must be checked broadly. A hit the production
 	// gate would drop can still prove the knowledge exists in the palace.
@@ -868,6 +923,13 @@ type caseFileMeta struct {
 	Wing      string `json:"wing"`
 	Corpus    int    `json:"corpus_drawers"`
 	Created   string `json:"created"`
+	// Pair provenance, for --style temporal. Without it a replayed run cannot
+	// tell a file whose pairs a judge confirmed from one generated before
+	// verification existed, and the two produce different numbers from the same
+	// command.
+	PairCandidates int    `json:"pair_candidates,omitempty"`
+	VerifiedPairs  int    `json:"verified_pairs,omitempty"`
+	Judge          string `json:"judge,omitempty"`
 }
 
 // writeCases saves cases as JSONL.

@@ -42,6 +42,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
 | `TestOlderNeighborFloorRejectsDistantPair` | `internal/palace/eval_test.go` | a neighbour beyond the distance ceiling is refused, and 0 means no ceiling | — |
+| `TestPairVerifiedMetaSurvivesRead` | `cmd/server/eval_test.go` | the pair provenance — candidates considered, pairs the judge confirmed, which judge — survives a replay | — |
 | `TestPairVerifiedRejectsDrift` | `cmd/server/eval_test.go` | a judge-rejected pair is dropped and counted in the meta, never filed as a case | — |
 | `TestPairVerifiedJudgeErrorDropsPair` | `cmd/server/eval_test.go` | a judge that errors drops the pair and never inflates `verified_pairs`, unlike `verifyAbsent` | — |
 | `TestPairVerifiedMetaSurvivesRead` | `cmd/server/eval_test.go` | every meta record of a merged case set is returned, and an unknown field is an error rather than a silent drop | — |
