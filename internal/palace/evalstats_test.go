@@ -336,4 +336,20 @@ func TestSupersessionGateVetoNeedsNonInferiority(t *testing.T) {
 	if got := ApplyRecencyVeto(base, weak, Interval{Lo: -0.01, Hi: 0.03}, len(recencySweep)); got.Status == VerdictNotJustified {
 		t.Error("a band that does not close the failure vetoed on cost alone")
 	}
+
+	// The family-wise correction has to bite. 2/40 clears the bar at a nominal
+	// 95% (upper bound 0.165) and does NOT clear it corrected over three bands
+	// (0.202), so a band selected as the best of the sweep must not veto on the
+	// uncorrected interval. Without this the correction could be deleted and
+	// every other assertion here would still pass.
+	borderline := SupersessionCell{Scope: ScopePool, Cases: 40, StaleAbove: 2}
+	if got := ApplyRecencyVeto(base, borderline, Interval{Lo: -0.01, Hi: 0.03}, len(recencySweep)); got.Status == VerdictNotJustified {
+		t.Error("a band vetoed on an interval that only clears the bar UNCORRECTED — the best of k " +
+			"bands chosen after the fact is not a 95% claim about any one of them")
+	}
+	// And it must still veto when only one band was ever in play.
+	if got := ApplyRecencyVeto(base, borderline, Interval{Lo: -0.01, Hi: 0.03}, 1); got.Status != VerdictNotJustified {
+		t.Errorf("with a single pre-registered band there is nothing to correct for, so the same "+
+			"counts must veto; got %q", got.Status)
+	}
 }

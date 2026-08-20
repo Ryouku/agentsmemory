@@ -370,3 +370,70 @@ func TestPairVerifiedMetaSurvivesRead(t *testing.T) {
 			got, want.PairCandidates, want.VerifiedPairs, want.Judge)
 	}
 }
+
+// TestSupersessionGateRefusesUnhardenedCases pins that the gate refuses rather
+// than answers when its evidence is not what it requires.
+//
+// Three refusals, each naming its own cause, because "the gate said no" is
+// useless if the operator cannot tell a thin corpus from a broken setup. The
+// floor is on pairs that are BOTH judge-verified and non-vacuous in THIS run —
+// never the generation-time verified_pairs integer, which knows nothing about
+// the pool this run used and so counts cases no arm could have ranked.
+func TestSupersessionGateRefusesUnhardenedCases(t *testing.T) {
+	cell := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 30}
+
+	t.Run("too few usable pairs", func(t *testing.T) {
+		thin := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 4, StaleAbove: 3}
+		if err := supersessionGateReady(thin, caseFileMeta{VerifiedPairs: 40}); err == nil {
+			t.Error("the gate answered on 4 usable pairs — the floor is on pairs verified AND " +
+				"non-vacuous in this run, not on what the generator once wrote")
+		} else if !strings.Contains(err.Error(), "--pool") && !strings.Contains(err.Error(), "corpus") {
+			t.Errorf("the refusal must point at the corpus or the pool, not at the bar: %v", err)
+		}
+	})
+
+	t.Run("case file was never hardened", func(t *testing.T) {
+		if err := supersessionGateReady(cell, caseFileMeta{}); err == nil {
+			t.Error("the gate answered on a case file with no verification record")
+		} else if !strings.Contains(err.Error(), "--style temporal") {
+			// The task said to name --verify-pairs. That flag does not exist:
+			// T2 wired pair verification unconditionally into temporal
+			// generation, so there is nothing to opt into and naming a flag that
+			// is not there is the defect this branch spent itself closing. The
+			// refusal names what actually fixes it — regenerating the file.
+			t.Errorf("the refusal must name what actually fixes it: %v", err)
+		}
+	})
+
+	t.Run("hardened and sufficient", func(t *testing.T) {
+		if err := supersessionGateReady(cell, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}); err != nil {
+			t.Errorf("a hardened file with enough usable pairs must be accepted: %v", err)
+		}
+	})
+}
+
+// TestSupersessionGateIgnoresPageScopedArms pins that the gate reads the arm it
+// was pre-registered against and refuses when that arm is absent.
+//
+// Substituting the nearest available arm is exactly the selection this task
+// exists to remove: a degraded run drops the reranked arms, and gating whatever
+// is left answers a different question under the same name.
+func TestSupersessionGateIgnoresPageScopedArms(t *testing.T) {
+	report := palace.EvalReport{Arms: []palace.EvalMetrics{
+		{Arm: palace.ArmProduction, Supersession: palace.SupersessionCell{Scope: palace.ScopePage, Cases: 40, StaleAbove: 0}},
+		{Arm: palace.ArmHybrid, Supersession: palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 1}},
+	}}
+	if _, err := gatedArmCell(report); err == nil {
+		t.Error("the gate accepted a report without its pre-registered arm — a page-scoped or " +
+			"merely-available arm answers a different question under the same name")
+	}
+	report.Arms = append(report.Arms, palace.EvalMetrics{
+		Arm: palace.SupersessionGatedArm(), Supersession: palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 30}})
+	got, err := gatedArmCell(report)
+	if err != nil {
+		t.Fatalf("the gated arm is present and was refused: %v", err)
+	}
+	if got.StaleAbove != 30 {
+		t.Errorf("the gate read the wrong arm: StaleAbove=%d, want 30 (the pre-registered arm's)", got.StaleAbove)
+	}
+}

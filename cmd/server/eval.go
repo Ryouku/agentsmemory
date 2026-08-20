@@ -1417,3 +1417,60 @@ func readCasesWithMeta(path string) ([]palace.EvalCase, caseFileMeta, error) {
 	}
 	return cases, meta, sc.Err()
 }
+
+// supersessionGateReady reports why the gate must refuse to answer, or nil.
+//
+// It refuses rather than answering thinly, and each refusal names its own cause:
+// "the gate said no" is useless if an operator cannot tell a thin corpus from an
+// unhardened case file from a broken run.
+//
+// The floor is on pairs that are BOTH judge-verified and non-vacuous in THIS run.
+// Not the generation-time verified_pairs integer — that knows nothing about the
+// pool this run used, so it counts cases whose superseded version never entered
+// the pool and no arm could have ranked.
+func supersessionGateReady(cell palace.SupersessionCell, meta caseFileMeta) error {
+	if meta.VerifiedPairs == 0 && meta.Judge == "" {
+		return fmt.Errorf("this case file carries no pair-verification record, so its temporal cases "+
+			"may pair unrelated memories — regenerate with --style temporal (pairs are judged at "+
+			"generation) or point --cases at a file that was; %d pair(s) present", cell.Cases+cell.Vacuous)
+	}
+	if cell.Cases < palace.SupersessionMinCases() {
+		return fmt.Errorf("only %d verified pair(s) are non-vacuous at --pool %d (%d were vacuous): "+
+			"below %d the interval straddles almost any bar. Grow the dated corpus or raise --pool — "+
+			"the bar is not the thing to change",
+			cell.Cases, defaultEvalPool, cell.Vacuous, palace.SupersessionMinCases())
+	}
+	return nil
+}
+
+// gatedArmCell finds the pre-registered arm in a report, by identity.
+//
+// Never the nearest available arm: a degraded run drops the reranked arms, and
+// gating whatever is left answers a different question under the same name. That
+// substitution is the selection this gate exists to remove.
+func gatedArmCell(report palace.EvalReport) (palace.SupersessionCell, error) {
+	want := palace.SupersessionGatedArm()
+	var reranked bool
+	for _, m := range report.Arms {
+		if m.Arm == want {
+			return m.Supersession, nil
+		}
+		if strings.Contains(string(m.Arm), "rerank") {
+			reranked = true
+		}
+	}
+	if !reranked {
+		return palace.SupersessionCell{}, fmt.Errorf(
+			"the gate is registered against %q and this report has no reranked arm at all — the run was "+
+				"degraded (--allow-degraded drops them when the cross-encoder fails its preflight); fix the "+
+				"reranker and re-run rather than gating a different arm", want)
+	}
+	return palace.SupersessionCell{}, fmt.Errorf(
+		"the gate is registered against %q, which this report does not contain although other reranked arms "+
+			"do — the constant is stale and must move in the same commit that changed production ranking", want)
+}
+
+// defaultEvalPool mirrors the eval command's --pool default, for the refusal
+// message: vacuity is defined against the pool a run used, so the count the gate
+// refuses on is only interpretable beside it.
+const defaultEvalPool = 50

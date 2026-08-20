@@ -357,3 +357,182 @@ func printSupersessionTable(out io.Writer, report EvalReport) {
 	fmt.Fprintln(out, "  ranked it above anything; 'unreachable' never retrieved the CORRECTION, which counts as")
 	fmt.Fprintln(out, "  a stale-above because the stale one came back and its replacement did not.")
 }
+
+// The supersession gate's pre-registered constants. Each is a decision, not a
+// tuning knob: changing one is an ADR amendment, because a threshold moved after
+// seeing the data is not a threshold.
+const (
+	// supersessionBar is the stale-above rate above which the failure is worth
+	// building a mechanism for.
+	//
+	// Too low and every corpus justifies work that a date preference would have
+	// closed; too high and a real, common failure reads as noise and ships. 0.20
+	// says: one temporal question in five returning the superseded memory above
+	// its correction is not something to leave alone.
+	supersessionBar = 0.20
+
+	// supersessionMinCases is the floor below which the gate refuses to answer.
+	//
+	// It is a floor on VERIFIED, NON-VACUOUS pairs in this run, not on how many
+	// the generator once wrote: vacuity is defined against the pool a run used,
+	// so the same case file yields a different count at a different --pool. Below
+	// it the Wilson interval is wide enough to straddle almost any bar, and a
+	// gate that always answers "unresolved" teaches people to skip it.
+	supersessionMinCases = 30
+
+	// supersessionNonInferiority is the MRR loss a cheap fix may cost general
+	// ranking before it stops counting as cheap.
+	//
+	// Honest about its own provenance: this margin is set by what n=40 can
+	// resolve, not by the loss we would actually accept. It is the weakest number
+	// in this ADR and should be re-derived once the non-temporal case set can
+	// resolve less than it.
+	supersessionNonInferiority = 0.05
+)
+
+// supersessionGatedArm is the arm the gate judges: the pool-scoped
+// reconstruction of what production ranks with.
+//
+// Chosen by IDENTITY and never by score. Scanning the table for the lowest
+// stale-above rate is the winner's curse the MRR table already warns about — the
+// arm that looks best on this corpus is the one most likely to be lucky on it.
+// This must change in the same commit that changes production ranking, and if
+// ADR-003 flips the closet prior off then production is ArmHybridRerank and this
+// constant moves with it.
+const supersessionGatedArm = ArmReranked
+
+// The three outcomes a supersession verdict can take.
+const (
+	VerdictJustified    = "justified"
+	VerdictNotJustified = "not justified"
+	VerdictUnresolved   = "unresolved"
+)
+
+// SupersessionOutcome is one verdict with the evidence it was read from.
+type SupersessionOutcome struct {
+	Status string
+	// Interval is the Wilson interval on the counted-as-failure rate.
+	Interval Interval
+	// Rate counts unreachable-correction cases as failures; RateReachable
+	// excludes them. When the two disagree about the outcome the verdict is
+	// unresolved and Reason says so.
+	Rate, RateReachable float64
+	Reason              string
+}
+
+// SupersessionVerdict decides whether the supersession failure is common enough
+// to justify building a mechanism against it.
+//
+// The verdict comes from the INTERVAL, not the point estimate: on a corpus with a
+// few dozen verified pairs the estimate is mostly noise, and a gate that compares
+// it to a bar answers confidently either way while being wrong about half the
+// time it matters. An interval that straddles the bar means this corpus cannot
+// separate the two, which is a finding about the evidence and not about the
+// ranker.
+//
+// The rate is computed under both defensible treatments of a case whose
+// correction was never retrieved — counted as a failure, since the stale one came
+// back and its replacement did not; or excluded, since no ranking fixes a
+// retrieval miss. When they disagree about the outcome the verdict is unresolved
+// naming both, because a verdict that depends on which treatment the author coded
+// first is not a verdict.
+func SupersessionVerdict(cell SupersessionCell, bar float64) SupersessionOutcome {
+	out := SupersessionOutcome{Rate: cell.Rate()}
+	out.Interval = WilsonInterval(cell.StaleAbove, cell.Cases)
+
+	reachableCases := cell.Cases - cell.CurrentUnreachable
+	if reachableCases > 0 {
+		out.RateReachable = float64(cell.StaleAboveReachable) / float64(reachableCases)
+	}
+
+	call := func(iv Interval) string {
+		switch {
+		case iv.Lo > bar:
+			return VerdictJustified
+		case iv.Hi < bar:
+			return VerdictNotJustified
+		default:
+			return VerdictUnresolved
+		}
+	}
+	counted := call(out.Interval)
+	out.Status = counted
+
+	if reachableCases > 0 && cell.CurrentUnreachable > 0 {
+		excluded := call(WilsonInterval(cell.StaleAboveReachable, reachableCases))
+		if excluded != counted {
+			out.Status = VerdictUnresolved
+			out.Reason = fmt.Sprintf(
+				"counting the %d case(s) whose correction was never retrieved as failures gives %q (rate %.3f); "+
+					"excluding them gives %q (rate %.3f) — both treatments are defensible and they disagree",
+				cell.CurrentUnreachable, counted, out.Rate, excluded, out.RateReachable)
+		}
+	}
+	return out
+}
+
+// ApplyRecencyVeto downgrades a justified verdict when a swept recency band
+// already closes the failure at no cost to general ranking.
+//
+// Two conditions, and both are necessary. The band's own interval must clear the
+// bar — corrected at α/k over the k pre-registered bands, because the best of k
+// bands chosen after the fact is not a 95% claim about any of them. And the
+// band's ranking cost must be bounded: nonInferiority is PairedDelta(band,
+// gatedArm), so MRR(band) − MRR(gatedArm), and its lower bound must sit above
+// −supersessionNonInferiority. A band that closes supersession while costing
+// general ranking has moved the loss rather than removed it, and an inverted
+// argument order would let a band veto by being worse than the arm it replaces.
+func ApplyRecencyVeto(base SupersessionOutcome, band SupersessionCell, nonInferiority Interval, k int) SupersessionOutcome {
+	if base.Status != VerdictJustified || k < 1 {
+		return base
+	}
+	// Bonferroni over the pre-registered bands: the interval that must clear the
+	// bar is the corrected one, not the nominal 95%.
+	iv := wilsonAt(band.StaleAbove, band.Cases, 0.05/float64(k))
+	if !(iv.Hi < supersessionBar) {
+		return base // the band does not close the failure
+	}
+	if !(nonInferiority.Lo > -supersessionNonInferiority) {
+		out := base
+		out.Reason = fmt.Sprintf(
+			"a recency band closes the failure (interval %s at alpha/%d) but its ranking cost is not bounded: "+
+				"PairedDelta(band, %s) = %s, whose lower bound is not above -%.2f — unresolved on cost, so it does not veto",
+			iv, k, supersessionGatedArm, nonInferiority, supersessionNonInferiority)
+		return out
+	}
+	return SupersessionOutcome{
+		Status: VerdictNotJustified, Interval: base.Interval,
+		Rate: base.Rate, RateReachable: base.RateReachable,
+		Reason: fmt.Sprintf("a date preference already closes it: a recency band's interval %s at alpha/%d "+
+			"is below the %.2f bar and it costs no general ranking (%s)", iv, k, supersessionBar, nonInferiority),
+	}
+}
+
+// wilsonAt is WilsonInterval at an arbitrary alpha, for family-wise correction.
+func wilsonAt(successes, n int, alpha float64) Interval {
+	if n <= 0 {
+		return Interval{}
+	}
+	z := math.Sqrt2 * math.Erfinv(1-alpha)
+	p := float64(successes) / float64(n)
+	nf := float64(n)
+	denom := 1 + z*z/nf
+	centre := (p + z*z/(2*nf)) / denom
+	spread := z * math.Sqrt(p*(1-p)/nf+z*z/(4*nf*nf)) / denom
+	lo, hi := centre-spread, centre+spread
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > 1 {
+		hi = 1
+	}
+	return Interval{Lo: lo, Hi: hi}
+}
+
+// SupersessionGatedArm is the arm the gate is pre-registered against. Exported
+// so the command can refuse a report that does not contain it, by name.
+func SupersessionGatedArm() EvalArm { return supersessionGatedArm }
+
+// SupersessionMinCases is the floor on verified, non-vacuous pairs. Exported for
+// the command's refusal message.
+func SupersessionMinCases() int { return supersessionMinCases }
