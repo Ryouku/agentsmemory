@@ -7,6 +7,16 @@
 **Produces:** `LEX_NORM` config key, `Service.WithLexNorm`, the shipping lexical-normaliser default, and (outcome i) the removal of the coverage machinery
 **Consumes:** `anchorEvidence` (T3)
 
+
+> **Amended 2026-08-20.** This task was written for a world where every fusion arm carried the
+> closet prior and an unboosted `no-closet` family was added beside it as a control. ADR-003 T1
+> made the prior opt-in by arm name and put closet variants of the sweep and adaptive arms
+> permanently out of scope, so the ten anchored arms are one unboosted family and there is no
+> `no-closet` counterpart to any of them — the confound the control existed for is gone rather
+> than being controlled for. Read every `no-closet` reference below as "the anchored arms",
+> and every count of four intervals or two regimes as two intervals over one regime. The bar per
+> interval is unchanged. See the amendment note in the parent ADR's Decision.
+
 ## Goal
 
 Execute the outcome the committed evidence selects — delete the adaptive machinery, ratify it, or record that it did not earn the default — and bind the code's disposition to the evidence with a test that recomputes the ADR's deterministic shipping rule and its four selection-free deletion intervals rather than trusting a written verdict.

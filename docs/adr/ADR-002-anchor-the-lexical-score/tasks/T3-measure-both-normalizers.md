@@ -7,6 +7,16 @@
 **Produces:** `anchorEvidence` — the committed eval results under `internal/palace/testdata/anchor/` plus their loader
 **Consumes:** `evalArms` registry, anchored arm names, the `no-closet` anchored family (T2)
 
+
+> **Amended 2026-08-20.** This task was written for a world where every fusion arm carried the
+> closet prior and an unboosted `no-closet` family was added beside it as a control. ADR-003 T1
+> made the prior opt-in by arm name and put closet variants of the sweep and adaptive arms
+> permanently out of scope, so the ten anchored arms are one unboosted family and there is no
+> `no-closet` counterpart to any of them — the confound the control existed for is gone rather
+> than being controlled for. Read every `no-closet` reference below as "the anchored arms",
+> and every count of four intervals or two regimes as two intervals over one regime. The bar per
+> interval is unchanged. See the amendment note in the parent ADR's Decision.
+
 ## Goal
 
 Produce the measurement the ADR's shipping rule and deletion trigger are read from: the four tables that produced the IDF-coverage result, re-run with fixed lexical weights 0.20/0.40/0.60 plus the adaptive and IDF arms, under page-maximum and both anchored normalisers, with every anchored arm additionally run without the closet boost, on both corpora — committed so the verdict is replayable offline.

@@ -61,7 +61,7 @@ The experiment survives both corrections; the **deduction** does not. What was p
 - **`rankRRF`** (`rank.go:194`) — the existing escape from score-scale incommensurability, and best on the large corpus with the cross-encoder on top. Kept as an arm; this ADR is the other branch of the same question.
 - **`adaptiveBM25Weight` / `LexicalCoverage` / `LexicalCoverageIDF`** (`rank.go:318-405`) — the machinery under test. Reused as arms, and candidates for deletion.
 - **Eval arm registry + `BootstrapMRR` / `PairedDelta`** (`eval.go:293-311`, `evalstats.go`) — every arm re-orders one shared pool from one vector search, so an arm costs no extra retrieval and no extra inference. Reused as the instrument; no new statistics code, which is why the deletion trigger is built from cross-corpus transfer rather than from a selection-aware bootstrap (see Follow-ups).
-- **`evalCase`'s boost handling** (`eval.go:493-496`, `eval.go:657-679`) — one `boosts` slice is built per case and handed to the swept fusion arms and both adaptive arms alike; only `hybrid` passes `nil`. That precedent is reused for a no-closet anchored family, which the deletion trigger needs (see Decision).
+- **`evalCase`'s boost handling** — as authored, one `boosts` slice was built per case and handed to the swept fusion arms and both adaptive arms alike, with only `hybrid` passing `nil`; the plan was to reuse that precedent for a paired no-closet family. **Superseded by ADR-003 T1** (`armBoosts`, `internal/palace/eval.go`): an arm now carries the prior only if its name says so, which is the same fix applied once at the source instead of per family.
 - **`bm25Sweep`** (`eval.go:69`) — already `{0.0, 0.2, 0.4, 0.6}`, which contains the three fixed weights this ADR measures. Reused, and load-bearing: it is the rival hypothesis to anchoring, not just a backdrop.
 - **`TestLexicalIDFChangesWhatSearchReturns`** (`service_test.go:583`) — the repo's own pattern for pinning that a flag reaches the ranking path: require two settings to produce **different scores through `Search`**. Reused verbatim in T2 and T4; its predecessor asserted only that both modes returned a result and passed while the flag was read by nothing.
 
@@ -102,7 +102,15 @@ The same algebra makes the naive comparison unreadable. "Anchored at `w` versus 
 
 Which `(LEX_NORM, BM25_WEIGHT)` pair ships is a **choice** under uncertainty. It is reversible with one environment variable, so it is settled by a declared deterministic rule over measured MRRs, and no confidence interval licenses it. Deleting `adaptiveBM25Weight`, `LexicalCoverage` and `LexicalCoverageIDF` is an irreversible **claim** about a mechanism. It is a git revert, not a knob, so it is settled by intervals — and by intervals that did not pick their own comparators out of the data they are computed on.
 
-**The shipping rule (deterministic, reversible, boosted arms — production boosts):**
+**The shipping rule (deterministic, reversible, read off the arms that match what production serves):**
+
+> **Amended 2026-08-20, after ADR-003 T1 landed.** This rule and the trigger below were written when
+> `evalCase` handed one closet-boosts slice to every fusion arm, so "the boosted arms" and "the arms
+> shaped like production" were the same set. ADR-003 T1 made the closet prior something an arm opts
+> into by name and put closet variants of the sweep and adaptive arms permanently out of scope, so
+> **no fusion, sweep or adaptive arm carries a boost any more** — the ten anchored arms are one
+> unboosted family. Read every "boosted arm" below as the unboosted fusion arms that now exist, and
+> see the note after the trigger for why the second regime went with them.
 
 1. Within each normaliser ∈ {`page-max`, `ceiling`, `saturating`}, take the highest-MRR fixed swept weight on each corpus.
 2. Ship the normaliser whose best-of-family MRR is highest **on both corpora**. If the corpora disagree on the argmax, ship the incumbent `page-max` and record the disagreement.
@@ -110,16 +118,20 @@ Which `(LEX_NORM, BM25_WEIGHT)` pair ships is a **choice** under uncertainty. It
 4. `page-max` beats an anchored normaliser on a tie. The incumbent wins ties because a flip moves the `score` on the `am_search` wire for no measured gain.
 5. `BM25_WEIGHT` ships as the argmax over {0.20, 0.40, 0.60, `auto`, `auto-idf`} under the shipped normaliser, agreeing on both corpora; on a tie or a disagreement, the incumbent `auto`. Under outcome (i) below, `auto` and `auto-idf` no longer exist and the argmax is over the three fixed weights.
 
-**The deletion trigger (irreversible, so pre-registered, selection-free and run in both boost regimes).** For each ordered pair of corpora (A→B and B→A) and each regime R ∈ {boosted, no-closet}:
+**The deletion trigger (irreversible, so pre-registered and selection-free).** For each ordered pair of corpora (A→B and B→A), over the single unboosted regime that now exists:
 
-- on corpus **A**, under R, pick the best anchored fixed swept weight `w*` and the stronger anchored adaptive arm `m*` (`auto` or `auto-idf`) by MRR;
-- on corpus **B**, under R, compute `PairedDelta(ranks[w*], ranks[m*])`.
+- on corpus **A**, pick the best anchored fixed swept weight `w*` and the stronger anchored adaptive arm `m*` (`auto` or `auto-idf`) by MRR;
+- on corpus **B**, compute `PairedDelta(ranks[w*], ranks[m*])`.
 
-All **four** intervals must exclude zero in favour of the fixed arm. The comparators are chosen on data the interval is not computed on, which is what the first version's "best fixed arm versus the stronger adaptive arm on the same cases" did not do: an ordinary paired interval on two arms selected from those same cases is not a 95% interval for anything.
+Both intervals must exclude zero in favour of the fixed arm. The comparators are chosen on data the interval is not computed on, which is what the first version's "best fixed arm versus the stronger adaptive arm on the same cases" did not do: an ordinary paired interval on two arms selected from those same cases is not a 95% interval for anything.
 
 Two honest caveats. The corpora are not an exchangeable split of one population — one is 45× larger — so this is a **transfer** test, not held-out validation; for an irreversible deletion that is the stronger bar and not the weaker one, since a mechanism that only survives on the corpus that selected it is precisely what we should not delete on. And the trigger may well never fire at n=40 and n=30, which is the designed behaviour rather than a defect: the outcome is then (iii), and nothing is deleted.
 
-The no-closet regime exists because the boosted contrast cannot separate a lexical-weighting effect from a boost-strength one. Anchoring inflates the boost by `1/s`, and `s = 1 − w(1 − a)` differs between a fixed arm and an adaptive arm whose effective weight moves per query. Requiring agreement in both regimes attributes a result that appears only with the prior on to the prior — which is ADR-003's question, not this one's. A trigger that fires in one regime and not the other is disposition (iii) and deletes nothing, but T4 stops and asks rather than recording it silently: it is a finding about the closet prior, and ADR-003 should hear it before this ADR files it away.
+**Why there is one regime now, and why that is not a weakening.** The second regime existed to control a confound: the boosted contrast cannot separate a lexical-weighting effect from a boost-strength one, because anchoring inflates an additive boost by `1/s` with `s = 1 − w(1 − a)`, and `s` differs between a fixed arm and an adaptive arm whose effective weight moves per query. Requiring agreement in both regimes stopped a result that only appears with the prior ON from being attributed to the lexical weight.
+
+ADR-003 T1 removed the confound at its source rather than controlling for it: no fusion, sweep or adaptive arm is boosted, so there is no boost for anchoring to inflate and no boost-strength effect to mistake for a weighting one. Four intervals become two because two of them were measuring a regime that no longer exists — not because the bar was lowered. **The bar per regime is unchanged: every interval that exists must still exclude zero in favour of the fixed arm.**
+
+One ordering dependency follows and is deliberate. This rule now reads the arms shaped like what production serves, and ADR-003 T4 is what decides that shape. If T4 ships closet-ON after all, the arms this rule reads no longer match production and the rule must be re-derived before it is applied — which is why the Follow-ups require re-running after either ADR lands.
 
 ### The three outcomes, each naming the pair it ships
 
