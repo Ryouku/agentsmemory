@@ -730,3 +730,50 @@ func TestLexNormDegenerateInputsYieldZero(t *testing.T) {
 		}
 	}
 }
+
+// TestLexNormSaturatingBoundOnAchievableInput pins the bound that actually
+// constrains the experiment, which is not the one the algebra suggests.
+//
+// TestLexNormSaturatingCompressesTheTop asserts only that the result stays below
+// 1, and it can afford that loose bound because it feeds raw = 8·kappa·C = 4C —
+// a value no real page can produce, since raw < C strictly. On achievable input
+// the supremum is 2/3: raw/(raw + 0.5·C) < C/(1.5·C).
+//
+// That is not a curiosity, it is a fairness problem for the comparison ADR-002
+// runs. Across bm25Sweep the saturating arm's lexical contribution tops out at
+// two thirds of page-max's at the same weight — 0.40 against 0.60 at w=0.6 —
+// so matching page-max at the top of the grid would need w = 0.9, outside it.
+// Best-of-family is only a fair rule if the grid spans each family comparably,
+// and for this family it is truncated at roughly two thirds of the range. On the
+// identifier-query regime, where lexical fusion measured 1.000 against vector's
+// 0.847, that is exactly the end of the range that matters.
+//
+// Recorded in ADR-002's Risks rather than fixed here: widening the sweep for one
+// arm changes the experiment's design, which is the ADR's decision, not a test's.
+func TestLexNormSaturatingBoundOnAchievableInput(t *testing.T) {
+	const ceiling = 4.0
+	// Sweep the whole achievable domain: raw ranges over (0, C).
+	var max float64
+	for i := 1; i < 1000; i++ {
+		raw := ceiling * float64(i) / 1000
+		got := lexNormSaturating([]float64{raw}, ceiling)[0]
+		if got > max {
+			max = got
+		}
+	}
+	const sup = 2.0 / 3.0
+	if max >= sup {
+		t.Errorf("saturating reached %.6f on achievable input; the supremum is %.6f", max, sup)
+	}
+	if max < sup-0.01 {
+		t.Errorf("saturating topped out at %.6f, well short of its %.6f supremum — the fixture no "+
+			"longer sweeps the achievable range and the bound is untested", max, sup)
+	}
+
+	// And the gap against page-max at the same weight, which is what makes the
+	// grid unfair rather than merely different.
+	if pm := lexNormPageMax([]float64{ceiling * 0.999}, ceiling)[0]; pm <= max {
+		t.Errorf("page-max reached %.6f and saturating %.6f; the truncation this test exists to "+
+			"pin has gone away — check whether the sweep still needs its Risks note", pm, max)
+	}
+}
