@@ -283,6 +283,12 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithString("content", mcp.Description("New verbatim content (re-embedded on change).")),
 		mcp.WithString("wing", mcp.Description("Move the drawer to this wing.")),
 		mcp.WithString("room", mcp.Description("Move the drawer to this room.")),
+		mcp.WithArray("code_anchors", mcp.Description(
+			"REPLACE this memory's code anchors, as [{\"path\":\"internal/x/y.go\",\"snippet\":\"<verbatim lines>\",\"repo\":\"<optional label>\"}]. "+
+				"Send [] to remove them all. Omit the field to leave them untouched. "+
+				"Correcting a memory without re-anchoring it leaves the old anchor pinned to text that "+
+				"changed, so the staleness check meant to protect the memory is what marks the correction "+
+				"out of date — that is the case this exists for.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -309,19 +315,31 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 			v := req.GetString("room", "")
 			patch.Room = &v
 		}
-		d, err := drawers.Update(ctx, t.TeamID, id, patch)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		// Anchors are REPLACED, not merged. This exists for the case that
 		// motivated it: a memory is corrected, and its old anchor still pins the
 		// old text — so the staleness check meant to protect the memory is what
 		// marks the correction out of date. Merging would leave both live.
-		if raw, present := args["code_anchors"]; present {
-			anchors, refusal := anchorReplacement(raw)
-			if refusal != "" {
+		//
+		// Validated BEFORE anything is written. The first version updated the
+		// drawer and then checked the anchors, so a call carrying new content and
+		// a malformed anchor list changed the content and returned an error
+		// announcing that it had refused — a caller reading that error and
+		// retrying would apply the content twice. An argument the caller got
+		// wrong must leave the memory as it found it.
+		raw, wantsAnchors := args["code_anchors"]
+		var anchors []palace.AnchorInput
+		if wantsAnchors {
+			var refusal string
+			if anchors, refusal = anchorReplacement(raw); refusal != "" {
 				return mcp.NewToolResultError(refusal), nil
 			}
+		}
+
+		d, err := drawers.Update(ctx, t.TeamID, id, patch)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if wantsAnchors {
 			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, anchors)
 			if aerr != nil {
 				return mcp.NewToolResultError(aerr.Error()), nil
