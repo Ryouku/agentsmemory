@@ -38,6 +38,7 @@ func mcpCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "token", Sources: cli.EnvVars("AGENTSMEMORY_TOKEN"), Usage: "API key: resolves the tenant and meters the call (HTTP parity)"},
 			&cli.StringFlag{Name: "team", Usage: "team id: local admin read, no metering (alternative to --token)"},
 			&cli.StringSliceFlag{Name: "arg", Aliases: []string{"a"}, Usage: "tool argument as key=value (repeatable)"},
+			&cli.StringFlag{Name: "wing", Usage: "scope calls to this wing, the way a per-project MCP registration does — an explicit -a wing= still wins, and \"*\" still asks across every wing. Without it a recall reads every wing in the workspace, which is what the HTTP path does not do"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runMCP(ctx, c, def)
@@ -94,7 +95,7 @@ func runMCP(ctx context.Context, c *cli.Command, def config.Config) error {
 	// Fold the bare positional into the tool's primary argument, layered under
 	// any explicit -a values (which win). The tool's run closure then reads its
 	// inputs the same way the HTTP handler does.
-	args := parseArgs(c.StringSlice("arg"), tailArgs(c), tool.primary)
+	args := parseArgsWithWing(c.StringSlice("arg"), tailArgs(c), tool.primary, c.String("wing"))
 	res, err := tool.run(ctx, svc, team, args)
 	if err != nil {
 		return err
@@ -175,6 +176,24 @@ func (a cliArgs) floatOr(key string, def float64) float64 {
 // in the map whichever way it arrived. The first plain token (not key=value, not
 // an -a marker) becomes the primary positional, folded under primaryKey unless
 // an explicit -a already set it.
+// parseArgsWithWing is parseArgs with a default wing layered UNDER any explicit
+// one, which is how a registration default behaves over MCP: an argument is a
+// decision, a default is only a default.
+//
+// It exists because the CLI diverged from the HTTP path on exactly this.
+// Reproduced on the running server: `mcp search "deploy"` returned eight hits
+// from two other projects' wings and none from the caller's, while the same
+// query over MCP returned only the registration's wing. The CLI has no
+// registration to derive a wing from, so the operator states it with --wing and
+// it then behaves the same way.
+func parseArgsWithWing(argFlags, rawTail []string, primaryKey, defaultWing string) cliArgs {
+	a := parseArgs(argFlags, rawTail, primaryKey)
+	if defaultWing != "" && a.str("wing") == "" {
+		a.m["wing"] = defaultWing
+	}
+	return a
+}
+
 func parseArgs(argFlags, rawTail []string, primaryKey string) cliArgs {
 	m := map[string]string{}
 	add := func(kv string) {

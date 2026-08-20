@@ -132,7 +132,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		Fusion:           strings.TrimSpace(c.String("fusion")),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
-		HTTPTimeout:      def.HTTPTimeout,
+		HTTPTimeout:      c.Duration("http-timeout"),
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
 		// Trimmed because the presented credential is: auth.bearerToken strips the
@@ -184,6 +184,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
+		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},

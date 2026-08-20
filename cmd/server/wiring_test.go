@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -23,6 +24,20 @@ import (
 // tests exercised the component instead of the wiring. These two check the wiring
 // itself.
 
+// operatorAssigns reports whether a Config field is populated from something an
+// operator controls — `c.String("x")`, `c.Duration("x")`, an env lookup — rather
+// than from `def.X`, which is the default it is supposed to override.
+func operatorAssigns(text, field string) bool {
+	for _, m := range regexp.MustCompile(`(?m)^\s*`+regexp.QuoteMeta(field)+`:\s*(.+?),?\s*$`).FindAllStringSubmatch(text, -1) {
+		v := strings.TrimSpace(m[1])
+		if strings.HasPrefix(v, "def.") || v == "" {
+			continue // the default assigning itself is not an operator setting it
+		}
+		return true
+	}
+	return false
+}
+
 // TestEveryConfigFieldIsPopulatedAndRead fails when a field of config.Config is
 // never assigned from the command line, or never read by anything outside the
 // config package.
@@ -38,7 +53,12 @@ func TestEveryConfigFieldIsPopulatedAndRead(t *testing.T) {
 		t.Fatal("found no exported Config fields — this check has stopped checking anything")
 	}
 
-	// Assignment: `Field:` appears in a composite literal in the command wiring.
+	// Assignment means an OPERATOR can set it — the field is populated from a flag
+	// accessor, not from the defaults. The check used to be `strings.Contains(text,
+	// f+":")`, which `HTTPTimeout: def.HTTPTimeout` satisfies, so a field nothing
+	// exposed passed while the failure message below promised "an operator has no
+	// way to set it". The message was right and the check was not.
+	//
 	// Reading: `.Field` appears anywhere outside the config package itself, where
 	// the declaration and the defaults naturally mention every name.
 	assigned := map[string]bool{}
@@ -54,7 +74,7 @@ func TestEveryConfigFieldIsPopulatedAndRead(t *testing.T) {
 		}
 		text := string(src)
 		for _, f := range fields {
-			if strings.Contains(text, f+":") {
+			if operatorAssigns(text, f) {
 				assigned[f] = true
 			}
 			if strings.Contains(text, "."+f) {
