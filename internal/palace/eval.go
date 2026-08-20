@@ -396,6 +396,87 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 // the score's zero is only "unscored" by convention: a sigmoid backend never
 // emits exactly 0, but a logit backend can, and the abstention data must not
 // quietly drop the case that lands there.
+// anchoredNorms are the lexical normalisers the eval compares against page-max,
+// each paired with the label that appears in the arm's name.
+//
+// It is a slice rather than a map so the table's column order is stable: a run
+// taken today has to be comparable with one taken next month, and map iteration
+// order is not.
+var anchoredNorms = []struct {
+	name string
+	norm lexNorm
+}{
+	{"ceiling", lexNormCeiling},
+	{"saturating", lexNormSaturating},
+}
+
+// anchoredArm names the anchored counterpart of a fusion arm. The suffix keeps
+// the pair adjacent when the table is read top to bottom, because the comparison
+// a reader wants is always base against anchored, never anchored against
+// anchored.
+func anchoredArm(base EvalArm, norm string) EvalArm {
+	return EvalArm(string(base) + " anchored:" + norm)
+}
+
+// fusionRankerFor turns an arm name into the ranker that scores it, or nil for
+// arms that are not score fusion at all — vector, RRF, contextual, production
+// and the reranked family, each of which evalCase handles on its own.
+//
+// The seam exists so an arm's ranking can be exercised without a corpus, an
+// embedder and a reranker. That matters for one specific failure: an anchored
+// arm that falls through to the page-max branch is registered, is scored, and
+// produces a row identical to its counterpart, which reads as "the normaliser
+// makes no difference" rather than as a bug. Nothing syntactic catches that;
+// only running the two rankers and comparing can.
+func fusionRankerFor(arm EvalArm, base float64) func(query string, docs []string, dists, boosts []float64) []HybridScore {
+	if arm == ArmHybrid || arm == ArmHybridCloset {
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybrid(query, docs, dists, boosts)
+		}
+	}
+	for _, w := range bm25Sweep {
+		if arm == bm25Arm(w) {
+			return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+				return rankHybridWeighted(query, docs, dists, boosts, w)
+			}
+		}
+	}
+	if arm == ArmAdaptive {
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptive(query, docs, dists, boosts, base)
+		}
+	}
+	if arm == ArmAdaptiveIDF {
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptiveIDF(query, docs, dists, boosts, base)
+		}
+	}
+	for _, n := range anchoredNorms {
+		norm := n.norm
+		for _, w := range bm25Sweep {
+			if w == 0 {
+				continue // the lexical term is multiplied away; the divisor cannot matter
+			}
+			if arm == anchoredArm(bm25Arm(w), n.name) {
+				return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+					return rankHybridWeightedNorm(query, docs, dists, boosts, w, norm)
+				}
+			}
+		}
+		if arm == anchoredArm(ArmAdaptive, n.name) {
+			return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+				return rankHybridAdaptiveNorm(query, docs, dists, boosts, base, norm)
+			}
+		}
+		if arm == anchoredArm(ArmAdaptiveIDF, n.name) {
+			return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+				return rankHybridAdaptiveIDFNorm(query, docs, dists, boosts, base, norm)
+			}
+		}
+	}
+	return nil
+}
+
 // evalArms is the registry: every arm a run can score, in table order.
 //
 // It is a function rather than an expression inside EvaluateWith so a test can
@@ -409,9 +490,29 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 		arms = append(arms, bm25Arm(w))
 	}
 	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
-	// The reality check runs LAST and always: this is the arm that exercises the
-	// code agents actually call. It went missing once already — built, documented,
-	// and never appended — which an adversarial review caught and no table did.
+	// The anchored counterparts, one family and unboosted. ADR-002 T2 originally
+	// called for a boosted family plus a no-closet control; ADR-003 T1 made the
+	// closet prior opt-in by name and put closet variants of the sweep arms
+	// permanently out of scope, which removes the confound the control existed
+	// for. Weight zero is skipped: the lexical term is multiplied away there, so
+	// the divisor cannot change the order and the row would duplicate its own
+	// counterpart while reading as a finding.
+	for _, n := range anchoredNorms {
+		for _, w := range bm25Sweep {
+			if w == 0 {
+				continue
+			}
+			arms = append(arms, anchoredArm(bm25Arm(w), n.name))
+		}
+		arms = append(arms, anchoredArm(ArmAdaptive, n.name), anchoredArm(ArmAdaptiveIDF, n.name))
+	}
+	// The reality check goes after every FUSION arm: this is the arm that
+	// exercises the code agents actually call, so it reads as the verdict on the
+	// rows above it. (It is not literally last — the contextual and reranked
+	// families follow — and the comment used to claim it was, which
+	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
+	// missing once already — built, documented, and never appended — which an
+	// adversarial review caught and no table did.
 	arms = append(arms, ArmProduction)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
@@ -590,6 +691,20 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	}
 	for _, arm := range arms {
 		var ordered []int // indices into pool, best first
+		// Score fusion goes through one seam, so an arm cannot be scored by a
+		// ranker no test can reach. Everything else — vector, RRF, contextual,
+		// production, the reranked family — is not fusion and keeps its own case.
+		if ranker := fusionRankerFor(arm, hybridBM25Weight); ranker != nil {
+			for _, r := range ranker(c.Query, docs, dists, armBoosts(arm, closet)) {
+				ordered = append(ordered, r.Index)
+			}
+			poolIDs := make([]string, len(pool))
+			for i, p := range pool {
+				poolIDs[i] = p.memory
+			}
+			out[arm] = rankOf(poolIDs, ordered, goldSet)
+			continue
+		}
 		switch arm {
 		case ArmVector:
 			idx := make([]int, len(pool))
@@ -598,14 +713,6 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			}
 			sort.SliceStable(idx, func(a, b int) bool { return pool[idx[a]].distance < pool[idx[b]].distance })
 			ordered = idx
-		case ArmHybrid:
-			for _, r := range rankHybrid(c.Query, docs, dists, nil) {
-				ordered = append(ordered, r.Index)
-			}
-		case ArmHybridCloset:
-			for _, r := range rankHybrid(c.Query, docs, dists, armBoosts(arm, closet)) {
-				ordered = append(ordered, r.Index)
-			}
 		case ArmProduction:
 			// The real path, telemetry suppressed so an eval does not pollute the
 			// palace's own recall statistics.
@@ -701,30 +808,9 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			for _, r := range BlendRerank(rrfFused, rrfScores, s.rerankWeight) {
 				ordered = append(ordered, r.Index)
 			}
-		case ArmAdaptive:
-			for _, r := range rankHybridAdaptive(c.Query, docs, dists, armBoosts(arm, closet), hybridBM25Weight) {
-				ordered = append(ordered, r.Index)
-			}
-		case ArmAdaptiveIDF:
-			for _, r := range rankHybridAdaptiveIDF(c.Query, docs, dists, armBoosts(arm, closet), hybridBM25Weight) {
-				ordered = append(ordered, r.Index)
-			}
 		default:
-			// A swept fusion arm: same pipeline, different lexical weight.
-			if isBM25Arm := func() bool {
-				for _, w := range bm25Sweep {
-					if arm == bm25Arm(w) {
-						for _, r := range rankHybridWeighted(c.Query, docs, dists, armBoosts(arm, closet), w) {
-							ordered = append(ordered, r.Index)
-						}
-						return true
-					}
-				}
-				return false
-			}(); isBM25Arm {
-				break
-			}
-
+			// Only the reranked family reaches here: every fusion arm, swept
+			// weights included, was dispatched through fusionRankerFor above.
 			// Every reranked arm shares one path; only the blend weight differs.
 			weight := s.rerankWeight
 			for _, w := range rerankSweep {

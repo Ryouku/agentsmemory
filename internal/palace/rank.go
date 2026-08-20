@@ -316,6 +316,19 @@ func rankHybrid(query string, docs []string, distances, boosts []float64) []Hybr
 // be actively wrong for another, which is an argument for a knob and an eval, not
 // for a better constant.
 func rankHybridWeighted(query string, docs []string, distances, boosts []float64, bm25Weight float64) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, bm25Weight, lexNormPageMax)
+}
+
+// rankHybridWeightedNorm is rankHybridWeighted with the lexical normaliser named
+// too, so an eval arm can hold the weight fixed and vary only the divisor.
+//
+// Weight and normaliser are not independent knobs, which is the reason both are
+// swept together rather than one being folded into the other: with no boost an
+// anchored normaliser at weight w orders a page exactly as page-max does at
+// w·a/(1 − w + w·a), so comparing them at the SAME w compares two points on one
+// curve. What separates them is everything that breaks the convex blend — an
+// additive boost, or a weight that moves per query.
+func rankHybridWeightedNorm(query string, docs []string, distances, boosts []float64, bm25Weight float64, norm lexNorm) []HybridScore {
 	if bm25Weight < 0 {
 		bm25Weight = 0
 	}
@@ -323,7 +336,7 @@ func rankHybridWeighted(query string, docs []string, distances, boosts []float64
 		bm25Weight = 1
 	}
 	vectorWeight := 1 - bm25Weight
-	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight, lexNormPageMax)
+	return rankFused(query, docs, distances, boosts, vectorWeight, bm25Weight, norm)
 }
 
 // LexicalCoverage reports what share of a query's terms carry usable lexical
@@ -429,14 +442,29 @@ func adaptiveBM25Weight(query string, docs []string, base float64) float64 {
 
 // rankHybridAdaptive fuses with the lexical weight chosen per query.
 func rankHybridAdaptive(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
-	return rankHybridWeighted(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base))
+	return rankHybridAdaptiveNorm(query, docs, distances, boosts, base, lexNormPageMax)
+}
+
+// rankHybridAdaptiveNorm is rankHybridAdaptive with the normaliser named.
+//
+// The adaptive arms are where the two normalisers can genuinely diverge without
+// a boost in play: the identity that makes anchoring a rescaling of the weight
+// holds at a FIXED weight, and here the weight moves per query, so the rescaling
+// would have to move with it.
+func rankHybridAdaptiveNorm(query string, docs []string, distances, boosts []float64, base float64, norm lexNorm) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, adaptiveBM25Weight(query, docs, base), norm)
 }
 
 // rankHybridAdaptiveIDF is rankHybridAdaptive with the IDF-weighted coverage.
 // It exists as a separate eval arm rather than a replacement: the binary
 // coverage is the shipping default until the IDF variant beats it on a table.
 func rankHybridAdaptiveIDF(query string, docs []string, distances, boosts []float64, base float64) []HybridScore {
-	return rankHybridWeighted(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs))
+	return rankHybridAdaptiveIDFNorm(query, docs, distances, boosts, base, lexNormPageMax)
+}
+
+// rankHybridAdaptiveIDFNorm is rankHybridAdaptiveIDF with the normaliser named.
+func rankHybridAdaptiveIDFNorm(query string, docs []string, distances, boosts []float64, base float64, norm lexNorm) []HybridScore {
+	return rankHybridWeightedNorm(query, docs, distances, boosts, base*LexicalCoverageIDF(query, docs), norm)
 }
 
 // lexNorm maps a page's raw BM25 scores to the [0,1] lexical term the fusion

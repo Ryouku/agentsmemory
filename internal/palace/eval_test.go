@@ -286,10 +286,10 @@ func TestProductionArmFollowsServedClosetScale(t *testing.T) {
 // disagree anywhere.
 func anchorFixture() (query string, docs []string, dists []float64) {
 	return "cache eviction", []string{
-			"eviction eviction happens twice here",
-			"eviction happens once here",
-			"eviction here",
-		}, []float64{0.55, 0.5, 0.45}
+		"eviction eviction happens twice here",
+		"eviction happens once here",
+		"eviction here",
+	}, []float64{0.55, 0.5, 0.45}
 }
 
 // TestAnchoredArmsRankDifferentlyFromPageMax is the behavioural check, and the
@@ -400,9 +400,16 @@ func TestAnchoredArmsSkipWeightZero(t *testing.T) {
 	}
 }
 
-// TestEvalArmsKeepProductionLast pins the invariant eval.go states in a comment
-// and nothing enforced: the arm that exercises the code agents actually call
-// runs after every other non-reranked arm.
+// TestEvalArmsKeepProductionLast pins the ordering invariant eval.go states in a
+// comment and nothing enforced: every fusion arm is scored before the arm that
+// exercises the code agents actually call.
+//
+// The comment says production "runs LAST and always" and that has never been
+// quite true — ArmContextual and the reranked family are appended after it, and
+// writing this test is how that surfaced. What the ordering is really for is the
+// comparison: production is the reality check on the fusion arms above it, so
+// what must hold is that no fusion arm appears below it. The comment now says
+// that instead of the stronger thing it could not back.
 func TestEvalArmsKeepProductionLast(t *testing.T) {
 	for _, rerankReady := range []bool{false, true} {
 		arms := evalArms(EvalOptions{Contextual: true}, rerankReady)
@@ -415,13 +422,13 @@ func TestEvalArmsKeepProductionLast(t *testing.T) {
 		if prod < 0 {
 			t.Fatalf("rerankReady=%v: the production arm is not registered at all", rerankReady)
 		}
-		for i, a := range arms[:prod] {
-			if a == ArmContextual {
-				t.Errorf("rerankReady=%v: %s at %d runs before production at %d", rerankReady, a, i, prod)
+		for i, a := range arms[prod+1:] {
+			if fusionRankerFor(a, hybridBM25Weight) != nil {
+				t.Errorf("rerankReady=%v: fusion arm %s is scored at %d, after production at %d", rerankReady, a, prod+1+i, prod)
 			}
 		}
-		if !rerankReady && prod != len(arms)-1 {
-			t.Errorf("without reranking production should be the last arm, got position %d of %d", prod, len(arms))
+		if prod == 0 {
+			t.Errorf("rerankReady=%v: production is the FIRST arm; it has nothing to be the reality check on", rerankReady)
 		}
 	}
 }
@@ -437,6 +444,47 @@ func TestEvalArmNamesAreUnique(t *testing.T) {
 			if seen[a] > 1 {
 				t.Errorf("rerankReady=%v: arm name %q is registered %d times; the later row overwrites the earlier", rerankReady, a, seen[a])
 			}
+		}
+	}
+}
+
+// TestEveryRegisteredArmIsScorable pins that a registered arm reaches the
+// scoring path its name implies, which is a different question from whether it
+// is registered at all.
+//
+// The trap is specific and this task walked into it: the anchored arms were
+// added to the registry before evalCase knew about them, so they fell through
+// the switch to the `default` branch — the one that scores the RERANKED family —
+// and would have been scored as reranked arms under their fusion names. Nothing
+// would have failed. armreach_test.go checks registration and is syntactic by
+// design; the report is keyed by arm name and takes whatever it is given.
+//
+// Every arm is therefore either score fusion (fusionRankerFor returns a ranker)
+// or one of the named exceptions below, each of which evalCase handles in its
+// own case. A new arm that is neither fails here.
+func TestEveryRegisteredArmIsScorable(t *testing.T) {
+	notFusion := map[EvalArm]string{
+		ArmVector:       "nearest-neighbour order, no fusion at all",
+		ArmRRF:          "reciprocal rank fusion, its own case",
+		ArmRRFReranked:  "RRF then the cross-encoder, its own case and its own scores",
+		ArmContextual:   "scores a different candidate set, not a different ranker",
+		ArmProduction:   "goes through Search, which is the point of it",
+		ArmHybridRerank: "fusion then the cross-encoder, scored in the rerank branch",
+		ArmReranked:     "fusion then the cross-encoder, scored in the rerank branch",
+	}
+	for _, w := range rerankSweep {
+		notFusion[rerankArm(w)] = "a rerank blend weight, scored in the rerank branch"
+	}
+
+	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
+		if fusionRankerFor(arm, hybridBM25Weight) != nil {
+			if why, listed := notFusion[arm]; listed {
+				t.Errorf("%s is listed as not-fusion (%s) yet fusionRankerFor returns a ranker for it; it would be scored twice over by two different rules", arm, why)
+			}
+			continue
+		}
+		if _, listed := notFusion[arm]; !listed {
+			t.Errorf("%s is registered but is neither score fusion nor a listed exception — it falls through to the rerank branch and is scored under a name that does not describe it", arm)
 		}
 	}
 }

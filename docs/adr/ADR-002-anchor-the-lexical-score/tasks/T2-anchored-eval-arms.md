@@ -7,6 +7,24 @@
 **Produces:** `evalArms` registry, anchored arm names `fusion bm25=<w> anchored:<norm>`, the `no-closet` anchored family, `fusionRankerFor` (the arm → ranker seam)
 **Consumes:** `lexNorm`, `lexNormCeiling`, `lexNormSaturating` (T1)
 
+## Goal (amended during execution — see the resolution note)
+
+**Cross-ADR resolution, 2026-08-20.** This task was written to add a BOOSTED anchored family plus a
+`no-closet` control family, on the argument that anchoring inflates an additive boost by `1/s` and a
+single boost regime cannot separate that from a lexical-weighting effect. ADR-003 T1 landed first and
+changed the premise: the closet prior is now something an arm opts into by its name, `armBoosts`
+hands `nil` to every arm that does not say `closet`, and ADR-003's Out of Scope tags closet variants
+of the sweep and adaptive arms `(permanent: a second dimension over ten arms is a table nobody
+reads)`.
+
+That removes the confound at its source rather than controlling for it — no sweep arm is boosted, so
+there is one regime and nothing to hold constant. Building the two families as written would re-add
+exactly the dimension ADR-003 marked permanently out of scope. The families therefore collapse into
+**one unboosted family of ten**: three nonzero swept weights and both adaptive arms, each under
+`ceiling` and `saturating`, no `no-closet` suffix and no boosted counterpart.
+`TestAnchoredArmsCarryNoClosetPrior` is what keeps them collapsed. Decided by the ADR owner rather
+than assumed.
+
 ## Goal
 
 Make old and new normalisation comparable within one run on one shared candidate pool, by registering an anchored counterpart for every nonzero lexical arm plus an unboosted anchored family the deletion trigger can be read from — through a dispatch seam that can be tested behaviourally.
@@ -22,7 +40,7 @@ Make old and new normalisation comparable within one run on one shared candidate
 
 1. Write the failing tests first (TDD red), in `internal/palace/eval_test.go`:
    - `TestAnchoredArmsRankDifferentlyFromPageMax` — **the behavioural one, and the one that matters.** Take the ranker `fusionRankerFor` returns for `fusion bm25=0.40 anchored:ceiling` and the one it returns for `fusion bm25=0.40`, run both over a fixture built so they must disagree (one weak-but-winning lexical match against a strong one, per T1's page-max fixture), and assert the fused scores differ. A registry test cannot fail when an anchored arm falls through to the page-max branch; this one can. It follows `TestLexicalIDFChangesWhatSearchReturns` (`service_test.go:583`), whose predecessor asserted only that both modes returned results and passed while the flag was read by nothing at all.
-   - `TestAnchoredArmsNoClosetFamilyIgnoresBoosts` — behavioural: the ranker for a `no-closet` arm returns identical fused scores whether it is handed a zero `boosts` slice or a nonzero one, and its boosted counterpart does not.
+   - ~~`TestAnchoredArmsNoClosetFamilyIgnoresBoosts`~~ → **replaced during execution by `TestAnchoredArmsCarryNoClosetPrior`.** See the resolution note below: there is no boosted family to contrast against, so the arms are asserted to carry no prior at all.
    - `TestAnchoredArmsCoverEveryNonzeroWeight` — `evalArms` contains a `ceiling` and a `saturating` counterpart for each nonzero entry of `bm25Sweep` and for both adaptive arms, plus one `no-closet` counterpart per anchored arm the deletion trigger reads.
    - `TestAnchoredArmsSkipWeightZero` — no anchored arm exists at `w=0`, because with the lexical term multiplied by zero the normaliser cannot matter and the row would be a duplicate reading as a finding.
    - `TestEvalArmsKeepProductionLast` and `TestEvalArmNamesAreUnique` — the registry's order and name uniqueness.
@@ -31,7 +49,7 @@ Make old and new normalisation comparable within one run on one shared candidate
 2. Extract the fusion dispatch from `evalCase`'s `switch` into `fusionRankerFor(arm EvalArm, base float64) func(query string, docs []string, dists, boosts []float64) []HybridScore`, returning nil for arms that are not score fusion (vector, RRF, contextual, production, reranked). `evalCase` calls it and keeps its remaining cases. This is what makes step 1's first two tests possible at all: today the only way to reach the dispatch is through a live corpus, an embedder and a reranker.
 3. Extract the inline arm list into `evalArms(o EvalOptions, rerankReady bool) []EvalArm` and have `EvaluateWith` call it, so the registry is testable and one list feeds both the run and T4's disposition check. **Preserve the existing order**: `eval.go:298-301` states the production arm "runs LAST and always", and a reordering would falsify that invariant while every test stayed green.
 4. Add the boosted anchored arms, reusing the same `docs`, `dists` and `boosts` the existing arms get — those mirror production, which boosts, and they are what the shipping rule is read from.
-5. Add the `no-closet` anchored family: the three fixed swept weights and both adaptive arms under `ceiling` and `saturating`, ranked with `boosts` nil. The deletion trigger must fire in both boost regimes, and the boosted regime alone cannot separate a lexical-weighting effect from a boost-strength one — anchoring inflates the additive boost by `1/s`, `s = 1 − w(1 − a)`, and `s` differs between a fixed arm and an adaptive arm whose effective weight moves per query. `ArmHybrid` passing nil while `ArmHybridCloset` passes boosts (`eval.go:554-560`) is the existing precedent for a paired regime.
+5. ~~Add the `no-closet` anchored family~~ — **dropped, see the resolution note.** The whole family is unboosted, so there is nothing to contrast it against. Originally: the three fixed swept weights and both adaptive arms under `ceiling` and `saturating`, ranked with `boosts` nil. The deletion trigger must fire in both boost regimes, and the boosted regime alone cannot separate a lexical-weighting effect from a boost-strength one — anchoring inflates the additive boost by `1/s`, `s = 1 − w(1 − a)`, and `s` differs between a fixed arm and an adaptive arm whose effective weight moves per query. `ArmHybrid` passing nil while `ArmHybridCloset` passes boosts (`eval.go:554-560`) is the existing precedent for a paired regime.
 6. Confirm no extra retrieval or cross-encoder call is added: arms share one pool per case and the rerank scores are fetched once (`eval.go:507-511`).
 7. Run the acceptance command.
 
@@ -46,7 +64,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
 | `TestAnchoredArmsRankDifferentlyFromPageMax` | `internal/palace/eval_test.go` | an anchored arm produces different fused scores through the shared ranking seam — the dispatch is wired, not merely named | — |
-| `TestAnchoredArmsNoClosetFamilyIgnoresBoosts` | `internal/palace/eval_test.go` | the `no-closet` arms really drop the boost, and their boosted counterparts really carry it | — |
+| `TestAnchoredArmsCarryNoClosetPrior` | `internal/palace/eval_test.go` | no anchored arm receives the closet prior — the collapsed-family resolution, enforced | — |
+| `TestEveryRegisteredArmIsScorable` | `internal/palace/eval_test.go` | **added during execution.** Every registered arm is either score fusion or a named non-fusion exception. The anchored arms were registered before `evalCase` knew about them and fell through to the branch that scores the RERANKED family, under their fusion names, with nothing failing — this is the check that catches it | — |
 | `TestAnchoredArmsCoverEveryNonzeroWeight` | `internal/palace/eval_test.go` | every nonzero fixed weight and both adaptive arms get both anchored counterparts, plus the `no-closet` family the trigger reads | — |
 | `TestAnchoredArmsSkipWeightZero` | `internal/palace/eval_test.go` | no anchored arm at `w=0`, where the normaliser cannot change the order | — |
 | `TestEvalArmsKeepProductionLast` | `internal/palace/eval_test.go` | the extracted registry returns the same order as the inline list for both `rerankReady` values, with `ArmProduction` after every non-reranked arm | — |
@@ -75,3 +94,4 @@ Stop if adding the arms makes a run's wall-clock time grow more than marginally 
 - Changing any default or config key — that is T4's job.
 
 ## Verification Log
+- 2026-08-20 · 32ca81b* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ -run "TestAnchoredArms|TestEvalArm|TestLexNorm|TestEveryDeclaredArmIsRegistered|TestSweptArmsAreReachable" -count=1'`

@@ -26,7 +26,7 @@ it does today.
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
 | T1 | Make the lexical normaliser a choice, and add the two anchored transforms | done | — | `go test ./internal/palace/ -run "TestLexNorm\|TestRankHybrid\|..."` |
-| T2 | Cross the anchored normalisers with the existing weight sweep in the eval | pending | — | `go test ./internal/palace/ -run "TestAnchoredArms\|TestEvalArm\|..."` |
+| T2 | Cross the anchored normalisers with the existing weight sweep in the eval | done | — | `go test ./internal/palace/ -run "TestAnchoredArms\|TestEvalArm\|..."` |
 | T3 | Re-run the four tables under both normalisers and commit the evidence | pending | — | `go test ./internal/palace/ -run "TestAnchorEvidence"` |
 | T4 | Retire or ratify the adaptive lexical weighting, from the evidence | pending | — | `go test ./internal/palace/ ./internal/config/ ./cmd/server/ -run "TestLexNorm\|..."` |
 
