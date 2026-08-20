@@ -126,17 +126,22 @@ func TestReplacePathConsultsTheDecision(t *testing.T) {
 	}
 	body := string(src)
 
+	if n := strings.Count(body, "ReplaceAnchors("); n != 1 {
+		t.Fatalf("%d ReplaceAnchors call sites — this check reads the first one only, so a second "+
+			"destructive path would be invisible to it", n)
+	}
 	i := strings.Index(body, "ReplaceAnchors(")
 	if i < 0 {
 		t.Fatal("no ReplaceAnchors call in drawers.go — this check has stopped checking anything")
 	}
-	start := i
-	for n := 0; n < 10 && start > 0; n++ {
-		if j := strings.LastIndex(body[:start], "\n"); j >= 0 {
-			start = j
-		}
+	// Anchored to where the argument is read rather than counting lines back: a
+	// fixed line count goes red when someone adds a log line between the decision
+	// and the call, and a gate with false alarms is one people learn to skip.
+	k := strings.LastIndex(body[:i], `args["code_anchors"]`)
+	if k < 0 {
+		t.Fatal("the code_anchors argument is no longer read above the replace")
 	}
-	window := body[start:i]
+	window := body[k:i]
 
 	if !strings.Contains(window, "anchorReplacement(") {
 		t.Error("the ReplaceAnchors call site does not consult anchorReplacement — the refusals are " +
