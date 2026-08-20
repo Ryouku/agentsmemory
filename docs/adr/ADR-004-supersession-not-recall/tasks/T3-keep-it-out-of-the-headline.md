@@ -64,3 +64,8 @@ Stop if excluding temporal cases leaves any arm with too few headline cases to i
 - Category handling for `absent` and `real` cases, which keep today's treatment.
 
 ## Verification Log
+- 2026-08-20 · e743a9d · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestHeadlineExcludesTemporal|TestSupersessionTable" -count=1 2>&1 | tee /tmp/adr-acceptance.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/adr-acceptance.out'`
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.054s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/cmd/server	0.006s [no tests to run]
+  ```
