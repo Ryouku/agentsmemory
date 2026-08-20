@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -97,7 +98,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 
-	cases, from, err := loadOrGenerateCases(ctx, c, svc, team, out)
+	cases, from, runMeta, err := loadOrGenerateCases(ctx, c, svc, team, out)
 	if err != nil {
 		return err
 	}
@@ -142,6 +143,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 	printEvalTable(out, report)
+	printClosetBlock(out, report)
 
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
@@ -152,6 +154,22 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 			fmt.Fprintf(out, "  (could not save the results file: %v)\n", err)
 		} else {
 			fmt.Fprintf(out, "full results (per-case ranks, config, warnings): %s\n", resPath)
+		}
+	}
+
+	// The run record is the file the ADR's evidence directory holds. It is
+	// separate from the results file because that one carries the queries, and
+	// the evidence directory is committed while the palace it measures is not.
+	if cPath := cellsPath(c.String("cases")); cPath != "" {
+		rec := cellsConfig{
+			Pool: c.Int("pool"), Cases: len(cases),
+			ClosetScale: cfg.ClosetBoost, BM25Weight: cfg.BM25Weight,
+			RerankConfigured: cfg.RerankURL != "", RerankWeight: cfg.RerankWeight, RerankPool: cfg.RerankPool,
+		}
+		if err := writeCells(cPath, report, runMeta, rec); err != nil {
+			fmt.Fprintf(out, "  (could not save the run record: %v)\n", err)
+		} else {
+			fmt.Fprintf(out, "run record (commit, ranking config, closet cells; no case text): %s\n", cPath)
 		}
 	}
 	return nil
@@ -419,14 +437,22 @@ func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question str
 	return "", nil
 }
 
-func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
+// loadOrGenerateCases returns the cases, a label saying where they came from,
+// and the provenance of the case file when one was replayed. The provenance
+// travels because a replayed file's questions were written by whatever generator
+// made it, which need not be the one this machine is configured with.
+func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, caseFileMeta, error) {
+	var replayMeta caseFileMeta
 	path := c.String("cases")
 	if path != "" {
 		var merged []palace.EvalCase
 		files := strings.Split(path, ",")
 		for _, f := range files {
 			f = strings.TrimSpace(f)
-			cases, err := readCases(f)
+			cases, meta, err := readCasesWithMeta(f)
+			if meta.Generator != "" {
+				replayMeta = meta
+			}
 			switch {
 			case err == nil:
 				merged = append(merged, cases...)
@@ -437,7 +463,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 				// A CORRUPT file, or a missing one among several, silently shrank
 				// the case set once; the label still said "from N files" and no
 				// run was comparable with any other.
-				return nil, "", fmt.Errorf("cases file %s: %w", f, err)
+				return nil, "", replayMeta, fmt.Errorf("cases file %s: %w", f, err)
 			}
 		}
 		if len(merged) > 0 {
@@ -445,18 +471,20 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			if len(files) > 1 {
 				label = fmt.Sprintf("from %d files", len(files))
 			}
-			return merged, label, nil
+			return merged, label, replayMeta, nil
 		}
 	}
 
 	if c.String("style") == "real" {
-		return generateRealCases(ctx, c, svc, team, out)
+		cases, from, err := generateRealCases(ctx, c, svc, team, out)
+		return cases, from, generatedMeta(c), err
 	}
 	// Temporal cases are shaped differently — a pair is discovered before a
 	// question is written — so the style gets its own generation loop instead of
 	// growing this one a second set of skip reasons.
 	if c.String("style") == "temporal" {
-		return generateTemporalCases(ctx, c, svc, team, out)
+		cases, from, err := generateTemporalCases(ctx, c, svc, team, out)
+		return cases, from, generatedMeta(c), err
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -467,14 +495,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// questions are what a re-run must hold constant, and they are on disk.
 	drawers, err := svc.drawers.SampleDrawers(ctx, team.ID, c.String("wing"), c.Int("n"))
 	if err != nil {
-		return nil, "", fmt.Errorf("sample drawers: %w", err)
+		return nil, "", replayMeta, fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		// Named distinctly rather than folded into runEval's "no eval cases": an
 		// empty corpus and a broken generator are different faults with different
 		// fixes, and reporting them with one sentence sent the reader to inspect a
 		// wing that was never the problem.
-		return nil, "", fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
+		return nil, "", replayMeta, fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
 			corpusLabel(c.String("wing")), team.Slug)
 	}
 
@@ -502,7 +530,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// times is thirty lines that say one thing — while the run still takes as long
 	// as a working one.
 	if _, err := gen.ask(ctx, drawers[0].Content); err != nil {
-		return nil, "", fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
+		return nil, "", replayMeta, fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
 	genStart := time.Now()
@@ -520,7 +548,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			// Later failures still skip, because by then the generator has proven it
 			// works and the fault is that drawer's.
 			if i == 0 {
-				return nil, "", fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
+				return nil, "", replayMeta, fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
 					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
 					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
 			}
@@ -560,7 +588,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
 		}
 	}
-	return cases, "generated", nil
+	return cases, "generated", replayMeta, nil
 }
 
 // genURL is where the question generator runs. It defaults to the embedder's
@@ -814,6 +842,18 @@ func cleanQuestion(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// generatedMeta is the provenance of cases this run generated itself: whatever
+// this machine is configured with, which is what the generators stamp into the
+// case file they write.
+func generatedMeta(c *cli.Command) caseFileMeta {
+	return caseFileMeta{
+		Generator: c.String("gen-model"),
+		Style:     c.String("style"),
+		Wing:      c.String("wing"),
+		Created:   time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
 // caseFileMeta is the provenance record written as the FIRST line of a case
 // file. Two runs of "the same" eval on different machines have already disagreed
 // for reasons that were invisible afterwards — different generator models write
@@ -827,34 +867,6 @@ type caseFileMeta struct {
 	Wing      string `json:"wing"`
 	Corpus    int    `json:"corpus_drawers"`
 	Created   string `json:"created"`
-}
-
-// readCases loads a JSONL case file.
-func readCases(path string) ([]palace.EvalCase, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var cases []palace.EvalCase
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		// A provenance line is metadata, not a case.
-		if strings.Contains(line, `"meta":true`) {
-			continue
-		}
-		var c palace.EvalCase
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		cases = append(cases, c)
-	}
-	return cases, sc.Err()
 }
 
 // writeCases saves cases as JSONL.
@@ -1173,4 +1185,171 @@ func firstLineOf(s string, max int) string {
 		s = string(r[:max])
 	}
 	return s
+}
+
+// printClosetBlock renders the comparison ADR-003 is decided on.
+//
+// It is separate from the arms table on purpose. Every "vs best" verdict there
+// compares an arm against a baseline chosen from the same table, which is a fine
+// diagnostic and a bad basis for flipping a default — the winner is selected by
+// the same data that then judges it. This block names its pair before the run
+// and prints what it excluded, so the number can be checked rather than trusted.
+func printClosetBlock(out io.Writer, report palace.EvalReport) {
+	cats := map[string]bool{}
+	var order []string
+	for _, d := range report.Details {
+		if d.Category == palace.CatAbsent || cats[d.Category] {
+			continue
+		}
+		cats[d.Category] = true
+		order = append(order, d.Category)
+	}
+	if len(order) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "\ncloset prior — %s minus %s, preselected before the run (unlike the 'vs best' column, whose baseline is chosen from this same table):\n",
+		palace.ArmHybridCloset, palace.ArmHybrid)
+	fmt.Fprintf(out, "  %-18s %9s %12s %10s %16s %12s %7s\n",
+		"category", "admitted", "unreachable", "ΔMRR", "95% paired CI", "Δrecall@1", "moved")
+	for _, cat := range order {
+		c := palace.ClosetDelta(report, cat)
+		fmt.Fprintf(out, "  %-18s %9d %12d %+10.3f %16s %+12.3f %7d\n",
+			cat, c.Admitted, c.Unreachable, c.DeltaMRR, c.Interval, c.DeltaRecall1, c.Moved)
+	}
+	fmt.Fprintln(out, "  Δ is closet minus no-closet: negative means the prior COSTS. 'unreachable' cases are")
+	fmt.Fprintln(out, "  excluded because their gold never entered the pool, so no arm could have ranked it;")
+	fmt.Fprintln(out, "  'moved' is how many admitted cases the two arms ordered differently at all — a Δ near")
+	fmt.Fprintln(out, "  zero with nothing moved is a different finding from one where many cases cancelled.")
+}
+
+// cellsConfig is the ranking configuration a run was taken under. It travels
+// with the numbers because a delta is only interpretable against the settings
+// that produced it — an abstention threshold or a flipped default is valid for a
+// configuration, never in the abstract.
+type cellsConfig struct {
+	Pool             int
+	Cases            int
+	ClosetScale      float64
+	BM25Weight       string
+	RerankConfigured bool
+	RerankWeight     float64
+	RerankPool       int
+}
+
+// buildStamp reports the commit the running binary was built from, and whether
+// the tree was dirty. A run record that cannot name its own code is a set of
+// numbers nobody can reproduce.
+//
+// It returns "unknown" rather than guessing when the binary carries no VCS
+// stamp, which is what `go run` and some container builds produce.
+func buildStamp() (commit string, dirty bool) {
+	commit = "unknown"
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return commit, false
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			commit = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	return commit, dirty
+}
+
+// writeCells persists the run record the evidence directory holds.
+//
+// Two rules govern what goes in it, and they pull against each other. It must
+// carry enough that two runs can be compared — the commit, the ranking config,
+// the generator that wrote the questions — because runs of "the same" eval have
+// already disagreed for reasons that were invisible afterwards. And it must
+// carry nothing that came out of the palace: this file is committed to a public
+// repository, the palace it measures is private, and the case files and results
+// that DO hold queries and drawer ids stay untracked beside it.
+func writeCells(path string, report palace.EvalReport, meta caseFileMeta, cfg cellsConfig) error {
+	commit, dirty := buildStamp()
+
+	var cells []palace.ClosetCell
+	seen := map[string]bool{}
+	for _, d := range report.Details {
+		if d.Category == palace.CatAbsent || seen[d.Category] {
+			continue
+		}
+		seen[d.Category] = true
+		cells = append(cells, palace.ClosetDelta(report, d.Category))
+	}
+
+	payload := map[string]any{
+		"created":           time.Now().UTC().Format(time.RFC3339),
+		"commit":            commit,
+		"dirty":             dirty,
+		"style":             meta.Style,
+		"wing":              meta.Wing,
+		"generator":         meta.Generator,
+		"corpus_drawers":    meta.Corpus,
+		"cases":             cfg.Cases,
+		"pool":              cfg.Pool,
+		"closet_scale":      cfg.ClosetScale,
+		"bm25_weight":       cfg.BM25Weight,
+		"rerank_configured": cfg.RerankConfigured,
+		"rerank_weight":     cfg.RerankWeight,
+		"rerank_pool":       cfg.RerankPool,
+		"warnings":          report.Warnings,
+		"cells":             cells,
+	}
+	raw, err := json.MarshalIndent(payload, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o644)
+}
+
+// cellsPath is the run record's path, derived from the case file's stem exactly
+// as resultsPath is, so a run's questions, results and record sit together.
+func cellsPath(casesFlag string) string {
+	first := strings.TrimSpace(strings.Split(casesFlag, ",")[0])
+	if first == "" {
+		return ""
+	}
+	return strings.TrimSuffix(first, ".jsonl") + ".cells.json"
+}
+
+// readCasesWithMeta is readCases plus the provenance line it used to drop.
+//
+// A replayed run knew its own --style flag and nothing about the generator that
+// actually wrote the questions, so a case file produced by one model and
+// replayed on a machine configured for another looked identical in every record
+// it left behind.
+func readCasesWithMeta(path string) ([]palace.EvalCase, caseFileMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, caseFileMeta{}, err
+	}
+	defer f.Close()
+	var (
+		cases []palace.EvalCase
+		meta  caseFileMeta
+	)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, `"meta":true`) {
+			// A malformed provenance line loses the provenance, not the run.
+			_ = json.Unmarshal([]byte(line), &meta)
+			continue
+		}
+		var c palace.EvalCase
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			return nil, meta, fmt.Errorf("%s: %w", path, err)
+		}
+		cases = append(cases, c)
+	}
+	return cases, meta, sc.Err()
 }

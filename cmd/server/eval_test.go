@@ -178,8 +178,22 @@ func TestEvalPrintsPreselectedClosetDelta(t *testing.T) {
 			t.Errorf("the closet block never mentions %q — a reader cannot tell what went into the number\n%s", want, got)
 		}
 	}
-	if !strings.Contains(got, "1 unreachable") && !strings.Contains(got, "unreachable 1") {
-		t.Errorf("the single-hop row does not report its one excluded case:\n%s", got)
+	// The counts live in columns, so check the row's fields rather than looking
+	// for the word next to the number.
+	var row []string
+	for _, line := range strings.Split(got, "\n") {
+		if f := strings.Fields(line); len(f) > 3 && f[0] == string(palace.CatSingle) {
+			row = f
+		}
+	}
+	if row == nil {
+		t.Fatalf("no %s row in the block:\n%s", palace.CatSingle, got)
+	}
+	if row[1] != "2" {
+		t.Errorf("%s row reports %s admitted, want 2:\n%s", palace.CatSingle, row[1], got)
+	}
+	if row[2] != "1" {
+		t.Errorf("%s row reports %s unreachable, want 1 — the excluded case is invisible:\n%s", palace.CatSingle, row[2], got)
 	}
 }
 
@@ -199,7 +213,7 @@ func TestRunRecordCarriesProvenanceAndNoCaseText(t *testing.T) {
 	meta := caseFileMeta{Generator: "qwen2.5-coder:7b", Style: "paraphrase", Wing: "wing_acme", Corpus: 4120}
 
 	if err := writeCells(path, closetReport(), meta, cellsConfig{
-		Pool: 50, Cases: 4, ClosetScale: 0, BM25Weight: 0.4,
+		Pool: 50, Cases: 4, ClosetScale: 0, BM25Weight: "0.40",
 		RerankConfigured: true, RerankWeight: 0.5, RerankPool: 50,
 	}); err != nil {
 		t.Fatalf("writeCells: %v", err)
