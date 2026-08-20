@@ -100,13 +100,22 @@ func bm25Scores(query string, docs []string) []float64 {
 	return scores
 }
 
-// bm25ScoresAndCeiling returns each candidate's raw BM25 score and C, the
-// largest score this query could attain against any document at all.
+// bm25ScoresAndCeiling returns each candidate's raw BM25 score and C, the least
+// upper bound on what this query could score against any document at all.
+//
+// C is a supremum and not a maximum: the per-term factor f·(k1+1)/(f + k1·L)
+// rises toward (k1+1) as term frequency grows but never reaches it, and the
+// smoothed IDF is strictly positive even for a term in every candidate. So every
+// real document scores strictly below C, and the anchored normalisers built on
+// it return values strictly below 1 rather than reaching it.
 //
 // The two are computed together because they share the same smoothed IDF: a
 // candidate's score is a sum of idf(t)·tf-saturation over the query terms, and
 // that saturation approaches (k1+1) as term frequency grows without bound, so
-// C = (k1+1)·Σ idf(t). Computing the ceiling anywhere else would mean a second
+// C = (k1+1)·Σ idf(t). Document length drops out: the length factor
+// L = 1 − b + b·dl/avgdl is bounded below by 1 − b = 0.25 and never zero, so the
+// supremum over frequency and length jointly is (k1+1) whatever dl is — which is
+// why dl does not appear in the formula. Computing the ceiling anywhere else would mean a second
 // copy of the IDF formula, and the identity the anchored normalisers rest on is
 // exact only while both use the same one.
 //
@@ -135,7 +144,15 @@ func bm25ScoresAndCeiling(query string, docs []string) ([]float64, float64) {
 		totalLen += len(tokenized[i])
 	}
 	if totalLen == 0 {
-		return scores, 0 // every candidate is text-less; nothing to rank lexically
+		// Every candidate is text-less: nothing to rank lexically, and no
+		// candidate set to compute df over. The ceiling is reported as 0 rather
+		// than as the IDF sum the formula would give, because there is nothing
+		// to anchor AGAINST — every raw score is zero, so both the 0 and the
+		// formula's value produce the same all-zero lexical term through every
+		// normaliser's guard. Reported as 0 so the caller sees "no lexical
+		// signal here" rather than a large number describing a page that has
+		// none.
+		return scores, 0
 	}
 	avgdl := float64(totalLen) / float64(n)
 

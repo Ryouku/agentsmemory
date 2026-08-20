@@ -68,6 +68,12 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 	// again, this string moves with it.
 	const assembler = "evalArms"
 
+	// Mentioned, not appended: the walk below collects every identifier in the
+	// function body, so an arm named in a comparison rather than an append would
+	// satisfy it. That is deliberately loose — the check exists to catch the arm
+	// nobody wired at all, and tightening it to append calls specifically would
+	// make it brittle against any refactor of how the list is built. The error
+	// text says "mentioned" so nobody reads more into a pass than it gives.
 	registered := map[string]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
@@ -85,7 +91,7 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 
 	for name, pos := range declared {
 		if !registered[name] {
-			t.Errorf("%s: %s is declared but never appended in %s — it will appear in no eval table, silently",
+			t.Errorf("%s: %s is declared but never MENTIONED in %s — it will appear in no eval table, silently",
 				fset.Position(pos), name, assembler)
 		}
 	}

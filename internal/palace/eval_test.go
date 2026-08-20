@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -486,5 +487,94 @@ func TestEveryRegisteredArmIsScorable(t *testing.T) {
 		if _, listed := notFusion[arm]; !listed {
 			t.Errorf("%s is registered but is neither score fusion nor a listed exception — it falls through to the rerank branch and is scored under a name that does not describe it", arm)
 		}
+	}
+}
+
+// TestRerankedArmsUseThePoolTheirNameClaims pins the two-pool selection, which
+// is one line and was invisible to the entire suite.
+//
+// evalCase fetches cross-encoder scores for a closet-on pool and a closet-off
+// pool, and each reranked arm picks one by whether armBoosts hands it a slice.
+// Inverting that single condition — so every reranked arm reads the wrong pool —
+// used to pass all tests, because no fixture in this package configures a
+// reranker at all, so the branch was dead as far as testing was concerned. That
+// is this repository's named defect exactly: the classifier had a test, the
+// CONSUMER of the classifier did not.
+//
+// The assertion is directional rather than "the two arms differ". Inverting the
+// condition swaps which arm reads which pool, so both arms still differ from
+// each other and a difference test would pass under the bug. What cannot survive
+// the swap is WHICH arm benefits: the closet boost lifts the mined source, and
+// the gold is in it, so the closet-on arm must rank it at least as well.
+func TestRerankedArmsUseThePoolTheirNameClaims(t *testing.T) {
+	ctx := context.Background()
+	const team = "team-1"
+	svc := newTestService(t).WithClosetBoost(0).WithReranker(&fakeReranker{}, DefaultRerankPool)
+
+	query, gold := closetFixture(t, svc, team)
+	arms := []EvalArm{ArmHybridRerank, ArmReranked}
+	ranks, _, _, _, _, degraded, err := svc.evalCase(ctx, team, EvalCase{Query: query, Expect: gold, Wing: "infra"}, arms, 20)
+	if err != nil {
+		t.Fatalf("evalCase: %v", err)
+	}
+	if degraded {
+		t.Fatal("the fake reranker failed; this test would then be comparing two copies of the fused order")
+	}
+	if ranks[ArmHybridRerank] == 0 || ranks[ArmReranked] == 0 {
+		t.Fatalf("fixture: the gold never made the pool (hybrid+rerank %d, hybrid+closet+rerank %d)", ranks[ArmHybridRerank], ranks[ArmReranked])
+	}
+	if ranks[ArmReranked] > ranks[ArmHybridRerank] {
+		t.Errorf("hybrid+closet+rerank ranked the gold at %d and hybrid+rerank at %d; the gold is in the MINED source, so the closet-on pool cannot be the worse of the two — the arms are reading each other's pools",
+			ranks[ArmReranked], ranks[ArmHybridRerank])
+	}
+	if ranks[ArmReranked] == ranks[ArmHybridRerank] {
+		t.Errorf("both reranked arms ranked the gold at %d; the fixture is not separating the two pools, so this test cannot see the selection it exists to check", ranks[ArmReranked])
+	}
+}
+
+// TestAnchoredNormNamesMatchTheirTransforms binds each label in anchoredNorms to
+// the function it claims, which nothing else does.
+//
+// Swapping the two entries in that table — `ceiling` pointing at
+// lexNormSaturating and vice versa — turned ZERO tests red across the whole
+// package before this existed. Every other anchored test asks only whether an
+// arm differs from page-max, and both transforms do, so both survive the swap.
+// The consequence is not academic: ADR-002 exists to compare the two, and T3's
+// evidence run would publish one transform's numbers under the other's name.
+//
+// The binding is behavioural rather than by identity, because Go cannot compare
+// function values. Each transform is pinned by the property that distinguishes
+// it: dividing by a constant is linear in raw, so equal raw ratios give equal
+// normalised ratios; the saturating transform is strictly concave, so the
+// normalised value grows slower than raw does. An unrecognised name fails, so a
+// third transform cannot be added without saying which of the two it behaves
+// like — or getting a case of its own.
+func TestAnchoredNormNamesMatchTheirTransforms(t *testing.T) {
+	const ceiling = 4.0
+	raw := []float64{1.0, 2.0}
+
+	for _, n := range anchoredNorms {
+		got := n.norm(raw, ceiling)
+		if got[0] <= 0 {
+			t.Fatalf("%s: fixture produced no signal to compare", n.name)
+		}
+		ratio := got[1] / got[0] // raw doubled; what did the transform do?
+		switch n.name {
+		case "ceiling":
+			// Proportional: dividing by a constant preserves ratios exactly.
+			if math.Abs(ratio-2) > 1e-12 {
+				t.Errorf("%q is not the proportional transform: doubling raw scaled the result by %.6f, want 2 — the label is wired to the wrong function", n.name, ratio)
+			}
+		case "saturating":
+			// Strictly concave: doubling raw gives strictly less than double.
+			if !(ratio > 1 && ratio < 2) {
+				t.Errorf("%q is not the saturating transform: doubling raw scaled the result by %.6f, want strictly between 1 and 2 — the label is wired to the wrong function", n.name, ratio)
+			}
+		default:
+			t.Errorf("anchoredNorms carries %q, which this test has no property for; a normaliser nothing pins can be swapped for another and every test stays green", n.name)
+		}
+	}
+	if len(anchoredNorms) != 2 {
+		t.Errorf("anchoredNorms holds %d transforms; add its distinguishing property above before registering it", len(anchoredNorms))
 	}
 }

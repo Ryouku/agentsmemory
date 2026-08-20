@@ -38,6 +38,15 @@ const (
 	// curation prior, then the cross-encoder. After ADR-003's flip this is the
 	// shape production serves, so without it the only reranked row in the table
 	// would be named after a configuration nobody runs.
+	//
+	// It blends at the SERVED rerank weight, and rerankSweep contains 0.5, which
+	// is also DefaultRerankWeight — so at the default configuration this row and
+	// `rerank blend w=0.50` are computed identically and will agree exactly.
+	// That is not a bug and it is not removed by dropping 0.5 from the sweep:
+	// the sweep has to keep a fixed grid for runs to stay comparable across
+	// configurations, and this arm has to track whatever weight is served. Two
+	// rows agreeing is the correct reading of "the served weight happens to be a
+	// swept point"; they diverge the moment RERANK_WEIGHT moves.
 	ArmHybridRerank EvalArm = "hybrid+rerank"
 	// ArmReranked is fusion WITH the closet prior, then the cross-encoder over
 	// the top K, blended at the configured weight.
@@ -658,14 +667,37 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	for i, p := range pool {
 		hitsForRerank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
 	}
+	// Only fetch the pool a requested arm will actually read. A cross-encoder
+	// pass is the slowest step in the pipeline, and before this a caller with a
+	// reranker configured but no reranked arm in its list paid for every pass it
+	// never used.
+	var needPlain, needCloset bool
+	for _, a := range arms {
+		switch {
+		case a == ArmReranked:
+			needCloset = true
+		case a == ArmHybridRerank:
+			needPlain = true
+		default:
+			for _, w := range rerankSweep {
+				if a == rerankArm(w) {
+					needPlain = true
+				}
+			}
+		}
+	}
 	var scoresPlain, scoresCloset []float64
 	rerankFailed := false
 	if s.rerank != nil {
-		if scoresPlain = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedPlain); scoresPlain == nil {
-			rerankFailed = true
+		if needPlain {
+			if scoresPlain = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedPlain); scoresPlain == nil {
+				rerankFailed = true
+			}
 		}
-		if scoresCloset = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedCloset); scoresCloset == nil {
-			rerankFailed = true
+		if needCloset {
+			if scoresCloset = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedCloset); scoresCloset == nil {
+				rerankFailed = true
+			}
 		}
 	}
 

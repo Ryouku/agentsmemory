@@ -193,5 +193,6 @@ They are strictly sequential and each gates the next: T1 makes every arm mean wh
 
 ## Follow-ups
 
+- [ ] `hybrid+rerank` blends at the SERVED rerank weight and `rerankSweep` contains 0.5, which is also `DefaultRerankWeight` — so at the default configuration that row and `rerank blend w=0.50` are computed identically and agree exactly. Found by review. Documented at the constant rather than removed, because the sweep needs a fixed grid for runs to stay comparable and the arm needs to track what is served; decide at T3 whether the table should mark coinciding rows rather than leave a reader to notice
 - [ ] Re-run the closet arm on a genuinely curated palace once one exists, and if the prior wins there, ship a per-corpus recommendation at the knob rather than a second global default.
 - [ ] Re-take ADR-002's normaliser comparison on the post-T1 arms, under the closet setting D1 leaves production in — the numbers it currently quotes were measured with the prior silently on.

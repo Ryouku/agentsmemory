@@ -4,10 +4,10 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `evalArms` registry, anchored arm names `fusion bm25=<w> anchored:<norm>`, the `no-closet` anchored family, `fusionRankerFor` (the arm → ranker seam)
+**Produces:** `evalArms` registry, ten anchored arms named `fusion bm25=<w> anchored:<norm>` (all unboosted — see the resolution note), `fusionRankerFor` (the arm → ranker seam)
 **Consumes:** `lexNorm`, `lexNormCeiling`, `lexNormSaturating` (T1)
 
-## Goal (amended during execution — see the resolution note)
+## Goal
 
 **Cross-ADR resolution, 2026-08-20.** This task was written to add a BOOSTED anchored family plus a
 `no-closet` control family, on the argument that anchoring inflates an additive boost by `1/s` and a
@@ -25,7 +25,7 @@ exactly the dimension ADR-003 marked permanently out of scope. The families ther
 `TestAnchoredArmsCarryNoClosetPrior` is what keeps them collapsed. Decided by the ADR owner rather
 than assumed.
 
-## Goal
+### The goal as originally written
 
 Make old and new normalisation comparable within one run on one shared candidate pool, by registering an anchored counterpart for every nonzero lexical arm plus an unboosted anchored family the deletion trigger can be read from — through a dispatch seam that can be tested behaviourally.
 
@@ -41,7 +41,7 @@ Make old and new normalisation comparable within one run on one shared candidate
 1. Write the failing tests first (TDD red), in `internal/palace/eval_test.go`:
    - `TestAnchoredArmsRankDifferentlyFromPageMax` — **the behavioural one, and the one that matters.** Take the ranker `fusionRankerFor` returns for `fusion bm25=0.40 anchored:ceiling` and the one it returns for `fusion bm25=0.40`, run both over a fixture built so they must disagree (one weak-but-winning lexical match against a strong one, per T1's page-max fixture), and assert the fused scores differ. A registry test cannot fail when an anchored arm falls through to the page-max branch; this one can. It follows `TestLexicalIDFChangesWhatSearchReturns` (`service_test.go:583`), whose predecessor asserted only that both modes returned results and passed while the flag was read by nothing at all.
    - ~~`TestAnchoredArmsNoClosetFamilyIgnoresBoosts`~~ → **replaced during execution by `TestAnchoredArmsCarryNoClosetPrior`.** See the resolution note below: there is no boosted family to contrast against, so the arms are asserted to carry no prior at all.
-   - `TestAnchoredArmsCoverEveryNonzeroWeight` — `evalArms` contains a `ceiling` and a `saturating` counterpart for each nonzero entry of `bm25Sweep` and for both adaptive arms, plus one `no-closet` counterpart per anchored arm the deletion trigger reads.
+   - `TestAnchoredArmsCoverEveryNonzeroWeight` — `evalArms` contains a `ceiling` and a `saturating` counterpart for each nonzero entry of `bm25Sweep` and for both adaptive arms. (The `no-closet` counterparts this bullet originally also required are dropped by the resolution note; the whole family is unboosted.)
    - `TestAnchoredArmsSkipWeightZero` — no anchored arm exists at `w=0`, because with the lexical term multiplied by zero the normaliser cannot matter and the row would be a duplicate reading as a finding.
    - `TestEvalArmsKeepProductionLast` and `TestEvalArmNamesAreUnique` — the registry's order and name uniqueness.
 
@@ -65,8 +65,9 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestAnchoredArmsRankDifferentlyFromPageMax` | `internal/palace/eval_test.go` | an anchored arm produces different fused scores through the shared ranking seam — the dispatch is wired, not merely named | — |
 | `TestAnchoredArmsCarryNoClosetPrior` | `internal/palace/eval_test.go` | no anchored arm receives the closet prior — the collapsed-family resolution, enforced | — |
+| `TestAnchoredNormNamesMatchTheirTransforms` | `internal/palace/eval_test.go` | **added after review.** Each label in `anchoredNorms` computes the transform it names, pinned by the property that separates them. Swapping the two entries previously turned zero tests red | — |
 | `TestEveryRegisteredArmIsScorable` | `internal/palace/eval_test.go` | **added during execution.** Every registered arm is either score fusion or a named non-fusion exception. The anchored arms were registered before `evalCase` knew about them and fell through to the branch that scores the RERANKED family, under their fusion names, with nothing failing — this is the check that catches it | — |
-| `TestAnchoredArmsCoverEveryNonzeroWeight` | `internal/palace/eval_test.go` | every nonzero fixed weight and both adaptive arms get both anchored counterparts, plus the `no-closet` family the trigger reads | — |
+| `TestAnchoredArmsCoverEveryNonzeroWeight` | `internal/palace/eval_test.go` | every nonzero fixed weight and both adaptive arms get both anchored counterparts — ten in all | — |
 | `TestAnchoredArmsSkipWeightZero` | `internal/palace/eval_test.go` | no anchored arm at `w=0`, where the normaliser cannot change the order | — |
 | `TestEvalArmsKeepProductionLast` | `internal/palace/eval_test.go` | the extracted registry returns the same order as the inline list for both `rerankReady` values, with `ArmProduction` after every non-reranked arm | — |
 | `TestEvalArmNamesAreUnique` | `internal/palace/eval_test.go` | two arms never collide on a name, which would silently overwrite a row | — |
@@ -75,12 +76,13 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 - Every pre-existing arm scores exactly as before: this task adds rows to the table and changes none of them, in the order they already ran.
 - One vector search and one cross-encoder call per case, unchanged — arms are cheap because they share the pool, and that is why measuring both normalisers in both boost regimes costs nothing but table width.
-- The boosted anchored arms carry the closet boost wherever their page-max counterparts do; the `no-closet` arms carry it nowhere.
+- **No anchored arm carries the closet boost.** (This invariant is the reverse of what the task originally stated, and the reversal is the resolution note above, not a drift: there is no boosted anchored family, so there is nothing for a `no-closet` family to contrast with. `TestAnchoredArmsCarryNoClosetPrior` enforces it.)
+- Each anchored label computes the transform it names: `ceiling` is proportional, `saturating` is strictly concave. Added after review — swapping the two entries in `anchoredNorms` turned zero tests red, so the table would have reported one transform's numbers under the other's name.
 - `fusionRankerFor` is the only place an arm name is turned into a ranker, so an arm cannot be scored by a ranker no test can reach.
 
 ## Risks
 
-- Table width: the anchored arms roughly double the fusion rows and the `no-closet` family adds ten more, and a wide table is easier to misread than a wrong one is to spot. Mitigation: the arm name carries the normaliser and the regime, so `fusion bm25=0.40` and `fusion bm25=0.40 anchored:ceiling` sort next to each other and the comparison a reader wants is the adjacent pair.
+- Table width: the ten anchored arms roughly double the fusion rows, and a wide table is easier to misread than a wrong one is to spot. Mitigation: the arm name carries the normaliser and the regime, so `fusion bm25=0.40` and `fusion bm25=0.40 anchored:ceiling` sort next to each other and the comparison a reader wants is the adjacent pair.
 - An anchored arm silently falling through to the page-max dispatch would produce two identical rows that read as "the normaliser makes no difference". The existing `armreach_test.go` checks are syntactic by design and cannot catch this; `TestAnchoredArmsRankDifferentlyFromPageMax` is the behavioural check that can, and T3's pairing gate catches it again on real ranks.
 - Extracting `fusionRankerFor` touches the hottest loop in the eval. Mitigation: it is a pure refactor with the existing arms' rows as the regression test — any change in a pre-existing arm's numbers is a bug in the extraction, not a finding.
 

@@ -49,6 +49,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestProductionArmFollowsServedClosetScale` | `internal/palace/eval_test.go` | `ArmProduction` reflects the configured scale, not the arms' full-strength one | — |
 | `TestEveryDeclaredArmIsRegistered` | `internal/palace/armreach_test.go` | the new `ArmHybridRerank` is actually appended to the arms list | — |
 | `TestSearchAppliesClosetBoost` | `internal/palace/rank_test.go` | the search path is unchanged by the split | — |
+| `TestRerankedArmsUseThePoolTheirNameClaims` | `internal/palace/eval_test.go` | **added after review, and it was blocking.** Each reranked arm reads the pool its name claims. Inverting that one condition, so every reranked arm read the wrong pool, previously turned zero tests red — no fixture in the package configured a reranker, so the branch was dead to the suite. The classifier had a test; its consumer did not | — |
 
 ## Invariants
 
@@ -59,7 +60,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Risks
 
-- One extra cross-encoder pass per case, for the second fused pool. With `--pool 50` and the default `RERANK_POOL=50` both passes score the same 50 documents in a different order, so the cost is inference time rather than a different candidate set; on a corpus where the pool exceeds the rerank pool the two heads differ, which is information, not noise.
+- One extra cross-encoder pass per case, for the second fused pool — and only when an arm that reads it was actually requested. Review found both passes firing unconditionally whenever a reranker was configured, so a caller asking for no reranked arms paid for two passes it never used; `evalCase` now fetches a pool only if a requested arm reads it. With `--pool 50` and the default `RERANK_POOL=50` both passes score the same 50 documents in a different order, so the cost is inference time rather than a different candidate set; on a corpus where the pool exceeds the rerank pool the two heads differ, which is information, not noise.
 - Renaming what an arm measures without saying so in the table would leave two runs of the same arm name meaning different things. T2's provenance block records the commit each run was taken at, which is what makes an old table identifiable as pre-T1.
 
 ## Stop Condition
