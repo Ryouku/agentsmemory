@@ -27,8 +27,8 @@ edit that reintroduces the defect, whether that edit compiled, and which test ca
 a task measured this week, three of five mutants survived the tests written for them and all three
 read as covered until the mutation was actually run.
 
-**Why ADR-009 exists, in one line.** The maintainer, who wrote the system, runs it on defaults —
-and the default is measurably the worst arm on every corpus anyone has run: `fusion bm25=auto`
+**Why ADR-009 exists, in one line.** Nobody tunes these knobs — this project's own deployments run
+the shipped defaults — and the default is measurably the worst arm on every corpus anyone has run: `fusion bm25=auto`
 scores 0.226 and 0.279 on the two n=100 tables where turning the lexical leg off scores 0.367 and
 0.445. The default is the product, and nobody tunes it. It sits fourth rather than first because a
 tuner that reads a table it cannot trust (ADR-007) automates the wrong answer at scale.

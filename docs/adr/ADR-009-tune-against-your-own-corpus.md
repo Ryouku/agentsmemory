@@ -9,7 +9,7 @@
 
 ## Context
 
-The operating reality, stated by the maintainer 2026-08-20: *"we do not experiment much with the params, we run it as is, with defaults and hope that it runs."* That is not a criticism of the operator — it is the normal case for every deployed system, and it means **the default is the product**.
+The operating reality: nobody tunes these knobs. This project's own deployments run the shipped defaults, and so, in our experience, does every other deployment of anything — tuning is work with no obvious trigger, and a default that has never visibly failed never prompts one. That is not a criticism of operators. It means **the default is the product**.
 
 Measured against that standard, the current default is the worst configuration on every corpus anyone has run. `config.Default()` ships `FUSION=linear`, `BM25_WEIGHT=auto`, page-maximum lexical normalisation — which is exactly the eval's `fusion bm25=auto` arm:
 
@@ -42,7 +42,7 @@ Three properties make it a tuner rather than a way to overfit:
 2. **Held-out selection.** Cases are split; the argmax is taken on one half and the margin confirmed on the other. Picking the winner from the same data that scored it is the selection bias this repository's own ADRs already reject, and a tuner is the place it would do the most damage because nobody reviews its output.
 3. **It moves nothing without a margin.** A knob changes only when the held-out paired interval excludes zero. Ties keep the incumbent, and the run records the tie — an operator who runs `tune` and is told "nothing moved, here is why" learns more than one handed a new number.
 
-**Pre-registered falsification.** If, on the maintainer's ~5,000-drawer corpus, the tuner's chosen configuration does not beat the shipped default on held-out cases in BOTH modes, this ADR is withdrawn rather than weakened: it would mean per-install tuning buys nothing that a better global constant would not, and ADR-002 should simply pick that constant.
+**Pre-registered falsification.** If, on a ~5,000-drawer corpus, the tuner's chosen configuration does not beat the shipped default on held-out cases in BOTH modes, this ADR is withdrawn rather than weakened: it would mean per-install tuning buys nothing that a better global constant would not, and ADR-002 should simply pick that constant.
 
 Scope: the retrieval knobs whose effect the eval already measures — `FUSION`, `BM25_WEIGHT`, `LEX_NORM`, `RERANK_WEIGHT`, `CLOSET_BOOST`. Not the embedding model, the pool size, or anything requiring a re-index.
 
@@ -51,7 +51,7 @@ Scope: the retrieval knobs whose effect the eval already measures — `FUSION`, 
 - **Ship a better global default and stop.** Rejected on the evidence above: the direction is robust but the destination is not, and one number cannot be right for a 240-drawer curated palace and a 5,000-drawer mined one. It is also the change most likely to be wrong for exactly the query mode nobody sampled. ADR-002 still owns the global default and this does not pre-empt it.
 - **Tune automatically at startup.** Rejected: a server that silently changes its ranking between restarts makes every bug report unreproducible, and the run costs real inference. Tuning is a decision an operator takes, with a record.
 - **Tune continuously from production traffic.** Rejected here, deferred: it is the honest long-run answer and it is blocked on telemetry volume — `search_events` held 25 rows at last count, and the `real` eval arm produced n=4 from it. Revisit when there are enough recorded queries to hold any out.
-- **Publish a tuning guide.** Rejected as the primary mechanism, for the reason this ADR exists: the maintainer, who wrote the system, runs defaults. A document asking operators to do what its own author does not is not a mechanism.
+- **Publish a tuning guide.** Rejected as the primary mechanism, for the reason this ADR exists: the people who wrote this system run its defaults. A document asking operators to do what its own authors do not is not a mechanism, it is a wish.
 
 ## Component / Boundary Impact
 

@@ -6,7 +6,7 @@
 **Owner:** unassigned
 **Produces:** a `literal`-mode table beside a `paraphrase` one, on the same corpus and the same cases count
 **Consumes:** none
-**Data dependency:** needs a populated corpus — the maintainer's ~5,000-drawer palace; ours tops out at a 100% retrieval ceiling where arms cannot separate
+**Data dependency:** needs a populated corpus — a ~5,000-drawer palace. A small one tops out at a 100% retrieval ceiling where arms cannot separate, so the run decides nothing
 
 ## Goal
 

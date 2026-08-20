@@ -1,7 +1,7 @@
 # Task ADR-010-T2: Retraction carries a reason, and erasure leaves the agent surface
 
-> **Amended 2026-08-20 before execution**, on the maintainer's objection that plenty of retractions
-> replace nothing: this task now adds an explicit `am_invalidate_drawer(id, reason)` verb beside the
+> **Amended 2026-08-20 before execution**, on the objection that plenty of retractions replace
+> nothing: this task now adds an explicit `am_invalidate_drawer(id, reason)` verb beside the
 > supersede path, and `reason` is required on both. It also removes THREE agent-facing destructive
 > tools rather than one — `delete_drawer`, `delete_tunnel`, `delete_hallway` — and adds the same
 > required `reason` to `am_kg_invalidate`, which today records a date and no why.

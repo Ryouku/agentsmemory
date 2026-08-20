@@ -9,7 +9,7 @@
 
 ## Context
 
-The maintainer, 2026-08-20, on the write path: *an update should set `valid_to`, not overwrite content; the append-only log should keep history with valid/invalid dates.* And the analogy that makes it concrete: **a court ruling is made under the laws valid on that day.** Delete the superseded law and the ruling stops being legible — the reasoning no longer connects to anything.
+The write path should end a record rather than overwrite it: an update sets `valid_to`, and the log keeps history with validity dates. The analogy that makes it concrete is a legal one. **A ruling is made under the laws valid on that day.** Delete the superseded law and the ruling stops being legible — the reasoning no longer connects to anything it was reasoning about.
 
 This repository already holds that principle, and applies it to the wrong half of the store.
 
@@ -30,7 +30,7 @@ There is a second, sharper problem hiding under the word *delete*, and it is why
 
 **And there is a third gap, which is the one that actually costs money.** Nothing anywhere records *why* something stopped applying. `am_kg_invalidate` takes `subject`, `predicate`, `object` and `ended` — a date, and no reason; the KG schema has `valid_to` and no column for one. So even the half of the store that keeps its history keeps only *that* a fact ended, never *why*.
 
-That is the rediscovery tax wearing a different hat. A session that finds an ended record with no reason is in the same position as one that finds nothing: it re-derives, reaches the same idea, and re-litigates a decision the team already took. The maintainer put it exactly — *a mechanism so that invalidation also knows a decision was already taken not to apply it, and why.* An invalidation is not an absence. It is a decision, and it is Class-B knowledge of precisely the kind §5 of the paper argues is irrecoverable.
+That is the rediscovery tax wearing a different hat. A session that finds an ended record with no reason is in the same position as one that finds nothing: it re-derives, reaches the same idea, and re-litigates a decision the team already took. What is needed is a mechanism by which an invalidation also records that a decision was already taken not to apply something, and why. An invalidation is not an absence. It is a decision, and it is Class-B knowledge of precisely the kind §5 of the paper argues is irrecoverable.
 
 ## Existing Primitives Audit
 
@@ -57,7 +57,7 @@ Drawers gain a validity window, and the two operations are separated at the tool
 
 **Recall returns current records; the reason rides along.** Superseded TEXT does not compete with its correction — that failure is documented here already, where an update rewrote chunk 0 while chunk 1 stayed live with its own embedding, still answering with the retracted claim. But the current record names what it replaced and why, so a reader of the live memory learns the decision was taken and does not re-take it. Full history stays behind an explicit flag for the cases that want the whole chain.
 
-**Why accumulation is affordable here, which is the load-bearing claim.** The maintainer's position is that everything the palace can accumulate should be kept, because the accumulation *is* the value. This ADR is what makes that position payable rather than merely principled.
+**Why accumulation is affordable here, which is the load-bearing claim.** The position this ADR is built on is that everything the palace can accumulate should be kept, because the accumulation *is* the value. This ADR is what makes that position payable rather than merely principled.
 
 Keeping everything has a cost, and it is not disk. It is **retrieval**: a larger, more heterogeneous corpus measurably retrieves worse, because unrelated records do not remove the answer — they add competitors ahead of it. That is already this project's own recorded finding, and it is why deletion exists at all. `am_delete_drawer` is a workaround for the absence of a validity window: with no way to mark a record ended, the only way to stop it competing in recall is to destroy it.
 
@@ -83,10 +83,10 @@ The `reason` field gets the same correction. Its quality is measured — median 
 
 ## Alternatives Considered
 
-- **Leave it; agents can file a new drawer and delete the old.** Rejected: that is the current behaviour, and it destroys the rejected alternative — the specific thing §5 of the maintainer's own paper argues is irrecoverable at any price.
+- **Leave it; agents can file a new drawer and delete the old.** Rejected: that is the current behaviour, and it destroys the rejected alternative — the specific thing that is irrecoverable at any price, because a rejected alternative leaves no trace in the artifact.
 - **Soft-delete with a `deleted_at` tombstone.** Rejected as insufficient rather than wrong: it records THAT a record died and not what replaced it. "Kafka until March, then NATS, because rebalancing" needs the link, and a tombstone has nowhere to put it.
-- **Full event sourcing — an append-only log as the source of truth, state as a projection.** Rejected for now, and it is the maintainer's framing so the reason matters: the store already has a working row model with vectors, chunking and anchors hanging off drawer identity, and rebuilding that as a projection is a rewrite whose risk is not justified by the benefit a validity window already delivers. A validity window IS the append-only property for the one thing that needs it. Revisit if a second consumer of the history appears.
-- **Only supersede; no standalone invalidate verb.** Rejected on the maintainer's objection, which is right: plenty of retractions replace nothing. "We are not doing this after all" has no successor record, and forcing one would make an agent invent a placeholder memory to express an absence.
+- **Full event sourcing — an append-only log as the source of truth, state as a projection.** Rejected for now, and the reason matters because this is the stronger version of the same idea: the store already has a working row model with vectors, chunking and anchors hanging off drawer identity, and rebuilding that as a projection is a rewrite whose risk is not justified by the benefit a validity window already delivers. A validity window IS the append-only property for the one thing that needs it. Revisit if a second consumer of the history appears.
+- **Only supersede; no standalone invalidate verb.** Rejected: plenty of retractions replace nothing. "We are not doing this after all" has no successor record, and forcing one would make an agent invent a placeholder memory to express an absence.
 - **Version everything, keep every revision.** Rejected: a typo fix would then create a revision, and the history that matters — a decision changing — would be buried in noise. Supersession is a deliberate act; a correction to spelling is not.
 
 ## Component / Boundary Impact

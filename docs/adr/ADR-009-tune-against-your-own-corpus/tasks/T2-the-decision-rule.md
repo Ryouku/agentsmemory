@@ -79,7 +79,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Stop Condition
 
-Stop and ask if the rule never moves on the maintainer's corpus — that is the parent ADR's pre-registered falsification, and it means a global constant suffices.
+Stop and ask if the rule never moves on a large corpus — that is the parent ADR's pre-registered falsification, and it means a global constant suffices.
 
 ## Verification Log
 
