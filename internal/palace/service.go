@@ -232,6 +232,24 @@ func (s *Service) WithFusion(mode string) *Service {
 	return s
 }
 
+// Clone returns a shallow copy, so a caller can configure one Service several
+// ways without the configurations bleeding into each other.
+//
+// It exists because every With* setter MUTATES and returns the same pointer.
+// That is convenient for a composition root, which configures once, and a trap
+// for anything that configures repeatedly: a sweep that reused one Service would
+// carry each cell's settings into the next, and every knob after the first would
+// look inert — the exact conclusion such a sweep exists to draw, reached for the
+// wrong reason.
+//
+// Shallow is correct here. The fields it copies are scalars and interface
+// handles; the repo, embedder and vector store are shared on purpose, since a
+// sweep varies ranking rather than storage.
+func (s *Service) Clone() *Service {
+	c := *s
+	return &c
+}
+
 // WithClosetBoost scales the closet curation prior (1 = full, 0 = off). Same
 // post-construction-setter contract as WithReranker: call before the service is
 // shared across goroutines.

@@ -56,8 +56,20 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
 | drop part 1 (liveness at baseline) from the predicate | yes | `TestBaselineInertKnobsAreNotAttributed` |
-| seed fewer drawers than `limit*hybridCandidateMultiplier` | yes | `TestModeScopedKnobsAreDiscovered` |
-| vary two knobs per cell instead of one | yes | `TestBaselineInertKnobsAreNotAttributed` |
+| reuse one Service across cells instead of cloning | yes | `TestModeScopedKnobsAreDiscovered` |
+| seed fewer drawers than the candidate multiplier | yes | **SURVIVED — recorded as surviving.** The one pair this corpus discovers is structural (`rankRRF` takes no weight parameter), so it is found even at six drawers. The fixture floor guards a different failure — a corpus too small to separate anything reports ZERO pairs — and the `want` assertion catches that instead |
+
+**The falsification test was wrong on its first attempt, and the mutation is the only reason that is
+known.** It checked that the rerank knobs do not move the ordering at baseline: true, and useless.
+Dropping part 1 of the predicate took the discovered pairs from **1 to 21** and left that check
+GREEN, because it asserted the fact the rule is built on rather than the rule's output. It reads the
+pair list now: a knob inert at baseline must appear in NO pair. Both tests call one `sweep()`, so
+neither can pass on a fact the other disproves.
+
+**And `Clone` exists because of the second mutation.** Every `With*` setter mutates and returns the
+same pointer — convenient for a composition root that configures once, a trap for anything that
+configures repeatedly. Reusing one Service carried each cell's settings into the next and produced
+seven spurious pairs.
 
 ## Out of Scope
 
@@ -79,4 +91,4 @@ Stop and ask if any shipped configuration produces a finding — that means the 
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-20 · cf94d91* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
