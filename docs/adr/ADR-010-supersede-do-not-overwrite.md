@@ -1,0 +1,110 @@
+# ADR-010: A memory is ended, not overwritten — and retraction is not erasure
+
+**Status:** Proposed
+**Date:** 2026-08-20
+**Owner:** unassigned
+**Spec:** None — no spec stage
+**Cross-references:** ADR-004 (supersession in ranking — this is supersession in storage), ADR-001 (recall must be able to say "I don't know"; a superseded record changes what "current" means)
+**Invalidates:** none — checked. It does REVISE work landed in this repository on 2026-08-20: `Service.Delete` was hardened to remove every chunk of a memory, and `Service.Update` to refuse a multi-chunk content edit. Both are correct within the current model and both become the wrong primitive under this one. Said plainly because an ADR that quietly reverses last week's fix is how a team stops trusting its own record.
+
+## Context
+
+The maintainer, 2026-08-20, on the write path: *an update should set `valid_to`, not overwrite content; the append-only log should keep history with valid/invalid dates.* And the analogy that makes it concrete: **a court ruling is made under the laws valid on that day.** Delete the superseded law and the ruling stops being legible — the reasoning no longer connects to anything.
+
+This repository already holds that principle, and applies it to the wrong half of the store.
+
+`db/migrations/00010_kg.sql`, on a knowledge-graph fact:
+
+> A fact is CURRENT while its `valid_to` is empty; setting `valid_to` ends it (**it becomes historical but is never deleted**).
+
+`db/migrations/00006_drawers.sql`, on a drawer: no `valid_to`, no `superseded_by`, no revision table. `Repo.Update` is an in-place `Updates()` — the prior content is gone the moment a correction lands. `Repo.Delete` removes the row and its vector.
+
+So the temporal model covers **facts** and not **reasoning**. That is backwards. A fact — "service X deploys to host Y" — is cheap to re-derive from the running system. A Class-B record — why Kafka was replaced, what was tried first, what the constraint was — is the thing that exists nowhere else, and it is the one the store lets an agent overwrite or delete outright.
+
+There is a second, sharper problem hiding under the word *delete*, and it is why this needs a decision rather than a schema patch. Two different operations are conflated:
+
+- **Retraction** — an agent decides a memory is no longer true. The old text is *evidence*: "we used Kafka until March, then replaced it because rebalancing stalled" is a better record than either half alone, and the rejected alternative is what makes the current decision legible.
+- **Erasure** — an operator decides data must not exist. A secret was filed, a customer asked, a retention policy applies. Here the old text must genuinely go, vectors included.
+
+`am_delete_drawer` is exposed to **agents** and performs **erasure**. An agent doing the first gets the second, irreversibly, and the palace's own protocol tells it to correct memories that turn out wrong.
+
+## Existing Primitives Audit
+
+- **KG validity windows** (`valid_from` / `valid_to`, `KGInvalidate`) — the model this ADR extends to drawers. Reuse the semantics verbatim rather than inventing a second vocabulary: a record is current while `valid_to` is empty, and ending it never deletes it.
+- **`Drawer.ParentID`** — already expresses "these rows are one memory". Reshape: a supersession chain is the same shape one level up, and reusing it keeps chunking and versioning from becoming two competing notions of identity.
+- **`content_date`** — the date a memory is ABOUT, already used by the recency reorder. Distinct from validity and must stay distinct; conflating "when this was true" with "when we believed it" is how temporal stores become unreadable.
+- **`Service.Delete` / `Service.Update`** — both hardened on 2026-08-20 and both re-scoped here. Reshape, and say so.
+- **`DeleteWing` / `MergeWing`** — operator-facing, already outside the agent surface. Reuse as the precedent for where erasure belongs.
+
+## Decision
+
+Drawers gain a validity window, and the two operations are separated at the tool surface.
+
+**Retraction (agent-facing).** Correcting a memory writes a NEW record and ends the old one by setting `valid_to`. The superseded text stays, searchable only when history is asked for. `am_update_drawer`'s content edit becomes a supersede: the returned id is the new record's, and the response names the one it replaced.
+
+**Erasure (operator-facing).** Genuine removal — row and vector — moves behind the operator surface where `delete_wing` already lives. It remains possible, because a store that cannot forget a leaked secret is not deployable, but it stops being something a confused agent reaches for while trying to be helpful.
+
+**Recall is unchanged by default.** Search returns current records only. History is reachable explicitly, which is the property ADR-004 needs: a superseded record must not compete with its own correction, and that failure is already documented here — an update rewrote chunk 0 while chunk 1 stayed live with its own embedding, still answering with the retracted text.
+
+**Pre-registered falsification.** The claim is that superseded records are worth keeping. If, after this ships, history is never read — no `include_history` call in telemetry over a meaningful window, and no eval case answerable only from a superseded record — then the ADR bought storage cost and complexity for nothing, and the honest response is to retract it rather than to argue the feature needs promotion. The measurement must be declared before the code lands, because afterwards every unread feature has an advocate.
+
+## Alternatives Considered
+
+- **Leave it; agents can file a new drawer and delete the old.** Rejected: that is the current behaviour, and it destroys the rejected alternative — the specific thing §5 of the maintainer's own paper argues is irrecoverable at any price.
+- **Soft-delete with a `deleted_at` tombstone.** Rejected as insufficient rather than wrong: it records THAT a record died and not what replaced it. "Kafka until March, then NATS, because rebalancing" needs the link, and a tombstone has nowhere to put it.
+- **Full event sourcing — an append-only log as the source of truth, state as a projection.** Rejected for now, and it is the maintainer's framing so the reason matters: the store already has a working row model with vectors, chunking and anchors hanging off drawer identity, and rebuilding that as a projection is a rewrite whose risk is not justified by the benefit a validity window already delivers. A validity window IS the append-only property for the one thing that needs it. Revisit if a second consumer of the history appears.
+- **Version everything, keep every revision.** Rejected: a typo fix would then create a revision, and the history that matters — a decision changing — would be buried in noise. Supersession is a deliberate act; a correction to spelling is not.
+
+## Component / Boundary Impact
+
+`internal/palace` keeps ownership of drawer identity and gains the validity window. `internal/mcpserver` moves one tool from the agent surface to the operator one. The vector index gains a rule — superseded records leave the default search — which is a change to what `Search` retrieves, not to how it ranks.
+
+## Wiring & Contract Changes
+
+| Surface | Change | Producer | Consumer(s) |
+|---------|--------|----------|-------------|
+| `drawers.valid_to`, `drawers.superseded_by` | add (migration) | `db/migrations` | `internal/palace` |
+| `am_update_drawer` content edit | change — supersedes instead of overwriting; returns the new id and names the ended one | `internal/mcpserver/drawers.go` | every agent that corrects a memory |
+| `am_delete_drawer` | change — leaves the agent surface | `internal/mcpserver` | agents (removed), operators (retained) |
+| `am_search` / `am_list_drawers` | change — current records only, with an explicit history flag | `internal/mcpserver` | every recall |
+| operator erasure path | add | `cmd/server` | operators, retention policy |
+
+## Inter-task Contracts
+
+| Contract | Producing task | Consuming task(s) | Breaking? |
+|----------|----------------|-------------------|-----------|
+| `valid_to` / `superseded_by` columns | T1 | T2, T3 | No — additive; empty `valid_to` is every existing row, which is correct |
+| supersede semantics on Update | T2 | T3 | **Yes** — `am_update_drawer` returns a different id than the one it was given |
+| current-only recall + history flag | T3 | T3 | Yes — search stops returning superseded records |
+
+## Implementation
+
+`tasks/README.md` — three tasks.
+
+## Consequences
+
+- **Positive:** the record that explains why a decision changed survives the change. "We used X until March, then Y, because Z" becomes expressible, and it is the shape a reader actually needs.
+- **Negative:** the store grows monotonically, and a correction now costs a row rather than reusing one. Superseded rows keep their vectors until an operator erases them, so the index grows too.
+- **Neutral:** `am_update_drawer` returns a new id. Any caller that assumed the id was stable across a content edit must be updated — inside this repository the only such caller is the tool itself.
+
+## Out of Scope
+
+- Full event sourcing of the whole store (deferred: docs/adr/BACKLOG.md — see Alternatives; revisit when a second consumer of history exists)
+- Versioning wing/room moves (permanent: a move is not a claim about the world, so ending and re-filing would record noise as history)
+- Retention or automatic pruning of superseded records (deferred: docs/adr/BACKLOG.md — needs the falsification measurement below to say what history is worth first)
+- Applying the same model to diary entries (deferred: docs/adr/BACKLOG.md — a diary is already append-only by construction; nothing overwrites an entry)
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| Superseded records leak back into default recall | Med | High | T3's falsification: a superseded record must be unreachable by every default route — search, list, and get — checked from an end-to-end scenario rather than a unit test, since this exact failure shipped once already as a live chunk 1 |
+| Agents cannot erase a wrongly-filed secret and file it anyway | Med | High | The operator erasure path lands in the same task, and the refusal text names it |
+| The store grows without bound | High | Low | Accepted deliberately; pruning is deferred until the falsification says what history is worth |
+| The migration mis-handles existing rows | Low | High | Empty `valid_to` means current, so every existing row is correct with no backfill; T1 asserts that on a copy of a real database |
+
+## Rollback
+
+The migration is additive: `valid_to` and `superseded_by` default empty, and every existing row reads as current. Reverting the code restores overwrite-and-delete, and the extra columns are ignored — no data is lost by rolling back, only by rolling forward and then erasing. Records superseded while the feature was live remain readable as ordinary drawers after a revert, since they differ only by a column nothing reads.
+
+## Follow-ups
