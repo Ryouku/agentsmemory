@@ -228,3 +228,20 @@ directly, which is a workaround and not the fix.
 Related, and the repo's own named defect: `internal/importer` already handles a `kg` record kind,
 preserving the validity window — and `wingbundle` has no such kind and never emits one. Half of KG
 portability is finished and unreachable.
+
+## The per-task acceptance guard has a false-positive mode
+
+The guard added to every task's Acceptance fence — `! grep -qE "no tests to run|^FAIL|^--- FAIL"` —
+fires when ANY package in a multi-package run reports no matching tests, even though another package
+ran the task's tests perfectly well. ADR-004 T3 hit it: `./internal/palace/` ran all four,
+`./cmd/server/` had none matching, and the gate called the run a failure.
+
+`adr-verify` implements the same rule correctly and centrally: it fails only when a "nothing ran"
+signature appears AND no evidence of a real run appears anywhere in the output. The per-task guards
+predate that and are now both redundant and stricter than the thing they duplicate.
+
+Removing all nineteen would invalidate every Verification Log entry taken under them (adr-lint
+rejects a `done` whose logged command no longer matches), so it is a deliberate sweep rather than a
+drive-by: strip the guards, re-run adr-verify on every completed task, commit between runs. Until
+then, scope a multi-package acceptance to the package that holds the tests.
+
