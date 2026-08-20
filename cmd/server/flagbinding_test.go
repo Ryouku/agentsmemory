@@ -77,8 +77,13 @@ func TestEveryFlagFillsTheFieldItNamesRunsTheRealCLI(t *testing.T) {
 		}
 		checked++
 	}
-	if checked < 15 {
-		t.Fatalf("only %d flags were probed; this check has stopped covering the command", checked)
+	// Coverage is asserted against the real flag count, not a magic number. A
+	// constant floor is satisfied by the flags that happen to have probes, which
+	// is exactly how the bool kind sat outside this check while the guard read
+	// "only 21 probed, floor is 15, fine".
+	if want := len(serveFlags(def)); checked != want {
+		t.Errorf("%d of %d flags were probed; %d flag(s) have no probe for their kind, so they are "+
+			"outside this check entirely. Add the kind to probeFor.", checked, want, want-checked)
 	}
 }
 
@@ -122,8 +127,15 @@ func normalize(s string) string {
 
 // probeFor returns a command-line argument that sets the flag to a value it
 // cannot already hold, and whether such a probe exists for this flag's kind.
+//
+// Every kind in the command must appear here. The first version omitted bool and
+// string-slice, which silently excused --local and --debug from the whole check:
+// swapping their two bindings was caught only by --local's own behavioural tests,
+// and --debug had no such backstop. A probe table that quietly skips a kind is
+// the same defect one level up — the gate is declared over "every flag" and
+// selects a subset.
 func probeFor(f cli.Flag, name string) (string, bool) {
-	switch f.(type) {
+	switch v := f.(type) {
 	case *cli.StringFlag:
 		return "--" + name + "=probe-" + name, true
 	case *cli.IntFlag:
@@ -132,6 +144,11 @@ func probeFor(f cli.Flag, name string) (string, bool) {
 		return "--" + name + "=0.4242", true
 	case *cli.DurationFlag:
 		return "--" + name + "=4242s", true
+	case *cli.BoolFlag:
+		// The negation of the default, so the probe always moves the field.
+		return fmt.Sprintf("--%s=%v", name, !v.Value), true
+	case *cli.StringSliceFlag:
+		return "--" + name + "=probe-" + name, true
 	}
 	return "", false
 }
