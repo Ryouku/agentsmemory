@@ -191,5 +191,7 @@ No persistent state, no contract, no production behaviour: reverting the commits
 
 ## Follow-ups
 
+
 - [ ] Record the gate's first verdict, its case count and its interval in `docs/adr/BACKLOG.md` whichever way it lands — a `not justified` that goes unwritten will be re-litigated within a month.
 - [ ] Re-derive the −0.05 MRR non-inferiority margin once the non-temporal case set can resolve less than that; today it is set by the instrument's resolution rather than by the recall loss we would actually accept, and it is the weakest number in this ADR.
+- [ ] Received from ADR-010 T3: ranking superseded records when history IS requested. ADR-010 hides superseded records from ordinary recall and defers the ordering question here, because this ADR already owns how a history request is ranked.

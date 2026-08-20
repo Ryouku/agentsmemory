@@ -74,7 +74,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- Retention policy for superseded records (deferred: docs/adr/BACKLOG.md)
+- Retention policy for superseded records (deferred: docs/adr/ADR-010-supersede-do-not-overwrite.md)
 - Superseding across a wing move (permanent: a move is not a claim about the world)
 
 ## Invariants

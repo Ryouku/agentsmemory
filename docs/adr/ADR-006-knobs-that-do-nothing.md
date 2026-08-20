@@ -98,3 +98,5 @@ The check is valid for the ranking and retrieval knobs reachable from the compos
 Every change is additive or a localised fix, and none touches persistent layout. Revert the commits: `configureRanking` folds back into `newServices`, the gate disappears, the two Usage strings lose a clause, `--http-timeout` becomes an unknown flag, and `Reranked` returns to over-reporting. The one row worth noting is `SearchEvent.Reranked` — rows written after T4 mean something different from rows written before it, and T4 records the cutover date in `docs/adr/BACKLOG.md` so a later reader of `am_recall_stats` can tell the two populations apart.
 
 ## Follow-ups
+
+- [ ] Received from ADR-008: the CLI `mcp` adapter's parity with the HTTP one. ADR-008's harness exercises the HTTP transport; the CLI adapter builds its own config through `configFromCmd` and shares no assertion with it. This ADR owns the config-to-wiring path both entry points use, which is where a parity check belongs.

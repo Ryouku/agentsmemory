@@ -237,3 +237,4 @@ Outcome (i)'s deletions are the exception and are not env-revertable; undoing th
 ## Follow-ups
 
 - [ ] Selection-aware paired bootstrap: recompute the best-of-family argmax **inside** each bootstrap replicate, so a single-corpus contrast between selected arms gets a valid interval. This ADR uses cross-corpus transfer instead because it needs no new statistics code; the bootstrap version would let a future ADR read the trigger on one corpus.
+- [ ] Received from ADR-007 T1: the `vs best` baseline's selection bias. ADR-007 defers it here because the open Follow-up above — the selection-aware paired bootstrap — is the same work: the `vs best` column's baseline is the table's own best arm, so the contrast is between a selected arm and a selected baseline. Whoever closes the bootstrap Follow-up closes ADR-007's punt with it.

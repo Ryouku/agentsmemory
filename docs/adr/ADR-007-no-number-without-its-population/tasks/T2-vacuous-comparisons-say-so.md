@@ -70,7 +70,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- Populating closets (deferred: docs/adr/ADR-003-retire-the-closet-prior.md — that ADR owns whether and how)
+- Populating closets (deferred: docs/adr/BACKLOG.md)
 - Applying the same status to other preselected contrasts (deferred: docs/adr/BACKLOG.md — the closet cell is the only preselected contrast today; generalise when a second exists)
 
 ## Invariants

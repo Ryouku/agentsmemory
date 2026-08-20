@@ -314,3 +314,200 @@ without the exit-code trap the first version had.
   Filed 2026-08-20 because T3's Out of Scope pointed here and this file did not hold it — the
   pointer resolved to a real file and the item was in neither, which is a punt that reports fine
   forever. `adr-debt` follows the pointer; it does not check that the destination received anything.
+
+## From ADR-002 (anchor the lexical score)
+
+- **Growing the eval corpora past the cases the original tables used** — every ADR-002 table re-runs the
+  questions its saved case file holds, which is what makes a re-run comparable and also what caps it:
+  growing a corpus means asking questions those tables never asked, so it is a new experiment rather than
+  a longer run, and nothing measured on the grown one is comparable to the committed evidence. Check first
+  whether the corpus those tables ran against still exists to be grown — mining is retired and the palace
+  has been reset since. More than one ADR punts this, so collect them before starting.
+- **Corpus-wide term statistics, so the lexical score stops depending on who else was retrieved** —
+  `bm25ScoresAndCeiling` derives N, document frequency, IDF and average document length from the candidate
+  pool it is handed, so a candidate's raw BM25 and the anchored ceiling `C` both move when a sibling is
+  added or dropped; ADR-002 buys independence from *which candidate won* and explicitly not this. Blocked
+  on there being no term-statistics store, and on nobody having measured how far `raw` and `C` actually
+  travel between pools, so the size of the defect is unknown. It is the store a lexical first stage needs too.
+- **A lexical first stage, so BM25 can nominate candidates instead of only reordering them** — every arm
+  re-orders one pool nominated by vector distance, so no lexical change can alter what is reachable, only
+  what is on top. There is nothing to nominate from: BM25 is computed in memory over the pool's documents
+  and nothing in the tree indexes terms. The measured headroom is small and stale — 1 gold of 40 never
+  entered the pool — and it is the same retrieval-ceiling number the candidate-pool section turns on, so
+  it is worth doing once that ceiling is re-measured and lexical-only misses are a named share of it.
+- **Recalibrating the closet boost against the rescaled fused range** — `rankFused` adds the boost in
+  absolute units on top of the fused score, so an anchored normaliser, which only shrinks the lexical term,
+  inflates a fixed boost by exactly `1/s`, `s = 1 − w(1 − a)`; this palace has already lost recall@1 from
+  92% to 17% to that class of scale mismatch. There is nothing to recalibrate from yet: after ADR-003 T1
+  the arms that would measure it carry no prior, and the anchored tables have not been run. Note the
+  capability table above is ahead of the tree — the flip to a default of 0 has not landed, `config.Default()`
+  still ships `ClosetBoost: 1` — so the default path is still boosted.
+
+## From ADR-003 (retire the closet prior)
+
+- **A preselected contrast for any arm pair** — `ClosetDelta` is hard-wired to one comparison,
+  `hybrid+closet` minus `hybrid` over one category; the arms table's `vs best` verdicts are still
+  measured against a baseline chosen from the same table. Generalising it means carrying ADR-007's
+  per-contrast reporting rules too — `not measured` on a vacuous contrast, no aggregate across arm
+  scopes, a case-set id per run — or the framework prints the numbers ADR-007 forbids. The first
+  real customer would be ADR-002's normaliser comparison, which has to be re-taken on post-T1 arms.
+- **A corpus sized for the question, and a genuinely curated palace to measure against** — both
+  corpora in every closet run are whatever happened to be filed, not a design. ADR-003's curated
+  cells carry a floor of 10 admitted cases and a wing that may not clear it, and those floors were
+  fixed against a pre-reset palace. Growing it by hand is labelling budget; growing it by mining
+  produces the mined corpus, which is the side being contrasted against. Nothing here moves until a
+  decision turns on the curated cell rather than on what the docs say about it.
+- **A doc-vs-code gate for every configurable default's value** — the pattern exists for exactly one
+  hand-picked number: `TestCatalogSizeIsWhatTheReadmeClaims` pins the README's tool count to the real
+  catalogue, and ADR-003 T5 copies it for one knob. The gates nearby prove a different thing — that a
+  setting is settable and read (`TestEveryConfigFieldIsPopulatedAndRead`, `TestEveryFlagIsRead`,
+  `TestDocumentedEnvVarsAreRead`), never that the number printed beside it ships. Blocked on
+  extraction: a default appears in README prose, a flag table, the landing doc and the web glossary.
+- **Closet summary concatenated into the indexed text at mine time** — the published +9.4% recall
+  variant ADR-003 cites as corroboration and deliberately never re-derives. It is a different
+  mechanism at a different stage from the rank-time prior: it changes what gets embedded, so it
+  costs a re-index of every mined source and cannot ride along with a default flip. Blocked on
+  having closets at all — the count was 0 on the 2026-08-20 audit and `am_mine` is idle — and on
+  whether a gain measured on someone else's indexing unit survives our chunking and our model.
+- **Normalising the closet boost by source fan-out** — divide it by how many drawers share the mined
+  source, so one closet hit cannot lift a fifty-part session at once. ADR-003 calls this the most
+  direct answer to the amplification argument it rests on, and rejects it there only because it is a
+  new ranking formula with no run behind it: it has to be measured against a settled default rather
+  than folded into the flip. It cannot be measured at all while no closets are filed, and nothing
+  says what the divisor should be — fan-out, its log, or a cap.
+- **Choosing the closet prior automatically from corpus composition** — scale it by the share of
+  curated versus mined drawers, or by closet coverage, instead of shipping one global default.
+  ADR-003 rejects it as unmeasured and names the precedent: `BM25_WEIGHT=auto` was an adaptive rule
+  invented without a table, and it measured worse than the fixed weight on paraphrase queries until
+  IDF weighting was added. It needs both corpus types measured first, and nobody has defined
+  composition — drawer provenance, closet coverage: neither is a quantity the server reports today.
+
+## From ADR-005 (deliverable handoffs)
+
+- **The new-wing refusal on `am_diary_write`** — `am_add_drawer` refuses a first write into an empty
+  wing when the room is `inbox`; the diary path has no equivalent check. A diary entry goes to the
+  session's OWN wing, so the mis-naming the refusal exists for has no route in: of the 217 drawers
+  measured 2026-08-20, both malformed wings were first written through the inbox path, not the diary
+  one. Unknown is whether a registration carrying the wrong default wing produces the same orphan by
+  another route — one observed case is what would make this worth building.
+- **Mid-session inbox delivery** — `am_status` names a waiting inbox at wake-up only, so an item
+  filed while a session runs stays invisible to it. Tagged `permanent` on a false premise and
+  corrected: the server serves streamable HTTP and the MCP library exposes
+  `SendNotificationToClient`, which nothing in this tree calls, so the transport can carry a push.
+  What is genuinely unknown is the client half — whether a given harness surfaces an unsolicited
+  notification to the model mid-turn — and that is answered by testing a harness, not by reasoning.
+- **An inbox count for wings other than the session's own** — the `am_status` `inbox` block counts
+  only the registration's default wing, deliberately: every extra count dilutes the one that
+  matters, and nobody has asked for the others. It is not a purely additive change if it is ever
+  wanted — ADR-008 T4 falsifies its isolation check by making one party's inbox count include
+  another's, so a cross-wing count would need that test restated as scoping rather than absence.
+  Worth revisiting when a surface exists that has to watch several wings at once.
+- **Marking an inbox item read or closed** — the convention closes an item out by filing what was
+  found, so a handled lead and an untouched one look identical to the next session and stale items
+  get rediscovered. It needs per-drawer state ADR-005 does not introduce. ADR-010 (Proposed) is the
+  nearest mechanism — a validity window plus a required reason — but it names no inbox, and
+  read-versus-open is a different axis from current-versus-ended: an item can be read, still true,
+  and still waiting. Whether one mechanism serves both is undecided.
+- **A repository gate over centralised skill text** — ADR-005 T3 put the handoff naming rule into
+  the two centralised skills, and no exit code here can prove it is still there: skill bodies live
+  in the palace, not the tree, so the edit was accepted on a human sign-off recording each skill's
+  version before and after. Blocked on the seed path described under unused core capabilities
+  above; once skill bodies ship in the tree, a gate can read them the way
+  `TestProtocolTextTeachesTheInboxConvention` reads the shipped protocol files.
+
+## From ADR-007 (no number without its population)
+
+- **The `measured` / `no effect` / `not measured` status over every preselected contrast** — ADR-007
+  T2 gives the closet row a status derived from whether the corpus holds any closets at all. Nothing
+  generalises it yet, because the closet pair is the only preselected contrast the eval computes;
+  every other verdict it prints is against the table's own best arm. Nor is the generalisation
+  mechanical: the input check is mechanism-specific — one corpus count for the closet prior, and no
+  other arm pair has an equivalent single question. Revisit when a second preselected pair exists.
+- **Comparing two eval runs by case-set id** — once a run stamps a content-derived case-set id into
+  its record, a command could place two of them against each other: same id, same questions;
+  different ids, and it refuses. Most of the value is the refusal, which is why this is not urgent —
+  the id in the table header already makes a mismatch visible to whoever reads it. What a cross-run
+  comparison should then compute is undecided: the paired bootstrap pairs arms inside one run over
+  shared cases, and two runs over one case set still differ by corpus, configuration and code.
+- **The same rule over `am_recall_stats`** — ADR-007 governs what an eval table may claim; the
+  production statistic makes the same kind of claim with no population attached. Its rows span
+  configurations, corpus sizes and code versions — `SearchEvent.Reranked` changes meaning at ADR-006
+  T4's fix, so a rate averaged over that cutover counts two different things. Blocked on events
+  carrying an identity to partition on, the profile-identity primitive this file already names.
+  Whether the honest form is partitioning, refusing, or reporting `not measured` per stage is open.
+- **Populating closets, so the closet contrast has an input** — `closets` is empty on both palaces
+  the 2026-08-20 eval tables were taken on, so `hybrid` and `hybrid+closet` are the same arm and
+  ADR-003's truth table is read off a comparison that never ran. Closets are built by `am_mine`
+  alone, mining is retired, and ADR-003 tags closet mining and curation permanent out of its own
+  scope, so nothing owns getting one populated. Which corpus would count is the open part: the prior
+  measured harmful on mined transcripts, so a curated palace is needed and none has been defined.
+
+## From ADR-008 (exercise the palace end to end)
+
+- **Cross-WORKSPACE isolation is one scenario, not a class gate** — `TestScenarioAnotherWorkspaceSeesNothing`
+  stands two workspaces on one database and proves four read tools do not cross the tenancy boundary, and one
+  further test does the same for `am_kg_query`. Five routes out of 41 registered tools: no mutation is asked,
+  nor any by-id route where the caller already holds another workspace's drawer id, nor anything that makes a
+  tool added tomorrow answer at all. The wing boundary has that gate — `TestEveryEnumerationHonoursTheRegistrationWing`
+  — and the outer boundary, which is tenancy, does not. Deferred out of ADR-008 T4 as deserving its own scenarios.
+- **Concurrent mutation by two parties is untested, and the harness cannot honestly test it yet** — every
+  multi-party scenario in `internal/mcptest` acts in sequence, so nothing covers two registrations updating or
+  deleting one memory at once. Two things are missing and the second is the blocker: there is no statement of
+  what a race should do — last write wins, refuse, or supersede, which is ADR-010's question — and
+  `internal/mcptest/harness.go` opens its SQLite without the server's `dbPragmas`, so it runs with no WAL and
+  `busy_timeout` at 0 where the server waits five seconds. A test written there measures a database we do not ship.
+- **Real-time multi-agent collaboration — two sessions mutating concurrently and observing each other live**
+  — deferred out of ADR-008, whose three parties act in sequence. The shipped protocol states today's behaviour
+  plainly (`clients/claude-code/bootstrap.md`: an inbox count is taken at wake-up, and "an item filed while you
+  are running will not appear, because nothing pushes it"), and ADR-005 punted mid-session inbox delivery for
+  the same reason. ADR-008 calls this the continuity spec's subject; no such spec is in the tree, and `WAVE.md`
+  puts it outside wave 2 as `/spec-write` work whose requirements are openly undecided.
+- **The CLI `mcp` adapter has no parity gate against the HTTP one** — the single divergence found by hand is
+  closed (`parseArgsWithWing`, `TestCLIWingDefaultsLikeARegistration`), by giving the operator a wing default
+  rather than by reading `SEARCH_SCOPE` as planned. The class is untouched: `readOnlyTools` mirrors 23 of the 41
+  registered tools and nothing checks that any of the 23 answers as its HTTP twin does. ADR-008 pointed the gate
+  at ADR-006, whose T4 fixed the instance and forwarded the general case here — so it was pointed twice and
+  filed nowhere. Cheap while `internal/mcptest` is fresh: drive its scenarios through the CLI dispatch as well.
+
+## From ADR-009 (tune against your own corpus)
+
+- **The crosslingual eval style has never been run, and no ADR owns it** — `--style crosslingual` is
+  implemented (`cmd/server/eval.go`, `CatCrossLingual` in `internal/palace/eval.go`) and appears in
+  no table. ADR-009 T1 punted it beside `temporal` and `absent`, but only those two have homes:
+  ADR-004 runs `temporal`, ADR-001's tasks run `absent`. ADR-003 excluded crosslingual from its
+  deltas as dominated by the lexical weight — an assumption about a mode nobody has measured. Worth
+  one run on a corpus large enough for arms to separate, to see whether ADR-002's knobs cover it.
+- **A surface for a tuning result, once there is more than one** — `agentsmemory tune` (ADR-009 T3)
+  prints its record and writes a file; nothing displays it, and there is nowhere obvious to put it.
+  The dashboard in `internal/web` belongs to the multi-tenant path, while a self-hosted server mounts
+  only `/mcp`, `/import`, `/stats` and `/healthz` (`serveLocal`, `cmd/server/main.go`) — so the
+  operator who runs `tune` is exactly the one with no web surface. Blocked on `tune` existing at all,
+  and worth building only once an operator has several runs to compare.
+- **Tuning per wing rather than per install** — ADR-009 tunes one configuration for a whole server,
+  yet wings hold corpora that differ as much as two installs do: a craft wing of short lessons and a
+  project wing of long incident notes are not the same retrieval problem. Whether the optimum
+  actually differs by wing is unmeasured, and that measurement comes first — a per-wing knob that
+  lands on the same values everywhere is cost with no return. It also needs an answer for wings too
+  small to hold any cases out.
+
+## From ADR-010 (supersede, do not overwrite)
+
+- **Ordering a supersession chain when history is asked for** — ADR-010 T3 returns the chain newest-first behind `include_history`, and stops there: nothing decides whether a history response should be RANKED by relevance, or by what, once a chain runs past a handful of records. Filed because T3's Out of Scope pointed at ADR-004 as "it owns ordering" and that ADR holds nothing of the kind — it is Accepted, it measures where a stale drawer lands in DEFAULT recall as the gate on populating the graph, states "No MCP surface change" and "production ranking unchanged", and never mentions history at all. `include_history` does not exist until T3 creates it, so no ADR owns this yet and the pointer resolved to a real file that could not have received it.
+- **Full event sourcing of the whole store** — an append-only log as the source of truth with current state as a projection: the stronger form of the validity window ADR-010 chose instead. Rejected there on risk rather than on merit — drawer identity already carries vectors, chunking and anchors hanging off it, and rebuilding that as a projection is a rewrite the window's benefit does not pay for. The stated trigger is a SECOND consumer of history; today the only one is the explicit history flag on recall, and nobody has written down what else would read the log. Revisit when that second consumer exists, not on principle.
+- **Validity windows on diary entries** — ADR-010 gives drawers `valid_to`, `superseded_by` and a required reason; diary entries get none of them, deferred on the ground that a diary is append-only by construction so nothing overwrites an entry. This file already records the counter-evidence: `DrawerID` drops agent and topic, so two byte-identical entries in one wing collapse to a single row on import, which the portability section above calls a silent violation of the append-only guarantee `diaryEntryID`'s own doc comment states. Append-only-by-construction is therefore the premise to check first, not the reason to skip the work. The retraction half is untouched either way — an entry whose decision later reversed stays current and competes with its correction, and since there is no way to mark one ended, no instance has ever been recorded.
+- **Structured reasons — a taxonomy of why something ended** — ADR-010 makes `reason` required free text on every retraction and on `am_kg_invalidate`, deliberately uncategorised, because a taxonomy chosen before there are reasons to classify is a guess. What would settle it is the corpus that field produces — median reason length plus a human reading a sample, which ADR-010 measures and which does not exist yet. The risk it would address is recorded there already: a required field an agent fills with "obsolete" buys nothing. Better tool prompting is the first remedy; a closed set only if the writing stays uninformative once there is writing to read.
+
+## From ADR-011 (anchor prompting — withdrawn)
+
+- **Retroactive Class-A classification of existing memories** — 179 of 270 sampled drawers (66%) make a
+  claim the repository could settle and 165 of those carry no anchor: the coverage gap ADR-011 measured
+  and left open. The labelled sample is the training data and it exists. Blocked on having no consumer —
+  nothing reads a classification today, and building the classifier first is the unreachable-capability
+  defect in its usual shape. What the sample cannot say is how far labellers agree, since four of them
+  took disjoint slices and no drawer was labelled twice, or whether the 66% holds outside this palace.
+- **`verified` should mean less when only a declaration line matched** — the cheapest compliant snippet is
+  the symbol's declaration, the line a behavioural change never touches, so it reports `verified` on every
+  recall while the behaviour it pins moves underneath — worse than no anchor, because it destroys the
+  reader's calibration rather than leaving it absent. ADR-011 found it, and it is the one carve-out from
+  that ADR's permanent "no change to how anchors are checked or reported". Not known whether a declaration
+  is cheaply distinguishable across languages, nor whether the fix is a weaker verdict or a fifth status.

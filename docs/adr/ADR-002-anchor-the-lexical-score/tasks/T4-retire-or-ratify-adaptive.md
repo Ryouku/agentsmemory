@@ -86,8 +86,8 @@ Stop and ask if the deletion trigger's four intervals **split by regime** — fi
 
 ## Out of Scope
 
-- Global corpus-wide IDF (deferred: docs/adr/BACKLOG.md)
-- Recalibrating the closet boost against the rescaled fused range (deferred: docs/adr/BACKLOG.md)
+- Global corpus-wide IDF (deferred: docs/adr/ADR-002-anchor-the-lexical-score.md)
+- Recalibrating the closet boost against the rescaled fused range (deferred: docs/adr/ADR-002-anchor-the-lexical-score.md)
 - A selection-aware bootstrap that would let the trigger be read on one corpus — this task uses cross-corpus transfer instead, and the bootstrap version is an ADR follow-up.
 - Any change to the cross-encoder blend or the reranked arms.
 

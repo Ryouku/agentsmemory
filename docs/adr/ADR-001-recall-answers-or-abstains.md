@@ -195,5 +195,7 @@ Unset `ABSTAIN_CALIBRATION` — every verdict becomes `unknown`, no canary probe
 
 ## Follow-ups
 
+
 - [ ] Re-calibrate and re-run the gate after ADR-002 or ADR-003 lands, since both change which document reaches production top-1, and record whether the boundaries moved
 - [ ] Re-calibrate once the verified-absent corpus exceeds 200 cases and report whether the recommended boundaries moved
+- [ ] Received from ADR-009 T1: running the crosslingual, temporal and absent eval styles, which have never been run. ADR-009 tunes against whatever the corpus contains; the styles that would populate those modes are this ADR's calibration instrument, so it owns whether they are worth running.

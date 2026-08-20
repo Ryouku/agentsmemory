@@ -63,8 +63,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 ## Out of Scope
 
 - Changing any tool's behaviour (permanent: T2 and T3 own the surface; a migration that also changes semantics cannot be rolled back independently)
-- Pruning ended records (deferred: docs/adr/BACKLOG.md)
-
+- Pruning ended records (deferred: docs/adr/ADR-010-supersede-do-not-overwrite.md)
 ## Invariants
 
 - Empty `valid_to` means current, in drawers exactly as in KG facts.
