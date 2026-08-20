@@ -30,7 +30,7 @@ the failure this ADR spends a task preventing.
 
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
-| T1 | Make closet use an explicit arm dimension | pending | — | `go test ./internal/palace/ -run "TestArmBoostsDimension\|TestClosetArmMeasuresClosets…"` |
+| T1 | Make closet use an explicit arm dimension | done | — | `go test ./internal/palace/ -run "TestArmBoostsDimension\|TestClosetArmMeasuresClosets…"` |
 | T2 | Print, persist and de-bias the evidence the flip is gated on | pending | — | `go test ./internal/palace/ ./cmd/server/ -run "TestClosetDelta…\|TestCandidateUnionPoolsTheClosetHead\|TestRunRecord…"` |
 | T3 | Take the four runs the truth table is read from | pending | — | `go test ./cmd/server/ -run "TestClosetEvidenceIsComplete"` |
 | T4 | Flip the closet prior's default to off, end to end | pending | — | `go test ./cmd/server/ ./internal/config/ ./internal/palace/ -run "TestClosetPrior…\|TestClosetBoostReachesTheService…\|TestClosetFlipIsBackedByEvidence"` |

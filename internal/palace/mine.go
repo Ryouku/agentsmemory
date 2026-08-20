@@ -297,8 +297,21 @@ func (s *Service) purgeClosetSource(ctx context.Context, teamID, source string) 
 // mined has no closet namespace, so any error or empty result simply yields no
 // boosts and search proceeds on vector+BM25 alone.
 func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32) map[string]float64 {
+	return s.closetBoostsAt(ctx, teamID, vec, s.closetBoostScale)
+}
+
+// closetBoostsAt is closetBoosts with the scale supplied by the caller rather
+// than read from the service.
+//
+// It exists for the eval: an arm named after the closet prior has to measure the
+// prior at full strength whatever the server happens to serve, or the arm that
+// decides whether serving it was right ends up comparing a disabled prior with
+// itself. Search has the opposite requirement and keeps reading the served
+// scale, which is why the split is here rather than a parameter added to every
+// caller.
+func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float32, scale float64) map[string]float64 {
 	boosts := map[string]float64{}
-	if s.closetBoostScale == 0 {
+	if scale == 0 {
 		// The prior is off: skip the closet vector search too, not just the
 		// arithmetic — this is one network call per search.
 		return boosts
@@ -332,7 +345,7 @@ func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32
 		// closet that is barely related contributes almost nothing instead of the
 		// same +0.40 a perfect match would.
 		if strength := closetBoostStrength(distanceFromScore(h.Score)); strength > 0 {
-			boosts[c.SourceFile] = closetRankBoosts[i] * strength * s.closetBoostScale
+			boosts[c.SourceFile] = closetRankBoosts[i] * strength * scale
 		}
 	}
 	return boosts

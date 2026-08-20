@@ -59,10 +59,19 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 
 	// Collect every identifier mentioned inside the function that assembles the
 	// arms list, which is where registration happens.
+	//
+	// The name below is load-bearing and has already moved once: the list used to
+	// be built inline in EvaluateWith and was extracted into evalArms so a test
+	// could enumerate it. The extraction alone made this gate report every arm as
+	// unreachable, which is the gate working — a check that had silently followed
+	// the code would have proved nothing. If the assembling function is renamed
+	// again, this string moves with it.
+	const assembler = "evalArms"
+
 	registered := map[string]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "EvaluateWith" {
+		if !ok || fn.Name.Name != assembler {
 			return true
 		}
 		ast.Inspect(fn.Body, func(inner ast.Node) bool {
@@ -76,8 +85,8 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 
 	for name, pos := range declared {
 		if !registered[name] {
-			t.Errorf("%s: %s is declared but never registered in EvaluateWith — it will appear in no eval table, silently",
-				fset.Position(pos), name)
+			t.Errorf("%s: %s is declared but never appended in %s — it will appear in no eval table, silently",
+				fset.Position(pos), name, assembler)
 		}
 	}
 }

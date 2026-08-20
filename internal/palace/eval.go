@@ -34,8 +34,13 @@ const (
 	ArmHybrid EvalArm = "hybrid"
 	// ArmHybridCloset adds the closet boost.
 	ArmHybridCloset EvalArm = "hybrid+closet"
-	// ArmReranked is production: fusion, then the cross-encoder over the top K,
-	// blended at the configured weight.
+	// ArmHybridRerank is the closet-OFF reranked arm: fusion without the
+	// curation prior, then the cross-encoder. After ADR-003's flip this is the
+	// shape production serves, so without it the only reranked row in the table
+	// would be named after a configuration nobody runs.
+	ArmHybridRerank EvalArm = "hybrid+rerank"
+	// ArmReranked is fusion WITH the closet prior, then the cross-encoder over
+	// the top K, blended at the configured weight.
 	ArmReranked EvalArm = "hybrid+closet+rerank"
 	// ArmRRF fuses the same two retrievers by RANK instead of by weighted score —
 	// the candidate for replacing an inherited 0.6/0.4 split with something that
@@ -290,25 +295,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		}
 	}
 
-	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
-	for _, w := range bm25Sweep {
-		arms = append(arms, bm25Arm(w))
-	}
-	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
-	// The reality check runs LAST and always: this is the arm that exercises the
-	// code agents actually call. It went missing once already — built, documented,
-	// and never appended — which an adversarial review caught and no table did.
-	arms = append(arms, ArmProduction)
-	if opts.Contextual {
-		arms = append(arms, ArmContextual)
-	}
-	if s.rerank != nil {
-		arms = append(arms, ArmRRFReranked)
-		arms = append(arms, ArmReranked)
-		for _, w := range rerankSweep {
-			arms = append(arms, rerankArm(w))
-		}
-	}
+	arms := evalArms(opts, s.rerank != nil)
 	byArm := map[EvalArm]*EvalMetrics{}
 	for _, a := range arms {
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
@@ -409,6 +396,55 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 // the score's zero is only "unscored" by convention: a sigmoid backend never
 // emits exactly 0, but a logit backend can, and the abstention data must not
 // quietly drop the case that lands there.
+// evalArms is the registry: every arm a run can score, in table order.
+//
+// It is a function rather than an expression inside EvaluateWith so a test can
+// enumerate the same list the run uses. TestEveryDeclaredArmIsRegistered parses
+// this function looking for the appends, so an arm added anywhere else is
+// reported as unreachable — which is the whole point, since an arm that is
+// declared and never appended appears in no table and nothing else notices.
+func evalArms(opts EvalOptions, rerank bool) []EvalArm {
+	arms := []EvalArm{ArmVector, ArmHybrid, ArmHybridCloset, ArmRRF}
+	for _, w := range bm25Sweep {
+		arms = append(arms, bm25Arm(w))
+	}
+	arms = append(arms, ArmAdaptive, ArmAdaptiveIDF)
+	// The reality check runs LAST and always: this is the arm that exercises the
+	// code agents actually call. It went missing once already — built, documented,
+	// and never appended — which an adversarial review caught and no table did.
+	arms = append(arms, ArmProduction)
+	if opts.Contextual {
+		arms = append(arms, ArmContextual)
+	}
+	if rerank {
+		arms = append(arms, ArmRRFReranked)
+		arms = append(arms, ArmHybridRerank)
+		arms = append(arms, ArmReranked)
+		for _, w := range rerankSweep {
+			arms = append(arms, rerankArm(w))
+		}
+	}
+	return arms
+}
+
+// armBoosts decides whether an arm carries the closet curation prior, and the
+// rule is simply its name: an arm that does not say "closet" must not have one.
+//
+// The alternative is what this replaced. One boosts slice was built per case and
+// handed to every arm, so twelve arms whose names promise a pure ranking
+// comparison were quietly measuring a curation prior as well — and a conclusion
+// about the lexical weight was then read off that table. An arm's name is the
+// only thing a reader of the table has; it must be the whole truth about what
+// went into the number.
+func armBoosts(arm EvalArm, closet []float64) []float64 {
+	switch arm {
+	case ArmHybridCloset, ArmReranked:
+		return closet
+	default:
+		return nil
+	}
+}
+
 func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (ranksOut map[EvalArm]int, topDistanceOut, topRerankOut float64, rerankScored bool, poolRankOut int, degraded bool, errOut error) {
 	vec, err := s.embed.EmbedOne(ctx, c.Query)
 	if err != nil {
@@ -489,10 +525,13 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	for i, p := range pool {
 		docs[i], dists[i] = p.content, p.distance
 	}
-	boosts := make([]float64, len(pool))
-	closetBoosts := s.closetBoosts(ctx, teamID, vec)
+	// Full strength, not the served scale: an arm named after the closet prior
+	// measures the prior, whatever the server is configured to hand agents.
+	// armBoosts is what decides which arms see this and which see nil.
+	closet := make([]float64, len(pool))
+	closetBySource := s.closetBoostsAt(ctx, teamID, vec, 1)
 	for i, p := range pool {
-		boosts[i] = closetBoosts[p.source]
+		closet[i] = closetBySource[p.source]
 	}
 
 	// The nearest candidate's distance, whatever the arm: it is what a
@@ -508,15 +547,23 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 	// scores do not depend on the blend weight, and fetching them per arm made the
 	// slowest step in the pipeline run six times over identical inputs — which is
 	// why a twelve-case run grew from one minute a case to three.
-	fusedForRerank := rankHybrid(c.Query, docs, dists, boosts)
+	// Two fused pools, because the closet prior is now a dimension rather than
+	// something every arm carries. RerankScoresFor aligns its scores to the
+	// order it is handed, so a pool ordered differently needs its own pass — the
+	// same reason rrf+rerank has always taken one.
+	fusedPlain := rankHybrid(c.Query, docs, dists, nil)
+	fusedCloset := rankHybrid(c.Query, docs, dists, closet)
 	hitsForRerank := make([]SearchHit, len(pool))
 	for i, p := range pool {
 		hitsForRerank[i] = SearchHit{Drawer: Drawer{ID: p.id, Content: p.content}}
 	}
-	var rerankScores []float64
+	var scoresPlain, scoresCloset []float64
 	rerankFailed := false
 	if s.rerank != nil {
-		if rerankScores = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedForRerank); rerankScores == nil {
+		if scoresPlain = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedPlain); scoresPlain == nil {
+			rerankFailed = true
+		}
+		if scoresCloset = s.RerankScoresFor(ctx, c.Query, hitsForRerank, fusedCloset); scoresCloset == nil {
 			rerankFailed = true
 		}
 	}
@@ -556,7 +603,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 				ordered = append(ordered, r.Index)
 			}
 		case ArmHybridCloset:
-			for _, r := range rankHybrid(c.Query, docs, dists, boosts) {
+			for _, r := range rankHybrid(c.Query, docs, dists, armBoosts(arm, closet)) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmProduction:
@@ -643,23 +690,23 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			out[arm] = rankOf(ctxOrderIDs, ctxOrdered, goldSet)
 			continue
 		case ArmRRF:
-			for _, r := range rankRRF(c.Query, docs, dists, boosts) {
+			for _, r := range rankRRF(c.Query, docs, dists, armBoosts(arm, closet)) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmRRFReranked:
 			// RRF changes the ORDER the head is taken in, so it needs its own
 			// scores — the one case where a second call is real information.
-			rrfFused := rankRRF(c.Query, docs, dists, boosts)
+			rrfFused := rankRRF(c.Query, docs, dists, armBoosts(arm, closet))
 			rrfScores := s.RerankScoresFor(ctx, c.Query, hitsForRerank, rrfFused)
 			for _, r := range BlendRerank(rrfFused, rrfScores, s.rerankWeight) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmAdaptive:
-			for _, r := range rankHybridAdaptive(c.Query, docs, dists, boosts, hybridBM25Weight) {
+			for _, r := range rankHybridAdaptive(c.Query, docs, dists, armBoosts(arm, closet), hybridBM25Weight) {
 				ordered = append(ordered, r.Index)
 			}
 		case ArmAdaptiveIDF:
-			for _, r := range rankHybridAdaptiveIDF(c.Query, docs, dists, boosts, hybridBM25Weight) {
+			for _, r := range rankHybridAdaptiveIDF(c.Query, docs, dists, armBoosts(arm, closet), hybridBM25Weight) {
 				ordered = append(ordered, r.Index)
 			}
 		default:
@@ -667,7 +714,7 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 			if isBM25Arm := func() bool {
 				for _, w := range bm25Sweep {
 					if arm == bm25Arm(w) {
-						for _, r := range rankHybridWeighted(c.Query, docs, dists, boosts, w) {
+						for _, r := range rankHybridWeighted(c.Query, docs, dists, armBoosts(arm, closet), w) {
 							ordered = append(ordered, r.Index)
 						}
 						return true
@@ -685,10 +732,15 @@ func (s *Service) evalCase(ctx context.Context, teamID string, c EvalCase, arms 
 					weight = w
 				}
 			}
-			// Scores were fetched once for this case; only the blend differs per
-			// arm, so no arm pays for inference again.
-			reranked := BlendRerank(fusedForRerank, rerankScores, weight)
-			for _, r := range reranked {
+			// Scores were fetched once per pool for this case; only the blend
+			// differs per arm, so no arm pays for inference again. Which pool
+			// depends on the same rule as everything else — whether the arm's
+			// name claims the closet prior.
+			fused, scores := fusedPlain, scoresPlain
+			if armBoosts(arm, closet) != nil {
+				fused, scores = fusedCloset, scoresCloset
+			}
+			for _, r := range BlendRerank(fused, scores, weight) {
 				ordered = append(ordered, r.Index)
 			}
 		}

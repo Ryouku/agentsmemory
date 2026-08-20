@@ -48,7 +48,10 @@ func evalCommand(def config.Config) *cli.Command {
 			"  vector                 nearest neighbour only — the baseline to beat\n" +
 			"  hybrid                 + Okapi-BM25 fusion\n" +
 			"  hybrid+closet          + the closet boost\n" +
-			"  hybrid+closet+rerank   + the cross-encoder (only when RERANK_URL is set)\n\n" +
+			"  hybrid+rerank          + the cross-encoder, no closet boost (only when RERANK_URL is set)\n" +
+			"  hybrid+closet+rerank   + both (only when RERANK_URL is set)\n\n" +
+			"An arm carries the closet prior only if its name says so. Every other arm —\n" +
+			"rrf, the fusion sweeps, the rerank blends — is measured without it.\n\n" +
 			"Read the DELTAS, not the absolute numbers: questions generated from a drawer\n" +
 			"share vocabulary with it, which flatters every arm equally.\n\n" +
 			"  agentsmemory eval --wing wing_acme --n 40 --cases /data/eval.jsonl\n" +
