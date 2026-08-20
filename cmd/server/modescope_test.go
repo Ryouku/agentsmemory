@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -415,11 +418,7 @@ var unobservableKnobs = map[string]string{
 // knob whose Usage claims one setting while its apply moves another cannot pass
 // by naming itself correctly.
 func TestEveryKnobIsSweptOrNamed(t *testing.T) {
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
-	}
-	universe := fieldsReadBy(t, string(src), "configureRanking")
+	universe := fieldsReadBy(t, "main.go", "configureRanking")
 	if len(universe) == 0 {
 		t.Fatal("no cfg.* reads found in configureRanking — the extraction that this " +
 			"check reads has moved, so it is measuring nothing")
@@ -463,37 +462,65 @@ func TestEveryKnobIsSweptOrNamed(t *testing.T) {
 }
 
 // fieldsReadBy returns the config.Config field names a named function reads,
-// scanned out of its source body.
-func fieldsReadBy(t *testing.T, src, fn string) []string {
+// parsed out of the AST rather than scanned out of the text.
+//
+// The string version this replaced ended the body at the first column-0 `}`,
+// which a raw literal inside the function silently moves — and a truncated
+// universe UNDER-reports, so the gate would go quiet exactly when a knob is
+// added past the truncation point. A bound that truncates its own sweep is a
+// defect this repository has shipped before.
+//
+// The config parameter is found by TYPE, not by the name `cfg`, so renaming it
+// cannot make the scan read nothing and report a clean sweep.
+func fieldsReadBy(t *testing.T, path, fn string) []string {
 	t.Helper()
-	i := strings.Index(src, "\nfunc "+fn+"(")
-	if i < 0 {
-		return nil
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
 	}
-	body := src[i:]
-	if j := strings.Index(body, "\n}\n"); j >= 0 {
-		body = body[:j]
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, part := range strings.Split(body, "cfg.")[1:] {
-		end := 0
-		for end < len(part) && (isIdentRune(part[end])) {
-			end++
+
+	var decl *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == fn {
+			decl = f
+			break
 		}
-		name := part[:end]
-		if name == "" || seen[name] {
+	}
+	if decl == nil {
+		t.Fatalf("no func %s in %s — the extraction this check reads has moved", fn, path)
+	}
+
+	param := ""
+	for _, f := range decl.Type.Params.List {
+		sel, ok := f.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Config" {
 			continue
 		}
-		seen[name] = true
-		out = append(out, name)
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "config" && len(f.Names) > 0 {
+			param = f.Names[0].Name
+		}
 	}
+	if param == "" {
+		t.Fatalf("%s takes no config.Config parameter, so this check has nothing to read", fn)
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != param || seen[sel.Sel.Name] {
+			return true
+		}
+		seen[sel.Sel.Name] = true
+		out = append(out, sel.Sel.Name)
+		return true
+	})
 	sort.Strings(out)
 	return out
-}
-
-func isIdentRune(b byte) bool {
-	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // fieldsMovedBy runs a knob's apply over every value it sweeps and reports which

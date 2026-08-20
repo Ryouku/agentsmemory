@@ -63,6 +63,11 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | drop `RerankTimeout` from `unobservableKnobs` | yes | `TestEveryKnobIsSweptOrNamed` |
 | `--fusion`'s apply stops assigning `c.Fusion` | yes | `TestEveryKnobIsSweptOrNamed` |
 
+No TDD-red entry stands in the Verification Log: the acceptance fence was first run against the
+finished state. The five mutation runs below are the substantive equivalent — each removes one
+mechanism and records the test that goes red — and they are stronger evidence than a single red run,
+because a red run shows the suite can fail while a mutant shows WHICH assertion binds to WHAT.
+
 Two first attempts did not build and were rewritten before they counted. Deleting the `if rrf` block
 outright left `rrf` declared and unused; `&& false` keeps every identifier live. And `cfg.EmbeddingModel`
 is not a field of `config.Config` — the mutation that was supposed to prove the universe is read out of

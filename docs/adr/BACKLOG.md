@@ -298,3 +298,19 @@ share it, or put the nothing-ran assertion back into the fences in a form that d
 multi-package runs — `go test -v` plus a check that at least one `=== RUN` appeared would do it
 without the exit-code trap the first version had.
 
+
+## From ADR-006 T3 (a knob that does nothing must say when)
+
+- **A conditional-documentation gate over the compose files and `.env.example`** — `--bm25-weight`
+  now names `--fusion=rrf` in its Usage, and `TestDiscoveredPairsAdmitTheirCondition` holds that
+  line for every pair the sweep discovers. The operator-facing files are not covered.
+  `TestDocumentedEnvVarsAreRead` already runs the READ direction — a variable a compose file
+  advertises must be read by the server, which on its first run found a shipped rerank pool of 20
+  the server had never read. The conditional direction is the unwritten half: `BM25_WEIGHT` can sit
+  in a compose file beside `FUSION=rrf` with nothing saying it is inert there, and every existing
+  gate passes. Wider than T3 because it needs a parser for three file formats rather than one flag
+  table.
+
+  Filed 2026-08-20 because T3's Out of Scope pointed here and this file did not hold it — the
+  pointer resolved to a real file and the item was in neither, which is a punt that reports fine
+  forever. `adr-debt` follows the pointer; it does not check that the destination received anything.
