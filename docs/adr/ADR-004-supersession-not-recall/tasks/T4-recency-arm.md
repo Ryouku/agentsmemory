@@ -22,7 +22,20 @@ Measure whether a content-date preference alone closes the supersession gap, so 
 
 1. Write the failing tests first (TDD red): `TestRecencyArmPrefersNewerWithinBand` in `internal/palace/eval_test.go`, over a pool where two candidates score within the band and differ only in `content_date`, asserting the recency arm ranks the newer one first while `ArmHybridCloset` does not; and `TestRecencyArmLeavesUndatedInPlace`, asserting a candidate whose date does not parse keeps its fused position. Commit them red.
 2. Add `ArmRecency EvalArm = "fusion+recency"` and a `recencySweep` of band widths, named through a helper like the existing `bm25Arm` / `rerankArm`, because picking one band by hand is the constant-nobody-measured mistake this repo already sweeps its way out of twice. The sweep is a FIXED list declared in source, never derived from a run: T5 corrects its interval family-wise over the number of bands, and a k that depends on the data is not a k anyone can pre-register.
-3. Implement the arm as the `ArmHybridCloset` ordering with a stable reorder: within a band of fused score, prefer the newer `findDate(ContentDate)`. An unparseable or empty date is never promoted and never demoted — absence of a date is not evidence of being old.
+3. Implement the arm as the **unboosted `ArmHybrid`** ordering with a stable reorder: within a band of fused score, prefer the newer `findDate(ContentDate)`. An unparseable or empty date is never promoted and never demoted — absence of a date is not evidence of being old.
+
+   **Amended before execution — this step was written for the pre-ADR-003 world.** It originally
+   said `ArmHybridCloset`. ADR-003 T1 made the closet prior opt-in by arm name, and
+   `TestArmBoostsDimension` now *errors* when any arm outside `{ArmHybridCloset, ArmReranked}`
+   receives boosts — so building the recency arm on the closet ordering is not stale prose, it is a
+   guaranteed red test. The unboosted baseline is also what ADR-004's own body calls for, and it is
+   the shape production serves after ADR-003's flip.
+
+   **The arm cannot go through the fusion seam as it stands.** `fusionRankerFor`'s signature is
+   `(query, docs, dists, boosts)` with no date input, and the `candidate` struct `evalCase` builds
+   carries no `ContentDate`. Thread the date onto the candidate and reorder after the fused call
+   rather than widening the seam for one arm — the seam exists so an arm cannot be scored by a ranker
+   no test can reach, and a date-shaped hole in it would weaken that for every other arm.
 4. Keep the whole reorder inside `eval.go`: production ranking must be unable to inherit it by accident, and the ADR puts a production recency prior explicitly out of scope.
 5. Run the acceptance command; both tests green and the existing arm tests unmoved.
 
