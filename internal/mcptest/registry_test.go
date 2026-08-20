@@ -450,6 +450,108 @@ var scenarios = []mcptest.Scenario{
 			}
 		},
 	},
+	{
+		// Mining is how a blob becomes memories, and how closets — the curation
+		// prior — come to exist at all. Measured 2026-08-20: this palace held ZERO
+		// closets, which made six eval tables report a clean null for a prior
+		// whose two arms were the same arm. A scenario that mines and then finds
+		// the result is the difference between "the prior does nothing" and "the
+		// prior was never fed".
+		Name:  "mined text becomes findable memories, and the derived graph rebuilds",
+		Tools: []string{"am_mine", "am_search", "am_recompute_graph", "am_list_hallways", "am_graph_stats"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			// Entity extraction is DICTIONARY-based — 59 known systems — not a
+			// generic proper-noun extractor. A hallway is an entity co-occurrence
+			// link between rooms, so a fixture whose text names no known system
+			// produces zero hallways and an assertion over it can never fail.
+			// Measured: "the Gateway Team owns the Upstream Timeout" extracts
+			// nothing; "Kafka" and "NATS" extract. The first fixture here was the
+			// former shape, and the mutation that made recompute return nothing
+			// survived because of it.
+			for _, r := range []struct{ room, text string }{
+				// BOTH names must appear TWICE in EACH drawer: entityMinFreq is 2, so a
+				// name seen once extracts nothing, and a drawer with fewer than two
+				// entities is skipped entirely. Then hallwayMinCount requires the PAIR
+				// in two drawers. The second fixture attempt named Kafka once here and
+				// produced zero hallways for that reason alone.
+				{"decisions", "We replaced Kafka with NATS. Kafka rebalancing stalled p99 during " +
+					"rolling deploys, and NATS does not rebalance that way."},
+				{"gotchas", "NATS consumers still stall when a deploy overlaps. Kafka had the same " +
+					"shape of failure, so NATS was not a free win over Kafka."},
+			} {
+				h.MustCall(t, "am_mine", map[string]any{
+					"wing": "wing_mined", "room": r.room, "source": r.room + ".md", "content": r.text,
+				})
+			}
+
+			if out := h.MustCall(t, "am_search", map[string]any{
+				"query": "why did we move off Kafka", "wing": "wing_mined", "limit": 5,
+			}); !contains(out, "rebalancing stalled") {
+				t.Errorf("mined text is not findable by a question it answers:\n%s", out)
+			}
+
+			h.MustCall(t, "am_recompute_graph", map[string]any{})
+
+			// Assert the graph has CONTENT, not merely that a JSON envelope came
+			// back. `len(out) > 10` is satisfied by {"count":0,"hallways":[]}, and
+			// that is how a rebuild returning nothing passed.
+			out := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_mined"})
+			if contains(out, `"count":0`) {
+				t.Errorf("rebuilding the derived graph produced no hallways over a corpus whose two "+
+					"rooms share entities — the graph is wired and unfed:\n%s", out)
+			}
+			if stats := h.MustCall(t, "am_graph_stats", map[string]any{}); !contains(stats, "wing_mined") {
+				t.Errorf("graph stats do not name the wing that was just mined:\n%s", stats)
+			}
+		},
+	},
+	{
+		// A tunnel that cannot be FOLLOWED is a link nobody can walk. Audited
+		// 2026-08-20: every tunnel in the live palace had access_count 0, so the
+		// read path had never been exercised by anyone, ever.
+		Name:  "a tunnel can be followed from the wing it leaves",
+		Tools: []string{"am_add_drawer", "am_create_tunnel", "am_follow_tunnels", "am_traverse"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			for _, w := range []string{"wing_from", "wing_to"} {
+				h.MustCall(t, "am_add_drawer", map[string]any{
+					"wing": w, "room": "decisions", "content": "a decision filed in " + w,
+				})
+			}
+			h.MustCall(t, "am_create_tunnel", map[string]any{
+				"source_wing": "wing_from", "source_room": "decisions",
+				"target_wing": "wing_to", "target_room": "decisions",
+				"label": "FOLLOWED-LABEL the infra decision explains the app behaviour",
+			})
+
+			if out := h.MustCall(t, "am_follow_tunnels", map[string]any{
+				"wing": "wing_from", "room": "decisions",
+			}); !contains(out, "wing_to") {
+				t.Errorf("a woven tunnel cannot be followed from the wing it leaves:\n%s", out)
+			}
+			if out := h.MustCall(t, "am_traverse", map[string]any{
+				"start_room": "decisions", "max_hops": 2,
+			}); len(out) < 10 {
+				t.Errorf("traversing from a populated room returned nothing:\n%s", out)
+			}
+		},
+	},
+	{
+		Name:  "the vector backend can be re-readied without losing what is stored",
+		Tools: []string{"am_add_drawer", "am_reconnect", "am_search"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_reconnect", "room": "decisions",
+				"content": "RECONNECT-MARKER the index must survive a re-ready",
+			})
+			h.MustCall(t, "am_reconnect", map[string]any{})
+			if out := h.MustCall(t, "am_search", map[string]any{
+				"query": "the index must survive a re-ready", "wing": "wing_reconnect", "limit": 5,
+			}); !contains(out, "RECONNECT-MARKER") {
+				t.Errorf("re-readying the backend lost what was already stored — a liveness check "+
+					"that destroys data is worse than no liveness check:\n%s", out)
+			}
+		},
+	},
 }
 
 // firstAnchorID pulls the id of the first anchor a listing returned.
