@@ -102,11 +102,49 @@ is harder to SEPARATE from an answerable one, which is the only property the
 calibration curve cares about. A question can keep every identifier, be genuinely
 unanswered, and still be trivially separable — and this measurement could not tell.
 
-The right measurement is the distance/score separation between answerable and
-unanswerable questions, taken once with each negative style against the same
-answerable set. That is recorded below when it lands; until then this task's claim
-is that the generator produces hard-LOOKING negatives, not that it produces
-harder-to-separate ones.
+**The separation measurement, taken against the same 25 answerable questions.**
+
+| negatives | answerable median | unanswerable median | gap |
+|---|---|---|---|
+| `absent-easy` (identifiers stripped) | 0.364 | 0.427 | **0.063** |
+| `absent` (identifiers KEPT) | 0.364 | 0.394 | **0.030** |
+
+The hard negatives sit HALF as far from answerable questions. That is the property
+the calibration curve depends on, and it is the one the rejection rate could not
+see. **The change is justified; the instrument that seemed to reject it was the
+wrong instrument.**
+
+**And the same run corrected the claim that motivated a sibling change.** Scored
+through the production reranker over 25 answerable and 17 unanswerable cases:
+
+| signal | kind | AUC |
+|---|---|---|
+| **`top_rerank`** | **absolute** | **0.81** |
+| `top_gap` | contrastive | 0.71 |
+| `score_spread` | contrastive | 0.70 |
+| `dist_gap` | contrastive | 0.69 |
+| `dist_spread` | contrastive | 0.61 |
+
+The ABSOLUTE cross-encoder score beats every contrastive shape. A separate
+measurement on wrong-WING detection had found the opposite — a contrastive margin
+at 0.985 against the reranker's 0.841 — and that was generalised here as "every
+strong signal is a difference, every weak one is a position". **That
+generalisation was wrong for this question, and T2's plan to calibrate on the
+production arm's top-1 stands as written.**
+
+The distinction is what the contrast is taken AGAINST. Across wings there is a
+meaningful alternative — is something better in another scope — so the margin
+dominates. Within a single page there is not: five uniformly wrong documents still
+produce a gap, because one of them is slightly less wrong, and the shape says
+nothing about whether any of them answer. The cross-encoder wins because it answers
+the question directly, which `printRerankSeparation`'s own comment said before any
+of this was measured: *"Cosine distance answers 'how similar', which is not the
+question… A cross-encoder score answers 'does this document answer this query',
+which IS the question."*
+
+The contrastive statistics stay, and stay beside the absolute one rather than
+replacing it — that was the point of adding them. What changed is which one the
+evidence now points at.
 
 **Not a reason to withdraw the change.** Keeping identifiers is right on the
 published evidence regardless of this corpus's rejection rate: abstention accuracy
