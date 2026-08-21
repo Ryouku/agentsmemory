@@ -678,3 +678,51 @@ without the exit-code trap the first version had.
   where every recompute was necessarily a no-op, because no drawer carried an entity. ADR-016 T3
   puts a note on the three READ tools; the write tool still reports a count of zero as though zero
   were an answer.
+
+## From ADR-017 (a subagent is a session)
+
+- **codex and pi subagent models** — this ADR fixes the harness the defect was reported on. Both
+  have their own hook shapes and neither was examined; the read/write gap is likely the same shape
+  and definitely not the same mechanism.
+- **Run the recall IN the hook and inject the RESULTS, not the instruction** — the strongest version
+  of ADR-017's idea, because it removes the compliance question entirely: a subagent cannot skip a
+  recall that already happened. Deferred only because the hook does not know the task, so it would
+  have to guess the query. If T1 measures poor compliance, this becomes the design rather than a
+  refinement.
+- **Mining drops sidechains, so past subagent work is unrecoverable** — `mineclaude.go:84` filters
+  `isSidechain` by design, documented as "subagent traffic, not the user's conversation". Correct for
+  "mine the user's conversation" and wrong for "recover what a subagent learned"; one flag serving
+  two jobs. Separating them would make already-finished subagent work minable.
+- **A subagent's writes cannot be attributed** — to it, or to its dispatcher. Needs a session
+  identity the palace does not record; see the recall-stats defect below, which is the same missing
+  column seen from the other end.
+
+## Recall statistics are attributed to the wrong session
+
+Found 2026-08-21 by a peer session on this machine, which was handed a "memories to write" task list
+naming failed searches in two wings it had never touched — and correctly refused to file invented
+drawers for them.
+
+`search_events` (db/migrations/00021) carries `team_id`, `wing`, `room`, `query`, counts and
+`created_at`. **There is no session column.** `/stats?hours=N` (`cmd/server/main.go:1091`) therefore
+filters by TEAM and TIME only, and the Stop hook's report is every search the whole palace served in
+the window — on a machine running several sessions against one local server, that is every other
+session's traffic reported as yours.
+
+The hook's own comment states the opposite: *"The window is THIS SESSION, measured from the
+transcript file the event names, not a fixed number of hours."* The window is computed per session
+and the DATA is not filtered per session, so narrowing the window cannot separate sessions that
+overlap in time. Same shape as the merge doc comment fixed the same day: a false premise justifying
+a step that was never taken.
+
+Two consequences, and the second is the serious one:
+
+- the recall percentages are wrong, which is ADR-007's rule broken again — a number that means
+  something other than what it says;
+- the "memories to write" list is not a statistic but a TASK LIST, and it hands each session another
+  session's gaps to fill. An agent that complies files a memory about a question it never asked, into
+  a wing it never opened, from no evidence. One agent caught it. The next will not.
+
+The fix needs a session id on `search_events` and a `session=` filter on `/stats`, which is a schema
+change plus a contract change plus a hook change — an ADR, not a patch. Until then the honest
+mitigation is for the hook to stop presenting the list as this session's.
