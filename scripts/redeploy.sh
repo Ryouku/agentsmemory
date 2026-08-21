@@ -65,8 +65,49 @@ for n in "${needles[@]}"; do
 done
 [ "$missing" -eq 0 ] || { echo "    a change is not in the running binary"; exit 1; }
 
+# Needles only prove a change that introduces a STRING. A pure-code change — a
+# switch rewritten, a constant derived instead of declared — adds no literal, so
+# no needle can distinguish it and "all present" would be a true statement about
+# nothing. Comparing the running binary against a fresh build of the image is what
+# covers those. It must be IMAGE-to-IMAGE: a host `go build` of the same source
+# produces a different digest (the docker context excludes .git, and the two do
+# not share a layer cache), so that comparison reports a false mismatch.
+echo "==> digest: the running binary against the image just built"
+# The image name comes from the CONTAINER, not from `compose config --images`,
+# which lists every service's image and would depend on ordering.
+# REDEPLOY_IMAGE is an override so this comparison can be DRIVEN — pointing it at
+# a different image must make the check fail. A gate nobody can make fail is not a
+# gate, and editing the script to test it tests the edit.
+image=${REDEPLOY_IMAGE:-$(docker inspect "$CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)}
+fresh=""
+live=$(docker exec "$CONTAINER" sha256sum "$BIN" 2>/dev/null | awk '{print $1}' || true)
+if [ -n "$image" ]; then
+  fresh=$(docker run --rm --entrypoint sha256sum "$image" "$BIN" 2>/dev/null | awk '{print $1}' || true)
+fi
+if [ -n "$fresh" ] && [ -n "$live" ]; then
+  if [ "$fresh" = "$live" ]; then
+    printf "    match %s\n" "$(printf %s "$live" | cut -c1-16)"
+  else
+    printf "    MISMATCH  image=%s  running=%s\n" \
+      "$(printf %s "$fresh" | cut -c1-16)" "$(printf %s "$live" | cut -c1-16)"
+    echo "    the container is not running what the image contains"
+    exit 1
+  fi
+else
+  # Failing to compare is not a pass. It means the check did not run, and a check
+  # that did not run must not look like one that succeeded.
+  echo "    could not compare digests: image=${image:-<unknown>} fresh=${fresh:-<unreadable>} running=${live:-<unreadable>}"
+  echo "    the check did not run, so this deploy is unverified"
+  exit 1
+fi
+
 echo "==> what the running server resolved"
-docker logs --since 2m "$CONTAINER" 2>&1 | grep -E "^.*(ranking:|fusion:|reranker:)" | tail -3 | sed 's/^/    /'
+# Informational, and NEVER fatal. Under `set -o pipefail` a grep that matches
+# nothing returns 1 and kills the deploy — which is what happened the first time
+# this ran against a container that had not just restarted, so there were no
+# startup lines inside the window. A line that only REPORTS must not be able to
+# fail the thing it reports on.
+docker logs --since 10m "$CONTAINER" 2>&1 | grep -E "(ranking:|fusion:|reranker:)" | tail -3 | sed 's/^/    /' || echo "    (no startup lines in the window — the container did not restart)"
 
 echo "==> smoke: one real search through the endpoint agents call"
 start=$(date +%s)
