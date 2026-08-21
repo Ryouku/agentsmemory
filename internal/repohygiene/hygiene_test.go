@@ -235,3 +235,91 @@ func repoRoot(t *testing.T) string {
 		dir = parent
 	}
 }
+
+// exampleWings is every wing name this repository is allowed to contain.
+//
+// It is an ALLOWLIST, not a denylist, and that is the whole point: a denylist of
+// real project names would have to spell those names out in a public repository,
+// which is the leak it exists to prevent. Naming the permitted examples publishes
+// nothing, and it puts a deliberate step exactly where the mistake happens.
+//
+// The mistake is specific and it has happened: an agent working with a live
+// palace has that palace's real wing list in front of it — am_status returns it —
+// and reaches for one of those names when it needs a fixture. Two real project
+// names reached a committed test that way on 2026-08-21.
+//
+// Adding an entry is fine and expected. Adding one that is somebody's actual
+// project is not, and the failure message says so rather than leaving it to
+// judgement.
+var exampleWings = map[string]bool{
+	"wing_a": true, "wing_abc": true, "wing_acme": true, "wing_acme-billing": true,
+	"wing_acme_laravel": true, "wing_acmee": true, "wing_agentmemories": true,
+	"wing_alpha": true, "wing_anchor": true, "wing_anything": true, "wing_api": true,
+	"wing_app": true, "wing_atlas": true, "wing_atomic": true, "wing_b": true,
+	"wing_beta": true, "wing_big": true, "wing_billing": true, "wing_chunked": true,
+	"wing_claude": true, "wing_craf": true, "wing_craft": true, "wing_diary": true,
+	"wing_dup": true, "wing_env": true, "wing_explicit": true, "wing_from": true,
+	"wing_gamma": true, "wing_gone": true, "wing_harness": true, "wing_infra": true,
+	"wing_keepanchor": true, "wing_local": true, "wing_mined": true,
+	"wing_missing": true, "wing_never_written": true, "wing_new": true,
+	"wing_one": true, "wing_orders-db": true, "wing_orphan": true, "wing_other": true,
+	"wing_proj": true, "wing_project": true, "wing_real": true,
+	"wing_reconnect": true, "wing_research": true, "wing_restored": true,
+	"wing_roles": true, "wing_room": true, "wing_rr": true, "wing_scenario": true, "wing_shape": true,
+	"wing_shared": true, "wing_shared_name": true, "wing_solo": true,
+	"wing_stats": true, "wing_storefront": true, "wing_sweep": true,
+	"wing_that_never_existed": true, "wing_to": true, "wing_to-": true,
+	"wing_to-beta": true, "wing_to-someproject": true, "wing_to-x": true,
+	"wing_two": true, "wing_typo": true, "wing_unused": true, "wing_verdict": true,
+	"wing_very-old-project": true, "wing_wake": true, "wing_written": true,
+	"wing_x": true, "wing_zzzzzz": true,
+}
+
+// wingName matches a wing identifier anywhere in a tracked file.
+var wingName = regexp.MustCompile(`wing_[a-z0-9][a-z0-9_-]*`)
+
+// TestNoRealProjectNamesInWings fails when a wing name appears that is not a
+// declared example.
+//
+// A wing IS a project namespace, so a wing name is a project name — which makes
+// every fixture, README snippet and comment in this repository a place where
+// somebody's real project can be published by accident. It arrives the same way
+// every time: whoever is writing the fixture has a live palace open, and the
+// nearest name is a real one.
+func TestNoRealProjectNamesInWings(t *testing.T) {
+	root := repoRoot(t)
+	ignored := gitignoreMatcher(t, root)
+	self := filepath.Join("internal", "repohygiene", "hygiene_test.go")
+
+	found := 0
+	for _, path := range walk(t, root, ignored) {
+		rel, _ := filepath.Rel(root, path)
+		if rel == self {
+			continue // the allowlist necessarily contains every name it permits
+		}
+		// Postmortems and ADRs describe incidents in prose; they are held to the
+		// same rule as code, which is why they are NOT skipped here.
+		src, err := os.ReadFile(path)
+		if err != nil || !looksTextual(src) {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, m := range wingName.FindAll(src, -1) {
+			name := strings.ToLower(string(m))
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			found++
+			if !exampleWings[name] {
+				t.Errorf("%s contains the wing name %q, which is not a declared example.\n"+
+					"  A wing name is a PROJECT name. If this is somebody's real project, it must not be "+
+					"committed — use wing_acme, wing_alpha or another neutral name.\n"+
+					"  If it is genuinely an example, add it to exampleWings in %s.", rel, name, self)
+			}
+		}
+	}
+	if found == 0 {
+		t.Error("no wing names were found anywhere in the tree — this check has stopped checking anything")
+	}
+}

@@ -109,9 +109,9 @@ Resolve it in this order, first hit wins:
    was created for. It wins over everything below, because it is the wing the
    server itself uses for a write that names none — a derived wing that
    disagrees with it does not move where your memories land, it only makes your
-   report of them wrong. Two live sessions resolved `wing_db-cluster` and
-   `wing_ptx-monorepo` from their git remotes while the registration said
-   `wing_playtrix`, where 1,964 drawers already were and the six-drawer wings
+   report of them wrong. Two live sessions resolved `wing_orders-db` and
+   `wing_storefront` from their git remotes while the registration said
+   `wing_acme`, where 1,964 drawers already were and the six-drawer wings
    were not.
 1. `$AGENTSMEMORY_WING`, if the launcher exported one.
 2. `wing=` in the nearest `.aiagentmemory` / `.aiagentmemory.local`, walking up

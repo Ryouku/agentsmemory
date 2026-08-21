@@ -285,7 +285,7 @@ type Config struct {
 	// in this set may edit the GLOBAL skillset (the am_skillset wakeup playbook)
 	// that every tenant shares. It is a deploy-time decision carried as process
 	// config (env SUPERADMIN_EMAILS, comma-separated), NOT a database row or a
-	// per-team role — mirroring how the sibling forumchat project gates its
+	// per-team role — mirroring how a sibling project on this stack gates its
 	// god-mode surface. Empty means no superadmin: the global skillset can be
 	// seeded on a fresh database but not edited from the dashboard.
 	SuperAdminEmails []string

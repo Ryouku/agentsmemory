@@ -1069,8 +1069,8 @@ destination is named on the way **in**:
 
 ```bash
 # Self-hosted: straight against the database, no server and no token needed.
-agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_forumchat --out forumchat.ndjson
-agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file forumchat.ndjson --as wing_abc
+agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_acme --out acme.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file acme.ndjson --as wing_abc
 ```
 
 `--as` is **required**. A bundle names no wing, so importing without a
@@ -1082,7 +1082,7 @@ On a multi-workspace database add `--project <slug>` (it defaults to the single
 
 ```bash
 # Agents / scripts: the same endpoint the mempalace migration uses, plus ?as=
-curl -X POST -H "Authorization: Bearer $KEY" --data-binary @forumchat.ndjson \
+curl -X POST -H "Authorization: Bearer $KEY" --data-binary @acme.ndjson \
   "https://your-host/import?as=wing_abc&recompute=1"
 
 # Browser: project page → "Move a wing" (download a wing, upload a bundle).
@@ -1207,5 +1207,5 @@ is the upstream source this project is derived from. The domain model
 (wings/rooms/drawers/closets/hallways/tunnels/KG/AAAK dialect), the 37-tool MCP
 contract, the hybrid ranking, and idempotent mining are ported; Chroma, local
 ONNX embeddings, and the HNSW repair tooling are dropped in favour of Qdrant +
-Ollama from the start. Reference Go stack patterns follow the sibling
-`forumchat` project (chi · templ · datastar · Ollama · Qdrant · MCP · RRF).
+Ollama from the start. Reference Go stack patterns follow a sibling
+project on the same stack (chi · templ · datastar · Ollama · Qdrant · MCP · RRF).

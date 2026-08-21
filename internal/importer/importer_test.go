@@ -78,11 +78,11 @@ func (denyAll) Allow(_ context.Context, _ string) (usage.Status, error) {
 }
 
 const bundle = `{"kind":"manifest","total":4}
-{"kind":"drawer","wing":"forumchat","room":"backend","content":"the hub fans out messages"}
+{"kind":"drawer","wing":"acme","room":"backend","content":"the hub fans out messages"}
 {"kind":"diary","wing":"wing_claude","room":"diary","agent":"claude","topic":"general","content":"SESSION:built import"}
-{"kind":"closet","wing":"forumchat","room":"backend","source_file":"notes.md","document":"built the hub|hub;ws|->d1"}
+{"kind":"closet","wing":"acme","room":"backend","source_file":"notes.md","document":"built the hub|hub;ws|->d1"}
 {"kind":"kg","subject":"hub","predicate":"fans_out","object":"messages","valid_from":"2026-01-01"}
-{"kind":"tunnel","source_wing":"forumchat","source_room":"backend","target_wing":"wing_claude","target_room":"diary","label":"shared work"}
+{"kind":"tunnel","source_wing":"acme","source_room":"backend","target_wing":"wing_claude","target_room":"diary","label":"shared work"}
 `
 
 // authedRequest builds a POST /import with the bundle body and a tenant already
@@ -256,11 +256,11 @@ func TestImportWithoutAsPreservesRecordWing(t *testing.T) {
 	for _, d := range fd.gotDrawers {
 		wings[d.Wing] = true
 	}
-	if !wings["forumchat"] || !wings["wing_claude"] {
-		t.Errorf("drawer wings = %v, want the bundle's own forumchat + wing_claude", wings)
+	if !wings["acme"] || !wings["wing_claude"] {
+		t.Errorf("drawer wings = %v, want the bundle's own acme + wing_claude", wings)
 	}
-	if tn := fd.gotTunnels[0]; tn.SourceWing != "forumchat" || tn.TargetWing != "wing_claude" {
-		t.Errorf("tunnel endpoints = %q/%q, want the bundle's own forumchat/wing_claude",
+	if tn := fd.gotTunnels[0]; tn.SourceWing != "acme" || tn.TargetWing != "wing_claude" {
+		t.Errorf("tunnel endpoints = %q/%q, want the bundle's own acme/wing_claude",
 			tn.SourceWing, tn.TargetWing)
 	}
 }

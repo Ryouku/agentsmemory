@@ -125,7 +125,7 @@ have ever filed:
 ```bash
 python mempalace_export.py --list-wings
 #   vvs-convos                       24068 drawers
-#   wing_forumchat                   4990 drawers
+#   wing_acme                   4990 drawers
 #   wing_agentmemories               595 drawers
 
 python mempalace_export.py --wing wing_agentmemories --out one-wing.ndjson

@@ -16,7 +16,7 @@ func TestImportDrawersVerbatim(t *testing.T) {
 
 	records := []ImportDrawer{
 		{
-			Wing: "forumchat", Room: "backend", SourceFile: "notes.md", ChunkIndex: 2,
+			Wing: "acme", Room: "backend", SourceFile: "notes.md", ChunkIndex: 2,
 			Content:     "the websocket hub fans out messages to subscribers",
 			Entities:    []string{"websocket", "hub"},
 			FiledAt:     "2026-01-02T03:04:05Z",
@@ -44,7 +44,7 @@ func TestImportDrawersVerbatim(t *testing.T) {
 	}
 
 	// Provenance and dates are preserved verbatim, not re-derived.
-	id := DrawerID(team, "forumchat", "backend", "notes.md", 2,
+	id := DrawerID(team, "acme", "backend", "notes.md", 2,
 		"the websocket hub fans out messages to subscribers")
 	got, err := svc.Get(ctx, team, id)
 	if err != nil {
@@ -93,12 +93,12 @@ func TestImportDrawersVerbatim(t *testing.T) {
 	if _, err := svc.AbsorbDrawers(ctx, team, records); err != nil {
 		t.Fatalf("re-absorb: %v", err)
 	}
-	list, err := svc.List(ctx, team, "forumchat", "", 100, 0)
+	list, err := svc.List(ctx, team, "acme", "", 100, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(list) != 1 {
-		t.Errorf("forumchat drawers after re-import = %d, want 1 (idempotent)", len(list))
+		t.Errorf("acme drawers after re-import = %d, want 1 (idempotent)", len(list))
 	}
 }
 
