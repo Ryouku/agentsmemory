@@ -167,7 +167,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	// Deliberately AFTER the tables and BEFORE the results file: the curve reads
 	// the same rows the tables were printed from, and a failing --gate must still
 	// leave the numbers on screen that explain why it failed.
-	calErr := runCalibration(ctx, c, cfg, report, out)
+	calErr := runCalibration(ctx, c, cfg, report, cases, src.Styles, out)
 
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
@@ -565,8 +565,13 @@ func absentCaseOutcome(answeredBy string, verr error) (keep bool, reason string)
 // branch is a generate-then-save run, and from the outside it is indistinguishable
 // from a replay.
 type caseSource struct {
-	Cases  []palace.EvalCase
-	Label  string
+	Cases []palace.EvalCase
+	Label string
+	// Styles is every style seen across the files that were merged. Meta keeps
+	// only ONE block — the last file with a generator wins — so a check reading
+	// Meta.Style is order-dependent, and an easy-negative file merged first would
+	// report its neighbour's style.
+	Styles []string
 	Meta   caseFileMeta
 	Origin string
 }
@@ -580,12 +585,16 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	path := c.String("cases")
 	if path != "" {
 		var merged []palace.EvalCase
+		var seenStyles []string
 		files := strings.Split(path, ",")
 		for _, f := range files {
 			f = strings.TrimSpace(f)
 			cases, meta, err := readCasesWithMeta(f)
 			if meta.Generator != "" {
 				replayMeta = meta
+			}
+			if st := strings.TrimSpace(meta.Style); st != "" {
+				seenStyles = append(seenStyles, st)
 			}
 			switch {
 			case err == nil:
@@ -605,7 +614,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			if len(files) > 1 {
 				label = fmt.Sprintf("from %d files", len(files))
 			}
-			return caseSource{Cases: merged, Label: label, Meta: replayMeta, Origin: palace.CaseSetReplayed}, nil
+			return caseSource{Cases: merged, Label: label, Styles: seenStyles, Meta: replayMeta, Origin: palace.CaseSetReplayed}, nil
 		}
 	}
 
@@ -700,6 +709,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		}
 		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62))
 		expect := d.ID
+		var verification *palace.AbsentVerification
 		if category == palace.CatAbsent {
 			// There is no gold for a question the palace should not answer; what
 			// gets measured is whether it returns something confident anyway.
@@ -714,8 +724,20 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			if !keep {
 				continue
 			}
+			// Stamped only on the path where the check actually PASSED, so the
+			// field's presence means what it says. A case file merges runs, and a
+			// case from before this existed must stay distinguishable from one
+			// checked at depth 20 rather than inheriting its credibility.
+			verification = &palace.AbsentVerification{
+				Checker: gen.model,
+				Depth:   absentVerifyDepth,
+				At:      time.Now().UTC().Format(time.RFC3339),
+			}
 		}
-		cases = append(cases, palace.EvalCase{Query: q, Expect: expect, Wing: c.String("wing"), Category: category})
+		cases = append(cases, palace.EvalCase{
+			Query: q, Expect: expect, Wing: c.String("wing"), Category: category,
+			AbsentVerification: verification,
+		})
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
@@ -729,7 +751,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
 		}
 	}
-	return caseSource{Cases: cases, Label: "generated", Meta: replayMeta, Origin: palace.CaseSetGenerated}, nil
+	return caseSource{Cases: cases, Label: "generated", Styles: []string{style}, Meta: replayMeta, Origin: palace.CaseSetGenerated}, nil
 }
 
 // genURL is where the question generator runs. It defaults to the embedder's
@@ -1833,7 +1855,7 @@ func gatedArmRanks(report palace.EvalReport, want palace.EvalArm) []int {
 // a calibration would make every ordinary measurement a candidate operating point,
 // and the whole reason this is a file rather than configuration is that a human
 // decides when one becomes real.
-func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, report palace.EvalReport, out io.Writer) error {
+func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, report palace.EvalReport, cases []palace.EvalCase, styles []string, out io.Writer) error {
 	if !c.Bool("calibrate") && !c.Bool("gate") {
 		return nil
 	}
@@ -1859,8 +1881,27 @@ func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, repo
 		// The Stop Condition, as an outcome rather than a crash: a curve needs
 		// both populations, and one of them alone is not a weak measurement, it is
 		// no measurement.
-		fmt.Fprintf(out, "  no curve: a threshold needs BOTH answerable and verified-absent cases in one run.\n"+
-			"  Merge two case files with --cases a.jsonl,b.jsonl.\n")
+		//
+		// Two very different causes reach here and they need different advice. If
+		// NOTHING was scored, the run had no reranker and the case set is
+		// irrelevant — telling the reader to merge more files is a remedy that
+		// cannot work, which is worse than no advice because they will try it.
+		scored := 0
+		for _, r := range rows {
+			if r.Scored {
+				scored++
+			}
+		}
+		switch {
+		case scored == 0:
+			fmt.Fprintf(out, "  no curve: nothing in this run carries a cross-encoder score, so there is\n"+
+				"  no quantity to threshold. The gate reads the served page's top-1 rerank score;\n"+
+				"  pass --rerank-url to score it. Merging more case files will not help.\n")
+		default:
+			fmt.Fprintf(out, "  no curve: a threshold needs BOTH answerable and verified-absent cases in one\n"+
+				"  run, and this one has %d and %d. Merge two case files with\n"+
+				"  --cases answerable.jsonl,absent.jsonl.\n", th.Reachable, th.Absent)
+		}
 		if c.Bool("gate") {
 			return fmt.Errorf("gate requested but the run holds no separation to gate on")
 		}
@@ -1891,6 +1932,17 @@ func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, repo
 	pass, rate, lower, n := palace.RefusalGate(th.Absent, refused, c.Float("refusal-bar"))
 	fmt.Fprintf(out, "  correct refusal at answer_at: %d/%d = %.3f, 90%% lower bound %.3f, bar %.2f — %s\n",
 		refused, n, rate, lower, c.Float("refusal-bar"), gateWord(pass))
+
+	if ok, why := calibrationEligible(cases, styles...); !ok {
+		fmt.Fprintf(out, "  NO calibration file: %s.\n"+
+			"  The curve above still stands — it is what T3 compares regimes with — but nothing\n"+
+			"  here may become an operating point.\n", why)
+		if c.Bool("gate") && !pass {
+			return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+				lower, c.Float("refusal-bar"), n)
+		}
+		return fmt.Errorf("refusing to write a calibration: %s", why)
+	}
 
 	if !c.Bool("calibrate") {
 		if c.Bool("gate") && !pass {
@@ -2019,4 +2071,52 @@ func printCurve(out io.Writer, curve []palace.CurvePoint, answerRecall, refusalB
 			"    point that does not exist. Change the score the gate reads, the corpus it is\n"+
 			"    calibrated on, or the targets themselves.\n", answerRecall, refusalBar)
 	}
+}
+
+// calibrationEligible reports whether this case set may produce a shipped
+// threshold, and why not when it may not.
+//
+// Two disqualifications, both about whether the negatives mean what they claim.
+// An absent case with no verification provenance was never confirmed absent, so
+// some other memory may answer it perfectly and calibrating on it tunes the gate
+// to refuse questions the palace can answer. A set generated with
+// --style absent-easy was confirmed, but against negatives whose identifiers were
+// stripped — measured on this corpus those sit twice as far from answerable
+// questions as the hard ones, so a threshold fitted to them is fitted to a gap
+// production will not have.
+//
+// This gates the FILE, never the report. T3 has to compare the two regimes side by
+// side, so the curve still prints; what is withheld is the artefact an operator
+// could point a server at.
+func calibrationEligible(cases []palace.EvalCase, styles ...string) (bool, string) {
+	// EVERY style present, not the one the merged metadata happened to keep. A
+	// merged set carries one metadata block and the last file with a generator
+	// wins, so reading a single style makes the check order-dependent — and an
+	// easy-negative file merged first would report its neighbour's style.
+	for _, style := range styles {
+		if strings.TrimSpace(style) != "absent-easy" {
+			continue
+		}
+		return false, "one of the case files was generated with --style absent-easy, whose negatives " +
+			"drop the note's identifiers and are separable on vocabulary alone; a threshold fitted " +
+			"to them is fitted to a gap production will not have"
+	}
+	absent, unverified := 0, 0
+	for _, c := range cases {
+		if c.Category != palace.CatAbsent {
+			continue
+		}
+		absent++
+		if c.AbsentVerification == nil {
+			unverified++
+		}
+	}
+	if absent == 0 {
+		return false, "the case set holds no absent cases, so there is no separation to fit a threshold to"
+	}
+	if unverified > 0 {
+		return false, fmt.Sprintf("%d of %d absent case(s) carry no verification provenance — their absence "+
+			"was never checked, so a memory may answer them that nobody looked for", unverified, absent)
+	}
+	return true, ""
 }

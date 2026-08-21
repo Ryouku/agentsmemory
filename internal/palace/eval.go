@@ -239,10 +239,32 @@ type EvalCase struct {
 	ExpectAny []string `json:",omitempty"`
 	Wing      string   // optional scope, mirroring how the query would really be run
 	Category  string   // one of the Cat* values; empty is treated as CatSingle
+	// AbsentVerification records that this case's absence was CHECKED, and how.
+	// Nil means it was not — which is a different fact from "checked and nothing
+	// answered it", and the two are indistinguishable once written to a file
+	// unless the provenance travels with the case.
+	//
+	// It matters because a case file merges: two runs at different depths, or one
+	// before the check existed and one after, land in the same file and are then
+	// read as one population. A threshold fitted across that mixture is fitted to
+	// cases some of which may be answerable by a memory nobody looked for.
+	AbsentVerification *AbsentVerification `json:",omitempty"`
 	// Distractor is the drawer id of the version this case's gold SUPERSEDES —
 	// the older, now-wrong memory that a temporal question must not surface
 	// above the correction. Empty when the case has no superseded version.
 	Distractor string `json:",omitempty"`
+}
+
+// AbsentVerification is the provenance of one absence check: which model
+// answered, how deep it looked, and when.
+//
+// The DEPTH is the load-bearing field. "Nothing answers this" is only as strong
+// as the search that failed to find an answer, and a case checked at depth 3 and
+// one checked at depth 20 are different claims wearing the same label.
+type AbsentVerification struct {
+	Checker string `json:"checker"`
+	Depth   int    `json:"depth"`
+	At      string `json:"at"`
 }
 
 // category returns the case's category, defaulting to single-hop.
