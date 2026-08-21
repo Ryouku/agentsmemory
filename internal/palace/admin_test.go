@@ -213,3 +213,90 @@ func TestMemoriesFiledAway(t *testing.T) {
 		t.Fatalf("expected a last_filed_at, got empty")
 	}
 }
+
+// TestMergedMemoryIsFoundInTheTargetWing is the user-visible property, and it is
+// the one that was false.
+//
+// A wing merge relabelled drawer rows and left every stored payload behind.
+// Service.Search passes the wing to the vector index as a FILTER, and the
+// drawer-row comparison that follows can only remove candidates — never add one
+// back — so a merged memory was retrievable from the wing it no longer lived in
+// and unreachable from the one it did. Measured 2026-08-21 on a live palace: 13
+// of 359 memories, answering only an unscoped search.
+func TestMergedMemoryIsFoundInTheTargetWing(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-search"
+
+	want := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions",
+		Content: "the rerank pool ships at ten because a cross encoder is linear in pool size"})
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions",
+		Content: "an unrelated memory about cache invalidation"})
+
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {
+		t.Fatalf("MergeWing: %v", err)
+	}
+
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "rerank pool size", Wing: "wing_acme", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, h := range hits {
+		if h.Drawer.ID == want.ID {
+			return
+		}
+	}
+	t.Errorf("a memory merged into %q is not returned by a search of %q (%d hit(s)) — it is filed "+
+		"there and unreachable from there, which is the only wing anyone would look in",
+		"wing_acme", "wing_acme", len(hits))
+}
+
+// TestMergeLeavesNoIndexDrift reads the stores back rather than trusting that
+// the write returned nil.
+func TestMergeLeavesNoIndexDrift(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-drift"
+
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "one"})
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-old", Room: "diary", Content: "two"})
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "three"})
+
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy", "wing_acme-old"}, "wing_acme"); err != nil {
+		t.Fatalf("MergeWing: %v", err)
+	}
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if !report.Clean() {
+		t.Errorf("after a merge, %d stored point(s) still claim a wing their drawer no longer has: %+v",
+			len(report.Drifted), report.Drifted)
+	}
+}
+
+// TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected: rows relabelled over a
+// stale index is the state nobody can see, so it must never be one a caller is
+// left in silently.
+func TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-fail"
+
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "one"})
+	svc.vectors = &patchFailingStore{VectorStore: svc.vectors}
+
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err == nil {
+		t.Error("the payload correction failed and the merge reported success — the caller is left " +
+			"with relabelled rows over a stale index and nothing says so")
+	}
+}
+
+// patchFailingStore accepts everything except a payload correction.
+type patchFailingStore struct {
+	store.VectorStore
+}
+
+func (p *patchFailingStore) SetPayload(context.Context, string, []string, map[string]string) error {
+	return errors.New("index unavailable")
+}

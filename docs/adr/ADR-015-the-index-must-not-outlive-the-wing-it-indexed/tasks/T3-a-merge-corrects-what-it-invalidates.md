@@ -36,9 +36,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/palace/ -run "TestMergedMemoryIsFoundInTheTargetWing|TestMergeLeavesNoIndexDrift" -count=1 -v 2>&1 | tee /tmp/a15t3.out
+  go test ./internal/palace/ -run "TestMergedMemoryIsFoundInTheTargetWing|TestMergeLeavesNoIndexDrift|TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected" -count=1 -v 2>&1 | tee /tmp/a15t3.out
   grep -q -- "--- PASS: TestMergedMemoryIsFoundInTheTargetWing" /tmp/a15t3.out
   grep -q -- "--- PASS: TestMergeLeavesNoIndexDrift" /tmp/a15t3.out
+  grep -q -- "--- PASS: TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected" /tmp/a15t3.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a15t3.out
   go test ./... -count=1'
 ```
@@ -49,6 +50,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestMergedMemoryIsFoundInTheTargetWing` | `internal/palace/admin_test.go` | the user-visible property: a merged memory is recallable from the wing it was merged into | — |
 | `TestMergeLeavesNoIndexDrift` | `internal/palace/admin_test.go` | read back from the store rather than trusting the write's nil return | — |
+| `TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected` | `internal/palace/admin_test.go` | a failed correction fails the merge — relabelled rows over a stale index is the state nobody can see | — |
 
 ## Reachability
 
@@ -66,7 +68,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | skip the payload patch entirely | yes | both |
 | patch the index but not the source of truth | yes | `TestMergeLeavesNoIndexDrift` |
 | patch with the source wing instead of the target | yes | `TestMergedMemoryIsFoundInTheTargetWing` |
-| swallow the patch error and return success | yes | `TestMergeLeavesNoIndexDrift` |
+| swallow the patch error and return success | yes | `TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected` |
+| collect the moved ids AFTER the relabel, when nothing distinguishes them | yes | both drift tests |
 
 ## Out of Scope
 
@@ -88,4 +91,5 @@ Stop and ask if a merge can interleave with a concurrent write to the same drawe
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 534aea2* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-21 · 534aea2* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

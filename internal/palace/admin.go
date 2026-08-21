@@ -29,9 +29,21 @@ type MergeWingResult struct {
 // MergeWing folds one or more source wings into a target, relabeling the `wing` of
 // every drawer and closet in place (ids unchanged), the frozen merge_wing. The
 // derived graph (hallways/tunnels) is NOT rebuilt here — call recompute_graph
-// afterwards, as the frozen tool instructs. Vectors are not re-written: their
-// payload wing is advisory (search filters on the drawer row's wing), so a merge
-// needs no re-embedding. Idempotent: merging an already-merged wing is a no-op.
+// afterwards, as the frozen tool instructs. Idempotent: merging an already-merged
+// wing is a no-op.
+//
+// It also corrects the wing stored in every affected point's PAYLOAD. That is not
+// housekeeping. This comment used to say the payload wing was "advisory (search
+// filters on the drawer row's wing)", and that was false: Service.Search passes
+// the wing to the vector index as a filter, and the drawer-row comparison after it
+// can only remove candidates, never add one back. So a payload left behind by a
+// merge makes the memory retrievable from the wing it no longer lives in and
+// UNREACHABLE from the one it does — measured 2026-08-21 on a live palace, 13 of
+// 359 memories, answering only an unscoped search while scoped recall is the
+// default.
+//
+// The correction is a payload patch, not a re-embedding: the text did not change,
+// so the vector is already right.
 func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string, target string) (MergeWingResult, error) {
 	tgt, err := SanitizeName(target, "target")
 	if err != nil {
@@ -51,15 +63,63 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 		return MergeWingResult{Sources: clean, Target: tgt}, nil
 	}
 
+	// The ids are collected BEFORE the relabel, because afterwards nothing
+	// distinguishes a drawer that has just moved from one that was always in the
+	// target — and patching every point in the target wing would be a write
+	// proportional to the wing rather than to the merge.
+	moved, err := s.drawerIDsInWings(ctx, teamID, clean)
+	if err != nil {
+		return MergeWingResult{}, fmt.Errorf("find the drawers a merge would move: %w", err)
+	}
+
 	drawers, err := s.repo.RelabelDrawerWing(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel drawers: %w", err)
+	}
+
+	// Correct the stored payloads, in batches bounded like every other id list
+	// here. A failure FAILS THE MERGE: rows relabelled over a stale index is a
+	// half-done state nobody can see from the outside, and reporting success over
+	// it is how the memories this fixes went missing in the first place. The rows
+	// are already moved, so the recovery is to re-run — which is safe, because a
+	// merge is idempotent and this patch is too.
+	for start := 0; start < len(moved); start += deleteBatch {
+		end := start + deleteBatch
+		if end > len(moved) {
+			end = len(moved)
+		}
+		if err := s.vectors.SetPayload(ctx, teamID, moved[start:end], map[string]string{"wing": tgt}); err != nil {
+			return MergeWingResult{}, fmt.Errorf(
+				"the drawers were relabelled to %q but their stored payloads were not, so they are "+
+					"unreachable from %q until this is re-run (merges are idempotent): %w", tgt, tgt, err)
+		}
 	}
 	closets, err := s.repo.RelabelClosetWing(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel closets: %w", err)
 	}
 	return MergeWingResult{Sources: clean, Target: tgt, Drawers: drawers, Closets: closets}, nil
+}
+
+// drawerIDsInWings lists every drawer id filed in any of the named wings, paged
+// so a wing of any size costs bounded memory and a bounded parameter list.
+func (s *Service) drawerIDsInWings(ctx context.Context, teamID string, wings []string) ([]string, error) {
+	var out []string
+	for _, w := range wings {
+		for offset := 0; ; offset += deleteBatch {
+			page, err := s.repo.List(ctx, teamID, w, "", deleteBatch, offset)
+			if err != nil {
+				return nil, err
+			}
+			if len(page) == 0 {
+				break
+			}
+			for _, d := range page {
+				out = append(out, d.ID)
+			}
+		}
+	}
+	return out, nil
 }
 
 // ErrConfirmMismatch is returned when a wing delete was not confirmed by echoing
