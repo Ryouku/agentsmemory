@@ -75,6 +75,47 @@ Stop and ask if the identifier-preserving generator yields negatives that anothe
 - The calibration report, the gate criterion and the refusal of unverified cases — that is T2's job.
 - Growing the absent corpus beyond what `--n` produces, and mining hard negatives from real queries instead of generating them (deferred: docs/adr/BACKLOG.md)
 
+## Stop Condition — measured 2026-08-21, and the threshold does not discriminate
+
+Run on the live 449-memory corpus, `--n 25`, depth 20, same checker model for both.
+
+| generator | rejected (another memory answers it) | verified-absent cases |
+|---|---|---|
+| `--style absent` (identifiers KEPT) | **8 of 25 (32%)** | 17 |
+| `--style absent-easy` (identifiers stripped) | 6 of 25 (24%) | 19 |
+
+**Against the Stop Condition as written**: 32% is marginally above the "~30%"
+line, and 17 survivors clears the "fewer than 15" floor. At n=25 the difference
+between 8 rejections and 7 is one case, so the trip is inside the resolution of
+the instrument.
+
+**But the control is the finding, and it falsified the prediction that motivated
+the change.** The expectation was that the easy generator — which strips the
+note's identifiers — would be rejected far less often, because its questions share
+no vocabulary with the corpus. It was rejected 6 times against 8. Two cases apart
+at n=25 is noise. **The identifier-preserving prompt did not measurably change how
+often another memory answers the question.**
+
+**Why the threshold was the wrong instrument.** The rejection rate measures whether
+the CORPUS happens to answer a question. It says nothing about whether the negative
+is harder to SEPARATE from an answerable one, which is the only property the
+calibration curve cares about. A question can keep every identifier, be genuinely
+unanswered, and still be trivially separable — and this measurement could not tell.
+
+The right measurement is the distance/score separation between answerable and
+unanswerable questions, taken once with each negative style against the same
+answerable set. That is recorded below when it lands; until then this task's claim
+is that the generator produces hard-LOOKING negatives, not that it produces
+harder-to-separate ones.
+
+**Not a reason to withdraw the change.** Keeping identifiers is right on the
+published evidence regardless of this corpus's rejection rate: abstention accuracy
+collapses from 98.0% to 1.1% when the irrelevant passage is merely on-topic, and
+the distractors models handle worst are the semantically related ones. The
+correction here is to the CLAIM, not to the code — and `--style absent-easy` exists
+precisely so the two regimes stay comparable rather than one silently replacing the
+other.
+
 ## Verification Log
 - 2026-08-21 · 9a88b51* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
   ```
