@@ -384,3 +384,231 @@ func TestRecencyVetoExplainsACostRejection(t *testing.T) {
 		}
 	}
 }
+
+// rowsFor builds calibration rows: answerable scores that were reachable, and
+// verified-absent scores. Unreachable rows are added separately by the tests that
+// care, because their whole point is that they must NOT be scored.
+func rowsFor(answerable, absent []float64) []CalibrationRow {
+	var rows []CalibrationRow
+	for _, s := range answerable {
+		rows = append(rows, CalibrationRow{Population: PopReachable, Score: s, Scored: true})
+	}
+	for _, s := range absent {
+		rows = append(rows, CalibrationRow{Population: PopAbsent, Score: s, Scored: true})
+	}
+	return rows
+}
+
+// TestRiskCoverageRecommendsThresholds pins both boundaries against their DECLARED
+// rules rather than against whatever maximises accuracy.
+//
+// The two rules answer different questions and must not be collapsed into one.
+// answer_at is "how high can the bar go while still answering what we can answer";
+// refuse_below is "how low must it go before we are throwing away answers we had".
+// A single accuracy-maximising threshold answers neither, and on an overlapping
+// distribution it lands wherever the class sizes happen to put it.
+func TestRiskCoverageRecommendsThresholds(t *testing.T) {
+	t.Run("separable, with a band", func(t *testing.T) {
+		// A band exists only while the allowance is STRICTLY tighter than the
+		// recall target permits — allowance < (1-recall)*n. Here n=20 and recall
+		// 0.90 permits 2 answerable below the bar while the allowance permits 1,
+		// so the two boundaries land on different thresholds and the middle
+		// verdict has somewhere to live.
+		var answerable []float64
+		for i := 5; i < 25; i++ {
+			answerable = append(answerable, float64(i))
+		}
+		got := RecommendThresholds(rowsFor(answerable, []float64{0, 1, 2}), 0.90, 1)
+		if got.AnswerAt == nil || got.RefuseBelow == nil {
+			t.Fatalf("separable data produced no boundaries: %+v", got)
+		}
+		if *got.AnswerAt < 5 {
+			t.Errorf("answer_at %v is below the lowest answerable score — it answers more than "+
+				"it needs to and admits absent cases for nothing", *got.AnswerAt)
+		}
+		if got.BandEmpty {
+			t.Errorf("reported an empty band where the allowance (1) is tighter than the recall "+
+				"target permits (2 of 20): %+v", got)
+		}
+		if !(*got.RefuseBelow < *got.AnswerAt) {
+			t.Errorf("refuse_below %v is not below answer_at %v, so there is no band",
+				*got.RefuseBelow, *got.AnswerAt)
+		}
+	})
+
+	t.Run("band collapses when the allowance matches the target", func(t *testing.T) {
+		// The case ADR-001 T2 predicted: at n=20 a 0.95 recall target permits
+		// exactly one answerable below the bar, and so does an allowance of 1 —
+		// so both rules select the SAME threshold and there is no middle verdict.
+		// An empty band is a real outcome to report, not a failure to compute one.
+		var answerable []float64
+		for i := 5; i < 25; i++ {
+			answerable = append(answerable, float64(i))
+		}
+		got := RecommendThresholds(rowsFor(answerable, []float64{0, 1, 2}), 0.95, 1)
+		if got.AnswerAt == nil || got.RefuseBelow == nil {
+			t.Fatalf("no boundaries: %+v", got)
+		}
+		if !got.BandEmpty {
+			t.Errorf("the two rules selected %v and %v and the band was not reported empty",
+				*got.RefuseBelow, *got.AnswerAt)
+		}
+	})
+
+	t.Run("the band never inverts", func(t *testing.T) {
+		// At small n the allowance can be LOOSER than the recall target permits:
+		// 4 rows, a 0.95 target pins answer_at to the minimum, and an allowance of
+		// 1 (25% of the sample) lifts refuse_below above it. T2 states the
+		// ordering "follows from recall being non-increasing"; it does not, it
+		// follows from allowance <= (1-recall)*n, and nothing enforced that.
+		//
+		// An inverted band would put the "not sure" verdict where the system
+		// should simply answer.
+		got := RecommendThresholds(rowsFor([]float64{1, 2, 3, 4}, []float64{0}), 0.95, 1)
+		if got.AnswerAt == nil || got.RefuseBelow == nil {
+			t.Fatalf("no boundaries: %+v", got)
+		}
+		if *got.RefuseBelow > *got.AnswerAt {
+			t.Errorf("refuse_below %v sits ABOVE answer_at %v", *got.RefuseBelow, *got.AnswerAt)
+		}
+		if !got.BandEmpty {
+			t.Error("an incoherent allowance/target pair produced a band rather than collapsing")
+		}
+	})
+
+	t.Run("overlapping honours the recall target", func(t *testing.T) {
+		// one answerable sits down among the absent scores. At a 1.00 recall
+		// target the bar must drop to include it; the rule is the target, not
+		// whatever separates best.
+		rows := rowsFor([]float64{-6.5, 5, 6, 7}, []float64{-6.3, 0, 1})
+		strict := RecommendThresholds(rows, 1.00, 1)
+		if strict.AnswerAt == nil {
+			t.Fatal("no answer_at at a 1.00 recall target")
+		}
+		if *strict.AnswerAt > -6.5 {
+			t.Errorf("answer_at %v excludes an answerable case at -6.5 while the target demands "+
+				"100%% recall", *strict.AnswerAt)
+		}
+		relaxed := RecommendThresholds(rows, 0.75, 1)
+		if relaxed.AnswerAt == nil {
+			t.Fatal("no answer_at at a 0.75 recall target")
+		}
+		if !(*relaxed.AnswerAt > *strict.AnswerAt) {
+			t.Errorf("a looser recall target (%v) did not raise the bar above the strict one (%v) — "+
+				"the target is not driving the choice", *relaxed.AnswerAt, *strict.AnswerAt)
+		}
+		if relaxed.AchievedRecall < 0.75 {
+			t.Errorf("achieved recall %v is below the target it was asked for", relaxed.AchievedRecall)
+		}
+	})
+
+	t.Run("unreachable rows are never scored as answerable", func(t *testing.T) {
+		base := rowsFor([]float64{5, 6, 7, 8}, []float64{0, 1, 2})
+		withUnreachable := append(append([]CalibrationRow(nil), base...),
+			// a gold that never entered the pool, sitting at a terrible score:
+			// counting it as answerable would drag the bar down to rescue a case
+			// no threshold could ever have rescued
+			CalibrationRow{Population: PopUnreachable, Score: -99, Scored: true},
+		)
+		a := RecommendThresholds(base, 0.95, 1)
+		b := RecommendThresholds(withUnreachable, 0.95, 1)
+		if a.AnswerAt == nil || b.AnswerAt == nil {
+			t.Fatal("missing boundary")
+		}
+		if *a.AnswerAt != *b.AnswerAt {
+			t.Errorf("an UNREACHABLE case moved answer_at from %v to %v — its gold never entered "+
+				"the pool, so no threshold could have surfaced it and it is a retrieval fact "+
+				"wearing a ranking result's clothes", *a.AnswerAt, *b.AnswerAt)
+		}
+		if b.Unreachable != 1 {
+			t.Errorf("unreachable count %d, want 1 — excluded rows must still be REPORTED, or the "+
+				"reader cannot tell a clean sample from one that dropped a third of itself", b.Unreachable)
+		}
+	})
+
+	t.Run("refuse_below honours its allowance", func(t *testing.T) {
+		// This subtest exists because a mutant found its absence: ignoring
+		// refuseAllowance entirely broke nothing, so the second boundary — half
+		// the recommendation — was derived by code no test drove.
+		//
+		// The allowance is a COUNT of answerable rows permitted to fall below the
+		// bar. At 0 the bar cannot sit above the lowest answerable score; at 1 it
+		// may rise past exactly one of them.
+		// n=20 so the recall grid is fine enough that a 0.95 target and an
+		// allowance of 1 are coherent with each other; at n=4 they are not,
+		// and the guard below would (correctly) collapse the band instead.
+		var answerable []float64
+		for i := 1; i <= 20; i++ {
+			answerable = append(answerable, float64(i))
+		}
+		rows := rowsFor(answerable, []float64{0})
+		strict := RecommendThresholds(rows, 0.95, 0)
+		loose := RecommendThresholds(rows, 0.95, 1)
+		if strict.RefuseBelow == nil || loose.RefuseBelow == nil {
+			t.Fatalf("missing refuse_below: strict=%+v loose=%+v", strict, loose)
+		}
+		if *strict.RefuseBelow > 1 {
+			t.Errorf("refuse_below %v at allowance 0 sits above the lowest answerable score (1), "+
+				"so an answerable case falls below a bar that permits none", *strict.RefuseBelow)
+		}
+		if !(*loose.RefuseBelow > *strict.RefuseBelow) {
+			t.Errorf("allowance 1 gave refuse_below %v, the same as allowance 0 (%v) — the "+
+				"allowance is not driving the boundary", *loose.RefuseBelow, *strict.RefuseBelow)
+		}
+		// The ordering is a consequence of recall being non-increasing in the
+		// threshold, so it is asserted rather than assumed.
+		if loose.AnswerAt != nil && *loose.RefuseBelow > *loose.AnswerAt {
+			t.Errorf("refuse_below %v sits ABOVE answer_at %v — the band is inverted and the "+
+				"middle verdict would fire where the system should be answering",
+				*loose.RefuseBelow, *loose.AnswerAt)
+		}
+	})
+
+	t.Run("unscored rows are excluded", func(t *testing.T) {
+		rows := rowsFor([]float64{5, 6, 7}, []float64{0, 1})
+		rows = append(rows, CalibrationRow{Population: PopReachable, Score: 0, Scored: false})
+		got := RecommendThresholds(rows, 0.95, 1)
+		if got.Reachable != 3 {
+			t.Errorf("reachable count %d, want 3 — a row nothing scored has no score, and a "+
+				"zero there is a value the reranker never produced", got.Reachable)
+		}
+	})
+}
+
+// TestGateFailsBelowDeclaredBar pins that the go/no-go is the Wilson LOWER BOUND
+// against the declared bar, not the point estimate.
+//
+// At the sample sizes this ADR works with, the point estimate carries roughly
+// ±0.11 at one standard error. A gate comparing the estimate passes on noise
+// roughly half the time it is near the bar, which is the failure mode that makes
+// a gate worse than no gate: it produces a verdict with the authority of a
+// measurement and the reliability of a coin.
+func TestGateFailsBelowDeclaredBar(t *testing.T) {
+	// 7 of 20 refused = 0.35 observed, comfortably above a 0.30 bar on the point
+	// estimate — and its 90% lower bound is not.
+	pass, rate, lower, n := RefusalGate(20, 7, 0.30)
+	if n != 20 {
+		t.Fatalf("n reported as %d", n)
+	}
+	if rate < 0.34 || rate > 0.36 {
+		t.Errorf("observed rate %v, want ~0.35", rate)
+	}
+	if lower >= rate {
+		t.Errorf("the lower bound %v is not below the point estimate %v — it is not a bound", lower, rate)
+	}
+	if pass {
+		t.Errorf("gate PASSED on an observed 0.35 whose 90%% lower bound is %.3f, below the 0.30 "+
+			"bar — this is the case the bound exists for", lower)
+	}
+
+	// A large, clearly-clearing sample must pass, or the gate can never say yes.
+	if pass, _, lower, _ := RefusalGate(400, 200, 0.30); !pass {
+		t.Errorf("gate FAILED on 200/400 with lower bound %.3f — a gate that cannot pass is not "+
+			"a gate, it is a refusal", lower)
+	}
+
+	// Zero cases is undefined, not failing-with-confidence.
+	if pass, _, _, n := RefusalGate(0, 0, 0.30); pass || n != 0 {
+		t.Error("an empty sample produced a verdict; there is nothing to be confident about")
+	}
+}
