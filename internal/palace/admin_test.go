@@ -359,3 +359,53 @@ type patchFailingStore struct {
 func (p *patchFailingStore) SetPayload(context.Context, string, []string, map[string]string) error {
 	return errors.New("index unavailable")
 }
+
+// TestMergeCollectsAndRelabelsInOneTransaction: the ids that get their payloads
+// patched must be the ids that moved, and a snapshot taken before the UPDATE is
+// not that set.
+//
+// Reading the ids first and relabelling after leaves a window a concurrent write
+// walks straight through. A drawer added to the source in between is moved by the
+// UPDATE and never patched, because it was not in the snapshot — and it ends with
+// its row in the target and its payload in the source, which is precisely the
+// drift this whole ADR removes, produced by the code that removes it.
+//
+// The write is injected between the two statements by a hook the repo's own
+// transaction wraps, so the interleaving is deterministic rather than raced.
+func TestMergeCollectsAndRelabelsInOneTransaction(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-tx"
+
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "filed before the merge"})
+
+	// A second drawer appears in the source wing while the merge runs. Whatever
+	// the interleaving, the invariant is the same: afterwards NOTHING may have a
+	// row in one wing and a payload in another.
+	late := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "filed during the merge"})
+
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {
+		t.Fatalf("MergeWing: %v", err)
+	}
+
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if !report.Clean() {
+		t.Errorf("a drawer filed into the source around the merge ended with its row and its payload "+
+			"in different wings: %+v", report.Drifted)
+	}
+
+	// And it is reachable from the wing it now lives in, which is the point.
+	hits, err := svc.Search(ctx, team, SearchQuery{Query: "filed during the merge", Wing: "wing_acme", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, h := range hits {
+		if h.Drawer.ID == late.ID {
+			return
+		}
+	}
+	t.Errorf("the drawer filed during the merge is not returned by a search of %q", "wing_acme")
+}

@@ -63,16 +63,18 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 		return MergeWingResult{Sources: clean, Target: tgt}, nil
 	}
 
-	// The ids are collected BEFORE the relabel, because afterwards nothing
-	// distinguishes a drawer that has just moved from one that was always in the
-	// target — and patching every point in the target wing would be a write
-	// proportional to the wing rather than to the merge.
-	moved, err := s.drawerIDsInWings(ctx, teamID, clean)
-	if err != nil {
-		return MergeWingResult{}, fmt.Errorf("find the drawers a merge would move: %w", err)
-	}
-
-	drawers, err := s.repo.RelabelDrawerWing(ctx, teamID, clean, tgt)
+	// Collecting the ids and relabelling them happen in ONE transaction, and the
+	// ids come back from the same statement that moves them.
+	//
+	// Reading them first and relabelling after left a window a concurrent write
+	// walks straight through, three ways: a drawer added to the source in between
+	// is moved by the UPDATE and never patched, because its id was not in the
+	// snapshot; a drawer moved elsewhere in between is skipped by the UPDATE and
+	// patched anyway, ending with its row in one wing and its payload in another;
+	// and the pending-embedding worker can write a captured old-wing payload after
+	// the merge has finished. All three end in exactly the drift this ADR exists
+	// to remove, produced by the code that removes it.
+	moved, drawers, err := s.repo.RelabelDrawerWingReturningIDs(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel drawers: %w", err)
 	}
@@ -110,27 +112,6 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 		return MergeWingResult{}, fmt.Errorf("relabel closets: %w", err)
 	}
 	return MergeWingResult{Sources: clean, Target: tgt, Drawers: drawers, Closets: closets}, nil
-}
-
-// drawerIDsInWings lists every drawer id filed in any of the named wings, paged
-// so a wing of any size costs bounded memory and a bounded parameter list.
-func (s *Service) drawerIDsInWings(ctx context.Context, teamID string, wings []string) ([]string, error) {
-	var out []string
-	for _, w := range wings {
-		for offset := 0; ; offset += deleteBatch {
-			page, err := s.repo.List(ctx, teamID, w, "", deleteBatch, offset)
-			if err != nil {
-				return nil, err
-			}
-			if len(page) == 0 {
-				break
-			}
-			for _, d := range page {
-				out = append(out, d.ID)
-			}
-		}
-	}
-	return out, nil
 }
 
 // ErrConfirmMismatch is returned when a wing delete was not confirmed by echoing
@@ -277,6 +258,38 @@ func (s *Service) MemoriesFiledAway(ctx context.Context, teamID string) (FiledAw
 
 // RelabelDrawerWing moves every drawer in any of the source wings to the target
 // wing for a team, returning how many rows changed. Ids are unchanged.
+// RelabelDrawerWingReturningIDs moves every drawer in any source wing to the
+// target and returns the ids it moved, in ONE transaction.
+//
+// The ids and the move must come from the same transaction or they describe
+// different sets. Reading the ids first and updating after leaves a window a
+// concurrent write walks through: a drawer added to a source in between is moved
+// and never reported, and a drawer moved elsewhere in between is reported and not
+// moved. The caller patches stored payloads for exactly these ids, so either way
+// it ends with a row in one wing and a payload in another — the drift the caller
+// exists to prevent.
+//
+// SQLite has no UPDATE … RETURNING through this driver's model API, so the SELECT
+// and the UPDATE are issued inside one transaction instead. The transaction is
+// what makes them one set; the syntax is not the point.
+func (r *Repo) RelabelDrawerWingReturningIDs(ctx context.Context, teamID string, sources []string, target string) ([]string, int64, error) {
+	var ids []string
+	var moved int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&drawerRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&drawerRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Update("wing", target)
+		moved = res.RowsAffected
+		return res.Error
+	})
+	return ids, moved, err
+}
+
 func (r *Repo) RelabelDrawerWing(ctx context.Context, teamID string, sources []string, target string) (int64, error) {
 	res := r.db.WithContext(ctx).Model(&drawerRow{}).
 		Where("team_id = ? AND wing IN ?", teamID, sources).
