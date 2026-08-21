@@ -6,7 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-002 (reads the anchored arms off these tables), ADR-003 (its truth table is one of the numbers this ADR shows cannot currently be read), ADR-004 (its supersession row is the behaviour this ADR generalises)
 **Invalidates:** none — checked (grepped ADR-001..006 for `EvalReport`, `printPool`, `ClosetDelta`, `--cases`: ADR-002/003/004 CONSUME these tables and none of them depends on how a number is labelled)
-**Served-path change:** None on the retrieval path — this ADR changes only what the eval PRINTS. Deliberate, and the point: the numbers an operator reads decide which production change is worth making, so an eval that misreports its population misroutes every downstream decision. 0 of 3 tasks done.
+**Served-path change:** None on the retrieval path — this ADR changes only what the eval PRINTS. Deliberate, and the point: the numbers an operator reads decide which production change is worth making, so an eval that misreports its population misroutes every downstream decision. 1 of 3 tasks done (T3).
 
 ## Context
 
@@ -15,6 +15,8 @@ Six eval tables were taken on 2026-08-20 across two palaces (~240 drawers and ~5
 **Fixed already, and the precedent.** `printPoolDiagnosis` took the worst `NotFound` across arms, and `NotFound` counts a different population per arm: `ArmProduction` is `ScopePage` and is scored over the page `Search` returns, not the shared pool. So a run printed *"38 of 100 question(s) had their answer OUTSIDE the candidate pool"* four lines below a ceiling reporting **97% in pool**. The number was `cases − recall@5`, carrying nothing the recall column did not already have. Its own remedy disproved it: raising `--pool` from 128 to 256 moved it 38 → 36, while genuine pool misses went 3 → 4. A pool-miss count can only fall when the pool grows.
 
 **Still live: a comparison whose two arms are identical prints a clean null.** Every one of the six tables printed the closet row as `admitted 96-97, ΔMRR +0.000, 95% paired CI [0.00–0.00], moved 0`. Read plainly that says the curation prior makes no difference. It says nothing of the kind: `select count(*) from closets` is **empty** on both palaces, so `hybrid` and `hybrid+closet` are the same arm and agree to three decimals because they are identical. ADR-003's truth table is read off exactly this contrast, so ADR-003 is not blocked on corpus size as recorded — it is blocked on `mine` having run. The eval already prints `moved`, which is the only reason anybody could tell; it just does not act on it.
+
+**Still live, and one level down: a run does not name the ranking it measured.** The run record carried the pool, the closet scale, the BM25 weight and the rerank settings. It named neither the fusion nor the lexical normaliser — both of which became configurable and both of which had their defaults flipped since. Two runs at the same commit, one on rrf and one on linear, produce different numbers and identical records. Found by review while T3 was being built, and folded into it: it is this ADR's own principle applied to the run's configuration rather than to its population.
 
 **Still live: runs are silently incomparable.** Without `--cases`, `loadOrGenerateCases` (`cmd/server/eval.go:509`) samples `--n` drawers and generates fresh questions; the file is only read or written when the flag is set. Four n=30 runs were therefore four different question sets, and the table labelled a `BEST` arm in each with nothing saying the questions had changed. The label moved between `rerank blend w=0.75` and `w=0.50` across them, and was read — by us, in this repository — as three tables agreeing on a configuration. They were three samples.
 
@@ -56,6 +58,7 @@ This is valid for the eval's own output. It does not make runs comparable; it ma
 | `EvalReport` gains `CaseSetID` and `CaseSetOrigin` (`generated` \| `replayed`) | add | `cmd/server/eval.go` | the table header, the `.cells.json` run record |
 | the `BEST` column | change — names the case set it is best over | `cmd/server/eval.go` | every reader of a table |
 | `palace.ClosetDelta` | change — takes the corpus's closet count so it can tell "no effect" from "no input" | `internal/palace/evalstats.go` | `cmd/server/eval.go` |
+| the run record gains `ranking`, the RESOLVED profile the service ranked with | add | `cmd/server/eval.go` (from `palace.Service.RankingProfile()`) | every reader of a `.cells.json` |
 
 ## Inter-task Contracts
 

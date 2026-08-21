@@ -1287,3 +1287,31 @@ func TestArmScopeRefusesToGuess(t *testing.T) {
 			"stop.", got)
 	}
 }
+
+// TestEvaluateStampsTheCaseSetItScored is the reachability half of the case-set
+// id: the function existing and being correct proves nothing if the production
+// path never calls it.
+//
+// Deleting the stamp from EvaluateWith left every test in cmd/server green,
+// because each of those passes a report it built by hand. This one takes the
+// report the evaluator actually produced.
+func TestEvaluateStampsTheCaseSetItScored(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-caseset"
+
+	gold := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions",
+		Content: "the rerank pool ships at ten because the cross encoder is linear in pool size"})
+	cases := []EvalCase{{Query: "how big is the rerank pool", Expect: gold.ID, Wing: "wing_acme"}}
+
+	report, err := svc.EvaluateWith(ctx, team, cases, 10, EvalOptions{CaseSetOrigin: CaseSetGenerated}, nil)
+	if err != nil {
+		t.Fatalf("EvaluateWith: %v", err)
+	}
+	if want := CaseSetID(cases); report.CaseSetID != want {
+		t.Errorf("the evaluator scored a case set and stamped %q; the cases it was handed hash to %q", report.CaseSetID, want)
+	}
+	if report.CaseSetOrigin != CaseSetGenerated {
+		t.Errorf("the report says origin %q, but the caller declared %q", report.CaseSetOrigin, CaseSetGenerated)
+	}
+}

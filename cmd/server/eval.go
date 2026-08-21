@@ -101,16 +101,18 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 
-	cases, from, runMeta, err := loadOrGenerateCases(ctx, c, svc, team, out)
+	src, err := loadOrGenerateCases(ctx, c, svc, team, out)
 	if err != nil {
 		return err
 	}
+	cases, runMeta := src.Cases, src.Meta
 	if len(cases) == 0 {
 		return fmt.Errorf("no eval cases: the wing has no drawers, or the generator produced nothing usable")
 	}
 
-	fmt.Fprintf(out, "\n%d case(s) %s, style %s, pool %d, corpus %s\n\n",
-		len(cases), from, c.String("style"), c.Int("pool"), corpusLabel(c.String("wing")))
+	fmt.Fprintf(out, "\n%d case(s) %s, style %s, pool %d, corpus %s, case set %s (%s)\n\n",
+		len(cases), src.Label, c.String("style"), c.Int("pool"), corpusLabel(c.String("wing")),
+		palace.CaseSetID(cases), src.Origin)
 	// Every arm runs per case, and a reranked arm is real inference, so a case can
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
@@ -138,7 +140,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	}
 
 	report, err := svc.drawers.EvaluateWith(ctx, team.ID, cases, c.Int("pool"),
-		palace.EvalOptions{Contextual: c.Bool("contextual"), AllowDegraded: c.Bool("allow-degraded")},
+		palace.EvalOptions{Contextual: c.Bool("contextual"), AllowDegraded: c.Bool("allow-degraded"), CaseSetOrigin: src.Origin},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
 		})
@@ -174,6 +176,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 			Pool: c.Int("pool"), Cases: len(cases),
 			ClosetScale: cfg.ClosetBoost, BM25Weight: cfg.BM25Weight,
 			RerankConfigured: cfg.RerankURL != "", RerankWeight: cfg.RerankWeight, RerankPool: cfg.RerankPool,
+			Ranking: svc.drawers.RankingProfile(),
 		}
 		if err := writeCells(cPath, report, runMeta, rec); err != nil {
 			fmt.Fprintf(out, "  (could not save the run record: %v)\n", err)
@@ -503,11 +506,26 @@ func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question str
 	return "", nil
 }
 
+// caseSource is where a run's questions came from: the cases themselves, a label
+// for the header line, the provenance of the file when one was replayed, and
+// whether the run replayed saved questions or wrote its own.
+//
+// Origin is grouped with the rest rather than derived by the caller because only
+// this function knows it — the "--cases names a file that does not exist yet"
+// branch is a generate-then-save run, and from the outside it is indistinguishable
+// from a replay.
+type caseSource struct {
+	Cases  []palace.EvalCase
+	Label  string
+	Meta   caseFileMeta
+	Origin string
+}
+
 // loadOrGenerateCases returns the cases, a label saying where they came from,
 // and the provenance of the case file when one was replayed. The provenance
 // travels because a replayed file's questions were written by whatever generator
 // made it, which need not be the one this machine is configured with.
-func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, caseFileMeta, error) {
+func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) (caseSource, error) {
 	var replayMeta caseFileMeta
 	path := c.String("cases")
 	if path != "" {
@@ -529,7 +547,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 				// A CORRUPT file, or a missing one among several, silently shrank
 				// the case set once; the label still said "from N files" and no
 				// run was comparable with any other.
-				return nil, "", replayMeta, fmt.Errorf("cases file %s: %w", f, err)
+				return caseSource{}, fmt.Errorf("cases file %s: %w", f, err)
 			}
 		}
 		if len(merged) > 0 {
@@ -537,20 +555,20 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			if len(files) > 1 {
 				label = fmt.Sprintf("from %d files", len(files))
 			}
-			return merged, label, replayMeta, nil
+			return caseSource{Cases: merged, Label: label, Meta: replayMeta, Origin: palace.CaseSetReplayed}, nil
 		}
 	}
 
 	if c.String("style") == "real" {
 		cases, from, err := generateRealCases(ctx, c, svc, team, out)
-		return cases, from, generatedMeta(c), err
+		return caseSource{Cases: cases, Label: from, Meta: generatedMeta(c), Origin: palace.CaseSetGenerated}, err
 	}
 	// Temporal cases are shaped differently — a pair is discovered before a
 	// question is written — so the style gets its own generation loop instead of
 	// growing this one a second set of skip reasons.
 	if c.String("style") == "temporal" {
 		cases, from, err := generateTemporalCases(ctx, c, svc, team, out)
-		return cases, from, generatedMeta(c), err
+		return caseSource{Cases: cases, Label: from, Meta: generatedMeta(c), Origin: palace.CaseSetGenerated}, err
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -561,14 +579,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// questions are what a re-run must hold constant, and they are on disk.
 	drawers, err := svc.drawers.SampleDrawers(ctx, team.ID, c.String("wing"), c.Int("n"))
 	if err != nil {
-		return nil, "", replayMeta, fmt.Errorf("sample drawers: %w", err)
+		return caseSource{}, fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		// Named distinctly rather than folded into runEval's "no eval cases": an
 		// empty corpus and a broken generator are different faults with different
 		// fixes, and reporting them with one sentence sent the reader to inspect a
 		// wing that was never the problem.
-		return nil, "", replayMeta, fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
+		return caseSource{}, fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
 			corpusLabel(c.String("wing")), team.Slug)
 	}
 
@@ -596,7 +614,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// times is thirty lines that say one thing — while the run still takes as long
 	// as a working one.
 	if _, err := gen.ask(ctx, drawers[0].Content); err != nil {
-		return nil, "", replayMeta, fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
+		return caseSource{}, fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
 	genStart := time.Now()
@@ -614,7 +632,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			// Later failures still skip, because by then the generator has proven it
 			// works and the fault is that drawer's.
 			if i == 0 {
-				return nil, "", replayMeta, fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
+				return caseSource{}, fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
 					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
 					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
 			}
@@ -654,7 +672,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
 		}
 	}
-	return cases, "generated", replayMeta, nil
+	return caseSource{Cases: cases, Label: "generated", Meta: replayMeta, Origin: palace.CaseSetGenerated}, nil
 }
 
 // genURL is where the question generator runs. It defaults to the embedder's
@@ -962,6 +980,18 @@ func writeCases(path string, cases []palace.EvalCase, meta caseFileMeta) error {
 	return nil
 }
 
+// caseSetLabel names the questions a verdict was computed over. A run with no
+// stamped id predates the stamp; saying so is the correct reading of it.
+func caseSetLabel(report palace.EvalReport) string {
+	if report.CaseSetID == "" {
+		return "an unidentified case set"
+	}
+	if report.CaseSetOrigin == "" {
+		return "case set " + report.CaseSetID
+	}
+	return fmt.Sprintf("case set %s (%s)", report.CaseSetID, report.CaseSetOrigin)
+}
+
 // printEvalTable renders the arms and the cases every arm missed.
 func printEvalTable(out io.Writer, report palace.EvalReport) {
 	for _, w := range report.Warnings {
@@ -989,7 +1019,11 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		case len(m.Ranks) == 0:
 			verdict = "no scoreable cases"
 		case i == best:
-			verdict = "BEST"
+			// The case set is named ON this line and not only in the header. Four
+			// runs labelled a BEST arm over four different question sets, the label
+			// moved between configurations, and the tables were read as agreeing —
+			// the caveat has to sit where the quoted line is.
+			verdict = "BEST over " + caseSetLabel(report)
 		case len(m.Ranks) == len(report.Arms[best].Ranks):
 			if delta := palace.PairedDelta(m.Ranks, report.Arms[best].Ranks); delta.Contains(0) {
 				verdict = "inconclusive vs best (CI spans zero)"
@@ -1324,6 +1358,15 @@ type cellsConfig struct {
 	RerankConfigured bool
 	RerankWeight     float64
 	RerankPool       int
+	// Ranking is the RESOLVED profile the service ranked with — fusion, lexical
+	// weight and normaliser, closet scale, reranker. The record carried the
+	// closet scale and the BM25 weight and named neither the fusion nor the
+	// normaliser, so two runs at the same commit, one on rrf and one on linear,
+	// produced different numbers and identical records. Resolved rather than
+	// requested, because a reranker that was configured and did not come up is
+	// exactly the case where the two differ and only the resolved one describes
+	// what ranked.
+	Ranking string
 }
 
 // buildStamp reports the commit the running binary was built from, and whether
@@ -1358,6 +1401,10 @@ func buildStamp() (commit string, dirty bool) {
 // carry nothing that came out of the palace: this file is committed to a public
 // repository, the palace it measures is private, and the case files and results
 // that DO hold queries and drawer ids stay untracked beside it.
+//
+// The case-set id is the one entry derived from palace content, and it is
+// admissible because it is a one-way hash: it identifies a question set to
+// anyone who already holds it and discloses nothing to anyone who does not.
 func writeCells(path string, report palace.EvalReport, meta caseFileMeta, cfg cellsConfig) error {
 	commit, dirty := buildStamp()
 
@@ -1386,6 +1433,9 @@ func writeCells(path string, report palace.EvalReport, meta caseFileMeta, cfg ce
 		"rerank_configured": cfg.RerankConfigured,
 		"rerank_weight":     cfg.RerankWeight,
 		"rerank_pool":       cfg.RerankPool,
+		"ranking":           cfg.Ranking,
+		"case_set_id":       report.CaseSetID,
+		"case_set_origin":   report.CaseSetOrigin,
 		"warnings":          report.Warnings,
 		"cells":             cells,
 	}

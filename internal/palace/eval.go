@@ -2,6 +2,8 @@ package palace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -187,6 +189,43 @@ const (
 	CatAbsent = "absent"
 )
 
+// CaseSetOrigin values: whether a run replayed questions somebody saved, or
+// wrote its own that nobody else will ever see.
+const (
+	CaseSetGenerated = "generated"
+	CaseSetReplayed  = "replayed"
+)
+
+// CaseSetID is the identity of a set of questions.
+//
+// It is derived from the CONTENT of the cases and from nothing else — not the
+// file they came from, not its path, not the order they happen to sit in.
+// Reordering one set must not change it, or replaying a saved file produces a
+// different id from the run that wrote it, and an id that changes on a cosmetic
+// difference trains people to ignore it.
+//
+// It is a one-way hash, which is why it is admissible in the committed run
+// record where the queries themselves are not: it identifies a case set to
+// anyone who already holds it, and discloses nothing to anyone who does not.
+func CaseSetID(cases []EvalCase) string {
+	lines := make([]string, 0, len(cases))
+	for _, c := range cases {
+		// A copy, sorted: two orderings of one case's accepted answers are one
+		// case. nil and an empty slice must canonicalise identically, because
+		// ExpectAny is `json:",omitempty"` — an empty slice is written as absent
+		// and read back nil, so any other treatment makes every replay disagree
+		// with the run that saved it.
+		alts := append([]string(nil), c.ExpectAny...)
+		sort.Strings(alts)
+		lines = append(lines, strings.Join([]string{
+			c.Query, c.Expect, strings.Join(alts, "|"), c.Wing, c.category(), c.Distractor,
+		}, "\x1f"))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\x1e")))
+	return "cs-" + hex.EncodeToString(sum[:6])
+}
+
 // EvalCase is one labelled question: the query, the drawer that should come back
 // for it, and what kind of question it is.
 type EvalCase struct {
@@ -265,6 +304,13 @@ func pct(n, total int) float64 {
 type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
+
+	// CaseSetID and CaseSetOrigin identify the questions this report scores.
+	// Without them a BEST label is a claim about one sample that reads as a claim
+	// about the system: four runs were compared across four different question
+	// sets before these existed, and nothing in any of the four tables said so.
+	CaseSetID     string
+	CaseSetOrigin string
 
 	// Warnings are conditions that changed what was measured — a degraded
 	// reranker, a skipped arm. They are part of the result, because a table whose
@@ -349,6 +395,10 @@ type EvalOptions struct {
 	// this eval has already once produced a full table of "reranked" numbers that
 	// were silently the hybrid order, and a loud stop is the only reliable cure.
 	AllowDegraded bool
+	// CaseSetOrigin says whether the caller replayed saved questions or generated
+	// its own. Only the caller knows; the report carries it so the table and the
+	// run record cannot disagree about it.
+	CaseSetOrigin string
 }
 
 // Evaluate scores every arm over the cases. poolSize is how many neighbours the
@@ -363,7 +413,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	if poolSize <= 0 {
 		poolSize = 50
 	}
-	report := EvalReport{}
+	report := EvalReport{CaseSetID: CaseSetID(cases), CaseSetOrigin: opts.CaseSetOrigin}
 
 	// Preflight the reranker with ONE probe before scoring hundreds of cases
 	// against it. A dead reranker degrades every reranked arm to the hybrid order
