@@ -1434,3 +1434,61 @@ func TestAbstentionStatsAreContrastiveNotAbsolute(t *testing.T) {
 			"under a new name", d.TopGap)
 	}
 }
+
+// TestDistanceShapeIsAvailableWithoutAReranker pins that the page's shape is
+// measurable in the configuration the eval actually runs in by default.
+//
+// TopGap and ScoreSpread are computed from cross-encoder scores, so they are zero
+// whenever no reranker is configured — which is the DEFAULT. A statistic that
+// exists only under a non-default configuration is a statistic the report will
+// print nothing about, and "prints nothing" is indistinguishable from "there is no
+// signal here".
+//
+// Distances always exist, so the same shape is available from them. They are given
+// their OWN names rather than folded into TopGap: a gap over cross-encoder logits
+// and a gap over cosine distances are different quantities on different scales,
+// and one name for two facts is the defect this file has already fixed twice.
+//
+// Polarity is the thing to get right. Distance is lower-is-better, so a decisive
+// page — top document much closer than the rest — must produce a POSITIVE gap, the
+// same direction as the rerank gap, or the two signals would disagree about what
+// "good" means while sharing a report.
+func TestDistanceShapeIsAvailableWithoutAReranker(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t) // deliberately NO reranker: the default configuration
+	const team = "team-1"
+
+	for _, c := range []string{
+		"alpha beta gamma delta alpha beta gamma delta",
+		"zzzz yyyy xxxx wwww",
+		"qqqq pppp oooo nnnn",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "shape", Content: c}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	report, err := svc.Evaluate(ctx, team, []EvalCase{
+		{Query: "alpha beta gamma delta", Category: CatAbsent},
+	}, 10, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	d := report.Details[0]
+
+	if d.RerankScored {
+		t.Fatal("fixture unexpectedly reranked — this test exists for the un-reranked path")
+	}
+	if d.TopGap != 0 {
+		t.Errorf("TopGap is %v without a reranker; a cross-encoder gap with no cross-encoder "+
+			"is a number invented from nothing", d.TopGap)
+	}
+	if d.DistGap <= 0 {
+		t.Errorf("DistGap is %v on a page whose top document shares every query term and whose "+
+			"others share none — either the shape is not computed without a reranker, or its "+
+			"polarity is inverted so a decisive page reads as an indecisive one", d.DistGap)
+	}
+	if d.DistSpread <= 0 {
+		t.Errorf("DistSpread is %v on a page with clearly unequal distances", d.DistSpread)
+	}
+}

@@ -1307,6 +1307,9 @@ func printSeparation(out io.Writer, report palace.EvalReport) {
 	}
 	fmt.Fprintf(out, "  distributions OVERLAP — no max_distance separates them; a confidence gate needs a different signal\n")
 	printRerankSeparation(out, report)
+	// ...and this says WHICH different signal, instead of leaving the sentence
+	// above as advice nobody can act on.
+	printContrastiveSeparation(out, report)
 }
 
 // printRerankSeparation asks the same question of the cross-encoder's score.
@@ -1333,6 +1336,125 @@ func printRerankSeparation(out io.Writer, report palace.EvalReport) {
 	}
 	fmt.Fprintf(out, "  overlapping too — but compare the medians: %.3f against %.3f is the size of the signal available\n",
 		median(gold), median(absent))
+}
+
+// printContrastiveSeparation ranks every available signal by how well it actually
+// separates answerable from unanswerable, and names the winner.
+//
+// The distance report above ends by saying the distributions overlap and "a
+// confidence gate needs a different signal" — and then does not say which. The
+// answer is measurable from the same run, so it is measured here rather than left
+// to the reader's eye on two medians.
+//
+// The signals are of two KINDS. A level (top_rerank) is where the best document
+// scored; a shape (the gaps and spreads) is how that score stood relative to the
+// rest of the page. A similarity score has no anchored zero and its scale moves
+// with the query, which is why the query-performance-prediction family is built
+// from shapes. Which kind wins HERE is what this prints, because that is a
+// property of the corpus and not of the argument.
+//
+// AUC rather than a median gap, because it is threshold-free: two signals can show
+// the same median difference while one orders the cases far better, and a gate's
+// question is about ordering.
+//
+// Reached only when the distance distributions OVERLAP, which is deliberate: a run
+// where distance already separates cleanly has nothing to choose between, and the
+// caller has already said so.
+func printContrastiveSeparation(out io.Writer, report palace.EvalReport) {
+	type signal struct {
+		name string
+		pick func(palace.EvalCaseResult) float64
+		// higher reports whether a LARGER value means "answerable". Stated per
+		// signal rather than assumed, because getting it wrong silently inverts
+		// the AUC into a confident backwards answer.
+		higher bool
+	}
+	// Distance shapes exist on every page. Cross-encoder shapes exist only when a
+	// reranker ran, and listing them as flat zeros would put dead signals in the
+	// ranking at a meaningless AUC 0.50 — so they are offered only when something
+	// actually scored them.
+	signals := []signal{
+		{"dist_gap", func(d palace.EvalCaseResult) float64 { return d.DistGap }, true},
+		{"dist_spread", func(d palace.EvalCaseResult) float64 { return d.DistSpread }, true},
+	}
+	reranked := false
+	for _, d := range report.Details {
+		if d.RerankScored {
+			reranked = true
+			break
+		}
+	}
+	if reranked {
+		signals = append(signals,
+			signal{"top_rerank", func(d palace.EvalCaseResult) float64 { return d.TopRerank }, true},
+			signal{"top_gap", func(d palace.EvalCaseResult) float64 { return d.TopGap }, true},
+			signal{"score_spread", func(d palace.EvalCaseResult) float64 { return d.ScoreSpread }, true},
+		)
+	}
+
+	var answerable, unanswerable []palace.EvalCaseResult
+	for _, d := range report.Details {
+		if d.Population == palace.PopAbsent {
+			unanswerable = append(unanswerable, d)
+		} else {
+			answerable = append(answerable, d)
+		}
+	}
+	// An AUC over one class is undefined, not weak. Say nothing.
+	if len(answerable) == 0 || len(unanswerable) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "\nseparation by signal (n=%d answerable, %d unanswerable):\n",
+		len(answerable), len(unanswerable))
+	best, bestAUC := "", -1.0
+	for _, sg := range signals {
+		a := make([]float64, 0, len(answerable))
+		for _, d := range answerable {
+			a = append(a, sg.pick(d))
+		}
+		u := make([]float64, 0, len(unanswerable))
+		for _, d := range unanswerable {
+			u = append(u, sg.pick(d))
+		}
+		auc := separationAUC(a, u, sg.higher)
+		fmt.Fprintf(out, "  %-13s AUC %.2f\n", sg.name, auc)
+		if auc > bestAUC {
+			best, bestAUC = sg.name, auc
+		}
+	}
+	fmt.Fprintf(out, "  best separating signal: %s (AUC %.2f)", best, bestAUC)
+	switch {
+	case bestAUC >= 0.9:
+		fmt.Fprintf(out, " — strong enough to build the gate on\n")
+	case bestAUC >= 0.7:
+		fmt.Fprintf(out, " — usable, but calibrate the threshold on more cases than this\n")
+	default:
+		fmt.Fprintf(out, " — NO signal here separates; a gate built on any of them would be noise\n")
+	}
+}
+
+// separationAUC is the probability that a randomly chosen answerable case scores
+// above a randomly chosen unanswerable one, ties counted as half.
+//
+// Written out rather than pulled in: it is six lines, and the alternative is a
+// dependency for a statistic whose definition is the thing that has to be right.
+func separationAUC(answerable, unanswerable []float64, higher bool) float64 {
+	if len(answerable) == 0 || len(unanswerable) == 0 {
+		return 0
+	}
+	var wins, ties float64
+	for _, a := range answerable {
+		for _, u := range unanswerable {
+			switch {
+			case a == u:
+				ties++
+			case (a > u) == higher:
+				wins++
+			}
+		}
+	}
+	return (wins + 0.5*ties) / float64(len(answerable)*len(unanswerable))
 }
 
 // median of a sorted slice.

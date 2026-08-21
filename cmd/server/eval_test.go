@@ -719,3 +719,120 @@ func TestAbsentCaseOutcomeDropsOnVerifierError(t *testing.T) {
 			"from a case rejected for being answerable", reason)
 	}
 }
+
+// TestContrastiveSeparationNamesTheBestSignal pins that the eval reports WHICH
+// signal a confidence gate should be built on, rather than leaving the reader to
+// compare medians by eye.
+//
+// The existing report already ends by saying the distance distributions overlap
+// and "a confidence gate needs a different signal" — and then does not say which.
+// The answer is measurable from the same run: rank every available signal by how
+// well it actually separates answerable from unanswerable, and print the winner.
+//
+// AUC is used rather than a median gap because it is threshold-free. Two signals
+// can show the same median difference while one of them orders the cases far
+// better, and the gate's question is about ordering.
+func TestContrastiveSeparationNamesTheBestSignal(t *testing.T) {
+	// A report where the SHAPE separates perfectly and the LEVEL does not: every
+	// absent case has a small gap and every answerable one a large gap, while the
+	// top rerank score is deliberately uninformative.
+	var details []palace.EvalCaseResult
+	for i := 0; i < 6; i++ {
+		details = append(details, palace.EvalCaseResult{
+			Category: palace.CatSingle, Population: palace.PopReachable,
+			RerankScored: true, TopRerank: 5.0, TopGap: 3.0 + float64(i)*0.1,
+		})
+		details = append(details, palace.EvalCaseResult{
+			Category: palace.CatAbsent, Population: palace.PopAbsent,
+			RerankScored: true, TopRerank: 5.0, TopGap: 0.1 + float64(i)*0.1,
+		})
+	}
+	var buf strings.Builder
+	printContrastiveSeparation(&buf, palace.EvalReport{Details: details})
+	got := buf.String()
+
+	if !strings.Contains(got, "top_gap") {
+		t.Errorf("the report does not mention top_gap at all:\n%s", got)
+	}
+	// The level carries no signal here (every case scores 5.0), so naming it as
+	// the best would mean the ranking is not measuring separation.
+	if strings.Contains(got, "best separating signal: top_rerank") {
+		t.Errorf("named the constant signal as the best separator:\n%s", got)
+	}
+	if !strings.Contains(got, "best separating signal: top_gap") {
+		t.Errorf("did not name top_gap as the best separator despite perfect separation:\n%s", got)
+	}
+	if !strings.Contains(got, "1.00") {
+		t.Errorf("a perfectly separating signal should report AUC 1.00:\n%s", got)
+	}
+}
+
+// TestContrastiveSeparationStaysSilentWithoutBothPopulations pins that the report
+// says nothing rather than something wrong when a run has only one kind of case.
+//
+// An AUC needs both classes. Computed over one, it is not a weak number — it is
+// undefined, and printing a number there would be the confident-value-on-no-
+// evidence failure this repository keeps finding.
+func TestContrastiveSeparationStaysSilentWithoutBothPopulations(t *testing.T) {
+	var details []palace.EvalCaseResult
+	for i := 0; i < 4; i++ {
+		details = append(details, palace.EvalCaseResult{
+			Category: palace.CatSingle, Population: palace.PopReachable,
+			RerankScored: true, TopGap: float64(i),
+		})
+	}
+	var buf strings.Builder
+	printContrastiveSeparation(&buf, palace.EvalReport{Details: details})
+	if got := buf.String(); got != "" {
+		t.Errorf("reported a separation with no unanswerable cases to separate from:\n%s", got)
+	}
+}
+
+// TestContrastiveSeparationReadsTheDistanceSignals pins that the distance shapes
+// are actually READ by the report, in the configuration where they are the only
+// signals available.
+//
+// This test exists because a mutant found its absence: wiring dist_gap to a
+// constant zero broke nothing, since the only other test supplies reranked cases
+// and expects a rerank signal to win. The distance signals could have been
+// declared, listed, and never consulted — the exact shape of defect this
+// repository keeps finding, reproduced inside the check meant to prevent it.
+//
+// No case here is reranked, which is the DEFAULT configuration: if the report only
+// worked with a cross-encoder configured, it would print nothing on an ordinary
+// run and "prints nothing" is indistinguishable from "there is no signal".
+func TestContrastiveSeparationReadsTheDistanceSignals(t *testing.T) {
+	var details []palace.EvalCaseResult
+	for i := 0; i < 6; i++ {
+		details = append(details, palace.EvalCaseResult{
+			Category: palace.CatSingle, Population: palace.PopReachable,
+			RerankScored: false, DistGap: 0.40 + float64(i)*0.01,
+		})
+		details = append(details, palace.EvalCaseResult{
+			Category: palace.CatAbsent, Population: palace.PopAbsent,
+			RerankScored: false, DistGap: 0.01 + float64(i)*0.01,
+		})
+	}
+	var buf strings.Builder
+	printContrastiveSeparation(&buf, palace.EvalReport{Details: details})
+	got := buf.String()
+
+	if got == "" {
+		t.Fatal("the report printed nothing on an un-reranked run — the distance shapes are " +
+			"the only signals available there, and they exist on every page")
+	}
+	if !strings.Contains(got, "dist_gap") {
+		t.Errorf("dist_gap is not listed:\n%s", got)
+	}
+	if strings.Contains(got, "top_rerank") {
+		t.Errorf("listed a cross-encoder signal on a run where nothing was reranked — it would "+
+			"score a flat zero and sit in the ranking as a dead entry:\n%s", got)
+	}
+	if !strings.Contains(got, "best separating signal: dist_gap") {
+		t.Errorf("dist_gap separates perfectly here and was not named best — the report is not "+
+			"reading the field:\n%s", got)
+	}
+	if !strings.Contains(got, "1.00") {
+		t.Errorf("a perfectly separating signal should report AUC 1.00:\n%s", got)
+	}
+}

@@ -397,6 +397,22 @@ type EvalCaseResult struct {
 	// fitted on each and the better one chosen by measurement.
 	TopGap      float64
 	ScoreSpread float64
+	// DistGap and DistSpread are the same shape read from cosine DISTANCES, which
+	// exist on every page. TopGap and ScoreSpread need a cross-encoder and are
+	// therefore zero in the default configuration, where a report built only on
+	// them prints nothing — and "prints nothing" is indistinguishable from "there
+	// is no signal here".
+	//
+	// Named separately rather than folded into TopGap because a gap over
+	// cross-encoder logits and a gap over cosine distances are different
+	// quantities on different scales. One name for two facts is the defect this
+	// file has already carried twice.
+	//
+	// Polarity is normalised: distance is lower-is-better, so a decisive page
+	// yields a POSITIVE gap, the same direction as TopGap — the two never disagree
+	// about what "good" means while sharing a report.
+	DistGap    float64
+	DistSpread float64
 	// TopRerank is the production arm's cross-encoder score for the top document,
 	// and RerankScored says whether a reranker actually produced it. Carried per
 	// case rather than into the two flat GoldRerank/AbsentRerank arrays, which
@@ -574,6 +590,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			Population: populationOf(cat, poolRank),
 			TopRerank:  topRerank, RerankScored: scored,
 			TopGap: oc.TopGap, ScoreSpread: oc.ScoreSpread,
+			DistGap: oc.DistGap, DistSpread: oc.DistSpread,
 		})
 		s.accumulate(byArm, &report, EvalCaseResult{Category: cat, Ranks: ranks}, arms)
 		if cat != CatAbsent {
@@ -856,6 +873,8 @@ type caseOutcome struct {
 	TopRerank          float64
 	TopGap             float64
 	ScoreSpread        float64
+	DistGap            float64
+	DistSpread         float64
 	RerankScored       bool
 	PoolRank           int
 	DistractorPoolRank int
@@ -1049,10 +1068,12 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// to notice. Keying it means the deeper arm CANNOT overwrite the default
 	// page's number: there is no guard to forget, because there is no shared slot.
 	type prodTop struct {
-		rerank float64
-		gap    float64
-		spread float64
-		scored bool
+		rerank     float64
+		gap        float64
+		spread     float64
+		distGap    float64
+		distSpread float64
+		scored     bool
 	}
 	prodTops := map[EvalArm]prodTop{}
 
@@ -1157,8 +1178,15 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				for i, h := range page {
 					scores[i] = h.RerankScore
 				}
+				dists := make([]float64, len(page))
+				for i, h := range page {
+					// negated so lower-is-better becomes higher-is-better: one
+					// pageShape then serves both, with equal polarity
+					dists[i] = -h.Distance
+				}
 				gap, spread := pageShape(scores)
-				prodTops[arm] = prodTop{page[0].RerankScore, gap, spread, page[0].Reranked}
+				dGap, dSpread := pageShape(dists)
+				prodTops[arm] = prodTop{page[0].RerankScore, gap, spread, dGap, dSpread, page[0].Reranked}
 			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
@@ -1266,6 +1294,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		TopDistance: topDistance,
 		TopRerank:   prodTops[ArmProduction].rerank, RerankScored: prodTops[ArmProduction].scored,
 		TopGap: prodTops[ArmProduction].gap, ScoreSpread: prodTops[ArmProduction].spread,
+		DistGap: prodTops[ArmProduction].distGap, DistSpread: prodTops[ArmProduction].distSpread,
 		PoolRank: poolRank, DistractorPoolRank: distractorPoolRank, Degraded: rerankFailed,
 	}, nil
 }
