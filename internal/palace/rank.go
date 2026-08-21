@@ -608,12 +608,6 @@ func rankFused(query string, docs []string, distances, boosts []float64, vectorW
 // centred on the query's own terms rather than cut from the front.
 const DefaultSnippetChars = 400
 
-// Snippet returns the window of content most relevant to query, with an ellipsis
-// where text was removed. It returns content unchanged when it already fits.
-//
-// The window is chosen by term density, not position: the first paragraph of a
-// memory is usually its heading, and the sentence that answers the query is
-// usually not there.
 // SnippetHeadChars is how much of a memory's opening is always kept when the
 // snippet window would otherwise start past it.
 //
@@ -650,6 +644,12 @@ func SnippetWithHead(content, query string, maxChars int, isHead bool) string {
 	return strings.TrimSuffix(string(runes[:head]), " ") + " … " + strings.TrimPrefix(body, "…")
 }
 
+// Snippet returns the window of content most relevant to query, with an ellipsis
+// where text was removed. It returns content unchanged when it already fits.
+//
+// The window is chosen by term density, not position: the first paragraph of a
+// memory is usually its heading, and the sentence that answers the query is
+// usually not there.
 func Snippet(content, query string, maxChars int) string {
 	if maxChars <= 0 {
 		maxChars = DefaultSnippetChars
@@ -664,6 +664,28 @@ func Snippet(content, query string, maxChars int) string {
 		return string(runes[:maxChars]) + "…"
 	}
 	lower := []rune(strings.ToLower(content))
+	best, end := snippetWindow(runes, lower, terms, maxChars)
+	return renderSnippet(runes, best, end)
+}
+
+// renderSnippet turns a chosen window into the string the caller sees, marking
+// each side that was cut.
+func renderSnippet(runes []rune, start, end int) string {
+	out := string(runes[start:end])
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(runes) {
+		out += "…"
+	}
+	return out
+}
+
+// snippetWindow picks the [start,end) rune window of runes that carries the most
+// query terms. lower must be the lowercased form of the same content: ToLower
+// maps runes one for one, so the two index identically, and matching against a
+// pre-lowered copy avoids re-lowering a window per candidate position.
+func snippetWindow(runes, lower []rune, terms []string, maxChars int) (int, int) {
 
 	// Score each candidate window by how many query terms start inside it. A
 	// coarse stride keeps this linear-ish on long content while still landing
@@ -747,14 +769,7 @@ func Snippet(content, query string, maxChars int) string {
 			}
 		}
 	}
-	out := string(runes[best:end])
-	if best > 0 {
-		out = "…" + out
-	}
-	if end < len(runes) {
-		out += "…"
-	}
-	return out
+	return best, end
 }
 
 // reorderByRecency is a stable tie-break, not a ranker: within a band of fused
