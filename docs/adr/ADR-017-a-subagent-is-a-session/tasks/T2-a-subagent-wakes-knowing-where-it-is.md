@@ -5,7 +5,7 @@
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
 **Produces:** the registered `SubagentStart` hook and the shipped agent definitions
-**Consumes:** T1's compliance measurement — its result decides whether this task instructs or acts
+**Consumes:** T1's compliance measurement — its result decides whether the INJECTION half of this task is built at all. The agent definitions half ships either way, because it changes what is possible rather than what is asked.
 **Data dependency:** hermetic for the tests
 
 ## Goal
@@ -27,7 +27,7 @@ Every subagent dispatched on a machine with agentsmemory installed starts with i
 1. Write the failing tests first (TDD red): `TestInstallerRegistersSubagentStart`, `TestSubagentContextNamesTheWing`, `TestSubagentContextStaysShort`. Commit them red.
 2. Register the hook through `ensureHook`, with the same supersession predicate the other three use, so a re-install replaces rather than duplicates.
 3. The injected context names the WING and the one recall call. It does not restate the protocol: a subagent has one job and a budget, and the precedent on the reference machine injects roughly one paragraph.
-4. Ship agent definitions whose `tools:` include the `am_*` tools. An instruction to call a tool the agent does not have is worse than silence — it produces an agent that reports it could not comply.
+4. Ship agent definitions whose `tools:` include the `am_*` tools. This half is unconditional: an agent whose definition restricts tools cannot call memory however it is instructed, and it is the only part of this ADR that cannot fail for compliance reasons. A `general-purpose` subagent already has all 41 and can call them — measured — so this is for the restricted definitions, of which this repository currently ships none and the machine ships three.
 5. Correct `README.md`. It claims the memory-first workflow "applies every session", which was false for subagents; it must now either be true or say what it covers.
 6. Falsify: drop the registration; let the context omit the wing; let it grow past the ceiling.
 7. Run the acceptance command.

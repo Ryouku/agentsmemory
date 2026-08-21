@@ -12,11 +12,23 @@
 
 Reported by a colleague and confirmed 2026-08-21 against this machine's own configuration. Every finding below is a line of code or a line of config, not an inference.
 
-**Read side — a subagent never recalls.**
+**Read side — a subagent recalls nothing, and NOT because it cannot.**
 
-- `clients/claude-code/installer.go:674,702,713` registers exactly three hook events: `Stop`, `SessionStart`, `SessionEnd`. All three are MAIN-session events. Nothing fires when a subagent starts.
-- The fix's shape is already proven on this machine by a different product. `~/.claude/settings.json` carries `SubagentStart -> cbm-subagent-reminder`, installed by the codebase-memory MCP, which injects `hookSpecificOutput.additionalContext` into every subagent naming its tools and the order to call them in. Run by hand, it returns that context and exits 0. agentsmemory has no counterpart.
-- The installer writes `CLAUDE.md`, `bootstrap.md`, `commands/`, `hooks/` and `extensions/`. It writes nothing under `agents/`. That matters more than "no instructions": an agent definition may declare an explicit `tools:` allowlist — the three installed `codebase-memory-*` definitions all do — and for any agent defined that way the `am_*` tools are **not callable at all**, however it is instructed. Only a `tools: *` agent can reach them, and then only after a `ToolSearch`, because this repo's own `CLAUDE.md` documents that they load deferred.
+This section was written before the diagnostic below and said the opposite. It is corrected here rather than quietly rewritten, because what it got wrong changes which fix is worth building.
+
+A `general-purpose` subagent was dispatched with one instruction: report what it can see. It reported, and the report contradicts the first draft of this ADR:
+
+- **The protocol reaches it, in full, first.** The global `CLAUDE.md`, `agentsmemory-bootstrap.md` (inlined, not merely referenced), and this repo's `CLAUDE.md` and `AGENTS.md` were all present in the first system-reminder block, ahead of its task text. `AGENTS.md`'s hard gate — *"First action of every session in this repo… Before you read a file, plan, or write a line of code, confirm the `am_*` MCP tools are actually reachable"* — arrived verbatim.
+- **The tools are there and they work.** All 41 `am_*` names were visible as deferred tools; `ToolSearch` loaded a schema and `am_status` returned a real answer.
+
+So the read-side defect is not delivery. **It is compliance.** The instruction arrives complete, unconditional, and before anything else, and a subagent with one job reads its files and starts. That is a harder finding than a missing hook, and it invalidates the obvious fix: injecting more text into a context that already contains the whole gate verbatim is the least likely thing to change the outcome.
+
+Two structural gaps survive the correction, and only two:
+
+- **An agent whose definition declares a `tools:` allowlist cannot call `am_*` at all**, whatever reaches it. The three installed `codebase-memory-*` definitions are exactly that shape, and this repository ships no agent definitions of its own — the installer writes `CLAUDE.md`, `bootstrap.md`, `commands/`, `hooks/` and `extensions/`, and nothing under `agents/`.
+- **No `SubagentStart` hook.** `clients/claude-code/installer.go:674,702,713` registers `Stop`, `SessionStart` and `SessionEnd` — all main-session events. The reference machine shows what one is for: `SubagentStart -> cbm-subagent-reminder`, installed by a different product, injecting `additionalContext` that names its tools and the order to call them in. Whether that helps HERE is now an open question rather than an assumption, because the thing it would inject is already present.
+
+**The probe's own opinion is not evidence.** Asked whether it would have recalled unprompted, it said "likely yes". An agent asked whether it would have complied says yes; that is what the question selects for, and it is worth nothing next to a count of what dispatched agents actually did. T1 measures behaviour and does not ask.
 
 **Write side — a subagent never persists.**
 
@@ -27,7 +39,7 @@ Reported by a colleague and confirmed 2026-08-21 against this machine's own conf
 
 **And the protocol has considered subagents exactly once — to excuse them.** `AGENTS.md` mentions them twice: a passing note about `cqrs`, and the read-only review exception, which explicitly permits an agent dispatched to review to proceed with no memory at all. There is no corresponding rule for an agent dispatched to WORK.
 
-**Measured on this session, which is the uncomfortable part.** Two implementation subagents were dispatched an hour before this ADR with detailed instructions about which files to read and no instruction to recall anything. Nothing in their context would have prompted it. The author of this ADR produced the defect while investigating it, which is the strongest available evidence that instructing people is not the fix.
+**Measured on this session, which is the uncomfortable part.** Two implementation subagents were dispatched an hour before this ADR. Both received the full protocol and both had the tools — the probe establishes that — and neither reported recalling anything. The dispatcher gave them careful instructions about which files to read and said nothing about memory. So the failure had two independent causes at once: an instruction that arrived and was not followed, and a dispatcher who did not repeat it. The author of this ADR produced the defect while investigating it, which is the strongest available evidence that relying on either party to remember is not a mechanism.
 
 ## Existing Primitives Audit
 
@@ -41,20 +53,20 @@ Reported by a colleague and confirmed 2026-08-21 against this machine's own conf
 
 **A subagent is a session.** It gets the same two guarantees the protocol already promises: it wakes knowing where it is and what is already decided, and it does not finish without offering what it learned back.
 
-Three mechanisms, in the order they matter:
+Three mechanisms — and the order below is the corrected one. The first draft led with injecting context, which the diagnostic has since made the LEAST promising of the three.
 
-1. **A `SubagentStart` hook injects the wing and the recall instruction.** Not a copy of the whole bootstrap protocol — a subagent has one job and a budget, and a wall of text is how a reminder becomes scenery. It names the wing, states that `am_search` is the only source of cross-session *why*, and names the one call that answers it.
-2. **A `SubagentStop` hook carries the persist nudge**, defaulting to every subagent stop rather than once per session, because a subagent stops once.
-3. **Shipped agent definitions that name the `am_*` tools**, so an agent with a `tools:` allowlist can reach them. Without this, mechanisms 1 and 2 instruct an agent to call tools it does not have — which is worse than silence, because it produces a subagent that reports it could not comply.
+1. **Shipped agent definitions that name the `am_*` tools.** This is the one unambiguous structural fix: an agent whose definition restricts tools cannot call memory however it is instructed, and this repository ships no definitions at all. It is also the only one of the three that cannot fail for compliance reasons, because it changes what is possible rather than what is asked.
+2. **A `SubagentStop` hook carries the persist nudge**, defaulting to every subagent stop rather than once per session, because a subagent stops once. This is a harness prompt at a moment the agent is already stopping, not another paragraph competing with the ones it already skipped — a different mechanism from instruction, which is why it survives the correction.
+3. **A `SubagentStart` injection — ONLY if T1 shows an instruction changes behaviour.** The full protocol already reaches every subagent, first and verbatim, so this adds emphasis to text that is present and ignored. T1 measures exactly that. If compliance does not move, this part is WITHDRAWN and the deferred alternative is promoted: have the hook run the recall and inject the RESULTS, which removes the compliance question rather than restating it.
 
-**What would make this fail, and the data exists to check it today.** The claim is that a hook-injected instruction changes what a subagent does. It is falsifiable by dispatching a subagent with an ordinary task and reading its transcript for an `am_search` call: if the injection lands and the subagent still does not recall, the instruction is being ignored and more instruction is not the answer — the tools would need to be in the agent's definition and the recall done FOR it. That test is cheap, runs on this machine, and T1 performs it before T2 is written. Valid for Claude Code; codex and pi have their own hook models and are out of scope here.
+**What would make this fail, and the data exists to check it today.** For mechanism 3 the claim is that an injected instruction changes what a subagent does, and the diagnostic has already weakened it: the same instruction, at greater length, is present and not followed. It is falsifiable by dispatching subagents with ordinary tasks and counting how many recall before their first substantive action, with and without the injection. **Below a clear difference, mechanism 3 is withdrawn** — not softened, not shipped hopefully — and the honest reading becomes that a subagent will not be instructed into recalling and must either have it done for it or not have it. Mechanisms 1 and 2 do not depend on that result and ship either way. Valid for Claude Code; codex and pi have their own hook models and are out of scope.
 
 ## Alternatives Considered
 
-- **Rely on `CLAUDE.md` reaching subagents.** Rejected on evidence: whatever reaches them, two subagents dispatched from this very session did not recall, and the repo's own gate ("first action of every session") did not fire for either. A protocol that depends on being read by an agent with one job is not a mechanism.
+- **Rely on `CLAUDE.md` reaching subagents.** Rejected on evidence, and the evidence is stronger than expected: it DOES reach them — global `CLAUDE.md`, the bootstrap protocol inlined, the repo's `CLAUDE.md` and `AGENTS.md`, all in the first system-reminder block ahead of the task, with the hard gate verbatim. Two subagents dispatched from this session received all of it and recalled nothing. A protocol that arrives complete, first, and unconditionally, and is still not followed, has already been tried at full strength.
 - **Tell the dispatcher to instruct its subagents.** Rejected: that is the current state, and the author of this ADR failed it twice in the hour before writing it. It also puts the burden on every future prompt rather than on the install.
-- **Inject the whole bootstrap protocol into every subagent.** Rejected: it is thousands of tokens against a subagent's budget, most of it irrelevant to one task, and a reminder nobody can finish reading is a reminder nobody reads. The precedent on this machine injects roughly one paragraph.
-- **Have the hook perform the recall itself and inject the RESULTS.** Genuinely attractive — it removes the compliance question entirely — and rejected for now only because the hook does not know the task, so it would have to guess the query. Recorded as a deferral rather than a rejection: it is the strongest version of this idea and T1's measurement may argue for it.
+- **Inject the whole bootstrap protocol into every subagent.** Rejected, and now for a second and better reason: it is already there. The first rejection was cost — thousands of tokens against a subagent's budget, most of it irrelevant to one task. The diagnostic supplies the stronger one: this is the current state, and it is what does not work.
+- **Have the hook perform the recall itself and inject the RESULTS.** The strongest version, because it removes the compliance question instead of restating it — a subagent cannot skip a recall that already happened. Held back only because the hook does not know the task and would have to guess the query, and a wrong recall injected as fact is worse than none. It is now the named FALLBACK for mechanism 3 rather than a distant deferral: if T1 shows instruction does not move compliance, this is what replaces it.
 - **Mine sidechains retroactively instead.** Rejected as a substitute and kept as a complement: recovering what a subagent did after the fact is strictly worse than it recalling before it starts, but it is the only route for work already done.
 
 ## Component / Boundary Impact
@@ -100,7 +112,7 @@ Three tasks: `tasks/README.md`.
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| The injected instruction is read and ignored, so the fix ships and changes nothing | Med | High | T1 measures compliance on real dispatches BEFORE T2 is written, and the ADR names what to do if it fails: put the tools in the definition and recall for the agent rather than asking it |
+| The injected instruction is read and ignored, so the fix ships and changes nothing | **High — already observed at full strength** | High | The whole protocol already reaches every subagent and is not followed, so this is no longer a risk but a measured starting condition. T1 counts real dispatches with a control; below a clear difference the injection is WITHDRAWN and the recall is done for the agent instead. Mechanisms 1 and 2 do not depend on the result |
 | The context injection grows until it is scenery | High | Med | One paragraph, and T2's test asserts a length ceiling rather than trusting the author |
 | Subagent diary entries drown the human's own | Med | Med | T3 scopes what a subagent persists to findings and decisions, not a session summary; measured after one week of real use |
 | A hook that fails breaks every subagent dispatch | Low | High | Fail-open and always exit 0, copying `agentsmemory-verify-hook.sh`, whose comment already states this rule |

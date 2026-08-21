@@ -12,7 +12,9 @@
 
 Know whether injecting a recall instruction into a subagent actually changes what it does, before building the mechanism that injects it.
 
-The ADR's central risk is that the fix ships and changes nothing: a subagent has one job and a budget, and an instruction it did not ask for is the first thing a busy agent skips. If that is what happens, more instruction is the wrong answer and the tools have to be in the agent's definition with the recall done FOR it.
+**This is measured against a baseline that already contains the instruction.** A diagnostic dispatch established that every subagent receives the global `CLAUDE.md`, the bootstrap protocol inlined, and this repo's `CLAUDE.md` and `AGENTS.md` — including the hard gate, verbatim — in the first system-reminder block, ahead of its task. So the control arm is not "no instruction". It is "the entire protocol, and nothing else". The question is whether one more paragraph, closer to the task, moves a number that the full text does not.
+
+If it does not, more instruction is the wrong answer: the tools go in the agent definition and the recall is done FOR the agent.
 
 ## Affected Files
 
@@ -30,7 +32,7 @@ The ADR's central risk is that the fix ships and changes nothing: a subagent has
 4. Dispatch **five** subagents with ordinary, memory-silent coding tasks in a repo whose wing holds memories. Do not mention memory in any prompt.
 5. Count how many called `am_search` or `am_status` before their first substantive action. That count, out of five, is the measurement.
 6. Repeat once with the injection DISABLED, as the control. A compliance rate that is the same either way means the injection is not what caused it.
-7. Paste both numbers into the ADR's Context, with the date and the harness version.
+7. Paste both numbers into the ADR's Context, with the date and the harness version, and state which mechanisms the result keeps or withdraws.
 
 ## Acceptance
 
@@ -85,7 +87,7 @@ grep -qE 'without-injection: [0-9]+ of 5' docs/adr/ADR-017-a-subagent-is-a-sessi
 
 ## Stop Condition
 
-Stop and report if compliance with injection is not clearly higher than without. That is the ADR's pre-registered falsification: it means instruction is not the mechanism, and T2 must put the tools in the agent definition and do the recall rather than ask for it.
+Stop and report if compliance with injection is not clearly higher than without. That is the ADR's pre-registered falsification, and the diagnostic already makes it the likely outcome: the full protocol reaches every subagent first and verbatim and is not followed. It means instruction is not the mechanism — the injection half of T2 is WITHDRAWN, the agent definitions half ships regardless, and the hook's job becomes performing the recall rather than asking for one.
 
 ## Verification Log
 
