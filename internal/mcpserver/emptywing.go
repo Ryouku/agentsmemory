@@ -34,18 +34,32 @@ func emptyWingNote(ctx context.Context, wings wingReader, teamID, wing string) (
 	}
 	names, err := wings.WingNames(ctx, teamID)
 	if err != nil || len(names) == 0 {
-		return fmt.Sprintf("the wing %q holds no memories at all, so this is not a miss — nothing "+
-			"has ever been filed there.", wing), nil
+		return fmt.Sprintf("the wing %q holds no memories, so this is not a miss: there is nothing "+
+			"there to match.", wing), nil
 	}
-	note := fmt.Sprintf("the wing %q holds no memories at all, so this is not a miss — nothing has "+
-		"ever been filed there. Wings that do hold memories: %s.", wing, strings.Join(names, ", "))
+	// The suggestion searches every name; the NOTE lists a bounded few. This
+	// string goes into an agent's context window, and a workspace holding
+	// thousands of wings would spend the whole page on a list nobody reads.
+	shown := names
+	extra := ""
+	if len(shown) > maxWingsInNote {
+		extra = fmt.Sprintf(" (+%d more)", len(shown)-maxWingsInNote)
+		shown = shown[:maxWingsInNote]
+	}
+	note := fmt.Sprintf("the wing %q holds no memories, so this is not a miss: there is nothing there "+
+		"to match. Wings that do hold memories: %s%s.", wing, strings.Join(shown, ", "), extra)
 	if near := nearestWing(wing, names); near != "" {
 		note += fmt.Sprintf(" Did you mean %q? Pass wing:\"*\" to search every wing.", near)
 	} else {
 		note += " Pass wing:\"*\" to search every wing."
 	}
-	return note, names
+	return note, shown
 }
+
+// maxWingsInNote bounds how many wing names the note spells out. The note is
+// delivered to an agent, so its cost is context, and an unbounded list is a
+// diagnostic that crowds out the thing it is diagnosing.
+const maxWingsInNote = 20
 
 // nearestWing suggests the closest existing wing name, or "" when nothing is
 // close enough to be worth guessing. A wrong suggestion is worse than none: it
@@ -71,9 +85,17 @@ func nearestWing(want string, names []string) string {
 	return best
 }
 
+// commonPrefix counts how many leading CHARACTERS two names share.
+//
+// Runes, not bytes: the floor above is stated in characters, and a byte count
+// let a single three-byte rune clear a three-character bar — "wing_猫x" was
+// offered "wing_猫y" as a confident suggestion on one shared character. A wrong
+// suggestion sends an agent to a wing with nothing to do with its question,
+// which is worse than no suggestion at all.
 func commonPrefix(a, b string) int {
+	ar, br := []rune(a), []rune(b)
 	n := 0
-	for n < len(a) && n < len(b) && a[n] == b[n] {
+	for n < len(ar) && n < len(br) && ar[n] == br[n] {
 		n++
 	}
 	return n

@@ -42,12 +42,26 @@ echo "==> build"
 echo "==> restart"
 "${COMPOSE[@]}" up -d "$SVC" >/dev/null
 
+# The host port and the local token are configurable, and this script probed
+# 8080 with no Authorization header whatever they were set to: a server on
+# another port looked dead, and a server with AGENTSMEMORY_LOCAL_TOKEN set
+# answered 401 and was reported as "did not answer".
+PORT="${AGENTSMEMORY_HOST_PORT:-8080}"
+BASE="http://localhost:${PORT}"
+# Written as a single string rather than an array: macOS ships bash 3.2, where
+# "${ARR[@]}" on an EMPTY array is an unbound-variable error under `set -u`, and
+# this script died at the smoke step the first time it ran with no token set.
+AUTH_HEADER=""
+if [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ]; then
+  AUTH_HEADER="Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}"
+fi
+
 echo "==> wait for health"
 for _ in $(seq 1 60); do
-  curl -fsS -m 2 http://localhost:8080/healthz >/dev/null 2>&1 && break
+  curl -fsS -m 2 "$BASE/healthz" >/dev/null 2>&1 && break
   sleep 1
 done
-curl -fsS -m 5 http://localhost:8080/healthz >/dev/null || { echo "    server did not come back"; exit 1; }
+curl -fsS -m 5 "$BASE/healthz" >/dev/null || { echo "    server did not come back on $BASE"; exit 1; }
 
 echo "==> read the ARTIFACT that is serving, not the build log"
 if ! docker exec "$CONTAINER" grep -ac -- "$CONTROL" "$BIN" >/dev/null 2>&1; then
@@ -111,12 +125,31 @@ docker logs --since 10m "$CONTAINER" 2>&1 | grep -E "(ranking:|fusion:|reranker:
 
 echo "==> smoke: one real search through the endpoint agents call"
 start=$(date +%s)
-code=$(curl -s -o /tmp/redeploy-smoke.json -w '%{http_code}' -m 60 -X POST http://localhost:8080/mcp \
+code=$(curl -s -o /tmp/redeploy-smoke.json -w '%{http_code}' -m 60 -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"am_search","arguments":{"query":"reachability","limit":3,"snippet_chars":1}}}' || echo 000)
 elapsed=$(( $(date +%s) - start ))
 printf "    HTTP %s in %ss\n" "$code" "$elapsed"
 [ "$code" = "200" ] || { echo "    the endpoint agents call did not answer"; exit 1; }
+# HTTP 200 is not a successful search. MCP returns tool FAILURES inside a 200
+# JSON-RPC envelope, so a dead embedder answers 200 with an error in the body and
+# this script printed "deployed and verified" over it. The body was already
+# being saved and never read.
+if grep -q '"isError"[[:space:]]*:[[:space:]]*true' /tmp/redeploy-smoke.json ||
+   grep -q '"error"[[:space:]]*:[[:space:]]*{' /tmp/redeploy-smoke.json; then
+  echo "    the search returned HTTP 200 carrying an MCP error:"
+  head -c 400 /tmp/redeploy-smoke.json | sed 's/^/      /'
+  exit 1
+fi
+# The payload is a JSON string INSIDE the envelope, so its quotes arrive escaped.
+if ! grep -qE '\\?"count\\?"[[:space:]]*:' /tmp/redeploy-smoke.json; then
+  echo "    the search answered 200 with no result payload — this is not a working search:"
+  # Bounded, and deliberately short: this body carries real memory text, and a
+  # pasted deploy log is a public artifact.
+  head -c 200 /tmp/redeploy-smoke.json | sed 's/^/      /'
+  exit 1
+fi
 if [ "$elapsed" -gt 25 ]; then
   echo "    WARNING: ${elapsed}s is beyond what MCP clients have been observed to wait."
   echo "    A search that times out returns nothing, which is worse than a bad ranking."

@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -13,14 +14,14 @@ func TestEmptyWingIsDistinguishableFromAMiss(t *testing.T) {
 	// populated lists the wings that DO hold memories; the one being searched is
 	// absent from it, which is the case this closes.
 	w := fakeWings{
-		populated: map[string]bool{"wing_depozitas": true, "wing_craft": true, "wing_zeus": true},
-		names:     []string{"wing_depozitas", "wing_craft", "wing_zeus"},
+		populated: map[string]bool{"wing_acme": true, "wing_craft": true, "wing_atlas": true},
+		names:     []string{"wing_acme", "wing_craft", "wing_atlas"},
 	}
-	note, _ := emptyWingNote(context.Background(), w, "t", "wing_depozitas_laravel")
+	note, _ := emptyWingNote(context.Background(), w, "t", "wing_acme_laravel")
 	if note == "" {
 		t.Fatal("a wing holding nothing produced no note — an agent cannot tell a typo from an absence")
 	}
-	if !strings.Contains(note, "wing_depozitas") {
+	if !strings.Contains(note, "wing_acme") {
 		t.Errorf("the note does not suggest the near neighbour that DOES hold memories: %q", note)
 	}
 	if !strings.Contains(note, `wing:"*"`) {
@@ -50,10 +51,10 @@ func TestEmptyWingNoteFailsOpen(t *testing.T) {
 // TestNoSuggestionWhenNothingIsClose: a wrong suggestion is worse than none — it
 // sends an agent to a wing unrelated to its question.
 func TestNoSuggestionWhenNothingIsClose(t *testing.T) {
-	if got := nearestWing("wing_zzzzzz", []string{"wing_craft", "wing_infrastructure"}); got != "" {
+	if got := nearestWing("wing_zzzzzz", []string{"wing_craft", "wing_billing"}); got != "" {
 		t.Errorf("suggested %q for a name sharing nothing with it", got)
 	}
-	if got := nearestWing("wing_craf", []string{"wing_craft", "wing_zeus"}); got != "wing_craft" {
+	if got := nearestWing("wing_craf", []string{"wing_craft", "wing_atlas"}); got != "wing_craft" {
 		t.Errorf("a one-character typo was not matched: got %q", got)
 	}
 }
@@ -67,4 +68,52 @@ func TestStarAndEmptyAreNotWings(t *testing.T) {
 			t.Errorf("wing %q produced a note: %q", wing, note)
 		}
 	}
+}
+
+// TestEmptyWingNoteIsBoundedAndCountsCharacters covers three defects a review
+// found in the diagnostic, all of which fail in the direction of making the
+// note worse than no note.
+func TestEmptyWingNoteIsBoundedAndCountsCharacters(t *testing.T) {
+	t.Run("the note does not spend the page listing wings", func(t *testing.T) {
+		many := make([]string, 400)
+		for i := range many {
+			many[i] = fmt.Sprintf("wing_project%03d", i)
+		}
+		note, names := emptyWingNote(context.Background(),
+			fakeWings{names: many}, "team", "wing_missing")
+		if note == "" {
+			t.Fatal("an empty wing produced no note")
+		}
+		if len(names) > maxWingsInNote {
+			t.Errorf("the note carried %d wing names on the wire; the cap is %d", len(names), maxWingsInNote)
+		}
+		if !strings.Contains(note, "+380 more") {
+			t.Errorf("the note truncated the list without saying so: %q", note)
+		}
+		if len(note) > 2000 {
+			t.Errorf("the note is %d bytes — a diagnostic that crowds out what it diagnoses", len(note))
+		}
+	})
+
+	t.Run("one multibyte character is not three characters", func(t *testing.T) {
+		// "wing_猫x" vs "wing_猫y": one shared rune past the prefix, three shared
+		// BYTES. The byte count cleared the three-character floor and offered a
+		// confident suggestion on nothing.
+		if got := nearestWing("wing_猫x", []string{"wing_猫y"}); got != "" {
+			t.Errorf("suggested %q on a single shared character — the floor is counted in bytes", got)
+		}
+		// Three real characters still suggest.
+		if got := nearestWing("wing_acmee", []string{"wing_acme"}); got != "wing_acme" {
+			t.Errorf("three shared characters must still suggest; got %q", got)
+		}
+	})
+
+	t.Run("an emptied wing is not a wing nobody ever used", func(t *testing.T) {
+		note, _ := emptyWingNote(context.Background(),
+			fakeWings{names: []string{"wing_acme"}}, "team", "wing_gone")
+		if strings.Contains(note, "ever been filed") {
+			t.Errorf("the note claims nothing was ever filed there; a wing whose last memory was "+
+				"deleted is also empty: %q", note)
+		}
+	})
 }
