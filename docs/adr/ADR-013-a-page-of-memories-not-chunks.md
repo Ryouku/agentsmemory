@@ -91,6 +91,10 @@ on `Service`. `internal/mcpserver` exposes the latter as an argument on an exist
 - `am_search`'s `limit` now counts memories. A caller asking for 10 may receive 10 memories where it
   previously received 10 chunks of as few as 5.
 - `am_get_drawer` gains a `whole` argument: return every chunk of the memory, in order.
+- `rankOf` counts distinct memory slots rather than candidate positions, so every rank, MRR and
+  recall@k recorded before 2026-08-21 is on a different scale from every one after. No committed
+  evidence table is invalidated in practice — ADR-002 T3 and ADR-003 T3, which produce the tables,
+  are both pending — but a reader comparing an old number to a new one is comparing two quantities.
 - `search_events.Hits` changes meaning from "chunks returned" to "memories returned". ADR-001
   calibrates abstention from these rows, so rows written before and after this ADR are not
   comparable; the cutover date is recorded in `docs/adr/BACKLOG.md`.
@@ -105,9 +109,18 @@ on `Service`. `internal/mcpserver` exposes the latter as an argument on an exist
 ## Consequences
 
 An agent's context window stops carrying the same memory twice, and a `limit` finally means what a
-caller thinks it means. The eval and production begin measuring the same unit, which is a
-precondition for any ranking work being trustworthy — this is the change that makes ADR-002's and
-ADR-003's pending measurements worth taking.
+caller thinks it means.
+
+**Correction, 2026-08-21, after review.** An earlier version of this section claimed the eval and
+production now measure the same unit. That was too strong as first written. Collapsing in `Search`
+aligned the unit of an ANSWER; it did not align the arithmetic of a RANK. The eval folds onto
+memories BEFORE ranking and `rankOf` then counted raw candidate positions, so two chunks of an
+irrelevant memory above the gold reported "rank 3" for something the served page puts in slot 2 —
+the same mismatch one level down. `rankOf` now counts distinct memory slots. Found by a
+different-lineage reviewer reading the two folds against each other, not by any gate here.
+
+That makes this the change that lets ADR-002's and ADR-003's pending measurements be worth taking —
+and it means every MRR figure recorded before today is on a different scale from every one after.
 
 The cost is that `search_events` rows straddle a meaning change, and that a caller wanting the full
 text of a long memory now makes a second call.

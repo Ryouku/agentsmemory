@@ -181,3 +181,27 @@ func TestGetMemoryReturnsEveryChunkInOrder(t *testing.T) {
 			"reassemble the memory if it holds chunk 0", len(fromLater), len(chunks))
 	}
 }
+
+// TestRankOfCountsMemorySlotsNotChunkPositions: the eval's rank must be the slot
+// the agent sees the answer at, and since Search collapses sibling chunks that is
+// a count of MEMORIES above the gold, not of candidates.
+//
+// Without this, two chunks of an irrelevant memory sitting above the gold made
+// the eval report rank 3 for something the served page puts in slot 2 — the same
+// unit mismatch ADR-013 removed from Search, one level down, in the arithmetic.
+func TestRankOfCountsMemorySlotsNotChunkPositions(t *testing.T) {
+	// Two sibling chunks of memory A, then the gold B. Ordered as fetched.
+	ids := []string{"A", "A", "B"}
+	ordered := []int{0, 1, 2}
+	got := rankOf(ids, ordered, map[string]bool{"B": true})
+	if got != 2 {
+		t.Errorf("rankOf = %d, want 2: memory A occupies ONE slot on the served page however "+
+			"many of its chunks matched, so the gold is the second thing the agent sees", got)
+	}
+
+	// And the degenerate case still holds: no siblings, no change.
+	if got := rankOf([]string{"A", "B"}, []int{0, 1}, map[string]bool{"B": true}); got != 2 {
+		t.Errorf("rankOf with no sibling chunks = %d, want 2 — the fold must not move a rank "+
+			"when there is nothing to fold", got)
+	}
+}

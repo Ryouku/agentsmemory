@@ -629,9 +629,21 @@ const (
 )
 
 // ArmScope classifies an arm by the population its ranks — and therefore its
-// NotFound count — are taken over. It is exhaustive by construction: a new arm
-// with no scope fails TestSupersessionRanksScopePerArm rather than having its
-// number printed beside arms measuring something else.
+// NotFound count — are taken over. An arm this switch does not name returns the
+// EMPTY scope, which TestSupersessionRanksScopePerArm rejects.
+//
+// That default is the whole point and it used to be `ScopePool`. The doc comment
+// then claimed the function was "exhaustive by construction: a new arm with no
+// scope fails TestSupersessionRanksScopePerArm" — and the test's check is
+// `if ArmScope(arm) == ""`, which the default made unreachable for every possible
+// input. A new arm silently inherited ScopePool, so a page-scoped one would have
+// had its NotFound count summed with pool-scoped arms: exactly the
+// across-populations aggregation ADR-007 exists to stop. The claim was false, the
+// gate behind it had never been able to fail, and a different-lineage reviewer
+// found it by reading the default rather than the promise.
+//
+// Every arm is named explicitly below for the same reason — a reader can see the
+// classification without inferring it from what is missing.
 //
 // Exported because the scope is not only a supersession concern. Any reader that
 // aggregates NotFound across arms is summing different populations unless it
@@ -644,10 +656,32 @@ func ArmScope(arm EvalArm) SupersessionScope {
 		return ScopePage
 	case ArmContextual:
 		return ScopeOwnIndex
-	default:
+	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
+		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF:
 		return ScopePool
 	}
+	// The swept families are minted at run time — bm25Arm, rerankArm and
+	// recencyArm build their names with fmt.Sprintf — so a case list cannot name
+	// them. They all re-rank the SHARED pool, which is what the scope is about.
+	//
+	// This branch is why the empty default matters. While the fallback was
+	// ScopePool these arms were never classified at all; they merely landed on the
+	// right answer, and so would a page-scoped arm added tomorrow.
+	for _, family := range sweptArmPrefixes {
+		if strings.HasPrefix(string(arm), family) {
+			return ScopePool
+		}
+	}
+	// Unclassified. Not a scope — the absence of one, so it is visible rather than
+	// absorbed into whichever value happened to be the fallback.
+	return ""
 }
+
+// sweptArmPrefixes are the run-time-generated arm families, each pinned to the
+// function that mints it so a renamed format string is caught by
+// TestSweptArmPrefixesMatchWhatMintsThem rather than silently unclassifying a
+// whole family.
+var sweptArmPrefixes = []string{"fusion bm25=", "rerank blend w=", "fusion+recency band="}
 
 // caseOutcome is everything one case produced. It is a struct because evalCase
 // returned seven values including two bools and this task needed two more; a
@@ -1071,17 +1105,32 @@ func rankOf(ids []string, ordered []int, expect map[string]bool) int {
 	if len(expect) == 0 {
 		return 0
 	}
-	for rank, idx := range ordered {
+	// ids are MEMORY ids, so several candidates can carry the same one (sibling
+	// chunks). The rank that matters is the position the agent SEES the answer at,
+	// and since ADR-013 the served page collapses sibling chunks — so a memory
+	// occupies one slot however many of its chunks matched.
+	//
+	// Counting raw positions therefore overstated the rank of everything below a
+	// chunked memory: two chunks of an irrelevant memory above the gold pushed the
+	// gold to "rank 3" while the page put it in slot 2. The eval folded onto
+	// memories BEFORE ranking and then counted chunk positions, which is the same
+	// unit mismatch one level down from the one ADR-013 removed. Found by a
+	// different-lineage reviewer reading the two folds against each other.
+	seen := make(map[string]bool, len(ordered))
+	rank := 0
+	for _, idx := range ordered {
 		if idx < 0 || idx >= len(ids) {
 			continue
 		}
-		// ids are MEMORY ids here, so several candidates can carry the same one
-		// (sibling chunks). The first position ANY relevant memory reaches is the
-		// rank that matters: that is where the agent sees an answer. Generated
-		// cases carry a single-member set; judged real-query cases carry every
-		// memory the judge accepted.
+		if seen[ids[idx]] {
+			continue // a sibling chunk of a memory already counted: one slot, not two
+		}
+		seen[ids[idx]] = true
+		rank++
+		// Generated cases carry a single-member set; judged real-query cases carry
+		// every memory the judge accepted.
 		if expect[ids[idx]] {
-			return rank + 1
+			return rank
 		}
 	}
 	return 0

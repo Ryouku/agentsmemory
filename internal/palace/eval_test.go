@@ -1221,3 +1221,69 @@ func TestBothProductionArmsArePageScoped(t *testing.T) {
 		}
 	}
 }
+
+// TestSweptArmPrefixesMatchWhatMintsThem: ArmScope classifies the run-time arm
+// families by name prefix, so the prefixes must be the ones the minting functions
+// actually produce. A renamed format string would unclassify a whole family in
+// silence — every swept arm would return the empty scope and be dropped from a
+// comparison rather than compared wrongly, which is safer but just as invisible.
+//
+// It asks the minters rather than the source text: bm25Arm, rerankArm and
+// recencyArm are called for a value and their output must start with the prefix
+// that claims them.
+func TestSweptArmPrefixesMatchWhatMintsThem(t *testing.T) {
+	minted := []EvalArm{bm25Arm(0.4), rerankArm(0.5), recencyArm(0.02)}
+	if len(minted) != len(sweptArmPrefixes) {
+		t.Fatalf("%d minters against %d prefixes — one family is unrepresented on one side, "+
+			"and this check only covers the pairs it can see", len(minted), len(sweptArmPrefixes))
+	}
+	for _, arm := range minted {
+		matched := false
+		for _, p := range sweptArmPrefixes {
+			if strings.HasPrefix(string(arm), p) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("%q is minted by a swept family but matches no prefix in sweptArmPrefixes — "+
+				"ArmScope returns the empty scope for it, so it silently leaves every comparison",
+				arm)
+		}
+		if ArmScope(arm) != ScopePool {
+			t.Errorf("ArmScope(%q) = %q, want %q", arm, ArmScope(arm), ScopePool)
+		}
+	}
+	// And a prefix that matches nothing minted is a stale claim.
+	for _, p := range sweptArmPrefixes {
+		used := false
+		for _, arm := range minted {
+			if strings.HasPrefix(string(arm), p) {
+				used = true
+			}
+		}
+		if !used {
+			t.Errorf("prefix %q matches no arm any minter produces — it classifies nothing", p)
+		}
+	}
+}
+
+// TestArmScopeRefusesToGuess pins the fallback itself. Without this, restoring
+// `default: return ScopePool` passes every other test in the package — because
+// every arm that exists today IS pool-scoped, so the wrong fallback lands on the
+// right answer for all of them and the mistake only surfaces when someone adds a
+// page-scoped arm months later.
+//
+// That is exactly how it survived: the doc comment claimed a new arm with no
+// scope would fail TestSupersessionRanksScopePerArm, and that test's check is
+// `ArmScope(arm) == ""`, which the fallback made unreachable for every possible
+// input. A gate is not proven by the inputs that exist; it is proven by the input
+// it was written to reject.
+func TestArmScopeRefusesToGuess(t *testing.T) {
+	if got := ArmScope(EvalArm("an arm nobody has classified")); got != "" {
+		t.Errorf("ArmScope of an unknown arm = %q, want the empty scope.\n"+
+			"  A fallback that names a real population classifies every future arm as whatever "+
+			"today's arms happen to be, and a page-scoped arm added later has its NotFound count "+
+			"summed with pool-scoped ones — the across-populations aggregation ADR-007 exists to "+
+			"stop.", got)
+	}
+}
