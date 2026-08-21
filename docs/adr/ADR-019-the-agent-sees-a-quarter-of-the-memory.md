@@ -161,6 +161,62 @@ Three tasks: `tasks/README.md`.
 - **Negative:** the page grows. Several regions plus an identity line per hit is more bytes than one window, on every recall, and the budget that governs it has to be defended rather than assumed.
 - **Neutral:** `content_truncated` becomes a compatibility field — anything reading it keeps working and learns nothing new, which is its current state.
 
+## Measurement after T3 — re-judged 2026-08-21
+
+**The judge-free half first, because it needs nobody's judgement.** Comparing the 148 hits the same 32 queries return before and after, counting only region characters that are NOT already inside the snippet, since overlapping text is not a gain:
+
+| | |
+|---|---|
+| readable snippet characters, as before | 59,424 |
+| NOVEL region characters, added | **30,961 (+52%)** |
+| region excerpts carrying text the snippet did not | **306** |
+| hits carrying regions | 127 of 148 |
+| hits carrying an identity line | 145 of 148 |
+| **median fraction of the memory now reported to the agent** | **0.25** |
+| hits showing less than half of their memory | 133 of 148 |
+| hits showing the whole memory | 3 of 148 |
+
+The median coverage of 0.25 is the ADR's title measured on the wire rather than argued: an agent was reading a quarter of the median memory and had no way to know which quarter.
+
+Four queries gain nothing. Two are the empty-wing pair that returns no hits at all; the other two are a query already fully answered by its first window and one whose answer is in a wing that was not searched. Both are categories this ADR says it does not address.
+
+### The judged half, and the control that decides how to read it
+
+Two blind judges ran on the same rubric in the same session, neither knowing what changed. **Judge B** read the new pages. **Judge A** re-judged the byte-identical input file the previous round judged — a control for judge-instance variance, rather than an assumption about it.
+
+| | answer | partial | failure |
+|---|---|---|---|
+| previous round, recorded | 18 | 10 | 4 |
+| **A — control, identical input** | **20** | **8** | **4** |
+| **B — the new pages** | **23** | **5** | **4** |
+
+**The control is the most important number here, and it fired the pre-registration's own falsification clause.** On input that did not change by one byte, the score moved by 2 answers. Per-query agreement with the previous round was 30 of 32, and both disagreements sat on the answer/partial boundary. So **the measured noise floor of this instrument is ±2 answers on n=32**, and every comparison below is B minus A. Comparing B against the previous round would re-introduce exactly the cross-judge confound the control exists to remove.
+
+It also retroactively earns the caution already recorded above, that 18-versus-12 was not evidence of improvement. It was not. Neither would 23-versus-18 be.
+
+**B − A = +3 answers.** Three queries changed verdict, all upward; none regressed. The decomposition is what carries the result:
+
+| cause | A (control) | B (new pages) | B − A | can regions reach it? |
+|---|---|---|---|---|
+| snippet-cut | 3 | **1** | **−2** | yes — this is the mechanism |
+| synthesis | 2 | 1 | −1 | partly — one memory can supply more of a multi-part answer |
+| ranked-below | 2 | 2 | **0** | no — the memory never came back |
+| wing-scoping | 5 | 5 | **0** | no — the answer is in a wing nobody searched |
+| not-stored / duplicates | 0 | 0 | 0 | no |
+
+**The two causes the mechanism cannot reach are exactly unchanged, and the gain sits entirely in the two it can.** That distinction is what separates this from a judge simply being more generous: generosity does not stop at a category boundary. Of the 12 queries A did not call `answer`, 5 were in the reachable set; all 3 flips landed there. Under random assignment that is 10/220 ≈ **0.045** — small n, so a signal rather than a proof, but it is the shape a working mechanism makes and not the shape generosity makes.
+
+Two of the three flips were queries A had called `snippet-cut` verbatim. On one, A wrote that the right drawer ranked first *"but this window shows only the n=100 score table; the anchoring decision itself … sits outside the text shown"*; B read the same hit as carrying both the decision and, in a second region, its rationale.
+
+### What this does not establish
+
+- **+3 against a ±2 floor is barely outside it.** The honest reading is "improved, at roughly the resolution of the instrument", not a measured effect size. Nothing downstream should quote 23 as a score.
+- **The cause-level counts are individually unreadable.** `snippet-cut` moved 4→3 between two judges on identical input, so its own noise is ±1 and the −2 here is twice that at best. `wing-scoping` is the only cause count stable enough to read a delta from, being a fact about the page rather than a judgement — and it is the one this ADR does not touch.
+- **The two conditions differ by more than the page.** Judge B's instructions say text in any of the new fields counts as readable; judge A's say no such thing, because A's pages have only one field. Unavoidable, and still a difference between conditions beyond the content itself.
+- **n = 32, and the population is one palace.** This supports a direction. It does not put an interval on anything.
+
+**Verdict against T3's Stop Condition.** The condition asks the task to stop and report if the score is unchanged, since that would be evidence the page was never the binding constraint. It is not unchanged, but the margin is one answer wider than the floor, so the finding that actually survives is the judge-free one: an agent now receives 52% more of the text it was already retrieving, and is told what fraction it is looking at. The judged half is consistent with that helping, concentrated where the mechanism predicts, and too small an instrument to prove it.
+
 ## Out of Scope
 
 - Synthesis — answers spread across SEVERAL memories (permanent: a different capability from showing more of ONE memory, and the same judge scored it 1 of 32 on this corpus)

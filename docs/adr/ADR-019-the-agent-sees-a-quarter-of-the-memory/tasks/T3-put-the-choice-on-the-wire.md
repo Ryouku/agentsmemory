@@ -115,3 +115,4 @@ Stop and report if the re-judged score is unchanged. That is not a failed task �
   PASS
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcptest	0.255s
   ```
+- 2026-08-21 · d150b7e* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
