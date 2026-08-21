@@ -107,9 +107,25 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 					"rows: %w", tgt, tgt, err)
 		}
 	}
-	closets, err := s.repo.RelabelClosetWing(ctx, teamID, clean, tgt)
+	// Closets carry a wing in their stored payload too (upsertClosetVectors), and
+	// relabelling their rows without it leaves the same split this function exists
+	// to prevent. Closet search passes no filter TODAY, so nothing ranks wrongly
+	// yet — which is exactly why it would have gone unnoticed until the day
+	// somebody scopes it, and then look like a search bug rather than a merge one.
+	movedClosets, closets, err := s.repo.RelabelClosetWingReturningIDs(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel closets: %w", err)
+	}
+	for start := 0; start < len(movedClosets); start += deleteBatch {
+		end := start + deleteBatch
+		if end > len(movedClosets) {
+			end = len(movedClosets)
+		}
+		if err := s.vectors.SetPayload(ctx, closetNamespace(teamID), movedClosets[start:end], map[string]string{"wing": tgt}); err != nil {
+			return MergeWingResult{}, fmt.Errorf(
+				"the closets were relabelled to %q but their stored payloads were not; "+
+					"`agentsmemory doctor --index` shows the split: %w", tgt, err)
+		}
 	}
 	return MergeWingResult{Sources: clean, Target: tgt, Drawers: drawers, Closets: closets}, nil
 }
@@ -303,6 +319,27 @@ func (r *Repo) RelabelClosetWing(ctx context.Context, teamID string, sources []s
 		Where("team_id = ? AND wing IN ?", teamID, sources).
 		Update("wing", target)
 	return res.RowsAffected, res.Error
+}
+
+// RelabelClosetWingReturningIDs is RelabelClosetWing with the moved ids, in one
+// transaction, for the same reason RelabelDrawerWingReturningIDs is: the ids the
+// caller patches must be the ids that moved.
+func (r *Repo) RelabelClosetWingReturningIDs(ctx context.Context, teamID string, sources []string, target string) ([]string, int64, error) {
+	var ids []string
+	var moved int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&closetRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&closetRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Update("wing", target)
+		moved = res.RowsAffected
+		return res.Error
+	})
+	return ids, moved, err
 }
 
 // CountWing reports what a wing holds: the same four numbers a delete returns, so

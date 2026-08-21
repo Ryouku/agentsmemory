@@ -100,6 +100,13 @@ func (s *Service) IndexDrift(ctx context.Context, teamID string) (DriftReport, e
 		}{"index", s.vectors})
 	}
 
+	// Closets are a second namespace with a second copy of the same wing, and a
+	// check that only looked at drawers reported clean over a split closet index.
+	closetWings, err := s.repo.ClosetWings(ctx, teamID)
+	if err != nil {
+		return DriftReport{}, fmt.Errorf("load closet wings: %w", err)
+	}
+
 	wings, pending, err := s.repo.DrawerWings(ctx, teamID)
 	if err != nil {
 		return DriftReport{}, fmt.Errorf("load drawer wings: %w", err)
@@ -157,6 +164,49 @@ func (s *Service) IndexDrift(ctx context.Context, teamID string) (DriftReport, e
 			}
 		}
 	}
+	// The closet namespace, checked the same way. Its ids live under a different
+	// namespace, so it cannot share the loop above.
+	if len(closetWings) > 0 {
+		closetIDs := make([]string, 0, len(closetWings))
+		for id := range closetWings {
+			closetIDs = append(closetIDs, id)
+		}
+		sort.Strings(closetIDs)
+		report.Checked += len(closetIDs)
+		ns := closetNamespace(teamID)
+		for _, st := range stores {
+			for start := 0; start < len(closetIDs); start += driftBatch {
+				end := start + driftBatch
+				if end > len(closetIDs) {
+					end = len(closetIDs)
+				}
+				batch := closetIDs[start:end]
+				points, err := st.vs.PointsByIDs(ctx, ns, batch)
+				if err != nil {
+					return DriftReport{}, fmt.Errorf("read closet points from the %s: %w", st.name, err)
+				}
+				seen := make(map[string]string, len(points))
+				for _, p := range points {
+					if _, asked := closetWings[p.ID]; !asked {
+						continue
+					}
+					indexed, _ := p.Payload["wing"].(string)
+					seen[p.ID] = indexed
+				}
+				for _, id := range batch {
+					indexed, ok := seen[id]
+					if !ok {
+						record(DriftedPoint{Store: st.name + " (closets)", DrawerID: id, Actual: closetWings[id], Missing: true})
+						continue
+					}
+					if indexed != closetWings[id] {
+						record(DriftedPoint{Store: st.name + " (closets)", DrawerID: id, Indexed: indexed, Actual: closetWings[id]})
+					}
+				}
+			}
+		}
+	}
+
 	sort.Slice(report.Drifted, func(a, b int) bool {
 		x, y := report.Drifted[a], report.Drifted[b]
 		if x.Store != y.Store {

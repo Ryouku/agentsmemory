@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
@@ -201,5 +202,72 @@ func TestIndexDriftDoesNotFaultAPendingEmbedding(t *testing.T) {
 	}
 	if report.Pending != 1 {
 		t.Errorf("Pending = %d, want 1 — the queue must be counted, not hidden", report.Pending)
+	}
+}
+
+// TestIndexDriftChecksClosetsToo: closets keep a second copy of the wing in their
+// stored payload, and a check that looked only at drawers reported clean over a
+// split closet index.
+//
+// Closet search passes no filter today, so nothing ranks wrongly yet — which is
+// exactly why this would have gone unnoticed until somebody scoped it, and then
+// looked like a search bug rather than a merge one.
+func TestIndexDriftChecksClosetsToo(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-drift-closets"
+
+	if _, err := svc.Mine(ctx, team, MineInput{
+		Wing: "wing_acme-legacy", Room: "decisions", Source: "notes.md",
+		Content: strings.Repeat("Redis powers it and Postgres backs it. Redis is fast, Postgres is durable. ", 40),
+	}); err != nil {
+		t.Fatalf("Mine: %v", err)
+	}
+
+	// Relabel the closet ROWS only, which is what the merge did before it patched
+	// their payloads.
+	if _, err := svc.repo.RelabelClosetWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {
+		t.Fatalf("relabel closets: %v", err)
+	}
+	if _, err := svc.repo.RelabelDrawerWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {
+		t.Fatalf("relabel drawers: %v", err)
+	}
+
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	var sawCloset bool
+	for _, d := range report.Drifted {
+		if strings.Contains(d.Store, "closet") {
+			sawCloset = true
+		}
+	}
+	if !sawCloset {
+		t.Errorf("closet payloads were left behind and the check does not mention them: %+v", report.Drifted)
+	}
+}
+
+// TestMergePatchesClosetPayloads: the merge's own closet half, end to end.
+func TestMergePatchesClosetPayloads(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-closets"
+
+	if _, err := svc.Mine(ctx, team, MineInput{
+		Wing: "wing_acme-legacy", Room: "decisions", Source: "notes.md",
+		Content: strings.Repeat("Redis powers it and Postgres backs it. Redis is fast, Postgres is durable. ", 40),
+	}); err != nil {
+		t.Fatalf("Mine: %v", err)
+	}
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {
+		t.Fatalf("MergeWing: %v", err)
+	}
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if !report.Clean() {
+		t.Errorf("after a merge, closet or drawer payloads still claim the old wing: %+v", report.Drifted)
 	}
 }

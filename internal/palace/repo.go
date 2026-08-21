@@ -651,6 +651,28 @@ func (r *Repo) DrawerWings(ctx context.Context, teamID string) (embedded map[str
 	return embedded, pending, nil
 }
 
+// ClosetWings maps every closet id to the wing it is filed in — the closet half
+// of DrawerWings, and for the same reason: closets keep a second copy of the wing
+// in their stored payload, and nothing compared them.
+func (r *Repo) ClosetWings(ctx context.Context, teamID string) (map[string]string, error) {
+	var rows []struct {
+		ID   string
+		Wing string
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&closetRow{}).
+		Select("id", "wing").
+		Where("team_id = ?", teamID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.ID] = row.Wing
+	}
+	return out, nil
+}
+
 // WingNames lists the wings a team has written to, for an error message that
 // has to show the caller what exists. Wings() carries counts nobody needs here.
 func (r *Repo) WingNames(ctx context.Context, teamID string) ([]string, error) {
