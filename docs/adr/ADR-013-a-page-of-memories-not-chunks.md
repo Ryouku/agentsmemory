@@ -149,4 +149,16 @@ tells a later reader which meaning a row carries.
 
 ## Follow-ups
 
-- [ ] Re-take the duplicate-slot measurement after this ships and record the before/after in `docs/adr/BACKLOG.md` — the two queries above are the baseline, and a change that does not move them is a change that did not work.
+- [x] **Re-taken 2026-08-21 against the rebuilt server.** Same query ("reachability defect…"),
+      same wing, `limit: 10`. Before: 8 distinct memories in 10 slots, 4 slots on two duplicated
+      memories, the pairs adjacent. After: **10 distinct memories in 10 slots, 0 duplicates.** Both
+      previously-duplicated memories appear once and as their CHUNK 1, not chunk 0 — the
+      best-ranked chunk survived, which is what the Decision says should happen. The two freed
+      slots went to memories the page could not previously fit.
+
+      **What this does NOT establish.** The two runs differ in two ways, not one: the rebuild
+      carried both the collapse AND ADR-014's default flip to rrf+rerank. The elimination of
+      duplicate slots is attributable to the collapse, because it is structural — no fusion change
+      can make two chunks of one memory occupy one slot. Which memories filled the freed slots, and
+      their order, is not attributable to either change alone. A clean attribution needs the two
+      runs to differ in one thing, and that measurement has not been taken.
