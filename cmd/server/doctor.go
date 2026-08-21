@@ -26,6 +26,12 @@ func doctorCommand(def config.Config) *cli.Command {
 		Name:  "doctor",
 		Usage: "Check the palace for inconsistencies between the stores (read-only; exit 1 when something is wrong)",
 		Flags: append(dataFlags(def),
+			// --local mirrors serve's, because without it doctor checks a backend
+			// nobody runs: `--local` is what switches the search index to chromem,
+			// and a self-hosted operator who started the server with it and then
+			// ran `doctor --index` was having a bare SQLite store inspected while
+			// chromem served every query. The check exited 0 on a broken palace.
+			&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Usage: "self-hosted single-workspace mode — must match how the server was started, or a different backend is checked"},
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
@@ -53,7 +59,12 @@ func doctorCommand(def config.Config) *cli.Command {
 // It prints drawer ids and wing names and never memory text: a doctor report is
 // pasted into an issue, and the palace it describes is private.
 func doctorIndex(ctx context.Context, cfg config.Config, slug string, out io.Writer) error {
-	svc, err := buildServices(cfg)
+	if err := requireExistingDB(cfg.DBPath); err != nil {
+		return err
+	}
+	// reconcile=false: a checker that rebuilt the index first would report on a
+	// palace it had just repaired, and could not fail on the fault it exists for.
+	svc, err := buildServicesWith(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -74,21 +85,32 @@ func doctorIndex(ctx context.Context, cfg config.Config, slug string, out io.Wri
 // an operator reads and the lookup needs a database — a report nobody can test
 // is a report that quietly stops saying anything.
 func reportDrift(out io.Writer, report palace.DriftReport) error {
+	pending := ""
+	if report.Pending > 0 {
+		pending = fmt.Sprintf(" (%d more await a first embedding, which is a queue and not a fault)", report.Pending)
+	}
 	if report.Clean() {
-		fmt.Fprintf(out, "index: %d drawer(s) checked, every stored point agrees with its row\n", report.Checked)
+		fmt.Fprintf(out, "index: %d drawer(s) checked, every stored point agrees with its row%s\n", report.Checked, pending)
 		return nil
 	}
 
-	fmt.Fprintf(out, "index: %d drawer(s) checked, %d stored point(s) disagree with their row\n\n",
-		report.Checked, len(report.Drifted))
+	fmt.Fprintf(out, "index: %d drawer(s) checked, %d stored point(s) disagree with their row%s\n\n",
+		report.Checked, report.Total, pending)
 	for _, d := range report.Drifted {
+		if d.Missing {
+			fmt.Fprintf(out, "  %-16s %s  ABSENT — no point at all, filed in %q\n", d.Store, d.DrawerID, d.Actual)
+			continue
+		}
 		fmt.Fprintf(out, "  %-16s %s  indexed as %q, filed in %q\n", d.Store, d.DrawerID, d.Indexed, d.Actual)
 	}
+	if report.Truncated() {
+		fmt.Fprintf(out, "  … and %d more, not listed. The COUNT above is exact.\n", report.Total-len(report.Drifted))
+	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "A scoped recall filters at the index, on the payload above — so each of these memories is")
-	fmt.Fprintln(out, "UNREACHABLE from the wing it is filed in, and answers only an unscoped search. This is what a")
-	fmt.Fprintln(out, "wing merge left behind before merges corrected the payloads they invalidate.")
-	return fmt.Errorf("%d stored point(s) disagree with their drawer", len(report.Drifted))
+	fmt.Fprintln(out, "A scoped recall filters at the index, on the payload above — so a mislabelled memory is")
+	fmt.Fprintln(out, "UNREACHABLE from the wing it is filed in and answers only an unscoped search. An ABSENT one")
+	fmt.Fprintln(out, "answers nothing at all: run `agentsmemory sync` to replay it from the source of truth.")
+	return fmt.Errorf("%d stored point(s) disagree with their drawer", report.Total)
 }
 
 // doctorGraph reports what the derived graph would hold if the entity extractor
@@ -100,7 +122,10 @@ func reportDrift(out io.Writer, report palace.DriftReport) error {
 // of the code — mining feeds the extractor long repetitive transcripts and
 // agents file short deliberate notes.
 func doctorGraph(ctx context.Context, cfg config.Config, slug string, out io.Writer) error {
-	svc, err := buildServices(cfg)
+	if err := requireExistingDB(cfg.DBPath); err != nil {
+		return err
+	}
+	svc, err := buildServicesWith(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -150,4 +175,17 @@ func verdictWord(viable bool) string {
 		return "CLEARS the bar — extracting on the write path is worth its cost"
 	}
 	return "BELOW the bar — extracting on the write path would leave the graph empty for a subtler reason"
+}
+
+// requireExistingDB refuses to inspect a database that is not there.
+//
+// openDB CREATES a missing file and the migrations then fill it, so a mistyped
+// --db made doctor build an empty palace and report it clean. "The path was
+// wrong" and "the palace is healthy" must not be the same output.
+func requireExistingDB(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("no database at %q — doctor inspects an existing palace and will not "+
+			"create one; check --db (or AGENTSMEMORY_DB)", path)
+	}
+	return nil
 }

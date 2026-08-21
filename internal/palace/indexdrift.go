@@ -25,16 +25,35 @@ type DriftedPoint struct {
 	DrawerID string `json:"drawer_id"`
 	Indexed  string `json:"indexed_wing"`
 	Actual   string `json:"actual_wing"`
+	// Missing marks a drawer the store holds NO point for. It is a different and
+	// worse fault than a wrong label: a mislabelled memory answers the wrong wing,
+	// an absent one answers nothing at all.
+	Missing bool `json:"missing,omitempty"`
 }
 
-// DriftReport is what IndexDrift found. Drifted is sorted for a stable report.
+// DriftReport is what IndexDrift found. Drifted is sorted for a stable report and
+// bounded: a fully drifted palace must produce a report an operator can read and
+// a process can hold in memory, so the count is exact and the listing is a sample.
 type DriftReport struct {
 	Checked int            `json:"checked"`
+	Total   int            `json:"total_drifted"`
 	Drifted []DriftedPoint `json:"drifted"`
+	// Pending is how many drawers are legitimately awaiting their first embedding
+	// — a row exists, no vector does yet, and that is a queue rather than a fault.
+	// Counted rather than reported, so a busy palace does not look broken.
+	Pending int `json:"pending_embedding"`
 }
 
+// driftSample bounds the listing. The COUNT is always exact; only the listing is
+// capped, because a palace whose index was rebuilt into the wrong shape would
+// otherwise print a line per memory.
+const driftSample = 50
+
 // Clean reports whether every point agrees with its drawer.
-func (r DriftReport) Clean() bool { return len(r.Drifted) == 0 }
+func (r DriftReport) Clean() bool { return r.Total == 0 }
+
+// Truncated reports whether the listing is a sample of a larger set.
+func (r DriftReport) Truncated() bool { return r.Total > len(r.Drifted) }
 
 // splitStore is a VectorStore that pairs a durable store with a search index.
 // Both copies of a payload must agree with the rows, so a check that could see
@@ -81,11 +100,12 @@ func (s *Service) IndexDrift(ctx context.Context, teamID string) (DriftReport, e
 		}{"index", s.vectors})
 	}
 
-	wings, err := s.repo.DrawerWings(ctx, teamID)
+	wings, pending, err := s.repo.DrawerWings(ctx, teamID)
 	if err != nil {
 		return DriftReport{}, fmt.Errorf("load drawer wings: %w", err)
 	}
 	report.Checked = len(wings)
+	report.Pending = len(pending)
 
 	ids := make([]string, 0, len(wings))
 	for id := range wings {
@@ -93,23 +113,46 @@ func (s *Service) IndexDrift(ctx context.Context, teamID string) (DriftReport, e
 	}
 	sort.Strings(ids) // deterministic batching, so a truncated run is repeatable
 
+	record := func(d DriftedPoint) {
+		report.Total++
+		if len(report.Drifted) < driftSample {
+			report.Drifted = append(report.Drifted, d)
+		}
+	}
+
 	for _, st := range stores {
 		for start := 0; start < len(ids); start += driftBatch {
 			end := start + driftBatch
 			if end > len(ids) {
 				end = len(ids)
 			}
-			points, err := st.vs.PointsByIDs(ctx, teamID, ids[start:end])
+			batch := ids[start:end]
+			points, err := st.vs.PointsByIDs(ctx, teamID, batch)
 			if err != nil {
 				return DriftReport{}, fmt.Errorf("read points from the %s: %w", st.name, err)
 			}
+			// Index what came back, so a point the store did NOT return can be
+			// noticed. Reading only the returned points made an omission read as
+			// agreement: a memory the index had lost entirely — unreachable by any
+			// search, not merely by a scoped one — reported clean.
+			seen := make(map[string]string, len(points))
 			for _, p := range points {
+				if _, asked := wings[p.ID]; !asked {
+					// A point the caller did not ask for. Comparing it against an
+					// absent row would invent drift out of a driver's own bug.
+					continue
+				}
 				indexed, _ := p.Payload["wing"].(string)
-				actual := wings[p.ID]
-				if indexed != actual {
-					report.Drifted = append(report.Drifted, DriftedPoint{
-						Store: st.name, DrawerID: p.ID, Indexed: indexed, Actual: actual,
-					})
+				seen[p.ID] = indexed
+			}
+			for _, id := range batch {
+				indexed, ok := seen[id]
+				if !ok {
+					record(DriftedPoint{Store: st.name, DrawerID: id, Actual: wings[id], Missing: true})
+					continue
+				}
+				if indexed != wings[id] {
+					record(DriftedPoint{Store: st.name, DrawerID: id, Indexed: indexed, Actual: wings[id]})
 				}
 			}
 		}

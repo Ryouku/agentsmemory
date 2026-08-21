@@ -907,7 +907,16 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 // services against it. It deliberately does NOT seed (the serve path seeds; a
 // read-only CLI invocation must not create data) and starts no transport, so it
 // is safe to call from both entry points.
-func buildServices(cfg config.Config) (*services, error) {
+func buildServices(cfg config.Config) (*services, error) { return buildServicesWith(cfg, true) }
+
+// buildServicesWith is buildServices with the index reconciliation made optional.
+//
+// A CHECKER must not repair the evidence before judging it. Reconciliation
+// replays the source of truth into the chromem index at construction, so an
+// index that had lost points was silently rebuilt and then reported clean — the
+// check could not fail on the fault it exists to find. Every serving path still
+// reconciles; only the read-only inspection does not.
+func buildServicesWith(cfg config.Config, reconcile bool) (*services, error) {
 	gdb, err := openDB(cfg.DBPath, cfg.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -929,7 +938,7 @@ func buildServices(cfg config.Config) (*services, error) {
 
 	// Vector storage: SQLite is always the source of truth; cfg.VectorBackend
 	// selects whether it also serves search or Qdrant indexes it.
-	vectors, err := buildVectorStore(cfg, gdb)
+	vectors, err := buildVectorStoreWith(cfg, gdb, reconcile)
 	if err != nil {
 		return nil, fmt.Errorf("vector store: %w", err)
 	}
@@ -1003,6 +1012,12 @@ func buildEmbedder(cfg config.Config) (palace.Embedder, error) {
 }
 
 func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error) {
+	return buildVectorStoreWith(cfg, gdb, true)
+}
+
+// buildVectorStoreWith is buildVectorStore with reconciliation made optional, for
+// the read-only checker. See buildServicesWith.
+func buildVectorStoreWith(cfg config.Config, gdb *gorm.DB, reconcile bool) (store.VectorStore, error) {
 	sot := sqlitevec.New(gdb)
 	switch cfg.VectorBackend {
 	case config.VectorBackendSQLite:
@@ -1014,8 +1029,10 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 			return nil, err
 		}
 		hybrid := store.NewHybrid(sot, index)
-		if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
-			return nil, err
+		if reconcile {
+			if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
+				return nil, err
+			}
 		}
 		log.Printf("chromem index: %s", dir)
 		return hybrid, nil

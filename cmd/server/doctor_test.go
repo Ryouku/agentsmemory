@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -52,7 +56,7 @@ func TestDoctorRefusesWithNoCheckSelected(t *testing.T) {
 // and exited 0 would sit green in every pipeline that runs this.
 func TestDoctorIndexExitsNonZeroOnDrift(t *testing.T) {
 	clean := palace.DriftReport{Checked: 5}
-	drifted := palace.DriftReport{Checked: 5, Drifted: []palace.DriftedPoint{
+	drifted := palace.DriftReport{Checked: 5, Total: 1, Drifted: []palace.DriftedPoint{
 		{Store: "index", DrawerID: "d1", Indexed: "wing_acme-legacy", Actual: "wing_acme"},
 	}}
 
@@ -78,3 +82,114 @@ func TestDoctorIndexExitsNonZeroOnDrift(t *testing.T) {
 }
 
 var _ = cli.Command{}
+
+// TestDoctorDistinguishesAnAbsentPointFromAMislabelledOne: they need different
+// actions, so they must not read the same.
+//
+// A mislabelled memory answers the wrong wing; an ABSENT one answers nothing at
+// all and is fixed by a sync rather than by a merge. Reporting them identically
+// sends an operator to the wrong repair.
+func TestDoctorDistinguishesAnAbsentPointFromAMislabelledOne(t *testing.T) {
+	var buf bytes.Buffer
+	err := reportDrift(&buf, palace.DriftReport{Checked: 2, Total: 2, Drifted: []palace.DriftedPoint{
+		{Store: "index", DrawerID: "d1", Indexed: "wing_acme-legacy", Actual: "wing_acme"},
+		{Store: "index", DrawerID: "d2", Actual: "wing_acme", Missing: true},
+	}})
+	if err == nil {
+		t.Error("drift reported and the command exited 0")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "ABSENT") {
+		t.Errorf("a drawer with no point at all is not marked absent:\n%s", out)
+	}
+	if !strings.Contains(out, "sync") {
+		t.Errorf("the report does not name the repair for an absent point:\n%s", out)
+	}
+}
+
+// TestDoctorBoundsItsListingAndKeepsTheCountExact: a fully drifted palace must
+// produce a report a human can read, and a count they can trust.
+func TestDoctorBoundsItsListingAndKeepsTheCountExact(t *testing.T) {
+	var buf bytes.Buffer
+	_ = reportDrift(&buf, palace.DriftReport{Checked: 5000, Total: 5000, Drifted: []palace.DriftedPoint{
+		{Store: "index", DrawerID: "d1", Indexed: "wing_acme-legacy", Actual: "wing_acme"},
+	}})
+	out := buf.String()
+	if !strings.Contains(out, "5000 stored point(s) disagree") {
+		t.Errorf("the exact count is not reported:\n%s", out)
+	}
+	if !strings.Contains(out, "4999 more, not listed") {
+		t.Errorf("the listing was truncated without saying so — silent truncation reads as "+
+			"'that was all of them':\n%s", out)
+	}
+}
+
+// TestDoctorSaysPendingEmbeddingIsNotAFault: a drawer awaiting its first
+// embedding has no point yet, and a busy palace must not look broken.
+func TestDoctorSaysPendingEmbeddingIsNotAFault(t *testing.T) {
+	var buf bytes.Buffer
+	if err := reportDrift(&buf, palace.DriftReport{Checked: 10, Pending: 3}); err != nil {
+		t.Errorf("a clean palace with a queue exited non-zero: %v", err)
+	}
+	if !strings.Contains(buf.String(), "queue and not a fault") {
+		t.Errorf("pending embeddings are not explained:\n%s", buf.String())
+	}
+}
+
+// TestDoctorRefusesAMissingDatabase: openDB CREATES a missing file and the
+// migrations fill it, so a mistyped --db built an empty palace and reported it
+// clean. "The path was wrong" and "the palace is healthy" must not be the same
+// output — and the check must not leave a database behind either.
+func TestDoctorRefusesAMissingDatabase(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-a-palace.db")
+	err := doctorIndex(context.Background(), config.Config{DBPath: missing}, "local", io.Discard)
+	if err == nil {
+		t.Fatal("doctor inspected a database that does not exist")
+	}
+	if !strings.Contains(err.Error(), "no database") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+	if _, statErr := os.Stat(missing); statErr == nil {
+		t.Error("doctor created the database it was asked to inspect")
+	}
+}
+
+// TestDoctorDoesNotReconcileBeforeChecking: a checker must not repair the
+// evidence.
+//
+// Building the chromem-backed store replays the source of truth into the index,
+// so an index that had lost points was rebuilt at construction and then reported
+// clean — the check could not fail on the fault it exists to find. Read off the
+// source, because the reconciliation happens inside a constructor a unit test
+// cannot observe without a database and an index on disk.
+func TestDoctorDoesNotReconcileBeforeChecking(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "doctor.go"))
+	if err != nil {
+		t.Fatalf("read doctor.go: %v", err)
+	}
+	if regexp.MustCompile(`buildServices\(`).Match(src) {
+		t.Error("doctor.go calls buildServices, which reconciles the search index before the check " +
+			"can look at it — use buildServicesWith(cfg, false)")
+	}
+	if !regexp.MustCompile(`buildServicesWith\(cfg, false\)`).Match(src) {
+		t.Error("doctor.go does not build its services with reconciliation disabled")
+	}
+}
+
+// TestDoctorTakesTheLocalFlag: --local is what switches the search index to
+// chromem, so a doctor without it inspects a bare SQLite store while chromem
+// serves every query — and exits 0 on a broken palace.
+func TestDoctorTakesTheLocalFlag(t *testing.T) {
+	cmd := doctorCommand(config.Default())
+	var found bool
+	for _, f := range cmd.Flags {
+		for _, n := range f.Names() {
+			if n == "local" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("doctor has no --local flag, so on a self-hosted install it checks a backend nobody runs")
+	}
+}

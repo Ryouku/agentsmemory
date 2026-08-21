@@ -134,3 +134,72 @@ func (r *recordingStore) Namespaces(ctx context.Context) ([]string, error) {
 	}
 	return nil, nil
 }
+
+// TestIndexDriftReportsAnAbsentPoint: a drawer the store holds NO point for is a
+// worse fault than a mislabelled one, and it was reported as agreement.
+//
+// The first version of this check looked only at the points a store RETURNED, so
+// a memory the index had lost entirely — unreachable by any search, not merely by
+// a scoped one — came back Clean(). Found by review, not by a test.
+func TestIndexDriftReportsAnAbsentPoint(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-drift-absent"
+
+	gone := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "one"})
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "two"})
+
+	// Drop the POINT and leave the row: the index has lost a memory the palace
+	// still believes it holds.
+	if err := svc.vectors.Delete(ctx, team, []string{gone.ID}); err != nil {
+		t.Fatalf("delete point: %v", err)
+	}
+
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if report.Clean() {
+		t.Fatal("a drawer whose point is gone reported clean — the memory is unreachable by any " +
+			"search at all and the check cannot see it")
+	}
+	var found bool
+	for _, d := range report.Drifted {
+		if d.DrawerID == gone.ID {
+			found = true
+			if !d.Missing {
+				t.Errorf("the absent point is reported as a wrong label rather than an absence: %+v", d)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the drawer with no point is not in the report: %+v", report.Drifted)
+	}
+}
+
+// TestIndexDriftDoesNotFaultAPendingEmbedding: a drawer awaiting its first
+// embedding legitimately has no point, so a busy palace must not look broken.
+func TestIndexDriftDoesNotFaultAPendingEmbedding(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-drift-pending"
+
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "embedded"})
+	if err := svc.repo.SaveUnembedded(ctx, []Drawer{{
+		ID: "pending-1", TeamID: team, Wing: "wing_acme", Room: "decisions",
+		Content: "queued", FiledAt: "2026-08-21T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("SaveUnembedded: %v", err)
+	}
+
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if !report.Clean() {
+		t.Errorf("a drawer awaiting its first embedding was reported as drift: %+v", report.Drifted)
+	}
+	if report.Pending != 1 {
+		t.Errorf("Pending = %d, want 1 — the queue must be counted, not hidden", report.Pending)
+	}
+}

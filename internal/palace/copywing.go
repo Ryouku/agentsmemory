@@ -13,12 +13,18 @@ import (
 // re-embedded. Every record is re-keyed with the destination team's id recipe, so
 // the copy is isolated and idempotent — re-running refreshes rather than duplicates.
 
-// pointReader is the slice of the vector store CopyWing needs beyond writing:
-// reading stored vectors by id. The source of truth (SQLite) supports it and the
-// configured store is always SQLite-backed (directly or behind the Hybrid), so the
-// runtime assertion in CopyWing holds; a pure search index would not implement it.
-type pointReader interface {
+// vectorReader is the slice of the vector store CopyWing needs beyond writing:
+// reading stored VECTORS by id, so a wing can be copied without re-embedding.
+//
+// It asserts store.SourceOfTruth and not merely "has PointsByIDs". Those were the
+// same test until PointsByIDs was promoted onto every VectorStore; after that a
+// pure search index satisfies the method and is allowed to return points with no
+// vector, so the capability check passed and every drawer was silently counted as
+// skipped. Only a SourceOfTruth promises the vector comes back.
+type vectorReader interface {
 	PointsByIDs(ctx context.Context, namespace string, ids []string) ([]store.Point, error)
+	AllPoints(ctx context.Context, namespace string) ([]store.Point, error)
+	Namespaces(ctx context.Context) ([]string, error)
 }
 
 // CopyResult reports what a wing copy moved.
@@ -49,9 +55,10 @@ func (s *Service) CopyWing(ctx context.Context, fromTeam, toTeam, wing string) (
 	if fromTeam == toTeam {
 		return res, fmt.Errorf("%w: source and destination teams must differ", ErrInvalidInput)
 	}
-	reader, ok := s.vectors.(pointReader)
+	reader, ok := s.vectors.(vectorReader)
 	if !ok {
-		return res, fmt.Errorf("vector backend does not support copy (no PointsByIDs)")
+		return res, fmt.Errorf("vector backend does not support copy: it is a search index, and a " +
+			"copy needs the stored vectors a source of truth keeps")
 	}
 
 	// --- drawers: page the source wing, copy vectors+rows re-keyed for the dest ---
@@ -101,7 +108,7 @@ func (s *Service) CopyWing(ctx context.Context, fromTeam, toTeam, wing string) (
 
 // copyDrawerBatch re-keys one batch of source drawers for the destination, pairs
 // each with its source vector, and writes both. Returns (copied, skipped).
-func (s *Service) copyDrawerBatch(ctx context.Context, reader pointReader, fromTeam, toTeam string, src []Drawer) (int, int, error) {
+func (s *Service) copyDrawerBatch(ctx context.Context, reader vectorReader, fromTeam, toTeam string, src []Drawer) (int, int, error) {
 	ids := make([]string, len(src))
 	for i, d := range src {
 		ids[i] = d.ID
@@ -148,7 +155,7 @@ func (s *Service) copyDrawerBatch(ctx context.Context, reader pointReader, fromT
 }
 
 // copyClosetBatch is the closet twin of copyDrawerBatch.
-func (s *Service) copyClosetBatch(ctx context.Context, reader pointReader, fromTeam, toTeam string, src []Closet) (int, int, error) {
+func (s *Service) copyClosetBatch(ctx context.Context, reader vectorReader, fromTeam, toTeam string, src []Closet) (int, int, error) {
 	ids := make([]string, len(src))
 	for i, c := range src {
 		ids[i] = c.ID
@@ -188,7 +195,7 @@ func (s *Service) copyClosetBatch(ctx context.Context, reader pointReader, fromT
 }
 
 // vectorsByID reads the given ids' vectors from a namespace into an id->vector map.
-func vectorsByID(ctx context.Context, reader pointReader, namespace string, ids []string) (map[string][]float32, error) {
+func vectorsByID(ctx context.Context, reader vectorReader, namespace string, ids []string) (map[string][]float32, error) {
 	pts, err := reader.PointsByIDs(ctx, namespace, ids)
 	if err != nil {
 		return nil, err

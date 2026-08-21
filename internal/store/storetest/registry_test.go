@@ -101,20 +101,33 @@ func TestEveryBackendRunsTheConformanceSuite(t *testing.T) {
 	// "covered" by having been typed into a map — which is the same shape as
 	// every unreachable capability this repository has shipped.
 	ran := backendsWithAConformanceTest(t, root)
+	perPkg := map[string]int{}
+	for name := range coveredBackends {
+		perPkg[strings.SplitN(name, ".", 2)[0]]++
+	}
 	for name := range coveredBackends {
 		pkg := strings.SplitN(name, ".", 2)[0]
-		if !ran[pkg] {
+		if ran[pkg] == 0 {
 			t.Errorf("coveredBackends claims %q runs the conformance suite, but no test in package %q "+
 				"calls BOTH storetest.RunPointsConformance and storetest.RunSetPayloadConformance", name, pkg)
+			continue
+		}
+		// Per TYPE, not per package. A package with two implementations and one
+		// suite would otherwise mark both covered, and the second could satisfy
+		// the seam with method bodies that do nothing.
+		if ran[pkg] < perPkg[pkg] {
+			t.Errorf("package %q declares %d covered implementation(s) and runs the suite %d time(s) — "+
+				"a second implementation in the same package is marked covered by the first one's test",
+				pkg, perPkg[pkg], ran[pkg])
 		}
 	}
 }
 
 // backendsWithAConformanceTest returns the packages under internal/store that
 // actually call the suite, read out of the test sources.
-func backendsWithAConformanceTest(t *testing.T, root string) map[string]bool {
+func backendsWithAConformanceTest(t *testing.T, root string) map[string]int {
 	t.Helper()
-	ran := map[string]bool{}
+	ran := map[string]int{}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, "_test.go") {
 			return err
@@ -135,8 +148,9 @@ func backendsWithAConformanceTest(t *testing.T, root string) map[string]bool {
 		if perr != nil {
 			return nil
 		}
-		// An external test package (store_test) covers the package it tests.
-		ran[strings.TrimSuffix(f.Name.Name, "_test")] = true
+		// An external test package (store_test) covers the package it tests. Count
+		// the CALLS, so a package with two implementations needs two suites.
+		ran[strings.TrimSuffix(f.Name.Name, "_test")] += strings.Count(text, "RunPointsConformance(t,")
 		return nil
 	})
 	if err != nil {

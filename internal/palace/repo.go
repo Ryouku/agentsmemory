@@ -617,28 +617,38 @@ func (r *Repo) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, erro
 	return id == "", nil
 }
 
-// DrawerWings maps every drawer id to the wing it is filed in.
+// DrawerWings maps every EMBEDDED drawer id to the wing it is filed in, and
+// separately lists the ids still awaiting a first embedding.
 //
 // Two columns of every row, which is the whole point: the drift check compares
 // this against what each vector store believes, and loading whole drawers to do
 // it would pull every memory's text into memory to read one field.
-func (r *Repo) DrawerWings(ctx context.Context, teamID string) (map[string]string, error) {
+func (r *Repo) DrawerWings(ctx context.Context, teamID string) (embedded map[string]string, pending []string, err error) {
 	var rows []struct {
-		ID   string
-		Wing string
+		ID         string
+		Wing       string
+		EmbeddedAt *string
 	}
 	if err := r.db.WithContext(ctx).
 		Model(&drawerRow{}).
-		Select("id", "wing").
+		Select("id", "wing", "embedded_at").
 		Where("team_id = ?", teamID).
 		Scan(&rows).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string]string, len(rows))
+	embedded = make(map[string]string, len(rows))
 	for _, row := range rows {
-		out[row.ID] = row.Wing
+		// A drawer awaiting its first embedding has no point yet, and that is a
+		// queue rather than a fault. Separating them here is what lets the drift
+		// check treat a MISSING point as a defect without a busy palace looking
+		// broken.
+		if row.EmbeddedAt == nil {
+			pending = append(pending, row.ID)
+			continue
+		}
+		embedded[row.ID] = row.Wing
 	}
-	return out, nil
+	return embedded, pending, nil
 }
 
 // WingNames lists the wings a team has written to, for an error message that
