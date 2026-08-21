@@ -44,7 +44,9 @@ conjunctions, past-tense verbs, adjectives, status words. Two causes, both check
 - The vendored COCA list is 1,016 CONTENT words. It excludes common nouns and verbs from being
   entities, and it was never a function-word stoplist, so it filters none of them.
 - `entityStoplist` — the map consulted immediately before the COCA check — is declared as an empty
-  literal. It exists, it is read on every candidate, and it holds nothing.
+  literal. It exists, it is read on every candidate, and it holds nothing. **(Wrong: see the
+  correction below. An `init()` fills it with 52 words; the defect is that it matched
+  case-sensitively.)**
   **Corrected by T2:** it is declared empty and then filled by an `init()` at the foot of the same
   file with 52 words, of which 20 add coverage COCA does not already have — `And`, `Assistant`, and
   the days and months. The map is not inert. What it is, is nearly redundant with COCA and matched
@@ -55,9 +57,44 @@ conjunctions, past-tense verbs, adjectives, status words. Two causes, both check
 So the pre-registration measured the right thing and was silent about the thing that matters as
 much. That is a defect in the criterion, recorded rather than quietly widened: the bar decided
 whether to PROCEED and it says proceed, and the ADR's own risk row already asked T1 to report what
-the graph would look like "so the threshold is set against real data rather than guessed". It is now
-set against real data, and the data says: fix the candidate rule first, then re-measure. T2 carries
-that, and re-runs `doctor --graph` to show what it changed.
+the graph would look like "so the threshold is set against real data rather than guessed".
+
+**Two of the three causes above are wrong, and T2 measured its way to the right one.** They are left
+in place because what they got wrong changes the repair.
+
+- **The shape rule is not the leak.** Over 163 ordinary English words, 47 survived SHOUTED and 46
+  survived in Title Case — differing by exactly one word. The noise arrives through Title Case too,
+  so NO rule over a token's SHAPE can separate `HTTP`/`MCP`/`ADR` from `AND`/`WAS`/`MISSING`:
+  survivors run 3–11 characters and acronyms 3–12. The fix this ADR prescribed — narrowing
+  `candidateWordRE` — was run as a mutant and killed all 47 acronyms.
+- **`entityStoplist` is not empty.** It is declared as an empty literal and then filled by an
+  `init()` at the foot of `entity.go` with 52 words, 20 of which add coverage beyond COCA. It was
+  never inert. It was nearly redundant with COCA, and it matched CASE-SENSITIVELY, which is why
+  `AND` survived while `And` did not. "Empty list" and "case-sensitive list" have different repairs,
+  and this ADR asked for the wrong one.
+
+The real fix is lexical: a case-folded stoplist carrying the closed-class function words, irregular
+verb forms and status participles that a 1,016-word CONTENT list structurally cannot hold, plus
+inflection reduction back into COCA. The two halves are separately load-bearing — 46 of the 62
+must-exclude words are caught by the stoplist and 16 ONLY by inflection reduction.
+
+**Re-measured on the live palace after T2, 2026-08-21:**
+
+| | drawers | ≥1 entity | ≥2 entities | hallways derivable |
+|---|---|---|---|---|
+| before T2 | 366 | 189 (52%) | 90 (**24.6%**) | 43 |
+| after T2 | 392 | 188 (48%) | 88 (**22.4%**) | 39 |
+
+Still clears the 20% bar. **The two runs are not a clean comparison and the difference must not be
+quoted as the fix's cost:** the corpus grew by 26 drawers between them, so the extractor and the
+population both changed. What IS clean is the qualitative half, and it is what the change was for —
+`AND`, `WAS`, `MISSING`, `FINDING` and `SIGNED` no longer appear among the most frequent candidates
+in any wing, where before they dominated several.
+
+**And the extractor is better, not clean.** `HOST`, `TAG`, `APPROVE`, `BEHAVIOUR`, `DISABLED`,
+`ACCEPTED`, `ROLLBACK` and `DELTA` still get through, and the plural reduction that correctly kills
+`Depends`/`Produces`/`Covers` also kills `Windows` → `window`, which is a real name lost. Recorded
+here rather than rounded up.
 
 **T2's re-measurement, 2026-08-21 — and the candidate rule was NOT the thing to fix.** Measured over
 163 ordinary English words in both cases: 47 survived the extractor SHOUTED, and 46 survived in
@@ -182,3 +219,4 @@ Half 1 is one assignment; reverting it stops new drawers carrying entities and l
 - **Re-run `doctor --graph` against the live palace** once the image is rebuilt, and paste the output
   beside T1's table. T2's corpus figures are from a fixture and say nothing about whether the live
   share still clears the 20% bar.
+- [ ] `Service.WriteDiary` has the identical defect T2 fixed in `Service.Add`: its own chunk loop, its own `Drawer` rows, and no `Entities`. Measured 2026-08-21 on the live palace — 119 of 383 drawers are in diary rooms, so **31% of the corpus stays outside the derived graph** after this ADR. Not folded into T2, because this ADR scopes half 1 to `Add` and widening it silently would stop it being a decision. It wants its own task.
