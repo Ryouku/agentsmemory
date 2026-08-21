@@ -1,6 +1,6 @@
 # ADR-016: A memory an agent files must be navigable, or the graph must say it is empty
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-21
 **Owner:** unassigned
 **Spec:** None — no spec stage

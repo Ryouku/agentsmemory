@@ -1,6 +1,6 @@
 # ADR-015: A wing merge must correct the search index it invalidates
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-21
 **Owner:** unassigned
 **Spec:** None — no spec stage
@@ -23,6 +23,18 @@ The defect is stated as a fact in the code that causes it. `MergeWing`'s doc com
 `Service.Search` calls `s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))`, and `searchFilter` puts the wing in the index filter. The payload is not advisory: it is the PRIMARY filter, and the drawer-row comparison that follows is a second pass that can only remove candidates, never add one back. This repository already holds a test (`TestDocumentedEnvVarsAreRead`) built on the premise that documentation is load-bearing; this is the same failure in a doc comment rather than a compose file.
 
 `Service.Update` — the other path that changes a drawer's wing — re-embeds and re-upserts, so it does not drift. Only the bulk relabel does.
+
+**Repaired 2026-08-21, before this ADR was executed.** The 13 points were corrected by hand in both
+stores — a payload patch on the Qdrant collection and an `UPDATE vectors SET payload` on the SQLite
+source of truth — and both now report zero disagreement with the drawer rows. Twelve of the thirteen
+were then probed through the live `/mcp` endpoint and found by a search of their own wing; the
+thirteenth is chunk 2 of a four-chunk memory whose other three chunks all return, so the memory is
+reachable and the miss is the probe's ranking rather than drift.
+
+That repair is the evidence for the mechanism this ADR ships: it is exactly a payload write, it
+needed no embedding call, and it had to touch BOTH stores — correcting only the index would have
+been undone by the next `agentsmemory sync`, which replays SQLite's payload forward. It also could
+not be done with any command the product offers today, which is why T1 and T3 exist.
 
 ## Existing Primitives Audit
 
