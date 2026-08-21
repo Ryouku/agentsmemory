@@ -447,7 +447,11 @@ type searchHitView struct {
 	// key. The domain has carried this bool since ADR-006 T4 made the telemetry
 	// honest; the agent-facing surface discarded it, so the one reader who acts on
 	// the answer could not see it.
-	Reranked bool `json:"reranked,omitempty"`
+	// NOT omitempty. The whole reason this field exists is that an absent
+	// rerank_score meant four things at once; dropping the false case would leave
+	// three of them merged. A hit that says reranked:false is a hit the
+	// cross-encoder did not score, stated.
+	Reranked bool `json:"reranked"`
 	// ChunksMatched is how many chunks of this memory were in the ranked pool.
 	// A memory that matched in four places is stronger evidence than one that
 	// matched in one, and ADR-013's collapse would otherwise destroy that signal
@@ -551,6 +555,15 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 		out := map[string]any{"hits": views, "count": len(views)}
+		// A zero-hit page from a wing that holds nothing is not a miss, and the two
+		// were indistinguishable: same count, same empty list, same sub-second
+		// reply. Measured against real queries, that confusion produced every hard
+		// failure in the sample.
+		if len(views) == 0 {
+			if note, _ := emptyWingNote(ctx, drawers, t.TeamID, wing); note != "" {
+				out["note"] = note
+			}
+		}
 		if stale > 0 {
 			out["stale_hits"] = stale
 			out["warning"] = "some hits are marked STALE: the code they were written about has changed since. " +
