@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Hybrid-ranking constants, ported verbatim from the frozen Python searcher
@@ -716,13 +717,22 @@ func Snippet(content, query string, maxChars int) string {
 	//
 	// Shift the window right so the clipped term completes, bounded by the content
 	// and never past the point where the window would start after it.
+	//
+	// Every index here is a RUNE index. The first form took a BYTE index from
+	// strings.Index over the lowercased window and sliced the ORIGINAL window with
+	// it. strings.ToLower maps runes one-for-one but not bytes: U+023A lowercases
+	// to U+2C65, two bytes becoming three, so the lowered window is longer than the
+	// original and an index near its end runs off the end of the original — a
+	// panic, on the path every single search result takes. `lower` is aligned with
+	// `runes` one rune to one rune, which is why the window is taken from it.
 	if end < len(runes) {
 		for _, t := range terms {
-			i := strings.Index(strings.ToLower(string(runes[best:end])), t)
-			if i < 0 {
+			win := string(lower[best:end])
+			b := strings.Index(win, t)
+			if b < 0 {
 				continue
 			}
-			termEnd := best + len([]rune(string(runes[best:end])[:i])) + len([]rune(t))
+			termEnd := best + utf8.RuneCountInString(win[:b]) + utf8.RuneCountInString(t)
 			if termEnd > end {
 				shift := termEnd - end
 				if best+shift+maxChars <= len(runes) {

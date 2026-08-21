@@ -3,6 +3,7 @@ package palace
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestSnippetKeepsTheIdentityOfChunkZero: the first line of a memory says what it
@@ -77,6 +78,40 @@ func TestSnippetFindsAMatchInTheFinalWindow(t *testing.T) {
 		if !strings.Contains(got, "CONCLUSION") {
 			t.Errorf("budget %d: the match sits in the last %d runes and the snippet returned "+
 				"the opening instead:\n  %.90q", budget, budget, got)
+		}
+	}
+}
+
+// TestSnippetSurvivesRunesThatChangeLengthWhenLowercased pins a crash, not a
+// quality regression.
+//
+// The clipped-term completion took a BYTE index from strings.Index over the
+// lowercased window and used it to slice the ORIGINAL window. strings.ToLower
+// maps runes one-for-one but not bytes: U+023A (Ⱥ, two bytes) lowercases to
+// U+2C65 (ⱥ, three bytes), so the lowered window is longer than the original and
+// an index near its end runs off the end of the original.
+//
+// That is a panic on the path EVERY search result takes — one memory containing
+// such a character, plus a query term landing late in the window, takes down the
+// whole request. Found by review, not by any gate: every existing snippet test
+// used ASCII, where byte and rune indexes agree.
+func TestSnippetSurvivesRunesThatChangeLengthWhenLowercased(t *testing.T) {
+	// Each of these lowercases to a DIFFERENT number of bytes than it occupies.
+	for _, r := range []string{"Ⱥ", "Ɫ", "Ᵽ", "Ɽ", "K", "Ω"} {
+		content := strings.Repeat(r, 200) + " budget must be short and the tail continues past the window"
+		for _, maxChars := range []int{20, 60, 120, 199, 200, 201} {
+			for _, q := range []string{"budget", "tail continues", strings.ToLower(r), "window past"} {
+				got := Snippet(content, q, maxChars) // must not panic
+				if !utf8.ValidString(got) {
+					t.Errorf("Snippet(%q…, %q, %d) returned invalid UTF-8", r, q, maxChars)
+				}
+				if got == "" {
+					t.Errorf("Snippet(%q…, %q, %d) returned nothing", r, q, maxChars)
+				}
+				if h := SnippetWithHead(content, q, maxChars, true); !utf8.ValidString(h) {
+					t.Errorf("SnippetWithHead(%q…, %q, %d) returned invalid UTF-8", r, q, maxChars)
+				}
+			}
 		}
 	}
 }
