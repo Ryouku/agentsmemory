@@ -209,15 +209,17 @@ Half 1 is one assignment; reverting it stops new drawers carrying entities and l
 
 ## Follow-ups
 
-- **`WriteDiary` is a second producer with the same defect.** Found while implementing T2:
-  `Service.WriteDiary` (`internal/palace/service.go`) builds its own `Drawer` rows in its own chunk
-  loop and never sets `Entities`, exactly as `Add` did. So every `am_diary_write` entry stays outside
-  the derived graph after this ADR lands, and that is not a rounding error: on the day T2 was
-  implemented the live palace held 383 drawers, 119 of them in `diary` rooms — 31% of the corpus this
-  ADR exists to make navigable. Not fixed here because this ADR scopes half 1 to `Add` and a
-  silent widening is how a decision stops being one. It is the repo's signature failure shape a
-  second time, and it wants its own task.
+- **CLOSED by T4 (2026-08-21, `4edbfe5`, acceptance exit 0).** `WriteDiary` was a second producer
+  with the same defect. Found while implementing T2: `Service.WriteDiary`
+  (`internal/palace/service.go`) built its own `Drawer` rows in its own chunk loop and never set
+  `Entities`, exactly as `Add` did — so every `am_diary_write` entry stayed outside the derived
+  graph, and that was not a rounding error: on the day T2 was implemented the live palace held 383
+  drawers, 119 of them in `diary` rooms, 31% of the corpus this ADR exists to make navigable. It was
+  not folded into T2 because this ADR scopes half 1 to `Add` and a silent widening is how a decision
+  stops being one; it got its own task instead. `service.go` now calls `extractEntities` on both
+  paths. Left in the record rather than deleted, because the finding — the repo's signature failure
+  shape a second time, one producer fixed and its sibling missed — is the part worth keeping.
 - **Re-run `doctor --graph` against the live palace** once the image is rebuilt, and paste the output
   beside T1's table. T2's corpus figures are from a fixture and say nothing about whether the live
   share still clears the 20% bar.
-- [ ] `Service.WriteDiary` has the identical defect T2 fixed in `Service.Add`: its own chunk loop, its own `Drawer` rows, and no `Entities`. Measured 2026-08-21 on the live palace — 119 of 383 drawers are in diary rooms, so **31% of the corpus stays outside the derived graph** after this ADR. Not folded into T2, because this ADR scopes half 1 to `Add` and widening it silently would stop it being a decision. It wants its own task.
+- [x] `Service.WriteDiary` had the identical defect T2 fixed in `Service.Add` — closed by T4 (`4edbfe5`): its own chunk loop, its own `Drawer` rows, and no `Entities`. Measured 2026-08-21 on the live palace — 119 of 383 drawers are in diary rooms, so **31% of the corpus was outside the derived graph** until T4 landed. Not folded into T2, because this ADR scopes half 1 to `Add` and widening it silently would stop it being a decision — it got its own task.
