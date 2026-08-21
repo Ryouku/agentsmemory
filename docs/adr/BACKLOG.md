@@ -574,3 +574,26 @@ without the exit-code trap the first version had.
   be a claim like any other. A stronger version worth thinking about: keep one mutant per task as a
   build-tagged patch the suite can apply and assert red.
 
+## From docs/architecture.md (2026-08-21, first version)
+
+- **`internal/palace` is one module with four reasons to change** — storage, ranking, evaluation and
+  the graph (hallways, tunnels, knowledge graph) move independently across 16k lines and 26 files.
+  The module map has one row where the code has four concerns, which is the definition of a split
+  candidate. Not urgent: nothing is currently blocked on it, and a split done before the eval work
+  lands would have to be redone when ranking moves. Revisit when the eval milestone closes.
+- **Nothing checks that a consumer-side interface stays narrower than the type it stands for** — the
+  house style is to declare an interface at the consumer with the one or two methods it needs, and
+  33 of 36 follow it. An interface that grows to mirror a whole service still compiles and still
+  reads as a seam while being none. A gate could compare each interface's method count against the
+  concrete implementation's exported method set and flag convergence.
+- **`mcptest.fakeEmbedder` has no parity contract** — it returns deterministic vectors of the right
+  dimension, which is enough to exercise the plumbing and nothing like a real model's geometry.
+  Every end-to-end scenario's retrieval assertions therefore hold against a distance function no
+  real embedder would produce. This matters most for the ranking milestone: a ranking change
+  measured only against the fake is measured against nothing.
+- **Three of the five dependency rules are held by the Go compiler, not by `archguard`** — `cmd/server`
+  and `clients/claude-code` are `package main` and cannot be imported; `internal/store` importing a
+  backend is a cycle. The rules are kept as documentation of direction and marked `heldBy: byCompiler`
+  so the test does not take credit. If a future refactor makes any of them importable, the rule
+  silently becomes live and nobody will notice the promotion.
+
