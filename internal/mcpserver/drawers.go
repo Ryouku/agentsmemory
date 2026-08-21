@@ -96,7 +96,7 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 				"(wing_x) is a wing no session will ever look in. Pass it when the project really "+
 				"has no memories filed for it yet.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -290,7 +290,7 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 				"changed, so the staleness check meant to protect the memory is what marks the correction "+
 				"out of date — that is the case this exists for.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -356,7 +356,7 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithDescription("Delete a memory by the id of any of its drawers (removes every chunk's metadata and embedding). A memory over the chunk size is several drawers sharing a parent, and deleting one of them would leave the rest live and searchable with nothing to belong to, so all of them go."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -639,7 +639,7 @@ func registerReconnect(reg *registrar, drawers *palace.Service, usageSvc *usage.
 	tool := newTool("reconnect",
 		mcp.WithDescription("Re-ready the workspace's vector store and confirm the backend is reachable (a stateless liveness probe)."),
 	)
-	reg.add(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

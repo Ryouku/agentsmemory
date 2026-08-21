@@ -58,11 +58,18 @@ func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		return jsonResult(map[string]any{"anchors": out, "count": len(out)}), nil
 	})
 
+	registerMarkAnchors(reg, drawers, usageSvc)
+}
+
+// registerMarkAnchors: take back the verification verdicts list_anchors handed
+// out. Split from registerAnchors because it WRITES and its sibling reads, and a
+// registration that builds both cannot carry one classification honestly.
+func registerMarkAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	mark := newTool("mark_anchors",
 		mcp.WithDescription("Record verification verdicts for code anchors: [{\"id\":\"<anchor id>\",\"status\":\"verified|drifted|missing\",\"line\":123}]. Writes only the verdict, never the memory, so stamping never re-embeds anything."),
 		mcp.WithArray("verdicts", mcp.Required(), mcp.Description("The results, one object per anchor checked.")),
 	)
-	reg.add(mark, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(mark, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -174,7 +181,7 @@ func registerDeleteWing(reg *registrar, drawers *palace.Service, usageSvc *usage
 		mcp.WithString("wing", mcp.Required(), mcp.Description("The wing to delete.")),
 		mcp.WithString("confirm", mcp.Required(), mcp.Description("Repeat the wing name exactly. This is a deliberate second spelling, so do not derive it from the wing argument — take it from what the user actually asked you to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -209,7 +216,7 @@ func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		),
 		mcp.WithString("target", mcp.Required(), mcp.Description("The wing to merge the sources into (created if new).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

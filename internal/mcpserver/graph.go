@@ -95,7 +95,7 @@ func registerCreateTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithString("source_drawer_id", mcp.Description("Optional drawer to pin the source endpoint to.")),
 		mcp.WithString("target_drawer_id", mcp.Description("Optional drawer to pin the target endpoint to.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -134,7 +134,7 @@ func registerDeleteTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithDescription("Delete a tunnel by id."),
 		mcp.WithString("tunnel_id", mcp.Required(), mcp.Description("The tunnel id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -255,7 +255,7 @@ func registerDeleteHallway(reg *registrar, drawers *palace.Service, usageSvc *us
 		mcp.WithDescription("Delete a hallway by id (it will return on the next am_recompute_graph if the co-occurrence still holds)."),
 		mcp.WithString("hallway_id", mcp.Required(), mcp.Description("The hallway id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -318,7 +318,7 @@ func registerRecomputeGraph(reg *registrar, drawers *palace.Service, usageSvc *u
 		mcp.WithString("wing", mcp.Description("Only rebuild this wing (default: all wings).")),
 		mcp.WithBoolean("prune_orphans", mcp.Description("Drop hallways for wings that no longer have drawers (default true).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

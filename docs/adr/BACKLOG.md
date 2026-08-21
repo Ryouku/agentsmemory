@@ -538,3 +538,21 @@ without the exit-code trap the first version had.
   escapes direct field access, would close it. Not urgent while `configureRanking` reads every field
   directly, and that is exactly the condition that will change without anyone noticing.
 
+## From ADR-012 (the agent surface enforces the role it reports)
+
+- **The read/write split is spelled in three places and nothing compares them** — `registrar.add` vs
+  `addWrite` in `internal/mcpserver`, `readOnlyTools()` in `cmd/server/mcp.go`, and
+  `readOnlyRemoteTools` in `clients/claude-code/mcpcall.go`. Each is a hand-kept mirror of the same
+  classification, and a tool added to one is not added to the others. ADR-012 rejected deriving the
+  server's guard from the CLI list because it points the dependency the wrong way; the honest fix is
+  the reverse — export the classification from the catalogue (`CatalogEntry.Write` now carries it) and
+  have both adapters read it instead of restating it. Cheap now that the field exists.
+- **A third privilege level, finer than read/write** — `delete_wing` is already gated by deployment
+  mode rather than by role, which is a proxy for "is this a shared workspace". A real admin-only tier
+  would replace that proxy. Blocked on evidence: nobody knows how the three roles are actually used,
+  and a tier designed against a guess is a tier that gets granted to everyone.
+- **Writes and refusals are unlogged** — a refused write returns a message to the caller and leaves no
+  record, so an operator cannot see that an agent has been failing its write-back for a week, and a
+  successful write names no actor beyond the drawer's own row. The audit question is larger than
+  authorization and should be taken as its own ADR, not bolted onto this one.
+

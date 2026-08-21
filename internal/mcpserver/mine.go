@@ -22,7 +22,7 @@ func registerMine(reg *registrar, drawers *palace.Service, usageSvc *usage.Servi
 		mcp.WithString("room", mcp.Description("Aspect within the wing (default \"general\").")),
 		mcp.WithString("agent", mcp.Description("Author recorded on each drawer (default \"mempalace\").")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

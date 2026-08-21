@@ -43,7 +43,7 @@ func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage
 		mcp.WithString("topic", mcp.Description("Optional tag grouping entries (default \"general\").")),
 		mcp.WithString("wing", mcp.Description("Optional target wing (default wing_<agent_name>).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

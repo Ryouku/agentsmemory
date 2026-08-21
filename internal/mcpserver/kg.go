@@ -33,7 +33,7 @@ func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Serv
 		mcp.WithString("source_file", mcp.Description("Optional source label.")),
 		mcp.WithString("source_drawer_id", mcp.Description("Optional drawer id this fact was extracted from.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -68,7 +68,7 @@ func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithString("object", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's object entity. A SHORT LABEL (max %d characters), not a sentence — evidence, commit ids and repro steps belong in a drawer referenced by source_drawer_id, never smuggled in here.", palace.MaxKGValueLen))),
 		mcp.WithString("ended", mcp.Description("When it stopped being true (YYYY-MM-DD or datetime; default today).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

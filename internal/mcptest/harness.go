@@ -60,6 +60,13 @@ const fakeDim = 8
 // for the bearer token the real gate resolves.
 const teamHeader = "X-Mcptest-Team"
 
+// roleHeader lets one scenario dial as a least-privileged member while the rest
+// stay admin. The role is resolved per request from a header for the same reason
+// the workspace is: pinning one role for the process makes "a member and an admin
+// on one server" inexpressible, which is exactly the shape the missing write
+// authorization had.
+const roleHeader = "X-Mcptest-Role"
+
 // TeamID is the workspace a harness client authenticates as by default.
 //
 // OtherTeamID is a SECOND workspace over the same database, and it exists
@@ -245,13 +252,29 @@ func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 		if team == "" {
 			team = TeamID
 		}
+		role := tenant.Role(r.Header.Get(roleHeader))
+		if role == "" {
+			role = tenant.RoleAdmin
+		}
 		ctx := auth.WithTenant(r.Context(), tenant.Tenant{
-			TeamID: team, UserID: "user-mcptest", Role: tenant.RoleAdmin,
+			TeamID: team, UserID: "user-mcptest", Role: role,
 		})
 		stream.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, drawers
+}
+
+// AsRole stands up a server and dials it as a registration whose caller holds the
+// named role, so a scenario can assert what a least-privileged member may do.
+func AsRole(t *testing.T, role tenant.Role) *Harness {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "palace.db"))
+	srv, drawers := newServer(t, gdb)
+	// A wing is set for the same reason the other constructors set one: a write
+	// without it is refused for lacking a wing, and a role scenario whose refusal
+	// comes from the wrong guard proves nothing about roles.
+	return newClientRole(t, srv, drawers, "wing_roles", TeamID, role)
 }
 
 // newClient dials an existing server as one registration.
@@ -264,6 +287,14 @@ func newClient(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing
 // one server and one database.
 func newClientAs(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing, team string) *Harness {
 	t.Helper()
+	return newClientRole(t, srv, drawers, wing, team, "")
+}
+
+// newClientRole is newClientAs plus the caller's role. An empty role leaves the
+// header off, which the server reads as admin — so every existing scenario keeps
+// the privileges it was written with.
+func newClientRole(t *testing.T, srv *httptest.Server, drawers *palace.Service, wing, team string, role tenant.Role) *Harness {
+	t.Helper()
 
 	// The wing rides on the registration as a header, exactly as `install` writes
 	// it — see auth.WingHeader. A harness that stored the wing without sending it
@@ -273,6 +304,9 @@ func newClientAs(t *testing.T, srv *httptest.Server, drawers *palace.Service, wi
 	headers := map[string]string{teamHeader: team}
 	if wing != "" {
 		headers[auth.WingHeader] = wing
+	}
+	if role != "" {
+		headers[roleHeader] = string(role)
 	}
 	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
 	cli, err := client.NewStreamableHttpClient(srv.URL, opts...)

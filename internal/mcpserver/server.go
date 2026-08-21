@@ -49,6 +49,10 @@ func newTool(name string, opts ...mcp.ToolOption) mcp.Tool {
 type CatalogEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Write says this tool changes stored memory, so a read-only role is refused.
+	// It is set by the registration that enforces the role, never declared beside
+	// it, which is what stops the flag and the enforcement from disagreeing.
+	Write bool `json:"write"`
 }
 
 // registrar wraps the MCP server and accumulates the tool catalogue as tools are
@@ -61,12 +65,64 @@ type registrar struct {
 	catalog []CatalogEntry
 }
 
-// add registers a tool and records its catalogue entry in one step, so a tool can
-// never be exposed without also being advertised (and vice versa). Description is
-// read off the built tool, so it stays in sync with the WithDescription text.
+// add registers a READ-ONLY tool and records its catalogue entry in one step, so
+// a tool can never be exposed without also being advertised (and vice versa).
+// Description is read off the built tool, so it stays in sync with the
+// WithDescription text.
+//
+// A tool that changes state goes through addWrite instead. The split is not
+// bookkeeping: addWrite is where the caller's role is enforced, so registering a
+// mutating tool here is the same mistake as forgetting the check, and
+// TestEveryMutatingToolIsRegisteredAsAWrite fails when it happens.
 func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	r.srv.AddTool(tool, handler)
-	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description})
+	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: false})
+}
+
+// addWrite registers a tool that CHANGES state, refusing the call when the
+// caller's role does not permit writing.
+//
+// The check lives in the registration rather than in each handler because a
+// per-handler check is a thing every future handler has to remember. Until this
+// existed the server resolved a real role for every call — tenantFromKey reads
+// the membership row and defaults to the least-privileged member — reported it
+// back in am_status, and enforced it on exactly one tool out of forty-one, while
+// the dashboard enforced it in twenty places. A read-only member could delete any
+// drawer through the agent surface.
+//
+// Role resolution is unchanged; this is the consumer that was missing.
+func (r *registrar) addWrite(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	r.srv.AddTool(tool, writeGuard(tool.Name, handler))
+	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: true})
+}
+
+// writeGuard refuses a call whose role may not change stored memory, before the
+// handler runs. It is a named function rather than a closure inside addWrite so a
+// test can drive the real guard instead of a copy of it — a re-implemented guard
+// in a test proves the test, not the server.
+//
+// It fails closed on a missing tenant: an absent tenant is not a zero role to be
+// judged, it is an unauthenticated call.
+func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, ok := auth.TenantFrom(ctx)
+		if !ok {
+			return mcp.NewToolResultError("unauthenticated: present a valid Bearer token"), nil
+		}
+		if !canWrite(t.Role) {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"%s changes stored memory and your role on this workspace is %q, which is read-only. "+
+					"An admin can grant you the writer role; every read tool remains available.",
+				name, string(t.Role))), nil
+		}
+		return handler(ctx, req)
+	}
+}
+
+// canWrite is the one definition of "may change stored memory", so the MCP
+// surface and the dashboard cannot drift into two different policies.
+func canWrite(role tenant.Role) bool {
+	return role == tenant.RoleWriter || role == tenant.RoleAdmin
 }
 
 // WorkspaceLookup resolves the workspace a session is scoped to. It is declared
