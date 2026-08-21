@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** `internal/mcpserver/server.go` (the registrar and the shared admission), `internal/tenant/tenant.go` (role resolution), `internal/web` (the dashboard's enforcement, the model this copies), ADR-008 (the end-to-end harness this extends with a role)
 **Invalidates:** none — checked. ADR-001..011 grepped for `Role`, `CanWrite`, `admit(`: none reasons about authorization. ADR-008 owns end-to-end tool coverage and gains a scenario rather than losing one.
+**Served-path change:** Every mutating MCP tool refuses a caller whose role may not write, and the refusal names the role and the remedy. A member-role key that could delete any drawer now cannot. Shipped.
 
 ## Context
 

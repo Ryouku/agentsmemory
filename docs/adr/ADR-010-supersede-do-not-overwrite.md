@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-004 (supersession in ranking — this is supersession in storage), ADR-001 (recall must be able to say "I don't know"; a superseded record changes what "current" means)
 **Invalidates:** none — checked. It does REVISE work landed in this repository on 2026-08-20: `Service.Delete` was hardened to remove every chunk of a memory, and `Service.Update` to refuse a multi-chunk content edit. Both are correct within the current model and both become the wrong primitive under this one. Said plainly because an ADR that quietly reverses last week's fix is how a team stops trusting its own record.
+**Served-path change:** Drawers gain a validity window and recall returns only what is current, so `am_search` stops surfacing memories the team has since retracted. Status is Proposed; 0 of 3.
 
 ## Context
 

@@ -20,6 +20,7 @@ There is a rule this project is built on: *code is the state of record, memory i
 The palace already has the mechanism that enforces it. A memory can carry **code anchors** — verbatim source lines plus a path — and when an anchored snippet later disappears, recall marks the memory STALE and tells the reader to check the code first. What it does not have is any way to decide *which* memories need one. The protocol asks (`internal/mcpserver/drawers.go`, the `code_anchors` description: *"Anchor whenever a memory explains a specific piece of code"*), and asking is a convention.
 
 **Measured, on 270 real drawers, four independent labellers over disjoint slices:**
+**Served-path change:** None — withdrawn before implementation.
 
 | | |
 |---|---|

@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** `cmd/server/wiring_test.go` (the existing reachability gates), `cmd/server/envreach_test.go`, ADR-003 (owns the `CLOSET_BOOST` default), ADR-002 (owns `BM25_WEIGHT`'s meaning)
 **Invalidates:** none — checked (grepped ADR-001..005 for `BM25_WEIGHT`, `RERANK_`, `SEARCH_SCOPE`, `wiring_test`: ADR-002 and ADR-003 read these knobs' VALUES and neither depends on how reachability is checked)
+**Served-path change:** `--http-timeout` becomes settable at all; `SearchEvent.Reranked` stops claiming reranking that did not happen; the CLI adapter scopes to its registration's wing; `--bm25-weight` states when it is inert and startup stops contradicting itself. All shipped.
 
 ## Context
 

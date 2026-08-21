@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-002 (owns which normaliser and lexical weight ship), ADR-003 (owns the closet default), ADR-007 (owns whether a printed number can be trusted)
 **Invalidates:** none — checked (ADR-002's shipping rule decides a GLOBAL default from two corpora; this decides a PER-INSTALL one and does not touch that rule. If ADR-002 later ships a new global default, it becomes this mechanism's starting point rather than its competitor.)
+**Served-path change:** `agentsmemory tune` writes a ranking configuration an operator's server then serves, so the served defaults change on their box rather than ours. Status is Proposed; 0 of 3.
 
 ## Context
 

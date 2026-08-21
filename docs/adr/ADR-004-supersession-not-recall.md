@@ -5,6 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/kg.go` (validity windows), `internal/palace/eval.go:105` (`CatTemporal`), `internal/palace/eval.go:562` (`ArmProduction`), `internal/palace/eval.go:772` (`OlderNeighbor`), `internal/palace/evalstats.go` (intervals), `cmd/server/eval.go:209` (`generateTemporalCases`), `cmd/server/eval.go:1006` (`printPoolDiagnosis`), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/BACKLOG.md`
+**Served-path change:** **None — this ADR changes only measurement.** All five tasks are done and every one is an eval arm, a statistic or a gate. What an agent receives from `am_search` is byte-identical before and after. The behaviour this measures — recall preferring current records over superseded ones — is ADR-010's, which is still Proposed at 0 of 3.
 
 ## Context
 

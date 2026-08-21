@@ -5,6 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/rank.go` (`rankFused`, `bm25Scores`, `adaptiveBM25Weight`, `LexicalCoverageIDF`), `internal/palace/eval.go` (arm registry, `evalCase`), `internal/palace/evalstats.go` (paired bootstrap), `internal/palace/armreach_test.go` (arm reachability), `internal/palace/service_test.go` (`TestLexicalIDFChangesWhatSearchReturns`, the behavioural-reachability pattern), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-003-retire-the-closet-prior.md` (it decides whether the prior this ADR must rank alongside survives at all)
+**Served-path change:** The lexical normaliser becomes an operator-selectable choice (`LEX_NORM` / `Service.WithLexNorm`) and the served fusion changes accordingly — T4, pending. **The two landed tasks changed only the eval**: `lexNormCeiling` and `lexNormSaturating` are referenced from `eval.go` and from nothing in `Search`.
 
 ## Context
 

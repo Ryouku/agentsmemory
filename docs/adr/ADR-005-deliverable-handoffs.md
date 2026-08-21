@@ -32,6 +32,7 @@ Two changes, one on each side of the loop.
 **Write side.** `am_add_drawer` refuses when the target wing holds no drawers *and* the room is `inbox`, naming the likely mistake and listing existing wings. An optional `confirm_new_wing` boolean proceeds anyway.
 
 The discriminator was chosen because a bare "this wing is new" warning is a false alarm on exactly the case the protocol protects in three separate paragraphs — a wing comes into existence on first write, so on a fresh install every wing is missing. **Falsification, checked before adopting:** if any legitimate wing's first write were an inbox item, the rule fires on correct behaviour and must be withdrawn. Measured across all 217 drawers on 2026-08-20: eight legitimate wings, first write `decisions` (2) or `diary` (6); the only two wings whose first write is `inbox` are the two malformed ones. Zero false positives. This is a property of a palace where agents file their own project's memories before handing work elsewhere; it is valid for that usage and would need re-checking for a deployment whose first act is federation.
+**Served-path change:** `am_add_drawer` refuses a handoff filed into a wing nobody will read and names the likely correction; `am_status` reports a waiting inbox and changes its hint when items are there. Both shipped.
 
 **Read side.** `am_status` gains a top-level `inbox` block — the count in the session's own wing — and a `hint` that changes when there is something waiting. The count exists today only inside the `wings` array, where it is one number among sixty.
 

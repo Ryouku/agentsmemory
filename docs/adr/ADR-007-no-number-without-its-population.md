@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-002 (reads the anchored arms off these tables), ADR-003 (its truth table is one of the numbers this ADR shows cannot currently be read), ADR-004 (its supersession row is the behaviour this ADR generalises)
 **Invalidates:** none — checked (grepped ADR-001..006 for `EvalReport`, `printPool`, `ClosetDelta`, `--cases`: ADR-002/003/004 CONSUME these tables and none of them depends on how a number is labelled)
+**Served-path change:** None on the retrieval path — this ADR changes only what the eval PRINTS. Deliberate, and the point: the numbers an operator reads decide which production change is worth making, so an eval that misreports its population misroutes every downstream decision. 0 of 3 tasks done.
 
 ## Context
 

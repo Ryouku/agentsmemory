@@ -6,6 +6,7 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-006 (settings reachability — the same principle applied to configuration), ADR-007 (measurement honesty — third in priority behind this)
 **Invalidates:** none — checked (grepped ADR-001..007 for `mcpserver`, `CallToolRequest`, `catalog`: none depends on how tools are tested, because none are)
+**Served-path change:** None — test infrastructure. It changes what the build refuses to ship, not what a running server does.
 
 ## Context
 

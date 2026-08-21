@@ -5,6 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; the decision rests on measurements recorded in the eval harness rather than on elicited requirements.
 **Cross-references:** `internal/palace/eval.go` (harness), `cmd/server/eval.go` (`verifyAbsent`, the absent generator), `internal/rerank/tei/tei.go` (the two-dialect rerank client), `db/migrations/00021_search_events.sql` (telemetry), `docs/adr/ADR-002-anchor-the-lexical-score.md` and `docs/adr/ADR-003-retire-the-closet-prior.md` (both change which document reaches production top-1, which is the document this ADR judges), `docs/adr/BACKLOG.md`, PR #20 comment recording the separation measurement
+**Served-path change:** `Service.Search` returns a confidence verdict and ABSTAINS rather than answering when calibration says it cannot — `am_search` carries it. Not yet on the served path: 0 of 6 tasks done, and T4-T6, the three that touch it, are gated on T3's go/no-go.
 
 ## Context
 
