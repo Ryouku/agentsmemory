@@ -650,7 +650,17 @@ func SnippetWithHead(content, query string, maxChars int, isHead bool) string {
 	// budget whose whole point is that an agent's context is expensive.
 	start, end := snippetWindow(runes, lower, terms, maxChars-head)
 	if end <= maxChars {
-		return renderSnippet(runes, 0, maxChars)
+		// One contiguous window from the start holds the identity AND the match.
+		// It still must not cut a word in half: this path returned a hard slice at
+		// exactly maxChars, so the word-boundary rule that snippetWindow applies
+		// was bypassed for every chunk-zero hit — which is most of a page. Grown
+		// rather than shifted here, because this window is anchored at rune 0 by
+		// construction and moving it would drop the identity it exists to keep.
+		cut := maxChars
+		if grow := wordTail(runes, cut); grow > 0 {
+			cut += grow
+		}
+		return renderSnippet(runes, 0, cut)
 	}
 	return strings.TrimSuffix(string(runes[:head]), " ") + " … " + renderSnippet(runes, start, end)[len("…"):]
 }
@@ -689,6 +699,27 @@ func windowHasTerm(lower []rune, start, end int, terms []string) bool {
 		}
 	}
 	return false
+}
+
+// wordTail reports how many runes past end belong to the word the boundary cuts,
+// or 0 when [.., end) does not end inside one.
+//
+// maxWordTail bounds it: a run of word runes longer than that is not a word
+// anybody is reading — it is an id or a hash — and chasing it would drag the
+// window off the match.
+func wordTail(runes []rune, end int) int {
+	const maxWordTail = 24
+	if end <= 0 || end >= len(runes) || !isWordRune(runes[end]) || !isWordRune(runes[end-1]) {
+		return 0
+	}
+	grow := 0
+	for end+grow < len(runes) && grow < maxWordTail && isWordRune(runes[end+grow]) {
+		grow++
+	}
+	if grow >= maxWordTail {
+		return 0
+	}
+	return grow
 }
 
 // isWordRune reports whether r is part of a word, using the same character
@@ -774,10 +805,11 @@ func snippetWindow(runes, lower []rune, terms []string, maxChars int) (int, int)
 		end = len(runes)
 	}
 
-	// Do not end the window in the MIDDLE OF A WORD. Measured 2026-08-21 against
-	// real queries, a page returned "…a budget must be shor…" and the sentence the
-	// agent needed continued past the cut: retrieval had put the right drawer at
-	// rank 1 and the aperture threw the answer away.
+	// Do not end the window in the MIDDLE OF A WORD — see completeLastWord, which
+	// this shares with SnippetWithHead's whole-opening path. Measured 2026-08-21
+	// against real queries, a page returned "…a budget must be shor…" and the
+	// sentence the agent needed continued past the cut: retrieval had put the
+	// right drawer at rank 1 and the aperture threw the answer away.
 	//
 	// The first attempt at this looked for a clipped query TERM inside the chosen
 	// window — which cannot work, because a term the window clips is by definition
@@ -792,13 +824,8 @@ func snippetWindow(runes, lower []rune, terms []string, maxChars int) (int, int)
 	// asked for. maxWordTail bounds the shift: a run of word runes longer than
 	// that is not a word anybody is reading, it is an id or a hash, and chasing it
 	// would drag the window off the match.
-	if end < len(runes) && isWordRune(runes[end]) && isWordRune(runes[end-1]) {
-		const maxWordTail = 24
-		grow := 0
-		for end+grow < len(runes) && grow < maxWordTail && isWordRune(runes[end+grow]) {
-			grow++
-		}
-		if grow < maxWordTail {
+	if grow := wordTail(runes, end); grow > 0 {
+		{
 			shiftedStart, shiftedEnd := best, end
 			switch {
 			case best+grow+maxChars <= len(runes):

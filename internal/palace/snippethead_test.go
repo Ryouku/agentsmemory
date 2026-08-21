@@ -130,6 +130,48 @@ func TestSnippetDoesNotEndMidWord(t *testing.T) {
 	const content = "the pool is fifty and the rerank budget must be shorter than any client waits, " +
 		"or the fail-open path is unreachable in practice and nobody finds out"
 
+	// BOTH entry points. The head path — chunk zero, which is most of a real page
+	// — took a hard slice at exactly maxChars and bypassed this rule entirely,
+	// measured against the live corpus after the rule had supposedly shipped.
+	for _, maxChars := range []int{20, 30, 40, 50, 60, 80, 120} {
+		for _, isHead := range []bool{true, false} {
+			assertNoMidWordCut(t, content, "budget shorter", maxChars, isHead)
+		}
+	}
+}
+
+// assertNoMidWordCut fails when the snippet's trailing ellipsis lands inside a
+// word — checked against the SOURCE, because a snippet that correctly ends at a
+// word boundary also ends in a letter and the two are indistinguishable from the
+// snippet alone. A check that could not tell them apart reported 116 of 142 live
+// snippets as broken when they were not.
+func assertNoMidWordCut(t *testing.T, content, query string, maxChars int, isHead bool) {
+	t.Helper()
+	got := SnippetWithHead(content, query, maxChars, isHead)
+	if !strings.HasSuffix(got, "…") {
+		return // nothing was cut
+	}
+	body := strings.TrimSuffix(got, "…")
+	if i := strings.LastIndex(body, " … "); i >= 0 {
+		body = body[i+len(" … "):]
+	}
+	body = strings.TrimPrefix(body, "…")
+	idx := strings.Index(content, body)
+	if idx < 0 || len(body) == 0 {
+		return
+	}
+	next := []rune(content[idx+len(body):])
+	last := []rune(body)[len([]rune(body))-1]
+	if len(next) > 0 && isWordRune(last) && isWordRune(next[0]) {
+		t.Errorf("isHead=%v maxChars=%d cut a word in half: %q (the source continues %q)",
+			isHead, maxChars, got, string(next[:min(6, len(next))]))
+	}
+}
+
+func TestSnippetDoesNotEndMidWordLegacy(t *testing.T) {
+	const content = "the pool is fifty and the rerank budget must be shorter than any client waits, " +
+		"or the fail-open path is unreachable in practice and nobody finds out"
+
 	for _, maxChars := range []int{20, 30, 40, 50, 60, 80, 120} {
 		got := Snippet(content, "budget shorter", maxChars)
 		body := strings.Trim(got, "…")
