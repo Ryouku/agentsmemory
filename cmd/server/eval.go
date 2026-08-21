@@ -35,6 +35,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank/tei"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
 )
@@ -62,6 +63,13 @@ func evalCommand(def config.Config) *cli.Command {
 			projectFlag(),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
+			&cli.BoolFlag{Name: "calibrate", Usage: "derive the abstention thresholds from this run and write a calibration file. Requires a set holding BOTH answerable and verified-absent cases — the separation cannot be computed from one alone"},
+			&cli.StringFlag{Name: "calibration-out", Value: "calibration.json", Usage: "where --calibrate writes the calibration file. The tool writes a FILE, never configuration: an operator still has to point the server at it, so a bad calibration cannot become production behaviour by itself"},
+			&cli.BoolFlag{Name: "gate", Usage: "exit non-zero unless the 90% Wilson LOWER BOUND on the correct-refusal rate clears --refusal-bar. The bound, not the point estimate: at these sample sizes the estimate carries about +/-0.11 at one standard error, so a gate on it passes on noise"},
+			&cli.FloatFlag{Name: "answer-recall", Value: 0.95, Usage: "answer-recall target the higher threshold must hold over REACHABLE-answerable cases"},
+			&cli.IntFlag{Name: "refuse-allowance", Value: 1, Usage: "how many reachable-answerable cases may fall below the lower threshold. A COUNT, not a rate: at these sample sizes the achievable recall grid is coarse enough that two rate targets pick the same threshold and the band collapses"},
+			&cli.FloatFlag{Name: "refusal-bar", Value: 0.30, Usage: "the correct-refusal rate --gate compares its lower bound against"},
+			&cli.StringFlag{Name: "rerank-model", Usage: "operator-declared label for the reranker in force, recorded in the calibration. Not detected: Reranker.Rerank returns floats and does not report what produced them"},
 			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
 			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions (must be GENERATIVE — an embedder like bge-m3 cannot answer /api/generate)"},
 			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
@@ -156,6 +164,11 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		}
 	}
 
+	// Deliberately AFTER the tables and BEFORE the results file: the curve reads
+	// the same rows the tables were printed from, and a failing --gate must still
+	// leave the numbers on screen that explain why it failed.
+	calErr := runCalibration(ctx, c, cfg, report, out)
+
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
 	// exists in scrollback cannot be compared with the next one, and comparing
@@ -184,7 +197,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 			fmt.Fprintf(out, "run record (commit, ranking config, closet cells; no case text): %s\n", cPath)
 		}
 	}
-	return nil
+	return calErr
 }
 
 // resultsPath derives where the results artifact lands: beside the first case
@@ -1811,4 +1824,155 @@ func gatedArmRanks(report palace.EvalReport, want palace.EvalArm) []int {
 		}
 	}
 	return nil
+}
+
+// runCalibration turns this run's labelled rows into thresholds, a verdict and a
+// file — or explains why it will not.
+//
+// Nothing here fires unless the operator asked for it. An eval that silently wrote
+// a calibration would make every ordinary measurement a candidate operating point,
+// and the whole reason this is a file rather than configuration is that a human
+// decides when one becomes real.
+func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, report palace.EvalReport, out io.Writer) error {
+	if !c.Bool("calibrate") && !c.Bool("gate") {
+		return nil
+	}
+
+	rows := make([]palace.CalibrationRow, 0, len(report.Details))
+	for _, d := range report.Details {
+		rows = append(rows, palace.CalibrationRow{
+			Population: d.Population,
+			// The score the SERVED gate will compare. Measured on this corpus the
+			// absolute cross-encoder score separates answerable from unanswerable
+			// at 0.81 AUC against 0.61-0.71 for every page-shape statistic, so the
+			// level is what the curve is fitted over and the shapes are reported
+			// beside it rather than used.
+			Score:  d.TopRerank,
+			Scored: d.RerankScored,
+		})
+	}
+	th := palace.RecommendThresholds(rows, c.Float("answer-recall"), c.Int("refuse-allowance"))
+
+	fmt.Fprintf(out, "\ncalibration — %d reachable-answerable, %d verified-absent, %d unreachable (excluded)\n",
+		th.Reachable, th.Absent, th.Unreachable)
+	if th.Reachable == 0 || th.Absent == 0 {
+		// The Stop Condition, as an outcome rather than a crash: a curve needs
+		// both populations, and one of them alone is not a weak measurement, it is
+		// no measurement.
+		fmt.Fprintf(out, "  no curve: a threshold needs BOTH answerable and verified-absent cases in one run.\n"+
+			"  Merge two case files with --cases a.jsonl,b.jsonl.\n")
+		if c.Bool("gate") {
+			return fmt.Errorf("gate requested but the run holds no separation to gate on")
+		}
+		return nil
+	}
+	fmt.Fprintf(out, "  answer_at    %s (target recall %.2f, achieved %.3f)\n",
+		fmtThreshold(th.AnswerAt), c.Float("answer-recall"), th.AchievedRecall)
+	fmt.Fprintf(out, "  refuse_below %s (allowance %d)\n", fmtThreshold(th.RefuseBelow), c.Int("refuse-allowance"))
+	if th.BandEmpty {
+		fmt.Fprintf(out, "  the band is EMPTY: both rules chose the same threshold, so this corpus supports\n"+
+			"  three verdicts and not four — there is no score range where the honest answer is\n"+
+			"  'I am not sure'.\n")
+	}
+
+	refused := 0
+	if th.AnswerAt != nil {
+		for _, r := range rows {
+			if r.Scored && r.Population == palace.PopAbsent && r.Score < *th.AnswerAt {
+				refused++
+			}
+		}
+	}
+	pass, rate, lower, n := palace.RefusalGate(th.Absent, refused, c.Float("refusal-bar"))
+	fmt.Fprintf(out, "  correct refusal at answer_at: %d/%d = %.3f, 90%% lower bound %.3f, bar %.2f — %s\n",
+		refused, n, rate, lower, c.Float("refusal-bar"), gateWord(pass))
+
+	if !c.Bool("calibrate") {
+		if c.Bool("gate") && !pass {
+			return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+				lower, c.Float("refusal-bar"), n)
+		}
+		return nil
+	}
+
+	// The fingerprint identifies the instrument. Without a reranker there is
+	// nothing to fingerprint, and a calibration that cannot be checked against the
+	// thing that produced it is a number with no provenance.
+	// palace.Service deliberately exposes no accessor to its own reranker, so the
+	// probe is built from the SAME configuration the service was built from. It
+	// identifies the endpoint and model — which is what the fingerprint is for —
+	// rather than the particular client object.
+	if strings.TrimSpace(cfg.RerankURL) == "" {
+		return fmt.Errorf("no --rerank-url configured, so there is nothing to fingerprint; a " +
+			"calibration that cannot be checked against the instrument that produced it is a " +
+			"number with no provenance")
+	}
+	canary, err := palace.ScoreCanary(ctx, tei.New(cfg.RerankURL, cfg.RerankTimeout))
+	if err != nil {
+		return fmt.Errorf("cannot fingerprint the reranker, so no calibration is written: %w", err)
+	}
+	cal := palace.Calibration{
+		AnswerAt: th.AnswerAt, RefuseBelow: th.RefuseBelow,
+		AnswerRecallTarget: c.Float("answer-recall"), RefuseAllowance: c.Int("refuse-allowance"),
+		AchievedRecall: th.AchievedRecall,
+		Reachable:      th.Reachable, Absent: th.Absent, Unreachable: th.Unreachable,
+		GatePassed: pass, RefusalRate: rate, RefusalLower: lower, RefusalBar: c.Float("refusal-bar"),
+		RerankModel:   strings.TrimSpace(c.String("rerank-model")),
+		Profile:       rankingProfileLabel(c),
+		Canary:        canary,
+		ScoresBounded: palace.ScoresLookBounded(canary),
+	}
+	path := c.String("calibration-out")
+	if err := cal.Save(path); err != nil {
+		return fmt.Errorf("write calibration: %w", err)
+	}
+	fmt.Fprintf(out, "  wrote %s (id %s, fingerprint over %d canary pairs, tolerance %.4f)\n",
+		path, cal.ID, len(canary), widestTolerance(canary))
+	fmt.Fprintf(out, "  the server does NOT read this by itself — point it at the file to make it real.\n")
+
+	if c.Bool("gate") && !pass {
+		return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+			lower, c.Float("refusal-bar"), n)
+	}
+	return nil
+}
+
+// fmtThreshold prints a threshold that may be ABSENT, without letting absent read
+// as the number zero — which on an unbounded cross-encoder scale is an ordinary
+// score sitting in the middle of the distribution.
+func fmtThreshold(v *float64) string {
+	if v == nil {
+		return "(none derivable)"
+	}
+	return fmt.Sprintf("%.4f", *v)
+}
+
+// gateWord names the go/no-go. Distinct from doctor.go's verdictWord, which
+// answers a different question with a different sentence.
+func gateWord(pass bool) string {
+	if pass {
+		return "PASS"
+	}
+	return "FAIL"
+}
+
+// widestTolerance is the largest spread any canary pair showed, which is what a
+// startup check has to allow for across all of them.
+func widestTolerance(pairs []palace.CanaryPair) float64 {
+	worst := 0.0
+	for _, p := range pairs {
+		if p.MaxDeviation > worst {
+			worst = p.MaxDeviation
+		}
+	}
+	return worst
+}
+
+// rankingProfileLabel records the ranking configuration the thresholds were
+// derived under. A threshold calibrated with one fusion mode and applied under
+// another is calibrated on nothing.
+func rankingProfileLabel(c *cli.Command) string {
+	return fmt.Sprintf("fusion=%s bm25=%s closet=%.2f rerank-pool=%d rerank-weight=%s",
+		c.String("fusion"), c.String("bm25-weight"), c.Float("closet-boost"),
+		c.Int("rerank-pool"), c.String("rerank-weight"))
 }

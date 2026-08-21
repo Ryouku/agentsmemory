@@ -1,6 +1,8 @@
 package palace
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,4 +109,79 @@ func TestLoadCalibrationRejectsGarbage(t *testing.T) {
 	if _, err := LoadCalibration(filepath.Join(dir, "absent.json")); err == nil {
 		t.Error("a missing calibration loaded without error")
 	}
+}
+
+// driftingReranker returns a different score on each call, cycling through the
+// supplied offsets. It stands in for a reranker whose output moves under load.
+type driftingReranker struct {
+	base    []float64
+	offsets []float64
+	call    int
+}
+
+func (r *driftingReranker) Rerank(_ context.Context, _ string, docs []string) ([]float64, error) {
+	off := r.offsets[r.call%len(r.offsets)]
+	r.call++
+	out := make([]float64, len(docs))
+	for i := range docs {
+		out[i] = r.base[i%len(r.base)] + off
+	}
+	return out, nil
+}
+
+// TestCanaryToleranceIsMeasuredNotTyped pins the invariant that makes the
+// fingerprint worth having: the tolerance comes from the INSTRUMENT, never from a
+// constant in the source.
+//
+// A typed epsilon is a guess about someone else's hardware. Too tight and a
+// healthy reranker is declared broken on a busy host; too loose and a genuinely
+// different model passes as the calibrated one — which is the failure that
+// matters, because it silently applies a threshold calibrated for a scale that no
+// longer exists.
+//
+// A deterministic reranker must yield tolerance 0, and therefore an exact-match
+// check at startup. That is the right answer when it is true, so it has to be
+// measured rather than floored to some "safe" non-zero value.
+func TestCanaryToleranceIsMeasuredNotTyped(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deterministic yields zero", func(t *testing.T) {
+		steady := &driftingReranker{base: []float64{0.8, -1.2}, offsets: []float64{0}}
+		got, err := ScoreCanary(ctx, steady)
+		if err != nil {
+			t.Fatalf("score canary: %v", err)
+		}
+		if len(got) == 0 {
+			t.Fatal("no canary pairs scored — the fingerprint would check nothing")
+		}
+		for _, p := range got {
+			if p.MaxDeviation != 0 {
+				t.Errorf("pair %q got tolerance %v from a deterministic reranker; a non-zero "+
+					"floor here is an epsilon typed in by another name", p.Query, p.MaxDeviation)
+			}
+		}
+	})
+
+	t.Run("drift is captured as the widest gap observed", func(t *testing.T) {
+		// offsets span 0.30; the tolerance must be the observed spread, not an
+		// average of it and not a constant.
+		drifty := &driftingReranker{base: []float64{0.8, -1.2}, offsets: []float64{0, 0.1, -0.2, 0.05, 0}}
+		got, err := ScoreCanary(ctx, drifty)
+		if err != nil {
+			t.Fatalf("score canary: %v", err)
+		}
+		for _, p := range got {
+			if p.MaxDeviation < 0.29 || p.MaxDeviation > 0.31 {
+				t.Errorf("pair %q tolerance %v; the repeats span 0.30, so a tolerance that is "+
+					"not ~0.30 is not derived from what was observed", p.Query, p.MaxDeviation)
+			}
+		}
+	})
+
+	t.Run("a broken reranker is an error, not a zero fingerprint", func(t *testing.T) {
+		if _, err := ScoreCanary(ctx, &fakeReranker{err: errors.New("unreachable")}); err == nil {
+			t.Error("a failing reranker produced a fingerprint; an empty one would then match " +
+				"any future instrument and the check would pass on nothing")
+		}
+	})
 }

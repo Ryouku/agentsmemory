@@ -1,6 +1,7 @@
 package palace
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -311,4 +312,111 @@ func (c Calibration) contentID() string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+// canaryRepeats is how many times each probe is scored. Five is enough to see a
+// spread without turning calibration into a benchmark; the number matters less
+// than that it is greater than one, because a single reading cannot show drift at
+// all and would record every instrument as perfectly deterministic.
+const canaryRepeats = 5
+
+// canaryProbes are the fixed (query, document) pairs the fingerprint is built
+// from. Deliberately short, self-contained and about nothing in any corpus: the
+// fingerprint identifies the INSTRUMENT, so a probe that depended on stored
+// content would change meaning whenever the content did.
+//
+// The pairs span the range on purpose — one where the document plainly answers the
+// query, one where it is on-topic and does not, one unrelated. A fingerprint taken
+// only at the top of the scale cannot tell a model that agrees about good matches
+// and disagrees about everything else.
+var canaryProbes = []struct{ Query, Document string }{
+	{"how do I rotate the signing key", "To rotate the signing key, run the rotate command and restart each node."},
+	{"how do I rotate the signing key", "Signing keys are stored in the vault; this note covers how they are generated."},
+	{"how do I rotate the signing key", "The kitchen roster for August is pinned in the hallway."},
+}
+
+// ScoreCanary probes the reranker and derives the fingerprint's tolerance from
+// what it observes.
+//
+// The tolerance is the WIDEST gap seen across repeats, never a typed epsilon. A
+// constant here would be a guess about someone else's hardware: too tight and a
+// healthy reranker is declared broken on a busy host, too loose and a genuinely
+// different model passes as the calibrated one — which is the failure that
+// matters, since it applies a threshold calibrated for a scale that no longer
+// exists.
+//
+// A deterministic reranker therefore yields zero, and an exact-match check at
+// startup. That is the correct answer when it is true, which is why it is measured
+// rather than floored to something "safe".
+//
+// A reranker that cannot score returns an error rather than an empty fingerprint:
+// an empty one would match any future instrument, and the check would pass on
+// nothing.
+func ScoreCanary(ctx context.Context, r Reranker) ([]CanaryPair, error) {
+	if r == nil {
+		return nil, fmt.Errorf("no reranker configured; a calibration without a fingerprint " +
+			"cannot be checked against the instrument that produced it")
+	}
+	docs := make([]string, len(canaryProbes))
+	for i, p := range canaryProbes {
+		docs[i] = p.Document
+	}
+	// One query per probe rather than one call for all of them: the probes share a
+	// query here, but a cross-encoder scores the (query, document) pair, and
+	// batching them under one query would silently change what is being measured
+	// if the probe list ever gained a second question.
+	runs := make([][]float64, 0, canaryRepeats)
+	for i := 0; i < canaryRepeats; i++ {
+		scores, err := r.Rerank(ctx, canaryProbes[0].Query, docs)
+		if err != nil {
+			return nil, fmt.Errorf("score canary probe (repeat %d): %w", i+1, err)
+		}
+		if len(scores) != len(docs) {
+			return nil, fmt.Errorf("canary repeat %d returned %d scores for %d documents",
+				i+1, len(scores), len(docs))
+		}
+		runs = append(runs, scores)
+	}
+
+	out := make([]CanaryPair, len(canaryProbes))
+	for i, p := range canaryProbes {
+		lo, hi, sum := math.Inf(1), math.Inf(-1), 0.0
+		for _, run := range runs {
+			v := run[i]
+			sum += v
+			if v < lo {
+				lo = v
+			}
+			if v > hi {
+				hi = v
+			}
+		}
+		out[i] = CanaryPair{
+			Query:    p.Query,
+			Document: p.Document,
+			Mean:     sum / float64(len(runs)),
+			// the observed spread, which is 0 for a deterministic instrument
+			MaxDeviation: hi - lo,
+		}
+	}
+	return out, nil
+}
+
+// ScoresLookBounded infers whether the reranker's scale is (0,1) or unbounded,
+// from the canary scores rather than from configuration.
+//
+// Reranker.Rerank returns floats and does not report which dialect decoded them,
+// so the scale is not knowable any other way — and the same model read through two
+// dialects gives two different scales for one threshold.
+//
+// Inferred once at calibration time and then recorded, never re-derived on load:
+// a calibration whose scale was guessed again later could disagree with the
+// thresholds stored beside it.
+func ScoresLookBounded(pairs []CanaryPair) bool {
+	for _, p := range pairs {
+		if p.Mean < 0 || p.Mean > 1 {
+			return false
+		}
+	}
+	return len(pairs) > 0
 }
