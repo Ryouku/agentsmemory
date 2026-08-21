@@ -45,6 +45,12 @@ conjunctions, past-tense verbs, adjectives, status words. Two causes, both check
   entities, and it was never a function-word stoplist, so it filters none of them.
 - `entityStoplist` — the map consulted immediately before the COCA check — is declared as an empty
   literal. It exists, it is read on every candidate, and it holds nothing.
+  **Corrected by T2:** it is declared empty and then filled by an `init()` at the foot of the same
+  file with 52 words, of which 20 add coverage COCA does not already have — `And`, `Assistant`, and
+  the days and months. The map is not inert. What it is, is nearly redundant with COCA and matched
+  CASE-SENSITIVELY, so it held `And` and let `AND` straight through — which is the same defect
+  arriving by a different route, and worth recording accurately because "the list is empty" and "the
+  list is case-sensitive" have different fixes.
 
 So the pre-registration measured the right thing and was silent about the thing that matters as
 much. That is a defect in the criterion, recorded rather than quietly widened: the bar decided
@@ -52,6 +58,43 @@ whether to PROCEED and it says proceed, and the ADR's own risk row already asked
 the graph would look like "so the threshold is set against real data rather than guessed". It is now
 set against real data, and the data says: fix the candidate rule first, then re-measure. T2 carries
 that, and re-runs `doctor --graph` to show what it changed.
+
+**T2's re-measurement, 2026-08-21 — and the candidate rule was NOT the thing to fix.** Measured over
+163 ordinary English words in both cases: 47 survived the extractor SHOUTED, and 46 survived in
+Title Case. The two sets differ by exactly one word, `AND`. So the all-caps regex was not what let
+the noise in — the noise was in Title Case too, and narrowing `candidateWordRE` would have fixed one
+word out of 47 while costing every acronym, since `HTTP`, `MCP`, `ADR`, `TEI` and `RRF` are all-caps
+and all entities. No rule over a token's SHAPE separates them from `AND`, `WAS` and `MISSING`: the
+shouted survivors run 3–11 characters and the acronyms 3–12.
+
+What discriminates is a LEXICON, so the repair is there. `entityStoplist` is now keyed lowercase and
+consulted case-insensitively, it holds what COCA structurally cannot (closed-class function words,
+irregular verb forms, status participles), and a lookup that misses falls back to COCA through the
+regular English inflections — because COCA holds `ship` and `change` while an agent writes `SHIPPED`
+and `CHANGED`. After:
+
+| battery | before | after |
+|---|---|---|
+| ordinary words surviving, ALL CAPS | 47 / 163 | **2 / 163** (`RANKING`, `OPTIONAL`) |
+| ordinary words surviving, Title Case | 46 / 163 | **2 / 163** |
+| acronyms still extracted | 47 / 47 | **47 / 47** |
+| ordinary-word product names still extracted (`Atlas`, `Vault`, `Delta`, `Sentry`…), both cases | 23 / 23 | **23 / 23** |
+
+Now excluded: `AND WAS WERE BEEN ARE MISSING BROKEN STALE DEAD SHIPPED ADDED REMOVED CHANGED FAILED
+WORKED RETURNED TOOK GAVE WROTE BROKE TESTING WORKING WRITING COUNTING UNLESS WHEREAS NOBODY`. Still
+admitted, recorded rather than hidden: `RANKING` and `OPTIONAL` (COCA holds neither `rank` nor a
+route to `optional`, and both name real things elsewhere), and the plural reduction that removes
+`Depends`, `Produces`, `Scores`, `Covers` and `Services` also removes `Windows` — a real name lost to
+`window`. The extractor is better, not clean.
+
+**The corpus caveat, stated so the number cannot be misquoted.** T2 could not re-run `doctor --graph`
+against the live palace: doing so needs the image rebuilt from the change, which would disturb the
+running container. The batteries above are hermetic, but the corpus figures were taken over a
+FIXTURE — this repository's own 99 agent-written markdown files, chunked as drawers — where the share
+carrying two or more entities moves 41.8% → 40.6% and derivable hallways 251 → 231. That is a
+different population from T1's 366 live drawers and is NOT a re-measurement of the 24.6%. It says
+only that the repair costs a few percent of yield rather than a category of it; whether the live
+share still clears the 20% bar is a `doctor --graph` run an operator still owes this ADR.
 
 ## Existing Primitives Audit
 
@@ -127,3 +170,15 @@ Three tasks: `tasks/README.md`.
 Half 1 is one assignment; reverting it stops new drawers carrying entities and leaves existing ones harmlessly populated — a stale `entities` column changes nothing except what the graph derives. Half 2 is additive text on three read-only tools. No schema change, no migration, nothing to undo in storage.
 
 ## Follow-ups
+
+- **`WriteDiary` is a second producer with the same defect.** Found while implementing T2:
+  `Service.WriteDiary` (`internal/palace/service.go`) builds its own `Drawer` rows in its own chunk
+  loop and never sets `Entities`, exactly as `Add` did. So every `am_diary_write` entry stays outside
+  the derived graph after this ADR lands, and that is not a rounding error: on the day T2 was
+  implemented the live palace held 383 drawers, 119 of them in `diary` rooms — 31% of the corpus this
+  ADR exists to make navigable. Not fixed here because this ADR scopes half 1 to `Add` and a
+  silent widening is how a decision stops being one. It is the repo's signature failure shape a
+  second time, and it wants its own task.
+- **Re-run `doctor --graph` against the live palace** once the image is rebuilt, and paste the output
+  beside T1's table. T2's corpus figures are from a fixture and say nothing about whether the live
+  share still clears the 20% bar.

@@ -438,6 +438,17 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 		if i > 0 {
 			parentID = drawers[0].ID
 		}
+		// Entities is the field this path was missing (ADR-016). Without it the
+		// derived graph — hallways, entity tunnels, the entity half of traverse —
+		// is not empty-for-now on a palace agents write to, it is structurally
+		// unreachable: RecomputeGraph reads drawers.entities, nothing on this
+		// path ever wrote it, and so a recompute reports success and derives
+		// nothing however often it runs.
+		//
+		// Extraction is per CHUNK, exactly as Mine does it, so co-occurrence
+		// stays local: a long memory must name two things in the SAME chunk for
+		// them to become a hallway, rather than every chunk inheriting the whole
+		// memory's entities and manufacturing connections the text never made.
 		drawers[i] = Drawer{
 			ID:          DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
 			TeamID:      teamID,
@@ -446,6 +457,7 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 			SourceFile:  in.SourceFile,
 			ChunkIndex:  c.Index,
 			Content:     c.Content,
+			Entities:    extractEntities(c.Content),
 			FiledAt:     filedAt,
 			ContentDate: strings.TrimSpace(in.ContentDate),
 			ParentID:    parentID,
