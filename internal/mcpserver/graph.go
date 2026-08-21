@@ -84,6 +84,15 @@ func toHallwayView(h palace.Hallway) hallwayView {
 	}
 }
 
+// graphStatsView is graph_stats on the wire: every metric at the top level, plus
+// the note explaining an empty derived graph. It embeds palace.GraphStats rather
+// than re-listing its fields so the shape an agent already parses cannot drift
+// from the one the palace computes.
+type graphStatsView struct {
+	palace.GraphStats
+	Note string `json:"note,omitempty"`
+}
+
 func registerCreateTunnel(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("create_tunnel",
 		mcp.WithDescription("Create or update an explicit cross-wing tunnel between two existing wing/room locations. Tunnels are symmetric — creating the reverse direction updates the same tunnel."),
@@ -238,7 +247,8 @@ func registerListHallways(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if !ok {
 			return errResult, nil
 		}
-		halls, err := drawers.ListHallways(ctx, t.TeamID, req.GetString("wing", ""))
+		wing := req.GetString("wing", "")
+		halls, err := drawers.ListHallways(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -246,7 +256,17 @@ func registerListHallways(reg *registrar, drawers *palace.Service, usageSvc *usa
 		for i, h := range halls {
 			views[i] = toHallwayView(h)
 		}
-		return jsonResult(map[string]any{"hallways": views, "count": len(views)}), nil
+		out := map[string]any{"hallways": views, "count": len(views)}
+		// An empty hallway list is byte-identical to a graph that can never hold
+		// one — which is the state of every palace populated through am_add_drawer.
+		// The lookup is skipped when there ARE hallways so the note never costs a
+		// second read of a list this handler already has.
+		if len(views) == 0 {
+			if note := emptyGraphNote(ctx, drawers, t.TeamID, wing); note != "" {
+				out["note"] = note
+			}
+		}
+		return jsonResult(out), nil
 	})
 }
 
@@ -291,7 +311,14 @@ func registerTraverse(reg *registrar, drawers *palace.Service, usageSvc *usage.S
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"nodes": nodes, "count": len(nodes)}), nil
+		out := map[string]any{"nodes": nodes, "count": len(nodes)}
+		// A walk that crosses rooms but no entity still describes a palace whose
+		// derived graph does not exist, and the walk alone does not say so. The
+		// note names no wing: this tool answers for the whole palace.
+		if note := emptyGraphNote(ctx, drawers, t.TeamID, ""); note != "" {
+			out["note"] = note
+		}
+		return jsonResult(out), nil
 	})
 }
 
@@ -308,7 +335,12 @@ func registerGraphStats(reg *registrar, drawers *palace.Service, usageSvc *usage
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(stats), nil
+		// total_edges:0 reads as "nothing is connected" whether the graph is
+		// young or structurally unreachable; the note separates the two.
+		return jsonResult(graphStatsView{
+			GraphStats: stats,
+			Note:       emptyGraphNote(ctx, drawers, t.TeamID, ""),
+		}), nil
 	})
 }
 

@@ -93,4 +93,5 @@ Stop and ask if distinguishing "no entities" from "below threshold" needs a quer
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 749b92e* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-21 · 42b0368* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
