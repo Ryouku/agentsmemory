@@ -705,23 +705,24 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// The gold has always gone through this; the distractor must too, or every
 	// multi-chunk distractor looks unreachable, Vacuous inflates, and every
 	// stale-above rate comes out better than it is — with nothing failing.
-	memoryOf := func(id string) (string, bool) {
+	// Resolves an id to the memory it belongs to. The FOLDING itself lives in
+	// memoryOf (palace.go) — it was written out by hand in four places in this
+	// file and nowhere in the pipeline, which is how the eval came to score
+	// memories while Search returned chunks.
+	memoryOfID := func(id string) (string, bool) {
 		if id == "" {
 			return "", false
 		}
 		switch d, err := s.repo.Get(ctx, teamID, id); {
 		case err == nil:
-			if d.ParentID != "" {
-				return d.ParentID, true
-			}
-			return d.ID, true
+			return memoryOf(d), true
 		default:
 			return "", false
 		}
 	}
 
 	distractorSet := map[string]bool{}
-	if m, ok := memoryOf(c.Distractor); ok {
+	if m, ok := memoryOfID(c.Distractor); ok {
 		distractorSet[m] = true
 	}
 
@@ -732,11 +733,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		}
 		switch gold, err := s.repo.Get(ctx, teamID, id); {
 		case err == nil:
-			if gold.ParentID != "" {
-				goldSet[gold.ParentID] = true
-			} else {
-				goldSet[gold.ID] = true
-			}
+			goldSet[memoryOf(gold)] = true
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			// A saved case can outlive its drawer: re-mining a source purges the
 			// old ids and mints new ones. Swallowing that scored the dead case as
@@ -767,10 +764,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		if !ok {
 			continue
 		}
-		memory := d.ID
-		if d.ParentID != "" {
-			memory = d.ParentID
-		}
+		memory := memoryOf(d)
 		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile, date: d.ContentDate})
 	}
 
@@ -964,10 +958,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
 			for i, h := range page {
-				memory := h.Drawer.ID
-				if h.Drawer.ParentID != "" {
-					memory = h.Drawer.ParentID
-				}
+				memory := memoryOf(h.Drawer)
 				pageIDs[i] = memory
 				pageOrder[i] = i
 			}
@@ -1002,10 +993,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				if !ok {
 					continue
 				}
-				memory := d.ID
-				if d.ParentID != "" {
-					memory = d.ParentID
-				}
+				memory := memoryOf(d)
 				ctxDocs = append(ctxDocs, d.Content)
 				ctxDists = append(ctxDists, distanceFromScore(h.Score))
 				ctxOrderIDs = append(ctxOrderIDs, memory)

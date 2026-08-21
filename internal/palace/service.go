@@ -491,6 +491,27 @@ func (s *Service) Get(ctx context.Context, teamID, id string) (Drawer, error) {
 	return d, err
 }
 
+// GetMemory returns every chunk of the memory the given drawer belongs to, in
+// chunk order — the parent and its children, or just the drawer itself when it
+// was never split.
+//
+// It exists because collapsing a search page to one hit per memory is only safe
+// if the rest of the memory can be fetched, and until now it could not:
+// repo.MemoryChunks was written and tested, and called by Update and Delete
+// alone. Both are write paths. No read path could reach a whole chunked memory,
+// so am_get_drawer handed back one chunk of a long note and there was no second
+// call that would complete it.
+//
+// The id may be ANY chunk's, not only the first: a caller holding a search hit
+// holds whichever chunk matched.
+func (s *Service) GetMemory(ctx context.Context, teamID, id string) ([]Drawer, error) {
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	return chunks, err
+}
+
 // Update edits an existing drawer's content/wing/room in place (its id is
 // stable). A supplied field must be non-empty — update_drawer must not be a back
 // door around the non-empty invariant add_drawer enforces (a blank wing/room
@@ -802,16 +823,38 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// other, and both are reported.
 	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
 
+	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
+	// query, so without this they cluster and crowd each other out: measured on a
+	// live palace at limit 10, one query spent 2 slots on a single memory and
+	// another spent 4 slots on two, the duplicates landing adjacent.
+	//
+	// The BEST-ranked chunk survives, not chunk 0, because the surviving chunk is
+	// the one that matched and its snippet is the passage the caller asked for.
+	// Ranking happens first for the same reason: collapsing earlier would score
+	// whichever chunk happened to be picked, so a memory's rank would depend on
+	// the order it was fetched in.
+	//
+	// A short page is the honest answer when the pool holds fewer than `limit`
+	// distinct memories. Padding it with a second chunk of a memory already shown
+	// is exactly what this removes.
 	results := make([]SearchHit, 0, limit)
+	slotOf := make(map[string]int, limit)
 	for _, r := range ranked {
-		if len(results) >= limit {
-			break
-		}
 		hit := survivors[r.Index]
+		mem := memoryOf(hit.Drawer)
+		if i, seen := slotOf[mem]; seen {
+			results[i].ChunksMatched++
+			continue
+		}
+		if len(results) >= limit {
+			continue // keep counting chunks of memories already on the page
+		}
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
 		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
+		hit.ChunksMatched = 1
+		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
 

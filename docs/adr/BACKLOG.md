@@ -597,3 +597,21 @@ without the exit-code trap the first version had.
   so the test does not take credit. If a future refactor makes any of them importable, the rule
   silently becomes live and nobody will notice the promotion.
 
+## From ADR-013 (a page of memories, not chunks)
+
+- **`search_events.Hits` changes meaning on 2026-08-21** — before this date it counted CHUNKS
+  returned; after it counts distinct MEMORIES. ADR-001 calibrates its abstention threshold from these
+  rows, so a calibration fitted across the boundary is fitted on two different quantities. No
+  calibration has ever been run (ADR-001 is at 0 of 6), so nothing recorded is invalidated — this
+  entry exists so the next reader of `am_recall_stats` can tell the two populations apart.
+- **Merging the matched chunks into one snippet** — a memory that matched in four places now returns
+  the best chunk plus `ChunksMatched: 4`, which tells the caller there is more without paying for it.
+  Merging would need the chunks joined in order and de-overlapped (chunks overlap by construction),
+  and it costs context window on every recall. Worth revisiting if callers routinely follow up with
+  `am_get_drawer whole:true` — that follow-up rate is the evidence, and nothing records it yet.
+- **Routing the eval's other ten arms through `Service.Search`** — ADR-013 makes production return the
+  unit the eval already scores, which removes the mismatch but not the duplication: nine arms still
+  fetch from `s.vectors.Search` and rank with the eval's own copy of the pipeline. A consensus round
+  is deciding the shape; whatever it lands on, the gate that matters is one that makes an arm unable
+  to diverge from the served pipeline silently.
+

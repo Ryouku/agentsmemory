@@ -254,8 +254,9 @@ const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder co
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("get_drawer",
-		mcp.WithDescription("Fetch a single drawer by its id."),
+		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
+		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -265,6 +266,22 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		id, err := req.RequireString("id")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		// A chunked memory had no read path that could return it whole: the query
+		// existed (repo.MemoryChunks) and was called only by update and delete.
+		// An agent handed one chunk of a long note had no second call to complete
+		// it, which is why collapsing a search page to one hit per memory could
+		// not ship on its own.
+		if req.GetBool("whole", false) {
+			chunks, err := drawers.GetMemory(ctx, t.TeamID, id)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			views := make([]drawerView, 0, len(chunks))
+			for _, c := range chunks {
+				views = append(views, toView(c))
+			}
+			return jsonResult(map[string]any{"chunks": views, "count": len(views)}), nil
 		}
 		d, err := drawers.Get(ctx, t.TeamID, id)
 		if err != nil {

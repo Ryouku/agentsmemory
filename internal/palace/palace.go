@@ -124,11 +124,17 @@ type Tunnel struct {
 // that fed the blend, surfaced for transparency; Distance is the raw cosine
 // distance from the query.
 type SearchHit struct {
-	Drawer      Drawer
-	Score       float64 // fused rank score, higher is better
-	BM25        float64 // raw Okapi-BM25 lexical score (pre-normalization)
-	ClosetBoost float64 // closet rank boost folded into Score (0 when none)
-	Distance    float64 // raw cosine distance, lower is closer
+	Drawer Drawer
+	// ChunksMatched is how many chunks of this memory were in the ranked pool: 1
+	// for a memory that was never split, N when N of its chunks matched. It exists
+	// because collapsing a page to one hit per memory would otherwise destroy the
+	// signal — a memory that matched in four places is stronger evidence than one
+	// that matched in one, and a silent collapse throws that away.
+	ChunksMatched int
+	Score         float64 // fused rank score, higher is better
+	BM25          float64 // raw Okapi-BM25 lexical score (pre-normalization)
+	ClosetBoost   float64 // closet rank boost folded into Score (0 when none)
+	Distance      float64 // raw cosine distance, lower is closer
 	// RerankScore is the cross-encoder's relevance for this hit, or 0 when no
 	// reranker is configured or it did not score this one. It is reported
 	// alongside Score rather than replacing it: the two are not on the same scale
@@ -142,4 +148,20 @@ type SearchHit struct {
 	// perfectly ordinary value. Anything deciding whether a score is PRESENT —
 	// an abstention gate, or the eval calibrating one — must read this.
 	Reranked bool
+}
+
+// memoryOf returns the id of the MEMORY a drawer belongs to: its parent when it
+// is a chunk of a larger one, otherwise itself.
+//
+// One definition, because there were two. The eval folded hits onto ParentID in
+// two places before scoring, so it measured memories, while Search returned
+// chunks — and a page of ten could hold as few as six distinct memories while the
+// eval reported the gold at rank 1. An eval cannot report a regression it does
+// not measure the unit of, and the unit was written down twice in the harness and
+// nowhere in the pipeline.
+func memoryOf(d Drawer) string {
+	if d.ParentID != "" {
+		return d.ParentID
+	}
+	return d.ID
 }
