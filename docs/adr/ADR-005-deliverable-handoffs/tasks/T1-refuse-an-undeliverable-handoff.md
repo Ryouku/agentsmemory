@@ -39,7 +39,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcpserver/ -run "TestHandoff" -count=1 -v 2>&1 | tee /tmp/a.out
+  go test ./internal/mcpserver/ -run "TestHandoff|TestAddPathConsultsTheHandoffCheck|TestWingIsEmptyCountsDrawers" -count=1 -v 2>&1 | tee /tmp/a.out
   grep -q -- "--- PASS: TestHandoffIntoAnUnresolvableWingIsRefused" /tmp/a.out
   grep -q -- "--- PASS: TestHandoffRefusalCanBeOverridden" /tmp/a.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a.out
@@ -81,3 +81,4 @@ Stop and ask if the emptiness check cannot be made to cost less than the write i
 
 - 2026-08-20 · d38c341* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-20 · d38c341* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-21 · 3877f08* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

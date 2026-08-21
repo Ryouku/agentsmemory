@@ -36,7 +36,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcptest/ -run "TestHarnessObservesAWriteThroughARead" -count=1 -v 2>&1 | tee /tmp/e1.out
+  go test ./internal/mcptest/ -run "TestHarnessObservesAWriteThroughARead|TestHarnessFailsOnAnEmptyCatalogue" -count=1 -v 2>&1 | tee /tmp/e1.out
   grep -q -- "--- PASS: TestHarnessObservesAWriteThroughARead" /tmp/e1.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/e1.out
   go test ./... -count=1'
@@ -85,3 +85,4 @@ Stop and ask if the transport cannot be driven in-process — an out-of-process 
 ## Verification Log
 
 - 2026-08-20 · c92e2ab* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-21 · 3877f08* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

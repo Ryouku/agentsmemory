@@ -556,3 +556,21 @@ without the exit-code trap the first version had.
   successful write names no actor beyond the drawer's own row. The audit question is larger than
   authorization and should be taken as its own ADR, not bolted onto this one.
 
+## From the ADR gate itself (2026-08-21)
+
+- **The Verification Log matches only the FIRST LINE of an Acceptance fence** — `adr-verify` records
+  `<first line> …` and `adr-lint` compares that, so on a multi-line fence (every fence in this repo,
+  since they all start with a container invocation) the `-run` filter, the grep assertions and the
+  suite run can ALL change and the recorded run still "matches the current Acceptance". Three fences
+  were widened today and their existing log entries would have satisfied the check unchanged; they
+  were re-run only because the change was made deliberately. The fix is a hash of the whole fence
+  recorded in the log entry, which means an `adr-verify` grammar change and invalidating every
+  existing entry — worth doing, not worth doing casually.
+- **A test named in a Tests table is now required to exist, to contain a failure path, and to be
+  selected by the Acceptance filter.** The remaining hole in that chain: nothing checks the test
+  actually FAILS when its subject breaks. That is what the Mutants table is for, and the Mutants
+  table is prose. Requiring each `done` task to name at least one mutation, with the test that went
+  red, would bind it — the objection is that a mutation cannot be re-run by a gate, so the row would
+  be a claim like any other. A stronger version worth thinking about: keep one mutant per task as a
+  build-tagged patch the suite can apply and assert red.
+
