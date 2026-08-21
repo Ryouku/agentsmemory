@@ -48,3 +48,32 @@ func TestHybridRunsTheConformanceSuite(t *testing.T) {
 		return store.NewHybrid(sqlitevec.New(gdb), idx)
 	})
 }
+
+// The same backend, the write half.
+func TestHybridRunsTheSetPayloadConformanceSuite(t *testing.T) {
+	storetest.RunSetPayloadConformance(t, "hybrid", func(t *testing.T) store.VectorStore {
+		dir := t.TempDir()
+		gdb, err := gorm.Open(glebarez.Open(filepath.Join(dir, "sot.db")), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Silent),
+		})
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		sqlDB, err := gdb.DB()
+		if err != nil {
+			t.Fatalf("sql handle: %v", err)
+		}
+		goose.SetBaseFS(db.Migrations)
+		if err := goose.SetDialect("sqlite3"); err != nil {
+			t.Fatalf("dialect: %v", err)
+		}
+		if err := goose.Up(sqlDB, "migrations"); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		idx, err := chromemvec.New(filepath.Join(dir, "chromem"))
+		if err != nil {
+			t.Fatalf("open index: %v", err)
+		}
+		return store.NewHybrid(sqlitevec.New(gdb), idx)
+	})
+}

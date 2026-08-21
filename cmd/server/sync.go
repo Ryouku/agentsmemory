@@ -152,13 +152,13 @@ func repairNamespacePayload(ctx context.Context, gdb *gorm.DB, index *qdrant.Cli
 			byLabel[key] = append(byLabel[key], d.ID)
 		}
 		for label, ids := range byLabel {
-			payload := map[string]any{"wing": label[0], "room": label[1]}
+			patch := map[string]string{"wing": label[0], "room": label[1]}
 			for start := 0; start < len(ids); start += 512 {
 				end := start + 512
 				if end > len(ids) {
 					end = len(ids)
 				}
-				if err := index.SetPayload(ctx, namespace, ids[start:end], payload); err != nil {
+				if err := index.SetPayload(ctx, namespace, ids[start:end], patch); err != nil {
 					return repaired, err
 				}
 				repaired += end - start

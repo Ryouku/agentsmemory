@@ -31,18 +31,25 @@ were then probed through the live `/mcp` endpoint and found by a search of their
 thirteenth is chunk 2 of a four-chunk memory whose other three chunks all return, so the memory is
 reachable and the miss is the probe's ranking rather than drift.
 
-That repair is the evidence for the mechanism this ADR ships: it is exactly a payload write, it
-needed no embedding call, and it had to touch BOTH stores — correcting only the index would have
-been undone by the next `agentsmemory sync`, which replays SQLite's payload forward. It also could
-not be done with any command the product offers today, which is why T1 and T3 exist.
+That repair is the evidence for the mechanism this ADR ships: it is exactly a payload write and it
+needed no embedding call.
+
+**Correction, found while executing T2.** The first draft of this ADR said the repair "could not be
+done with any command the product offers today". That is wrong: `agentsmemory sync --repair-payload`
+rebuilds payloads from the drawer rows and would have fixed the INDEX. What is true is worse and
+more specific — it writes only the index, so the source of truth keeps the stale label, and a plain
+`agentsmemory sync` replays that stale payload straight back over the repair. The product shipped
+two repair paths that undo each other, and the one an operator reaches for first is the one that
+loses. Fixed here by routing the repair through the `Hybrid`, which writes both.
 
 ## Existing Primitives Audit
 
-- **`store.VectorStore`** (`internal/store/store.go`) — has `Upsert`, `Search`, `Delete`, `EnsureNamespace`. It cannot CHANGE a point's payload without supplying the vector again. Reshape: `SetPayload` added, implemented by all four backends.
+- **`store.VectorStore`** (`internal/store/store.go`) — has `Upsert`, `Search`, `Delete`, `EnsureNamespace`. It cannot CHANGE a point's payload through the SEAM without supplying the vector again. Reshape: `SetPayload` promoted onto the interface and implemented by all four backends.
 
 - **`SourceOfTruth.PointsByIDs`** (`internal/store/store.go`) — reads points by id, payloads included, and already exists: it is the read half of copying memory between tenants without re-embedding. Reuse by PROMOTION to `VectorStore`. The first draft of this audit missed it and declared a second method that did the same thing; the gap is not that no by-id read exists but that only the DURABLE store had one, so a check could read the source of truth and never the index — and the index is the copy a scoped search actually filters on. `SourceOfTruth` keeps the stronger promise that the vector comes back too.
 - **`store.SourceOfTruth.AllPoints`** (`internal/store/store.go`) — already enumerates stored points with vectors, for replaying SQLite into a search index. Reuse: it is what makes a repair of the existing drift possible without re-embedding anything.
-- **`agentsmemory sync`** (`cmd/server`) — already replays every tenant's vectors from SQLite into the index. Reuse as the repair path IF the SQLite payload is itself correct; if it is not, sync propagates the drift and the repair must rebuild the payload from the drawer rows.
+- **`qdrant.Client.SetPayload`** (`internal/store/qdrant/qdrant.go`) — already patches a Qdrant payload without touching vectors, and its own comment says it exists "so a palace can be repaired for the cost of a few HTTP calls rather than a full re-embedding". Reuse by PROMOTION, widened from `map[string]any` to the seam's `map[string]string`. The second existing primitive this audit missed on the first pass; the lesson is to grep for the method NAME, not only for the concept.
+- **`agentsmemory sync --repair-payload`** (`cmd/server/sync.go`) — already rebuilds payloads from the drawer rows, which is exactly this repair. It writes ONLY the index, so the source of truth keeps the stale label and a plain `sync` — which replays the source of truth into the index — puts it back. Two repair paths that undo each other, and the one that runs by default is the one that loses. Reshape: it now writes through the `Hybrid`, so both stores move together.
 - **`Service.Update`** (`internal/palace/service.go`) — already does the right thing for a single drawer. Reuse as the reference behaviour, not as the mechanism: re-embedding 13 drawers to fix a label is the cost this ADR exists to avoid.
 
 ## Decision
@@ -71,7 +78,8 @@ Valid for: any deployment whose search index filters on a payload copy of the wi
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
 | `store.VectorStore.PointsByIDs` | move — promoted from `SourceOfTruth`, so the INDEX can be read too | `internal/store/{qdrant,sqlitevec,chromemvec}`, `store.Hybrid` | `internal/palace/indexdrift.go` |
-| `store.VectorStore.SetPayload` | add | `internal/store/{qdrant,sqlitevec,chromemvec}`, `store.Hybrid` | `internal/palace/admin.go` |
+| `store.VectorStore.SetPayload` | move — promoted from `qdrant.Client`, widened to `map[string]string` | `internal/store/{qdrant,sqlitevec,chromemvec}`, `store.Hybrid` | `internal/palace/admin.go`, `cmd/server/sync.go` |
+| `sync --repair-payload` | change — writes through the `Hybrid` so the source of truth moves too, instead of leaving a repair a plain `sync` undoes | `cmd/server/sync.go` | operators |
 | `store.Hybrid.Halves` | add — a checker must compare the two copies, not use one | `internal/store/hybrid.go` | `internal/palace/indexdrift.go` |
 | `cmd/server.rootCommand` | add — the CLI's command list was built inside `main`, where nothing could assert what is registered | `cmd/server/main.go` | `cmd/server/doctor_test.go` |
 | `MergeWing` doc comment asserting the payload is advisory | remove — it is false and it is why the bug exists | `internal/palace/admin.go` | every reader |
@@ -83,7 +91,7 @@ Valid for: any deployment whose search index filters on a payload copy of the wi
 |----------|----------------|-------------------|-----------|
 | `VectorStore.PointsByIDs` | T1 | T1 | Yes — a third-party VectorStore implementation would no longer satisfy the interface. All four implementations are in this repository. |
 | the index-drift report (`doctor --index`) | T1 | T3 | No — additive and read-only, and it is T3's acceptance command |
-| `VectorStore.SetPayload` | T2 | T3 | Yes — same interface, same reason. Separate from `Points` so the reader lands without the writer, and T3 cannot be verified by a method it also calls to make the change. |
+| `VectorStore.SetPayload` | T2 | T3 | Yes — same interface, same reason. Separate from `PointsByIDs` so the reader lands without the writer, and T3 cannot be verified by a method it also calls to make the change. |
 
 ## Implementation
 

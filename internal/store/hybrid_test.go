@@ -112,6 +112,37 @@ func (f *fakeIndex) Delete(_ context.Context, _ string, _ []string) error {
 	return nil
 }
 
+// Both fakes gain the payload write, now that every VectorStore has one. They
+// merge, because that is what the seam promises and a fake that replaces would
+// let a driver that replaces look correct.
+func (f *fakeSoT) SetPayload(_ context.Context, ns string, ids []string, patch map[string]string) error {
+	patchPayload(f.points[ns], ids, patch)
+	return nil
+}
+
+func (f *fakeIndex) SetPayload(_ context.Context, ns string, ids []string, patch map[string]string) error {
+	patchPayload(f.upserted[ns], ids, patch)
+	return nil
+}
+
+func patchPayload(held []store.Point, ids []string, patch map[string]string) {
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	for i := range held {
+		if !want[held[i].ID] {
+			continue
+		}
+		if held[i].Payload == nil {
+			held[i].Payload = map[string]any{}
+		}
+		for k, v := range patch {
+			held[i].Payload[k] = v
+		}
+	}
+}
+
 // The index fake gains the read half too, now that every VectorStore has one.
 func (f *fakeIndex) PointsByIDs(_ context.Context, ns string, ids []string) ([]store.Point, error) {
 	return pointsByID(f.upserted[ns], ids), nil

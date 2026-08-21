@@ -99,6 +99,21 @@ type VectorStore interface {
 	// vector asks a SourceOfTruth. Copying memory between tenants without
 	// re-embedding relies on that, which is why this began on SourceOfTruth.
 	PointsByIDs(ctx context.Context, namespace string, ids []string) ([]Point, error)
+
+	// SetPayload merges patch into the payload of each named point, leaving the
+	// VECTOR untouched. Fields not named in patch are unchanged; ids the store
+	// does not hold are ignored; an empty id list or an empty patch is a no-op.
+	//
+	// It merges rather than replaces because its caller patches one field. A wing
+	// merge corrects `wing` and nothing else, and a driver that replaced the
+	// payload would erase `room` on every point it fixed — turning a repair of
+	// one filter into a break of another.
+	//
+	// It exists so that correcting a LABEL is not a re-embed. The vector of a
+	// relabelled memory is already right, because the text did not change; the
+	// alternative is a model call per drawer to fix a string, unbounded in the
+	// size of the merged wing.
+	SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error
 }
 
 // SourceOfTruth is a durable VectorStore that can additionally enumerate

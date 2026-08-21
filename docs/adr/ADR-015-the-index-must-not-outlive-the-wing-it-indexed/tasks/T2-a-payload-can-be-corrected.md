@@ -4,7 +4,7 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `store.VectorStore.SetPayload`
+**Produces:** `store.VectorStore.SetPayload` (promoted from `qdrant.Client`), and a `sync --repair-payload` that writes both stores
 **Consumes:** none
 **Data dependency:** hermetic
 
@@ -19,19 +19,22 @@ The vector is already correct after a wing relabel — the text did not change �
 | File | Change | Why |
 |------|--------|-----|
 | `internal/store/store.go` | edit | the interface method and the contract its implementations must honour |
-| `internal/store/qdrant/vector.go` | edit | Qdrant's set-payload API, over the derived point UUIDs |
+| `internal/store/qdrant/qdrant.go` | edit | widen the EXISTING `SetPayload` to the seam's signature and guard the reserved key |
 | `internal/store/sqlitevec/sqlitevec.go` | edit | the source of truth's payload column |
-| `internal/store/chromem/chromem.go` | edit | the local-default backend |
+| `internal/store/chromemvec/chromemvec.go` | edit | the local-default backend — BOTH copies of its payload |
+| `internal/store/hybrid.go` | edit | patch both halves, source of truth first |
 | `internal/store/storetest/conformance.go` | edit | one suite every backend runs, so a backend cannot silently skip the new method |
+| `cmd/server/sync.go` | edit | `--repair-payload` writes through the Hybrid, so a plain `sync` no longer undoes it |
 
 ## Ordered Steps
 
 1. Write the failing conformance test first (TDD red): `TestSetPayloadPatchesWithoutTouchingTheVector`, run against every backend through the shared suite. Commit it red.
 2. Add `SetPayload(ctx, namespace string, ids []string, patch map[string]string) error` to `store.VectorStore`. An empty id list is a no-op; an unknown id is ignored, matching `Delete`'s contract so callers need no existence check.
 3. Implement it per backend. The patch MERGES: fields not named are left alone, or a caller correcting `wing` would silently erase `room`.
-4. Pin that the vector survives: search for the point after the patch and assert the same neighbour ordering, or a backend that reinserts with a zero vector passes a payload-only assertion.
-5. Falsify: make one backend's implementation a no-op returning nil; make another replace the payload instead of merging it.
-6. Run the acceptance command.
+4. Pin that the vector survives: search for the point after the patch and assert it is still the nearest neighbour of its own vector, or a backend that reinserts with a zero vector passes a payload-only assertion.
+5. Pin that the patch changes what a FILTERED search matches, not only what a read returns. A backend may hold the payload twice — verbatim for readers, flattened so the index can filter — and patching only the readable copy leaves every scoped query matching the old value, which is this ADR's own bug reproduced one layer down. It survived the first version of this suite.
+6. Falsify: make one backend's implementation a no-op returning nil; make another replace the payload instead of merging it; patch one copy of a two-copy payload; make the Hybrid write only the index.
+7. Run the acceptance command.
 
 ## Acceptance
 
@@ -40,9 +43,11 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/store/... -run "TestSetPayloadPatchesWithoutTouchingTheVector|TestSetPayloadMergesRatherThanReplaces|TestEveryBackendRunsTheConformanceSuite" -count=1 -v 2>&1 | tee /tmp/a15t2.out
-  grep -q -- "--- PASS: TestSetPayloadPatchesWithoutTouchingTheVector" /tmp/a15t2.out
-  grep -q -- "--- PASS: TestSetPayloadMergesRatherThanReplaces" /tmp/a15t2.out
+  go test ./internal/store/... -run "SetPayloadConformanceSuite|TestEveryBackendRunsTheConformanceSuite" -count=1 -v 2>&1 | tee /tmp/a15t2.out
+  grep -q -- "PASS: TestSqlitevecRunsTheSetPayloadConformanceSuite/sqlitevec/SetPayload" /tmp/a15t2.out
+  grep -q -- "PASS: TestQdrantRunsTheSetPayloadConformanceSuite/qdrant/SetPayload" /tmp/a15t2.out
+  grep -q -- "PASS: TestChromemvecRunsTheSetPayloadConformanceSuite/chromemvec/SetPayload" /tmp/a15t2.out
+  grep -q -- "PASS: TestHybridRunsTheSetPayloadConformanceSuite/hybrid/SetPayload" /tmp/a15t2.out
   grep -q -- "--- PASS: TestEveryBackendRunsTheConformanceSuite" /tmp/a15t2.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a15t2.out
   go test ./internal/store/... -count=1'
@@ -52,9 +57,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestSetPayloadPatchesWithoutTouchingTheVector` | `internal/store/storetest/conformance.go` | the payload changes and the point still ranks where it did | — |
-| `TestSetPayloadMergesRatherThanReplaces` | `internal/store/storetest/conformance.go` | patching `wing` leaves `room` intact | — |
-| `TestEveryBackendRunsTheConformanceSuite` | `internal/store/storetest/conformance.go` | every implementation of `VectorStore` in this repo is actually run through the suite — a backend added later must not be able to skip it | — |
+| `Test<Backend>RunsTheSetPayloadConformanceSuite` | each backend's `conformance_test.go` | the shared suite, per backend: the patch merges, the vector survives, a FILTERED search follows the patch, unknown ids and empty inputs are no-ops | — |
+| `TestEveryBackendRunsTheConformanceSuite` | `internal/store/storetest/registry_test.go` | every implementation runs BOTH halves of the suite — read and write — and every backend the list claims is covered has a test that calls them | — |
 
 ## Reachability
 
@@ -69,9 +73,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| one backend's SetPayload returns nil and does nothing | yes | `TestSetPayloadPatchesWithoutTouchingTheVector` |
-| replace the whole payload instead of merging | yes | `TestSetPayloadMergesRatherThanReplaces` |
-| drop a backend from the conformance table | yes | `TestEveryBackendRunsTheConformanceSuite` |
+| replace the whole payload instead of merging | yes | the suite, on every backend |
+| patch a two-copy payload's readable half and not the filterable one | yes | the suite's filtered-search assertion — and it SURVIVED the first version, which had none |
+| the Hybrid patches only the index | yes | the suite, through the Hybrid |
+| a backend runs only the read half of the suite | yes | `TestEveryBackendRunsTheConformanceSuite` |
 
 ## Out of Scope
 
@@ -86,6 +91,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 ## Risks
 
 - A backend without a native payload-patch API forces a read-modify-write, which is not atomic. Mitigated: the only writer is a merge, which is already serialized, and the drift report from T1 makes a partial write visible.
+- An equivalent mutant worth recording rather than chasing: dropping the empty-patch guard makes Qdrant receive a POST that merges nothing. It is a wasted HTTP call, not a wrong answer, and no assertion can distinguish it — so it is named here instead of being counted as a surviving mutant.
 
 ## Stop Condition
 
@@ -93,4 +99,4 @@ Stop and ask if a backend has no way to write a payload without the vector AND n
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 4e944e5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

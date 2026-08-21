@@ -70,7 +70,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestPointsReturnsTheStoredPayload` | `internal/store/storetest/conformance.go` | every backend reads a payload back by id, omits ids it does not hold, and returns EXACTLY the keys written | — |
+| `Test<Backend>RunsTheConformanceSuite` | each backend's `conformance_test.go` | every backend reads a payload back by id, omits ids it does not hold, and returns EXACTLY the keys written | — |
 | `TestEveryBackendRunsTheConformanceSuite` | `internal/store/storetest/registry_test.go` | every type declaring itself a `VectorStore` runs the suite, AND every backend the list claims is covered has a test that calls it | — |
 | `TestIndexDriftReadsEveryStore` | `internal/palace/indexdrift_test.go` | both halves of a Hybrid are read — a drift in the source of truth alone survives a check that reads only the index, and returns on the next sync | — |
 | `TestDoctorRefusesWithNoCheckSelected` | `cmd/server/doctor_test.go` | `doctor` with no check selected does not exit 0; a command that ran nothing must not read as a healthy palace | — |
@@ -93,7 +93,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
 | compare the drawer's wing against itself instead of the payload | yes | `TestIndexDriftIsFound` |
-| one backend's `PointsByIDs` returns nothing rather than the stored payload | yes | the conformance suite, for that backend |
+| one backend's `PointsByIDs` returns nothing rather than the stored payload | yes | that backend's `Test<Backend>RunsTheConformanceSuite` |
 | a backend returns its internal payload keys to the caller | yes | the conformance suite (exact-keys assertion) |
 | drop a backend from `coveredBackends` | yes | `TestEveryBackendRunsTheConformanceSuite` |
 | keep a backend on the list and delete its conformance test | yes | `TestEveryBackendRunsTheConformanceSuite` |

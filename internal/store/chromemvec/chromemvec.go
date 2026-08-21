@@ -266,6 +266,60 @@ func (i *Index) PointsByIDs(ctx context.Context, namespace string, ids []string)
 	return out, nil
 }
 
+// SetPayload merges patch into each named point's payload.
+//
+// chromem has no payload-update API, so this re-adds the document with its
+// stored embedding — which is why the embedding is read back first. It is still
+// not a re-embed: no model is called and the vector is byte-identical.
+//
+// BOTH copies of the payload move together. The blob is what a reader gets back
+// and the flattened keys are what a `where` filter matches, so patching one and
+// not the other would make a point answer one question correctly and the other
+// wrongly — which is the exact failure this whole method exists to repair.
+func (i *Index) SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error {
+	if len(ids) == 0 || len(patch) == 0 {
+		return nil
+	}
+	col, err := i.collection(namespace)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		doc, err := col.GetByID(ctx, id)
+		if err != nil {
+			continue // not held: ignored, matching Delete
+		}
+		var payload map[string]any
+		if raw := doc.Metadata[payloadKey]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				return fmt.Errorf("decode payload of %q: %w", id, err)
+			}
+		}
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		for k, v := range patch {
+			payload[k] = v
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode payload of %q: %w", id, err)
+		}
+		meta := map[string]string{payloadKey: string(encoded)}
+		for k, v := range payload {
+			if str, ok := v.(string); ok && k != payloadKey {
+				meta[k] = str
+			}
+		}
+		if err := col.AddDocuments(ctx, []chromem.Document{{
+			ID: doc.ID, Metadata: meta, Embedding: doc.Embedding,
+		}}, 1); err != nil {
+			return fmt.Errorf("chromem patch payload of %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
 // Delete removes points by ID, ignoring IDs the namespace does not hold.
 
 func (i *Index) Delete(ctx context.Context, namespace string, ids []string) error {

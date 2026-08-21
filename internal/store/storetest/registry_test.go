@@ -105,7 +105,7 @@ func TestEveryBackendRunsTheConformanceSuite(t *testing.T) {
 		pkg := strings.SplitN(name, ".", 2)[0]
 		if !ran[pkg] {
 			t.Errorf("coveredBackends claims %q runs the conformance suite, but no test in package %q "+
-				"calls storetest.RunPointsConformance", name, pkg)
+				"calls BOTH storetest.RunPointsConformance and storetest.RunSetPayloadConformance", name, pkg)
 		}
 	}
 }
@@ -120,7 +120,14 @@ func backendsWithAConformanceTest(t *testing.T, root string) map[string]bool {
 			return err
 		}
 		src, rerr := os.ReadFile(path)
-		if rerr != nil || !strings.Contains(string(src), "RunPointsConformance(") {
+		if rerr != nil {
+			return nil
+		}
+		// BOTH halves of the suite, not either: a backend that reads correctly
+		// and writes a payload that erases the rest of it is covered by one and
+		// broken by the other.
+		text := string(src)
+		if !strings.Contains(text, "RunPointsConformance(") || !strings.Contains(text, "RunSetPayloadConformance(") {
 			return nil
 		}
 		fset := token.NewFileSet()

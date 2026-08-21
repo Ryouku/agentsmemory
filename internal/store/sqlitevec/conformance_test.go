@@ -14,3 +14,10 @@ func TestSQLiteVecRunsTheConformanceSuite(t *testing.T) {
 		return newTestStore(t)
 	})
 }
+
+// The same backend, the write half.
+func TestSqlitevecRunsTheSetPayloadConformanceSuite(t *testing.T) {
+	storetest.RunSetPayloadConformance(t, "sqlitevec", func(t *testing.T) store.VectorStore {
+		return newTestStore(t)
+	})
+}

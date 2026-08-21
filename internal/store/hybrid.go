@@ -77,6 +77,28 @@ func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32,
 // could only see one of the two would have reported clean.
 func (h *Hybrid) Halves() (SourceOfTruth, VectorStore) { return h.sot, h.index }
 
+// SetPayload patches BOTH, source of truth first, for the same
+// durability-before-index reason as Upsert — and for a second reason this method
+// alone has: the index is what a scoped search filters on, and the source of
+// truth is what the next Rebuild replays over it. Patching only the index fixes
+// search until somebody syncs; patching only the truth fixes nothing today.
+//
+// Measured 2026-08-21 on a live palace, a wing merge had left 13 points stale in
+// BOTH, and a repair of either half alone would have looked complete from the
+// other side.
+func (h *Hybrid) SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error {
+	if len(ids) == 0 || len(patch) == 0 {
+		return nil
+	}
+	if err := h.sot.SetPayload(ctx, namespace, ids, patch); err != nil {
+		return fmt.Errorf("source of truth set payload: %w", err)
+	}
+	if err := h.index.SetPayload(ctx, namespace, ids, patch); err != nil {
+		return fmt.Errorf("index set payload (source of truth ok, run Rebuild): %w", err)
+	}
+	return nil
+}
+
 // Delete removes from both, SoT first so the truth no longer claims a point the
 // index has already dropped.
 func (h *Hybrid) Delete(ctx context.Context, namespace string, ids []string) error {
