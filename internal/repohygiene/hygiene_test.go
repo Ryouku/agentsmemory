@@ -253,7 +253,8 @@ func repoRoot(t *testing.T) string {
 // judgement.
 var exampleWings = map[string]bool{
 	"wing_a": true, "wing_abc": true, "wing_acme": true, "wing_acme-billing": true,
-	"wing_acme_laravel": true, "wing_acmee": true, "wing_agentmemories": true,
+	"wing_acme_laravel": true, "wing_acme-legacy": true, "wing_acme-old": true,
+	"wing_acmee": true, "wing_agentmemories": true,
 	"wing_alpha": true, "wing_anchor": true, "wing_anything": true, "wing_api": true,
 	"wing_app": true, "wing_atlas": true, "wing_atomic": true, "wing_b": true,
 	"wing_beta": true, "wing_big": true, "wing_billing": true, "wing_chunked": true,

@@ -10,11 +10,11 @@
 
 ## Context
 
-Measured 2026-08-21 against the live self-hosted palace (359 drawers, 359 Qdrant points, 116 recorded recalls):
+Measured 2026-08-21 against the live self-hosted palace (359 drawers, 359 Qdrant points, 116 recorded recalls). Wing names below are neutral stand-ins for the real ones — a wing name is a project name, and this file is public — but the SHAPES are exact and are what the argument rests on: two of the four sources are `wing_to-<project>` inboxes, the misdelivery ADR-005 describes, which somebody then merged into the project's real wing.
 
-- **13 points carry a wing their drawer no longer has.** Four sources: `wing_depozitas_laravel` (4), `wing_to-ingest-limango` (2), `wing_depozitas_fe` (1), `wing_to-freshdesk-ai-app` (1) and the rest of the same families. Every one is a wing that was merged into another. The drawer row was relabelled; the index payload was not.
+- **13 points carry a wing their drawer no longer has.** Four sources: `wing_acme-legacy` (4), `wing_to-beta` (2), `wing_acme-old` (1), `wing_to-x` (1) and the rest of the same families. Every one is a wing that was merged into another. The drawer row was relabelled; the index payload was not.
 - **The memories are invisible to the recall that matters.** Probed three of them through the live `/mcp` endpoint with a phrase from their own text: scoped to the wing they are filed in, none came back; scoped to `*`, all three did. Scoped recall is the DEFAULT (`SEARCH_SCOPE=wing`), so these are memories an agent cannot reach by asking about its own project.
-- **The stale name still costs a pool slot.** `search_events` records a recall scoped to `wing_depozitas_laravel` — a wing holding nothing — that retrieved 4 candidates and returned 0 hits. The index matched the stale payload, the redundant drawer-row check dropped all four, and the caller paid 4 of a 10-candidate pool for nothing.
+- **The stale name still costs a pool slot.** `search_events` records a recall scoped to `wing_acme-legacy` — a wing holding nothing — that retrieved 4 candidates and returned 0 hits. The index matched the stale payload, the redundant drawer-row check dropped all four, and the caller paid 4 of a 10-candidate pool for nothing.
 
 The defect is stated as a fact in the code that causes it. `MergeWing`'s doc comment says:
 
@@ -38,7 +38,7 @@ not be done with any command the product offers today, which is why T1 and T3 ex
 
 ## Existing Primitives Audit
 
-- **`store.VectorStore`** (`internal/store/store.go`) — has `Upsert`, `Search`, `Delete`, `EnsureNamespace`. No way to change a point's payload without its vector. Reshape: one method added, implemented by all three backends.
+- **`store.VectorStore`** (`internal/store/store.go`) — has `Upsert`, `Search`, `Delete`, `EnsureNamespace`. It can neither READ a point's payload by id nor CHANGE one without supplying the vector again. Reshape: two methods added, implemented by all three backends. `Points` is what lets a check read the index instead of inferring from a search; `SetPayload` is what lets a merge correct it. They are separate because a reader that also writes cannot be trusted to report honestly about its own writes, and this ADR's whole acceptance rests on that separation.
 - **`store.SourceOfTruth.AllPoints`** (`internal/store/store.go`) — already enumerates stored points with vectors, for replaying SQLite into a search index. Reuse: it is what makes a repair of the existing drift possible without re-embedding anything.
 - **`agentsmemory sync`** (`cmd/server`) — already replays every tenant's vectors from SQLite into the index. Reuse as the repair path IF the SQLite payload is itself correct; if it is not, sync propagates the drift and the repair must rebuild the payload from the drawer rows.
 - **`Service.Update`** (`internal/palace/service.go`) — already does the right thing for a single drawer. Reuse as the reference behaviour, not as the mechanism: re-embedding 13 drawers to fix a label is the cost this ADR exists to avoid.
@@ -68,6 +68,7 @@ Valid for: any deployment whose search index filters on a payload copy of the wi
 
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
+| `store.VectorStore.Points` | add | `internal/store/{qdrant,sqlitevec,chromem}` | `internal/palace/indexdrift.go` |
 | `store.VectorStore.SetPayload` | add | `internal/store/{qdrant,sqlitevec,chromem}` | `internal/palace/admin.go` |
 | `MergeWing` doc comment asserting the payload is advisory | remove — it is false and it is why the bug exists | `internal/palace/admin.go` | every reader |
 | `agentsmemory doctor --index` (a read-only drift report, exit 1 when the index disagrees with the rows) | add | `cmd/server` | operators, and this ADR's own acceptance |
@@ -76,8 +77,9 @@ Valid for: any deployment whose search index filters on a payload copy of the wi
 
 | Contract | Producing task | Consuming task(s) | Breaking? |
 |----------|----------------|-------------------|-----------|
+| `VectorStore.Points` | T1 | T1 | Yes — a third-party VectorStore implementation would no longer satisfy the interface. All three implementations are in this repository. |
 | the index-drift report (`doctor --index`) | T1 | T3 | No — additive and read-only, and it is T3's acceptance command |
-| `VectorStore.SetPayload` | T2 | T3 | Yes — a third-party VectorStore implementation would no longer satisfy the interface. All three implementations are in this repository. |
+| `VectorStore.SetPayload` | T2 | T3 | Yes — same interface, same reason. Separate from `Points` so the reader lands without the writer, and T3 cannot be verified by a method it also calls to make the change. |
 
 ## Implementation
 
@@ -86,7 +88,7 @@ Three tasks: `tasks/README.md`.
 ## Consequences
 
 - **Positive:** a memory merged into a wing is recallable from that wing. The 13 already adrift are repaired, and the check that finds them runs on demand instead of requiring somebody to think of it.
-- **Negative:** `VectorStore` grows a method, so every implementation must provide it — including the in-memory fakes in tests.
+- **Negative:** `VectorStore` grows two methods, so every implementation must provide them — including the in-memory fakes in tests.
 - **Neutral:** a merge does one extra write per affected point. It is a payload patch, not an embedding, so it is bounded by the merge's own size and costs no model call.
 
 ## Out of Scope

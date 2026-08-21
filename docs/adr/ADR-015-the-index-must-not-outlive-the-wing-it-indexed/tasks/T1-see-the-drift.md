@@ -4,7 +4,7 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `agentsmemory doctor --index`, exit 1 when any point's payload wing disagrees with its drawer
+**Produces:** `store.VectorStore.Points`, `palace.IndexDrift`, and `agentsmemory doctor --index` — exit 1 when any point's payload wing disagrees with its drawer
 **Consumes:** none
 **Data dependency:** hermetic (its own migrated SQLite + in-memory index)
 
@@ -21,17 +21,22 @@ This task comes first because it is the instrument. The fix in T3 is a write tha
 | `cmd/server/doctor.go` | add | the subcommand, its flags and its report |
 | `cmd/server/doctor_test.go` | add | a drifted point is reported and exits 1; a consistent one exits 0 |
 | `cmd/server/main.go` | edit | register the subcommand — a command nothing registers is a command nobody can run |
+| `internal/store/store.go` | edit | `Points(ctx, namespace, ids)` — the interface can write points and search them, and cannot read one back |
+| `internal/store/qdrant/vector.go` | edit | retrieve by the derived point UUIDs |
+| `internal/store/sqlitevec/sqlitevec.go` | edit | select the payload column by id |
+| `internal/store/chromem/chromem.go` | edit | the local-default backend |
 | `internal/palace/indexdrift.go` | add | the comparison itself, so both the command and a test can call it |
 | `internal/palace/indexdrift_test.go` | add | drift is found in either store, and a clean palace reports none |
 
 ## Ordered Steps
 
 1. Write the failing tests first (TDD red): `TestIndexDriftIsFound`, `TestDoctorIndexExitsNonZeroOnDrift`. Commit them red.
-2. `palace.IndexDrift(ctx, teamID)` walks the drawers and, for each, asks the index what wing it holds for that id. Report the count and a bounded sample — never the memory text, because a doctor report is pasted into issues.
-3. Read BOTH stores where both exist: the SQLite source of truth and the search index. A repair that fixed one and not the other is the failure mode this must be able to see.
-4. Wire the subcommand and make it exit 1 on any drift, 0 on none.
-5. Falsify: point the report at a palace with a deliberately patched payload and confirm it goes red; delete the registration in `main.go` and confirm the command disappears from `--help`.
-6. Run the acceptance command.
+2. Add `Points(ctx, namespace string, ids []string) ([]Point, error)` to `store.VectorStore`, implemented by all three backends. An unknown id is omitted rather than an error, matching `Delete`'s contract, so a caller need not check existence first.
+3. `palace.IndexDrift(ctx, teamID)` walks the drawers and, for each, asks the index what wing it holds for that id. Report the count and a bounded sample — never the memory text, because a doctor report is pasted into issues.
+4. Read BOTH stores where both exist: the SQLite source of truth and the search index. A repair that fixed one and not the other is the failure mode this must be able to see.
+5. Wire the subcommand and make it exit 1 on any drift, 0 on none.
+6. Falsify: point the report at a palace with a deliberately patched payload and confirm it goes red; delete the registration in `main.go` and confirm the command disappears from `--help`.
+7. Run the acceptance command.
 
 ## Acceptance
 
@@ -40,20 +45,23 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/palace/ -run "TestIndexDriftIsFound|TestIndexDriftIsSilentOnACleanPalace" -count=1 -v 2>&1 | tee /tmp/a15t1.out
+  go test ./internal/store/... -run "TestPointsReturnsTheStoredPayload" -count=1 -v 2>&1 | tee /tmp/a15t1.out
+  go test ./internal/palace/ -run "TestIndexDriftIsFound|TestIndexDriftIsSilentOnACleanPalace" -count=1 -v 2>&1 | tee -a /tmp/a15t1.out
   go test ./cmd/server/ -run "TestDoctorIndexExitsNonZeroOnDrift|TestDoctorIsRegistered" -count=1 -v 2>&1 | tee -a /tmp/a15t1.out
+  grep -q -- "--- PASS: TestPointsReturnsTheStoredPayload" /tmp/a15t1.out
   grep -q -- "--- PASS: TestIndexDriftIsFound" /tmp/a15t1.out
   grep -q -- "--- PASS: TestIndexDriftIsSilentOnACleanPalace" /tmp/a15t1.out
   grep -q -- "--- PASS: TestDoctorIndexExitsNonZeroOnDrift" /tmp/a15t1.out
   grep -q -- "--- PASS: TestDoctorIsRegistered" /tmp/a15t1.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a15t1.out
-  go test ./cmd/server/ ./internal/palace/ -count=1'
+  go test ./cmd/server/ ./internal/palace/ ./internal/store/... -count=1'
 ```
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
+| `TestPointsReturnsTheStoredPayload` | `internal/store/storetest/conformance.go` | every backend can read a point's payload back by id, and omits ids it does not hold | — |
 | `TestIndexDriftIsFound` | `internal/palace/indexdrift_test.go` | a point whose payload wing differs from its drawer's is reported, in either store | — |
 | `TestIndexDriftIsSilentOnACleanPalace` | `internal/palace/indexdrift_test.go` | a consistent palace reports nothing, so the check is not noise | — |
 | `TestDoctorIndexExitsNonZeroOnDrift` | `cmd/server/doctor_test.go` | the exit code carries the verdict, not the prose | — |
@@ -73,6 +81,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
 | compare the drawer's wing against itself instead of the payload | yes | `TestIndexDriftIsFound` |
+| one backend's `Points` returns nothing rather than the stored payload | yes | `TestPointsReturnsTheStoredPayload` |
 | report drift but exit 0 | yes | `TestDoctorIndexExitsNonZeroOnDrift` |
 | drop the `main.go` registration | yes | `TestDoctorIsRegistered` |
 | read only the index, never the source of truth | yes | `TestIndexDriftIsFound` |
