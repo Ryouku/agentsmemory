@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -27,12 +28,22 @@ func doctorCommand(def config.Config) *cli.Command {
 		Flags: append(dataFlags(def),
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
+			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
-			if !c.Bool("index") {
-				return fmt.Errorf("nothing to check: pass --index (the only check so far)")
+			if !c.Bool("index") && !c.Bool("graph") {
+				return fmt.Errorf("nothing to check: pass --index or --graph")
 			}
-			return doctorIndex(ctx, configFromCmd(c, def), c.String("project"), os.Stdout)
+			cfg := configFromCmd(c, def)
+			if c.Bool("graph") {
+				if err := doctorGraph(ctx, cfg, c.String("project"), os.Stdout); err != nil {
+					return err
+				}
+			}
+			if c.Bool("index") {
+				return doctorIndex(ctx, cfg, c.String("project"), os.Stdout)
+			}
+			return nil
 		},
 	}
 }
@@ -78,4 +89,65 @@ func reportDrift(out io.Writer, report palace.DriftReport) error {
 	fmt.Fprintln(out, "UNREACHABLE from the wing it is filed in, and answers only an unscoped search. This is what a")
 	fmt.Fprintln(out, "wing merge left behind before merges corrected the payloads they invalidate.")
 	return fmt.Errorf("%d stored point(s) disagree with their drawer", len(report.Drifted))
+}
+
+// doctorGraph reports what the derived graph would hold if the entity extractor
+// ran over every drawer now.
+//
+// It changes nothing. It exists because the derived graph is empty on every
+// palace populated through the agent write path, the obvious fix is to extract
+// on write, and whether that fix WORKS is a property of the corpus rather than
+// of the code — mining feeds the extractor long repetitive transcripts and
+// agents file short deliberate notes.
+func doctorGraph(ctx context.Context, cfg config.Config, slug string, out io.Writer) error {
+	svc, err := buildServices(cfg)
+	if err != nil {
+		return err
+	}
+	team, err := resolveProject(ctx, svc, slug)
+	if err != nil {
+		return err
+	}
+	report, err := svc.drawers.GraphPotential(ctx, team.ID)
+	if err != nil {
+		return err
+	}
+	return reportGraph(out, report)
+}
+
+// reportGraph renders the projection.
+//
+// The BAR is printed beside the number, always, because the number alone is what
+// gets quoted: "39% would carry two entities" reads as a result, and it is only a
+// result against a threshold somebody committed to beforehand.
+func reportGraph(out io.Writer, report palace.GraphReport) error {
+	fmt.Fprintf(out, "graph: %d drawer(s) examined — nothing was written\n\n", report.Drawers)
+	fmt.Fprintf(out, "  %-26s %8s %10s %10s %10s\n", "wing", "drawers", ">=1 entity", ">=2", "hallways")
+	fmt.Fprintf(out, "  %s\n", strings.Repeat("-", 68))
+	for _, w := range report.Wings {
+		fmt.Fprintf(out, "  %-26s %8d %10d %10d %10d\n", w.Wing, w.Drawers, w.WithAny, w.WithTwo, w.Hallways)
+	}
+	fmt.Fprintf(out, "  %s\n", strings.Repeat("-", 68))
+	fmt.Fprintf(out, "  %-26s %8d %10d %10d %10d\n\n", "TOTAL", report.Drawers, report.WithAny, report.WithTwo, report.Hallways)
+
+	fmt.Fprintf(out, "  %.1f%% of drawers would carry two or more entities, against a pre-registered bar of %.0f%%: %s\n",
+		100*report.ViableShare(), 100*palace.GraphViabilityBar, verdictWord(report.Viable()))
+	fmt.Fprintln(out, "  (a hallway needs a PAIR co-occurring in one drawer, so a drawer with one entity adds nothing)")
+
+	for _, w := range report.Wings {
+		if len(w.TopEntities) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n  most frequent candidates in %s: %s\n", w.Wing, strings.Join(w.TopEntities, ", "))
+	}
+	return nil
+}
+
+// verdictWord states the decision the bar implies, so the reader does not have
+// to compare two numbers to find out what was decided.
+func verdictWord(viable bool) string {
+	if viable {
+		return "CLEARS the bar — extracting on the write path is worth its cost"
+	}
+	return "BELOW the bar — extracting on the write path would leave the graph empty for a subtler reason"
 }

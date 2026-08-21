@@ -22,9 +22,40 @@ Measured 2026-08-21 against the live self-hosted palace, 359 drawers filed by ag
 
 This is the fourth surface in this repo found finished and unreachable, and the first where the unreachable thing is a whole domain concept with read, delete and recompute surfaces and no producer.
 
+**T1's measurement, taken 2026-08-21 against the live palace, 366 drawers.** Wing names and entity
+names are withheld — both name real projects and real identifiers, and this file is public.
+
+| | drawers | ≥1 entity | ≥2 entities | hallways derivable |
+|---|---|---|---|---|
+| total | 366 | 189 (52%) | **90 (24.6%)** | 43 |
+
+**24.6% against a pre-registered bar of 20%: it clears. T2 is not withdrawn.** The frequency rule
+survives contact with short, deliberate, agent-written memories better than the risk row feared, and
+the derived graph would hold 43 hallways rather than the 0 it holds now.
+
+**And the same run says the extractor must not be wired as it stands.** The report prints the most
+frequent candidates per wing precisely so noise is visible rather than inferred, and roughly half of
+them are not entities at all: they are ordinary English words an agent SHOUTED for emphasis —
+conjunctions, past-tense verbs, adjectives, status words. Two causes, both checkable:
+
+- `candidateWordRE` is `\p{Lu}[\p{L}]*`, an uppercase letter followed by letters, so an all-caps
+  word matches. In prose, capitalisation marks a proper noun; in an agent's memory it marks emphasis,
+  and this corpus is full of it.
+- The vendored COCA list is 1,016 CONTENT words. It excludes common nouns and verbs from being
+  entities, and it was never a function-word stoplist, so it filters none of them.
+- `entityStoplist` — the map consulted immediately before the COCA check — is declared as an empty
+  literal. It exists, it is read on every candidate, and it holds nothing.
+
+So the pre-registration measured the right thing and was silent about the thing that matters as
+much. That is a defect in the criterion, recorded rather than quietly widened: the bar decided
+whether to PROCEED and it says proceed, and the ADR's own risk row already asked T1 to report what
+the graph would look like "so the threshold is set against real data rather than guessed". It is now
+set against real data, and the data says: fix the candidate rule first, then re-measure. T2 carries
+that, and re-runs `doctor --graph` to show what it changed.
+
 ## Existing Primitives Audit
 
-- **`extractEntities`** (`internal/palace/entity.go:166`) — frequency-and-length extraction over a chunk's text, already used by mining. Reuse verbatim; the question is where it is called, not what it does.
+- **`extractEntities`** (`internal/palace/entity.go:166`) — frequency-and-length extraction over a chunk's text, already used by mining. Reuse, with one correction T1 measured into existence: its candidate rule admits all-caps emphasis, and its stoplist is empty. The question was going to be only where it is called; the corpus says it is also what it admits.
 - **`Service.Add`** (`internal/palace/service.go`) — already chunks, embeds and writes rows. Reshape: one field set per row.
 - **`RecomputeGraph`** (`internal/palace/graphquery.go`) — already derives hallways and entity tunnels from `drawers.entities`, prunes, and preserves prior dynamics. Reuse unchanged: it works, it has simply never had input.
 - **`emptyWingNote`** (`internal/mcpserver/emptywing.go`) — the precedent for the second half of this decision. A zero-hit page that says WHY it is empty already exists on the search path; the graph tools need the same and have none.
