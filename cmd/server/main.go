@@ -183,9 +183,9 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "embed-backend", Sources: cli.EnvVars("EMBED_BACKEND"), Value: def.EmbedBackend, Usage: "what embeds text: ollama (default) or tei (text-embeddings-inference — the only path to bge-m3's sparse and multi-vector output)"},
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
-		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 0 off (default), 1 full boost — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
-		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
+		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: rrf (default — rank fusion) or linear (weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
@@ -787,6 +787,15 @@ type services struct {
 // The returned lines are the ONLY observable of this wiring; each setter emits
 // one. That is what lets an extraction be checked as a move rather than trusted
 // as one.
+// defaultFusion and defaultClosetBoost mirror config.Default() so the startup
+// lines can report a DEPARTURE from what ships rather than a departure from a
+// literal that stopped being the default. TestConfiguredDefaultsMatchConfig keeps
+// them honest.
+const (
+	defaultFusion      = "rrf"
+	defaultClosetBoost = 0.0
+)
+
 func configureRanking(svc *palace.Service, cfg config.Config,
 	newReranker func(url string, timeout time.Duration) palace.Reranker) (*palace.Service, []string) {
 
@@ -794,9 +803,15 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	say := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	drawers := svc
 
-	if cfg.ClosetBoost != 1 {
-		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
-		say("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
+	// Applied unconditionally: the service's own zero value is the FULL prior, so
+	// a config default of 0 that was only applied "when it differs from 1" would
+	// have shipped the prior it is meant to retire. The announcement is the delta —
+	// silence means the shipped default, which the resolved-profile line at the end
+	// states in full either way.
+	drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
+	if cfg.ClosetBoost != defaultClosetBoost {
+		say("closet boost: scaled to %.2f (%.2f is the shipped default; 1.00 is the full curation prior)",
+			cfg.ClosetBoost, defaultClosetBoost)
 	}
 	// An unrecognized value is reported rather than silently ignored, the same way
 	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
@@ -808,7 +823,12 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 		if strings.EqualFold(f, "rrf") {
 			drawers = drawers.WithFusion("rrf")
 			rrf = true
-			say("fusion: reciprocal-rank (bm25 weight does not apply)")
+			// Announced even when rrf is the SHIPPED default. Every other line here
+			// reports a departure, and this one deliberately does not: an operator
+			// who sets --bm25-weight or --lex-norm under rrf gets no behaviour and
+			// no error, and staying quiet because "that is just the default" is how
+			// they would find out from a table instead of from their own logs.
+			say("fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)")
 		} else {
 			say("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
 		}

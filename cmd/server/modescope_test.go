@@ -131,16 +131,41 @@ func TestBaselineInertKnobsAreNotAttributed(t *testing.T) {
 	}
 }
 
+// sweepBaseline is the configuration the sweep varies knobs FROM. It is
+// deliberately NOT config.Default().
+//
+// The sweep's predicate needs a baseline where a knob is live, so that "inert
+// under D" means something. Anchoring it to whichever mode currently ships makes
+// it blind to that mode's own relationships: the moment FUSION=rrf became the
+// default, --bm25-weight and --lex-norm were inert at baseline, the two-part
+// predicate could no longer be evaluated for them, and the sweep reported ZERO
+// pairs — including the bm25/rrf pair that plainly exists in the code and that
+// this file's own assertion names. A discovery tool anchored to the default stops
+// discovering exactly when the default becomes interesting.
+//
+// So it sweeps from the most permissive mode: linear fusion, where every ranking
+// knob has something to do.
+func sweepBaseline() config.Config {
+	c := config.Default()
+	// Fusion only. An earlier version also forced ClosetBoost to 1 and the prior
+	// promptly swamped the lexical signal, so the sweep reported --bm25-weight as
+	// inert under four unrelated knobs — fixture artefacts, not code facts. A
+	// baseline should remove exactly the one obstruction it is there to remove.
+	c.Fusion = "linear"
+	return c
+}
+
 // sweep computes the mode-scoped pairs and the knobs that cannot move anything
 // at baseline. Both tests read it, so neither can pass on a fact the other
 // disproves.
 func sweep(t *testing.T) (pairs, inertAtBaseline []string) {
 	t.Helper()
 	base, queries := sweepFixture(t)
+	cfg := sweepBaseline()
 
 	live := map[string]bool{}
 	for _, k := range sweptKnobs {
-		live[k.name] = knobMoves(t, base, queries, config.Default(), k)
+		live[k.name] = knobMoves(t, base, queries, cfg, k)
 	}
 
 	for _, k := range sweptKnobs {
@@ -313,12 +338,33 @@ func TestDiscoveredPairsAdmitTheirCondition(t *testing.T) {
 		t.Fatal("the sweep discovered no pairs, so this check has nothing to enforce — " +
 			"--bm25-weight under --fusion=rrf exists in the code and should have been found")
 	}
+	enforced := 0
 
 	flags := serveFlags(config.Default())
 
+	observed := 0
 	for _, p := range pairs {
 		// "--bm25-weight is inert when --fusion=rrf"
 		knobName, gate := parsePair(t, p)
+		// A pair the sweep OBSERVES is not yet a pair the code guarantees. The
+		// predicate measures orderings on one fixture, so "K did not move the top
+		// eight while D was set" also happens when D merely shrinks K's effect
+		// below the resolution of this corpus.
+		//
+		// Only --fusion is confirmable from the code today: it selects a different
+		// ranker, and rankRRF takes no weight parameter, so the inertness is
+		// structural rather than a matter of degree. The rest are reported and not
+		// enforced, because writing "DOES NOTHING when --lex-norm is set" into
+		// --bm25-weight's help would ship a false sentence to operators —
+		// rankHybridWeightedNorm takes both. Satisfying a gate by documenting
+		// something untrue is worse than the gap it closes.
+		if gate != "--fusion" {
+			observed++
+			t.Logf("observed but not code-confirmed: %s — the fixture could not separate them; "+
+				"not enforced as an admission", p)
+			continue
+		}
+		enforced++
 		usage := flagUsage(t, flags, knobName)
 		if usage == "" {
 			t.Errorf("no Usage string found for %s", knobName)
@@ -329,6 +375,10 @@ func TestDiscoveredPairsAdmitTheirCondition(t *testing.T) {
 				"  An operator who sets it gets no behaviour change and no explanation. Naming the "+
 				"gating knob is the whole remedy.", knobName, gate, usage)
 		}
+	}
+	if enforced == 0 {
+		t.Errorf("%d pair(s) observed and none code-confirmed — the only structurally confirmable "+
+			"gate (--fusion) produced nothing, so this check enforced nothing at all", observed)
 	}
 }
 
@@ -343,7 +393,7 @@ func TestStartupDoesNotContradictItself(t *testing.T) {
 	_, lines := configureRanking(bareService(), cfg, noReranker)
 	joined := strings.Join(lines, "\n")
 
-	if !strings.Contains(joined, "does not apply") {
+	if !strings.Contains(joined, "do not apply") {
 		t.Fatalf("rrf did not announce that the bm25 weight is inert:\n%s", joined)
 	}
 	if strings.Contains(joined, "bm25 weight: auto (IDF-weighted coverage)") {

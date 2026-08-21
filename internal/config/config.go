@@ -321,8 +321,8 @@ func Default() Config {
 		BM25Weight:       "auto",
 		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
-		ClosetBoost:      1,
-		Fusion:           "linear",
+		ClosetBoost:      0,
+		Fusion:           "rrf",
 		// Spelled here rather than imported: config must not depend on the domain.
 		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the
 		// two spellings cannot drift into two different defaults.

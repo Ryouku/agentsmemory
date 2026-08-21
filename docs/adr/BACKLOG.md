@@ -634,3 +634,21 @@ without the exit-code trap the first version had.
   the honest reading. Either the sweep constructs services another way, or `Clone` earns a
   production use.
 
+## From ADR-014 (the shipped default is the measured one)
+
+- **rrf WITHOUT a reranker has no table** — the evidence for rank fusion is `rrf+rerank` winning at
+  n=100, and the shipped default has no reranker configured. The combination that now ships is the
+  one nobody measured. Measuring rrf against linear on at least one corpus, reranker off, is the
+  single most valuable eval run outstanding.
+- **ADR-003 T3's two-corpus measurement is now a check, not a gate** — it was designed to run BEFORE
+  the closet default flipped and the flip happened first. It is still worth running, and the report
+  must include the case where the evidence does not support what shipped; a re-measurement that can
+  only confirm is not a measurement.
+- **The mode-scope sweep cannot tell code-inertness from fixture-inertness** — its predicate observes
+  orderings on one corpus, so "K did not move the page while D was set" also happens when D merely
+  shrinks K's effect below that corpus's resolution. It observed "--bm25-weight is inert when
+  --lex-norm is set", which is false in code: `rankHybridWeightedNorm` takes both. Only `--fusion` is
+  confirmable structurally today (rankRRF has no weight parameter), so only `--fusion` pairs are
+  enforced. Confirming a pair by checking the selected code path drops the parameter would make the
+  rest enforceable.
+

@@ -31,31 +31,34 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 	}{
 		{"a default configuration still announces the profile it resolved",
 			func(c config.Config) config.Config { return c },
-			[]string{"ranking: fusion=linear lex-weight=auto lex-norm=page-max closet-boost=1.00 rerank=off"}},
-		{"rrf says that the bm25 weight no longer applies, and the profile agrees",
-			func(c config.Config) config.Config { c.Fusion = "rrf"; return c },
-			[]string{"fusion: reciprocal-rank", "ranking: fusion=rrf"}},
-		{"the profile reports the normaliser actually in force",
-			func(c config.Config) config.Config { c.LexNorm = "ceiling"; return c },
+			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off"}},
+		{"the shipped default announces that the lexical knobs do not apply",
+			func(c config.Config) config.Config { return c },
+			[]string{"fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)"}},
+		{"linear restores the lexical half and the profile agrees",
+			func(c config.Config) config.Config { c.Fusion = "linear"; return c },
+			[]string{"ranking: fusion=linear"}},
+		{"the profile reports the normaliser actually in force (under linear)",
+			func(c config.Config) config.Config { c.Fusion = "linear"; c.LexNorm = "ceiling"; return c },
 			[]string{"lex-norm=ceiling"}},
 		{"the profile reports a fixed lexical weight as the number, not as auto",
-			func(c config.Config) config.Config { c.BM25Weight = "0.25"; return c },
+			func(c config.Config) config.Config { c.Fusion = "linear"; c.BM25Weight = "0.25"; return c },
 			[]string{"lex-weight=0.25"}},
-		{"the profile reports a scaled closet prior",
-			func(c config.Config) config.Config { c.ClosetBoost = 0; return c },
-			[]string{"closet-boost=0.00"}},
+		{"the profile reports a restored closet prior",
+			func(c config.Config) config.Config { c.ClosetBoost = 1; return c },
+			[]string{"closet-boost=1.00"}},
 		{"a fusion typo is reported, not silently ignored",
 			func(c config.Config) config.Config { c.Fusion = "rff"; return c },
 			[]string{"is not 'linear' or 'rrf'"}},
-		{"a fixed bm25 weight is announced",
-			func(c config.Config) config.Config { c.BM25Weight = "0.25"; return c },
+		{"a fixed bm25 weight is announced (under linear, where it applies)",
+			func(c config.Config) config.Config { c.Fusion = "linear"; c.BM25Weight = "0.25"; return c },
 			[]string{"bm25 weight: fixed"}},
-		{"an unparseable bm25 weight is reported",
-			func(c config.Config) config.Config { c.BM25Weight = "heavy"; return c },
+		{"an unparseable bm25 weight is reported (under linear, where it applies)",
+			func(c config.Config) config.Config { c.Fusion = "linear"; c.BM25Weight = "heavy"; return c },
 			[]string{"is not 'auto', 'auto-idf' or a number"}},
-		{"a scaled closet boost is announced",
-			func(c config.Config) config.Config { c.ClosetBoost = 0; return c },
-			[]string{"closet boost: scaled to 0.00"}},
+		{"restoring the closet prior is announced (0 is now the shipped default)",
+			func(c config.Config) config.Config { c.ClosetBoost = 1; return c },
+			[]string{"closet boost: scaled to 1.00"}},
 	}
 
 	for _, tc := range cases {
@@ -161,6 +164,10 @@ func TestConfigureRankingAppliesTheLexicalNormaliser(t *testing.T) {
 		{"nonsense", palace.DefaultLexNorm},
 	} {
 		cfg := config.Default()
+		// Linear, because under the shipped rrf default the normaliser is INERT by
+		// construction — rank fusion combines positions, so there is no lexical
+		// magnitude to normalise. That is exactly why --help says so.
+		cfg.Fusion = "linear"
 		cfg.LexNorm = tc.set
 		svc, lines := configureRanking(bareService(), cfg, noReranker)
 		if got := svc.LexNormName(); got != tc.want {
