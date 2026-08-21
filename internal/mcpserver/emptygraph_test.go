@@ -59,6 +59,12 @@ func TestEmptyGraphSaysWhyItIsEmpty(t *testing.T) {
 		// want are fragments the note must carry: what is wrong, and the thing
 		// that would change it.
 		want []string
+		// forbid are fragments it must NOT carry. A note that explains an
+		// emptiness with a cause that has since been FIXED is worse than no note:
+		// it sends the reader to change something that is already right. This one
+		// blamed am_add_drawer for stamping no entities, which was true when it
+		// was written and false within the day.
+		forbid []string
 	}{
 		{
 			name:  "nothing has been filed here at all",
@@ -70,7 +76,12 @@ func TestEmptyGraphSaysWhyItIsEmpty(t *testing.T) {
 			graph: fakeGraph{drawers: []palace.Drawer{
 				{ID: "d1", Wing: "wing_acme", Room: "decisions", Content: "a memory an agent filed"},
 			}},
-			want: []string{"carries an entity", "am_mine", "am_recompute_graph"},
+			want: []string{"carries an entity", "am_recompute_graph"},
+			// And it must NOT repeat the cause that was true when this note was
+			// written and false within the day: every write path stamps entities
+			// now, so blaming am_add_drawer sends the reader to change something
+			// already correct.
+			forbid: []string{"am_add_drawer carries none", "no derivable graph at all"},
 		},
 		{
 			name: "entities are there but no pair ever meets",
@@ -92,6 +103,12 @@ func TestEmptyGraphSaysWhyItIsEmpty(t *testing.T) {
 			if !strings.Contains(note, want) {
 				t.Errorf("%s: the note does not name %q, so the reader is not told what would change it: %q",
 					tc.name, want, note)
+			}
+		}
+		for _, bad := range tc.forbid {
+			if strings.Contains(note, bad) {
+				t.Errorf("%s: the note still carries %q, a cause that has since been fixed — it sends "+
+					"the reader to change something already correct: %q", tc.name, bad, note)
 			}
 		}
 		notes[i] = note

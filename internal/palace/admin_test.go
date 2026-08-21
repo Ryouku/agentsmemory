@@ -360,9 +360,20 @@ func (p *patchFailingStore) SetPayload(context.Context, string, []string, map[st
 	return errors.New("index unavailable")
 }
 
-// TestMergeCollectsAndRelabelsInOneTransaction: the ids that get their payloads
-// patched must be the ids that moved, and a snapshot taken before the UPDATE is
-// not that set.
+// TestMergeCollectsAndRelabelsInOneTransaction pins the INVARIANT, and it is
+// weaker than its name suggests. Read this before trusting it.
+//
+// It asserts that after a merge nothing has its row in one wing and its payload
+// in another. It does NOT create the interleaving: both drawers are filed before
+// MergeWing runs, so it would still pass if the transaction were removed. A
+// reviewer pointed that out after a commit message claimed it covered
+// concurrency, which it does not.
+//
+// It is kept because the invariant is the thing worth pinning and it does catch
+// the id-set bug — a snapshot that misses a row fails it. Genuinely exercising
+// the race needs a writer interleaved between the SELECT and the UPDATE, which
+// the repo gives no seam for; that is recorded in the backlog rather than
+// implied by a test name.
 //
 // Reading the ids first and relabelling after leaves a window a concurrent write
 // walks straight through. A drawer added to the source in between is moved by the
@@ -379,9 +390,8 @@ func TestMergeCollectsAndRelabelsInOneTransaction(t *testing.T) {
 
 	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "filed before the merge"})
 
-	// A second drawer appears in the source wing while the merge runs. Whatever
-	// the interleaving, the invariant is the same: afterwards NOTHING may have a
-	// row in one wing and a payload in another.
+	// A second drawer in the source wing. It is filed BEFORE the merge, not during
+	// it — see the note above; this is the invariant, not the race.
 	late := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "filed during the merge"})
 
 	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err != nil {

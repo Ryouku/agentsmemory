@@ -738,3 +738,52 @@ mitigation is for the hook to stop presenting the list as this session's.
   self-hosted single-palace shape, where several sessions share one local server. A hosted workspace
   has the same missing column and a less acute symptom, because a token is closer to a session
   there. Nobody has checked how much closer, and "less acute" is not "absent".
+
+## From ADR-016 T2's lexicon (found by review, 2026-08-21)
+
+**The stoplist loses real names and acronyms, and the obvious fix makes it worse.**
+
+Inflection reduction strips `Jobs→job`, `Wells→well`, `Fields→field`, `Waters→water`, `Teams→team`,
+`Fastly→fast`, `Harding→hard`. The irregular-verb section additionally removes `Drew`, `Rose`, and —
+as acronyms — `RAN`, `LED`, `FED`. Every one is a real thing somebody might file a memory about.
+
+The obvious repair is to add them to `known_systems.json`, which bypasses the stoplist entirely
+(`ordinary()` is applied only to single-word candidates, AFTER the known-systems prepass masks its
+matches). **That would be worse.** The known-systems matcher is `(?i)\b…\b`, so adding `LED` makes
+every "this led to" an entity.
+
+What is actually needed is a split by word CLASS, applied at different case-sensitivities:
+
+- **Function words** (`and`, `was`, `unless`) are never entities in any casing, including shouted.
+  Case-insensitive is right for them.
+- **Irregular verb forms and common nouns that collide with names** (`led`, `fed`, `ran`, `rose`,
+  `drew`, `teams`) are ordinary in lower or Title case and plausibly an ACRONYM or a product in all
+  caps. Stripping them case-insensitively is what loses `LED` and `FED`.
+
+That is a real design decision rather than a patch, and it is deliberately not being taken now: the
+derived graph is days old, nothing depends on it yet, and the current lexicon is a large improvement
+on what it replaced (ordinary words surviving fell 47/163 to 2/163 with every acronym kept). The
+cost is recorded so the next person does not rediscover it, and so nobody "fixes" it via
+known_systems.
+
+Two smaller ones from the same review:
+
+- **`Service.Update` leaves entity metadata stale.** `Add`, `WriteDiary` and `Mine` all stamp
+  entities; `Update` re-embeds the content and updates only content/wing/room (`repo.go:267`). So
+  editing a memory leaves the graph deriving from names the text no longer contains, and never
+  seeing names it gained. Narrow today because `am_update_drawer` is rare and search is unaffected —
+  only the derived graph goes stale.
+- **`doctor --index` reports legitimately pending closets as missing points.** `ClosetWings` returns
+  every closet without checking `embedded_at`, while `closet.go:252` deliberately creates pending
+  closets with no vector — and `Pending` counts drawers only. So a palace mid-mine reports index
+  corruption that is a queue. A check with false alarms is one people learn to skip, which is the
+  failure mode that matters here.
+
+- **No seam to interleave a writer inside `MergeWing`'s transaction.**
+  `TestMergeCollectsAndRelabelsInOneTransaction` asserts the invariant — nothing ends with its row
+  in one wing and its payload in another — but files both drawers BEFORE the merge, so it would
+  still pass with the transaction removed. The transaction is correct (a reviewer confirmed SQLite
+  gives serializable writes on success; a concurrent writer aborts the merge with
+  `SQLITE_BUSY_SNAPSHOT` rather than corrupting it), but nothing PROVES it from the test suite. A
+  hook that lets a test commit between the SELECT and the UPDATE would; adding one to production
+  code purely for a test is the trade to weigh.

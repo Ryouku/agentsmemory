@@ -87,9 +87,20 @@ func emptyGraphNote(ctx context.Context, g graphReader, teamID, wing string) str
 				"there but never appear together.", scope)
 		}
 	}
+	// What this may and may not claim, and the difference matters twice over.
+	//
+	// It reads the newest N memories, so it can only speak about those — an older
+	// entity-bearing memory can still make a hallway, and saying "recompute will
+	// derive nothing" from a sample would be a confident wrong answer.
+	//
+	// And the reason it USED to give is now false: every write path stamps
+	// entities (Add, WriteDiary and Mine all call extractEntities), so "a memory
+	// filed with am_add_drawer carries none" was true when written and wrong
+	// within the day. A tool that explains an emptiness with a cause that has been
+	// fixed sends the reader to change something that is already right.
 	return fmt.Sprintf("%s holds memories, but not one of the %d most recently filed carries an entity, "+
-		"and hallways are derived from entities: am_recompute_graph will report success and derive "+
-		"nothing however often it runs. Entities are stamped by am_mine; a memory filed with "+
-		"am_add_drawer carries none, so a palace populated through the agent surface has no derivable "+
-		"graph at all.", scope, len(recent))
+		"and hallways are derived from entities. Entities are stamped when a memory is written, so the "+
+		"likeliest causes are that these memories predate that, or that their text names nothing an "+
+		"extractor recognises. Run am_recompute_graph — older memories may still carry entities and "+
+		"this sample cannot see them.", scope, len(recent))
 }
