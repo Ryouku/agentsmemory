@@ -440,6 +440,20 @@ type searchHitView struct {
 	// into score because the two are not on the same scale — an agent reading the
 	// page should be able to see which signal moved a hit.
 	RerankScore float64 `json:"rerank_score,omitempty"`
+	// Reranked says a cross-encoder actually SCORED this hit. It exists because
+	// rerank_score's absence was ambiguous four ways: no reranker configured, a
+	// reranker at weight 0, a hit below the pool cutoff that was never scored, and
+	// a cross-encoder that genuinely returned 0.0 all produced the same missing
+	// key. The domain has carried this bool since ADR-006 T4 made the telemetry
+	// honest; the agent-facing surface discarded it, so the one reader who acts on
+	// the answer could not see it.
+	Reranked bool `json:"reranked,omitempty"`
+	// ChunksMatched is how many chunks of this memory were in the ranked pool.
+	// A memory that matched in four places is stronger evidence than one that
+	// matched in one, and ADR-013's collapse would otherwise destroy that signal
+	// silently — which it did, for exactly as long as this field existed in the
+	// domain and not on the wire.
+	ChunksMatched int `json:"chunks_matched,omitempty"`
 	// Truncated says the content above is a snippet around the match, not the
 	// whole memory — fetch it with am_get_drawer when the snippet is not enough.
 	Truncated  bool `json:"content_truncated,omitempty"`
@@ -502,7 +516,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
+			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
 			ids[i] = h.Drawer.ID
 			if snippetChars > 0 {
 				// The window is centred on the query's own terms, so what comes
