@@ -1929,6 +1929,26 @@ func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, repo
 			}
 		}
 	}
+	// T2 step 4: how many verified-absent cases fall below the LOWER boundary, not
+	// the upper one. The lower boundary sits just under the answerable tail by
+	// construction, so this count can be zero — and when it is, the fourth verdict
+	// can never fire on evidence like this. That has to be said in as many words,
+	// because a design documented as four verdicts and delivering three is a
+	// difference nobody notices until they look for the missing one.
+	belowRefuse := 0
+	if th.RefuseBelow != nil {
+		for _, r := range rows {
+			if r.Scored && r.Population == palace.PopAbsent && r.Score < *th.RefuseBelow {
+				belowRefuse++
+			}
+		}
+	}
+	fmt.Fprintf(out, "  verified-absent below refuse_below: %d of %d\n", belowRefuse, th.Absent)
+	if belowRefuse == 0 {
+		fmt.Fprintf(out, "    zero — the 'no answer' verdict can NEVER fire on evidence like this sample.\n"+
+			"    This corpus supports THREE verdicts, not four.\n")
+	}
+
 	pass, rate, lower, n := palace.RefusalGate(th.Absent, refused, c.Float("refusal-bar"))
 	fmt.Fprintf(out, "  correct refusal at answer_at: %d/%d = %.3f, 90%% lower bound %.3f, bar %.2f — %s\n",
 		refused, n, rate, lower, c.Float("refusal-bar"), gateWord(pass))

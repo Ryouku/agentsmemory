@@ -37,8 +37,23 @@ Turn the labelled scores into a risk–coverage curve, two boundaries and a fing
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace cmd/server | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestRiskCoverage|TestGate|TestCalibrat" -count=1'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+  apk add --no-cache bash >/dev/null
+  if [ -n "$(gofmt -l internal/palace cmd/server)" ]; then echo "gofmt"; exit 1; fi
+  go vet ./... || exit 1
+  go test ./internal/palace/ ./cmd/server/ -run "TestRiskCoverageRecommendsThresholds|TestRiskCoverageCurveShowsTheWholeTradeoff|TestGateFailsBelowDeclaredBar|TestCalibrationFingerprintRoundTrip|TestLoadCalibrationRejectsGarbage|TestCanaryToleranceIsMeasuredNotTyped|TestViablePointReportsWhetherAnyThresholdClearsBothBars|TestAnsweredAndRefusedAreComplementary|TestCalibrateRefusesUnverifiedCases" -count=1 -v 2>&1 | tee /tmp/a1t2.out
+  for t in TestRiskCoverageRecommendsThresholds TestRiskCoverageCurveShowsTheWholeTradeoff TestGateFailsBelowDeclaredBar TestCalibrationFingerprintRoundTrip TestLoadCalibrationRejectsGarbage TestCanaryToleranceIsMeasuredNotTyped TestViablePointReportsWhetherAnyThresholdClearsBothBars TestAnsweredAndRefusedAreComplementary TestCalibrateRefusesUnverifiedCases; do
+    grep -q -- "--- PASS: $t" /tmp/a1t2.out || { echo "missing PASS: $t"; exit 1; }
+  done
+  if grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a1t2.out; then echo "vacuous or failing"; exit 1; fi
+  go test ./... -count=1'
 ```
+
+The original filter read `TestRiskCoverage|TestGate|TestCalibrat`, which matches
+neither the canary test, the viable-point test, nor the complementarity test — and
+`-run` exits 0 when a pattern matches nothing. Every name is now listed and every
+PASS line asserted, and the run fails on "no tests to run"; this is the third
+acceptance in this ADR whose filter could have passed against an empty run.
 
 ## Tests
 
@@ -48,6 +63,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestGateFailsBelowDeclaredBar` | `internal/palace/evalstats_test.go` | the go/no-go is the Wilson bound against 0.30, not a judgement | — |
 | `TestCalibrateRefusesUnverifiedCases` | `cmd/server/eval_test.go` | unverified or easy-negative cases print a curve but cannot produce a shipped threshold | — |
 | `TestCalibrationFingerprintRoundTrip` | `internal/palace/calibration_test.go` | the file round-trips; an absent threshold reads back absent, not 0 | — |
+| `TestLoadCalibrationRejectsGarbage` | `internal/palace/calibration_test.go` | a corrupt or missing file is an ERROR, not a zero Calibration whose nil thresholds read as "do not gate" — a silent decode failure would switch the gate off while every report said it was on | — |
+| `TestCanaryToleranceIsMeasuredNotTyped` | `internal/palace/calibration_test.go` | the tolerance is the widest spread OBSERVED across repeats; a deterministic reranker yields 0. Measured on the live reranker it came back 0.1316, so any typed epsilon under that would have declared a healthy instrument broken | — |
+| `TestViablePointReportsWhetherAnyThresholdClearsBothBars` | `internal/palace/calibration_test.go` | a FAIL verdict cannot say whether the threshold was badly chosen or whether none could pass; this pins that the second question is answered | — |
+| `TestAnsweredAndRefusedAreComplementary` | `internal/palace/calibration_test.go` | added after a mutant survived: flipping the refusal boundary to `<=` kept monotonicity and the degenerate ends intact while counting a case as both answered and refused. Identical answerable/absent score sets so every threshold lands on a real score | — |
 
 ## Invariants
 
@@ -73,3 +92,4 @@ Stop if the curve cannot be computed because too few rows carry a scored top-1 �
 - A learned multi-feature abstention model over the same rows (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+- 2026-08-21 · c2e8992* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
