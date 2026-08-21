@@ -24,7 +24,7 @@ CONTROL=am_search
 
 needles=("$@")
 if [ ${#needles[@]} -eq 0 ]; then
-  needles=("ranking: " "chunks_matched" "reranked" "lex-norm")
+  needles=("ranking: " "chunks_matched" "reranked" "lex-norm" "BEST over " "case_set_id")
 fi
 
 echo "==> tests must pass before anything is built"
