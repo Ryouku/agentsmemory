@@ -309,6 +309,37 @@ func (s *Service) WithLexNorm(name string) *Service {
 	return s
 }
 
+// RankingProfile is the fully resolved ranking configuration in one line: every
+// decision that will act on the next query, whether an operator set it or it came
+// from a default.
+//
+// It exists because a deployment could not previously say what it ranks with.
+// Startup announced DELTAS — a default configuration printed nothing at all — so
+// "no lines" meant both "everything is default" and "the operator set values that
+// happen to equal the defaults", and neither an operator reading logs nor an agent
+// reading am_status could tell which arm of an eval table their server
+// corresponds to. A measurement that cannot be tied to a configuration is a
+// number about nothing.
+func (s *Service) RankingProfile() string {
+	fusion := "linear"
+	if s.fusionRRF {
+		fusion = "rrf"
+	}
+	lex := fmt.Sprintf("%.2f", s.bm25Base)
+	switch {
+	case s.bm25Auto && s.bm25IDF:
+		lex = "auto-idf"
+	case s.bm25Auto:
+		lex = "auto"
+	}
+	rerank := "off"
+	if s.rerank != nil {
+		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
+	}
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s",
+		fusion, lex, s.lexNormName, s.closetBoostScale, rerank)
+}
+
 // LexNormName reports the normaliser in force, so startup and am_status can state
 // what is actually ranking rather than what was requested.
 func (s *Service) LexNormName() string { return s.lexNormName }

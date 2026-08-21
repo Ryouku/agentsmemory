@@ -861,6 +861,12 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
 	}
 
+	// The resolved profile is announced ALWAYS, not as a delta. Everything above
+	// reports what changed; this reports what will act. A server whose startup said
+	// nothing was indistinguishable from one whose operator had set every value to
+	// its default, and neither could be matched against a row in an eval table.
+	lines = append(lines, "ranking: "+drawers.RankingProfile())
+
 	return drawers, lines
 }
 

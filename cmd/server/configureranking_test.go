@@ -17,16 +17,33 @@ import (
 // extraction exists so ADR-006 T2 can drive flag values through to behaviour
 // without standing a server up; a block only reachable from newServices cannot
 // be swept.
+// TestConfigureRankingEmitsTheSameLines pins the delta lines AND the resolved
+// profile. The "a default configuration announces nothing" case used to assert
+// zero lines, which made a silent startup ambiguous: it meant both "everything is
+// default" and "an operator set values that happen to equal the defaults". The
+// profile line removes the ambiguity, so a deployment can be matched against the
+// eval row that describes it.
 func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  func(config.Config) config.Config
 		want []string
 	}{
-		{"a default configuration announces nothing", func(c config.Config) config.Config { return c }, nil},
-		{"rrf says that the bm25 weight no longer applies",
+		{"a default configuration still announces the profile it resolved",
+			func(c config.Config) config.Config { return c },
+			[]string{"ranking: fusion=linear lex-weight=auto lex-norm=page-max closet-boost=1.00 rerank=off"}},
+		{"rrf says that the bm25 weight no longer applies, and the profile agrees",
 			func(c config.Config) config.Config { c.Fusion = "rrf"; return c },
-			[]string{"fusion: reciprocal-rank"}},
+			[]string{"fusion: reciprocal-rank", "ranking: fusion=rrf"}},
+		{"the profile reports the normaliser actually in force",
+			func(c config.Config) config.Config { c.LexNorm = "ceiling"; return c },
+			[]string{"lex-norm=ceiling"}},
+		{"the profile reports a fixed lexical weight as the number, not as auto",
+			func(c config.Config) config.Config { c.BM25Weight = "0.25"; return c },
+			[]string{"lex-weight=0.25"}},
+		{"the profile reports a scaled closet prior",
+			func(c config.Config) config.Config { c.ClosetBoost = 0; return c },
+			[]string{"closet-boost=0.00"}},
 		{"a fusion typo is reported, not silently ignored",
 			func(c config.Config) config.Config { c.Fusion = "rff"; return c },
 			[]string{"is not 'linear' or 'rrf'"}},

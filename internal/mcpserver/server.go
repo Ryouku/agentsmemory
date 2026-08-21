@@ -343,9 +343,13 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		}
 
 		out, _ := json.Marshal(map[string]any{
-			"ok":            true,
-			"team_id":       t.TeamID,
-			"role":          string(t.Role),
+			"ok":      true,
+			"team_id": t.TeamID,
+			"role":    string(t.Role),
+			// The ranking configuration that will act on this session's searches.
+			// An agent comparing its recall against an eval table could not
+			// previously tell which row described its server.
+			"ranking":       drawers.RankingProfile(),
 			"mode":          mode,
 			"workspace":     workspace,
 			"default_wing":  defaultWing,
