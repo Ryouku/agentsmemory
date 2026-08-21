@@ -93,13 +93,21 @@ baseline, the two-part predicate could not be evaluated for them, and the sweep 
 including the bm25/rrf pair that plainly exists in the code. A discovery tool anchored to the default
 stops discovering exactly when the default becomes interesting. It now sweeps from linear.
 
-**The sweep also over-reports, and the flip exposed it.** With a permissive baseline it observed
-pairs like "`--bm25-weight` is inert when `--lex-norm` is set", which is false in code —
-`rankHybridWeightedNorm` takes both. The predicate measures orderings on one fixture, so it cannot
-distinguish "the code ignores K under D" from "D shrank K's effect below this corpus's resolution".
-Only `--fusion` is confirmable structurally (rankRRF takes no weight parameter), so only `--fusion`
-pairs are enforced as admissions; the rest are logged. Satisfying a gate by documenting something
-untrue would be worse than the gap it closes.
+**The sweep also over-reported, and my first explanation of why was wrong.** With the new baseline it
+observed pairs like "`--bm25-weight` is inert when `--lex-norm` is set", and this ADR originally
+attributed that to fixture resolution — the corpus being too small to show the effect. A
+different-lineage reviewer found the real cause: liveness was measured from `sweepBaseline()`
+(linear) while every conditioned cell was still built from `config.Default()`, which after this
+flip is rrf. So every conditioned cell silently carried rank fusion, both lexical knobs were inert
+in all of them, and the sweep charged that to whichever knob the cell happened to vary. Measuring
+liveness in one world and inertness in another is not a two-part predicate; it is two unrelated
+facts. Conditioning from the same baseline collapsed fifteen observed pairs to three.
+
+All three are now confirmed from the code and enforced as admissions, including one this ADR
+originally dismissed as unconfirmable: `--lex-norm` is inert at `--bm25-weight=0`, because
+`rankFused` multiplies the normalised lexical term by the weight and zero annihilates it before it
+reaches the fused score. An observed pair that nobody classifies now FAILS rather than being logged
+— logging it is what would let a real inert knob ship undocumented.
 
 ## Out of Scope
 

@@ -131,6 +131,20 @@ func TestBaselineInertKnobsAreNotAttributed(t *testing.T) {
 	}
 }
 
+// confirmedPairs are the observed (knob, gate) pairs whose inertness is confirmed
+// from the CODE, each with the reason. The sweep can only observe orderings, so a
+// pair it reports is a hypothesis until someone names the mechanism.
+//
+// This is an allowlist, and an allowlist beside the truth is usually the wrong
+// shape — it is tolerable here only because an unclassified observation FAILS
+// rather than passing quietly, so the list cannot silently fall behind what the
+// sweep finds.
+var confirmedPairs = map[string]string{
+	"--bm25-weight is inert when --fusion=rrf":   "rankRRF takes no weight parameter at all; rank fusion combines positions, so there is no magnitude to weight",
+	"--lex-norm is inert when --fusion=rrf":      "same call: rankRRF takes no normaliser either, because there is no lexical magnitude to normalise",
+	"--lex-norm is inert when --bm25-weight=0.0": "rankFused multiplies the normalised lexical term by the weight, so at zero the normaliser's output is annihilated before it reaches the fused score",
+}
+
 // sweepBaseline is the configuration the sweep varies knobs FROM. It is
 // deliberately NOT config.Default().
 //
@@ -177,8 +191,16 @@ func sweep(t *testing.T) (pairs, inertAtBaseline []string) {
 			if d.name == k.name {
 				continue
 			}
-			for _, dv := range d.values[1:] { // values[0] is the default
-				cfg := d.apply(config.Default(), dv)
+			for _, dv := range d.values[1:] { // values[0] is the family's reference value
+				// Conditioned from the SAME baseline liveness was measured from.
+				// This read config.Default(), which after the 2026-08-21 flip is rrf
+				// — so every conditioned cell silently carried rank fusion, both
+				// lexical knobs were inert in all of them, and the sweep attributed
+				// that to whichever knob the cell happened to vary. It reported
+				// "--bm25-weight is inert when --lex-norm=ceiling" and the cause was
+				// neither knob. Measuring liveness in one world and inertness in
+				// another is not a two-part predicate, it is two unrelated facts.
+				cfg := d.apply(sweepBaseline(), dv)
 				if !knobMoves(t, base, queries, cfg, k) {
 					pairs = append(pairs, fmt.Sprintf("%s is inert when %s=%s", k.name, d.name, dv))
 				}
@@ -351,19 +373,20 @@ func TestDiscoveredPairsAdmitTheirCondition(t *testing.T) {
 		// eight while D was set" also happens when D merely shrinks K's effect
 		// below the resolution of this corpus.
 		//
-		// Only --fusion is confirmable from the code today: it selects a different
-		// ranker, and rankRRF takes no weight parameter, so the inertness is
-		// structural rather than a matter of degree. The rest are reported and not
-		// enforced, because writing "DOES NOTHING when --lex-norm is set" into
-		// --bm25-weight's help would ship a false sentence to operators —
-		// rankHybridWeightedNorm takes both. Satisfying a gate by documenting
-		// something untrue is worse than the gap it closes.
-		if gate != "--fusion" {
-			observed++
-			t.Logf("observed but not code-confirmed: %s — the fixture could not separate them; "+
-				"not enforced as an admission", p)
+		// An observed pair must be CLASSIFIED, because the predicate alone cannot
+		// tell "the code ignores K under D" from "D shrank K's effect below this
+		// corpus's resolution". Logging the unclassified ones let a real pair ship
+		// undocumented; failing on them forces the question to be answered once.
+		why, confirmed := confirmedPairs[p]
+		if !confirmed {
+			t.Errorf("the sweep observed %q and nothing classifies it.\n"+
+				"  Either confirm it from the code — name the parameter the selected path drops — "+
+				"and add it to confirmedPairs, or establish that the fixture merely could not "+
+				"separate the two and say so there. An observation nobody classified is how a real "+
+				"inert knob ships undocumented.", p)
 			continue
 		}
+		_ = why
 		enforced++
 		usage := flagUsage(t, flags, knobName)
 		if usage == "" {

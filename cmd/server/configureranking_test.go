@@ -175,3 +175,22 @@ func TestConfigureRankingAppliesTheLexicalNormaliser(t *testing.T) {
 		}
 	}
 }
+
+// TestConfiguredDefaultsMatchConfig: the startup lines report a departure from
+// what SHIPS, so the literals they compare against must equal config.Default().
+//
+// They are a duplication of it — kept because configureRanking receives one
+// config and cannot see the defaults — and a duplication with no check is how
+// `cfg.ClosetBoost != 1` came to mean "differs from the default" long after the
+// default stopped being 1. Then a silent startup would have meant "the shipped
+// value" while shipping something else.
+func TestConfiguredDefaultsMatchConfig(t *testing.T) {
+	d := config.Default()
+	if defaultFusion != d.Fusion {
+		t.Errorf("defaultFusion = %q but config.Default().Fusion = %q — startup would report a "+
+			"departure from a value nobody ships", defaultFusion, d.Fusion)
+	}
+	if defaultClosetBoost != d.ClosetBoost {
+		t.Errorf("defaultClosetBoost = %v but config.Default().ClosetBoost = %v", defaultClosetBoost, d.ClosetBoost)
+	}
+}
