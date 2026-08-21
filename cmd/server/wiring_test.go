@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -253,5 +254,36 @@ func TestLexNormDefaultsAgree(t *testing.T) {
 	if !found {
 		t.Errorf("the default %q is not among the selectable names %v — the default is unreachable "+
 			"by anyone who states it explicitly", config.Default().LexNorm, names)
+	}
+}
+
+// TestRerankBudgetIsShorterThanAnyClientWaits: the rerank budget must be short
+// enough that the SERVER gives up first.
+//
+// applyRerank fails open — a cancelled or failed rerank returns the fused order —
+// so a slow cross-encoder should cost ranking quality and nothing else. That path
+// can only fire if the server's own budget expires before the caller's. With
+// RerankTimeout at 90 seconds it never did: measured 2026-08-21, a pool of 50 on a
+// CPU cross-encoder cost ~22 seconds, an independent MCP session's searches timed
+// out 3 times out of 3, and each one received NOTHING where a fused page was
+// available the whole time.
+//
+// Ten seconds is not a magic number; it is shorter than any MCP client's patience
+// observed so far and longer than the measured worst case at the default pool
+// (~4.3s). The property this pins is the ordering, not the value.
+func TestRerankBudgetIsShorterThanAnyClientWaits(t *testing.T) {
+	d := config.Default()
+	const clientPatience = 30 * time.Second
+	if d.RerankTimeout >= clientPatience {
+		t.Errorf("RerankTimeout is %s, at or beyond the %s a client is assumed to wait — the "+
+			"fail-open path in applyRerank can never fire, so a slow reranker returns nothing "+
+			"instead of the fused order it already has", d.RerankTimeout, clientPatience)
+	}
+	// And the budget must actually cover the default pool, or every search degrades.
+	worst := time.Duration(d.RerankPool) * 600 * time.Millisecond
+	if d.RerankTimeout < worst {
+		t.Errorf("RerankTimeout %s is below the measured worst case for a pool of %d (%s at "+
+			"600ms/doc) — reranking would be cut off on every search, which is a reranker "+
+			"configured and never used", d.RerankTimeout, d.RerankPool, worst)
 	}
 }

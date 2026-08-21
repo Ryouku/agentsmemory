@@ -319,15 +319,21 @@ func Default() Config {
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
 		BM25Weight:       "auto",
-		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankPool:       10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		ClosetBoost:      0,
 		Fusion:           "rrf",
 		// Spelled here rather than imported: config must not depend on the domain.
 		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the
 		// two spellings cannot drift into two different defaults.
-		LexNorm:       "page-max",
-		RerankTimeout: 90 * time.Second,
+		LexNorm: "page-max",
+		// A rerank budget must be SHORTER than any client will wait, or the
+		// degradation path can never fire: the server sits inside its own budget
+		// while the caller times out and gets nothing, which is strictly worse than
+		// the fused order it would have returned. Measured 2026-08-21: a pool of 50
+		// costs ~22s on a CPU cross-encoder, an MCP client gave up 3 times out of 3,
+		// and the 90s budget meant the server never once fell back.
+		RerankTimeout: 10 * time.Second,
 		Debug:         false,
 	}
 }

@@ -41,7 +41,13 @@ const (
 	// document the vector pass ranked 40th can never reach the page no matter how
 	// well it answers the query. 50 is wide enough to change the answer and small
 	// enough to cross-encode within a search's latency budget.
-	DefaultRerankPool = 50
+	// Lowered from 50 on 2026-08-21. The cost is linear and measured — ~435ms per
+	// document on a CPU cross-encoder, so 50 candidates cost ~22 seconds and made
+	// am_search unusable: an independent session's searches timed out 3 times out
+	// of 3 while am_status answered instantly. What a larger pool BUYS is still
+	// unmeasured at any size, so this is a cost-driven choice and not a quality
+	// one; an operator on faster hardware should raise it, and --rerank-pool is how.
+	DefaultRerankPool = 10
 
 	// DefaultRerankWeight is how much of the final ordering the cross-encoder
 	// decides, with the rest left to the hybrid score it refines.
