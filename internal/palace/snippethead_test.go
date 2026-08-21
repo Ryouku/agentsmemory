@@ -115,3 +115,96 @@ func TestSnippetSurvivesRunesThatChangeLengthWhenLowercased(t *testing.T) {
 		}
 	}
 }
+
+// TestSnippetDoesNotEndMidWord is the test the previous attempt at this did not
+// have, and could not have had: its repair searched for the clipped term INSIDE
+// the chosen window, and strings.Index only matches a term wholly contained in
+// it — so the shift condition (termEnd > end) was unreachable from the day it
+// was written. Deleting the entire block left the whole package suite green.
+//
+// The symptom it was written for survived it verbatim: a 50-rune window over
+// this content returned "…rerank budget must be sh…", which is the failure the
+// real-query measurement named — the right drawer at rank 1 with the answer cut
+// out of the text.
+func TestSnippetDoesNotEndMidWord(t *testing.T) {
+	const content = "the pool is fifty and the rerank budget must be shorter than any client waits, " +
+		"or the fail-open path is unreachable in practice and nobody finds out"
+
+	for _, maxChars := range []int{20, 30, 40, 50, 60, 80, 120} {
+		got := Snippet(content, "budget shorter", maxChars)
+		body := strings.Trim(got, "…")
+		if body == "" {
+			t.Fatalf("maxChars=%d returned nothing", maxChars)
+		}
+		// The window ends mid-word when the last rune of the body is a word rune
+		// AND the rune that followed it in the content is too.
+		if strings.HasSuffix(got, "…") {
+			last := []rune(body)[len([]rune(body))-1]
+			idx := strings.Index(content, body)
+			if idx < 0 {
+				t.Fatalf("maxChars=%d: %q is not a substring of the content", maxChars, body)
+			}
+			next := []rune(content[idx+len(body):])
+			if len(next) > 0 && isWordRune(last) && isWordRune(next[0]) {
+				t.Errorf("maxChars=%d cut a word in half: %q (next rune %q)", maxChars, got, string(next[0]))
+			}
+		}
+	}
+}
+
+// TestSnippetShiftKeepsAMatchInView guards the fix against reproducing the bug
+// it fixes. Completing a trailing word moves the window RIGHT, and a window that
+// moves right can push the match off its left edge — which is the same failure
+// ("the answer is not in the returned text") wearing the opposite sign.
+func TestSnippetShiftKeepsAMatchInView(t *testing.T) {
+	const term = "needle"
+	for _, lead := range []int{0, 3, 17, 40, 91} {
+		for _, maxChars := range []int{12, 20, 40, 90} {
+			content := strings.Repeat("a ", lead) + term + " tailwordthatiscertainlylong " + strings.Repeat("b ", 120)
+			got := Snippet(content, term, maxChars)
+			if !strings.Contains(strings.ToLower(got), term) && maxChars >= len(term)+2 {
+				t.Errorf("lead=%d maxChars=%d: the window no longer contains %q: %q", lead, maxChars, term, got)
+			}
+		}
+	}
+}
+
+// TestSnippetScoresEveryPositionWhateverTheWindowSize: the window chooser
+// advanced by a fixed stride of 40, so with a window narrower than the stride
+// the positions between candidates were never scored at all. A match at rune 21
+// with maxChars=10 returned the opening of the content and no match.
+func TestSnippetScoresEveryPositionWhateverTheWindowSize(t *testing.T) {
+	for _, at := range []int{5, 21, 39, 44, 77, 130} {
+		content := strings.Repeat("x", at) + " needle " + strings.Repeat("y", 200)
+		for _, maxChars := range []int{10, 16, 30, 39} {
+			got := Snippet(content, "needle", maxChars)
+			if !strings.Contains(got, "needle") {
+				t.Errorf("match at rune %d, maxChars=%d: %q does not contain it", at, maxChars, got)
+			}
+		}
+	}
+}
+
+// TestSnippetWithHeadDoesNotRepeatTheHead: the head was prepended whenever the
+// body window did not start at rune 0, including when the body window started
+// only a little past it — so runes 40..120 of a memory were delivered twice,
+// inside a budget whose whole point is that context is expensive.
+func TestSnippetWithHeadDoesNotRepeatTheHead(t *testing.T) {
+	content := strings.Repeat("a", 300) + " MATCH here " + strings.Repeat("b", 300)
+	got := SnippetWithHead(content, "match", 400, true)
+	if !strings.Contains(got, "MATCH") {
+		t.Fatalf("the match is not in the snippet: %q", got)
+	}
+	if n := strings.Count(got, " … "); n > 0 && !strings.Contains(got, "…"+strings.Repeat("a", 10)) {
+		// A joined snippet is fine; a joined snippet whose two halves overlap is not.
+		head, body, _ := strings.Cut(got, " … ")
+		head = strings.TrimSuffix(head, " ")
+		body = strings.TrimPrefix(body, "…")
+		if len(head) > 8 && strings.Contains(body, head[len(head)-8:]) {
+			t.Errorf("the head and the body overlap — content delivered twice: %q", got)
+		}
+	}
+	if len([]rune(strings.ReplaceAll(strings.Trim(got, "…"), " … ", ""))) > 400 {
+		t.Errorf("the snippet is longer than its budget: %d runes", len([]rune(got)))
+	}
+}

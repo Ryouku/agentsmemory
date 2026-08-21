@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"unicode/utf8"
+	"unicode"
 )
 
 // Hybrid-ranking constants, ported verbatim from the frozen Python searcher
@@ -637,11 +637,22 @@ func SnippetWithHead(content, query string, maxChars int, isHead bool) string {
 	if head > maxChars/2 {
 		head = maxChars / 2 // never let the head crowd out the match itself
 	}
-	body := Snippet(content, query, maxChars-head)
-	if strings.HasPrefix(body, string(runes[:1])) && !strings.HasPrefix(body, "…") {
-		return body // the window already starts at the head; nothing to prepend
+	terms := tokenize(query)
+	if len(terms) == 0 {
+		return string(runes[:maxChars]) + "…"
 	}
-	return strings.TrimSuffix(string(runes[:head]), " ") + " … " + strings.TrimPrefix(body, "…")
+	lower := []rune(strings.ToLower(content))
+
+	// The body is chosen against the REDUCED budget, because the head will take
+	// the rest. But if that window ends within the first maxChars runes, one
+	// contiguous window from the start holds the identity AND the match, and
+	// joining two overlapping halves would deliver the same runes twice inside a
+	// budget whose whole point is that an agent's context is expensive.
+	start, end := snippetWindow(runes, lower, terms, maxChars-head)
+	if end <= maxChars {
+		return renderSnippet(runes, 0, maxChars)
+	}
+	return strings.TrimSuffix(string(runes[:head]), " ") + " … " + renderSnippet(runes, start, end)[len("…"):]
 }
 
 // Snippet returns the window of content most relevant to query, with an ellipsis
@@ -668,6 +679,25 @@ func Snippet(content, query string, maxChars int) string {
 	return renderSnippet(runes, best, end)
 }
 
+// windowHasTerm reports whether any query term falls wholly inside [start,end).
+// lower is the lowercased content, aligned with the original one rune to one.
+func windowHasTerm(lower []rune, start, end int, terms []string) bool {
+	w := string(lower[start:end])
+	for _, t := range terms {
+		if strings.Contains(w, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// isWordRune reports whether r is part of a word, using the same character
+// classes tokenRE does — so "the boundary is inside a word" means the same thing
+// here as "this is one token" does to the ranker.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_'
+}
+
 // renderSnippet turns a chosen window into the string the caller sees, marking
 // each side that was cut.
 func renderSnippet(runes []rune, start, end int) string {
@@ -687,10 +717,24 @@ func renderSnippet(runes []rune, start, end int) string {
 // pre-lowered copy avoids re-lowering a window per candidate position.
 func snippetWindow(runes, lower []rune, terms []string, maxChars int) (int, int) {
 
-	// Score each candidate window by how many query terms start inside it. A
-	// coarse stride keeps this linear-ish on long content while still landing
+	// Score each candidate window by how many query terms fall wholly inside it.
+	// A coarse stride keeps this linear-ish on long content while still landing
 	// within a sentence of the best match.
-	const stride = 40
+	//
+	// It must never exceed half the window, or consecutive candidates leave gaps
+	// that are never scored: at the fixed 40 it began with, a 10-rune window
+	// scored positions 0, 40, 80 … and a match at rune 21 was invisible to the
+	// chooser, which then returned the opening. Half the window guarantees every
+	// term up to maxChars/2 long sits wholly inside some candidate — a term
+	// longer than that can still be missed, and no window could show it whole
+	// anyway.
+	stride := 40
+	if stride > maxChars/2 {
+		stride = maxChars / 2
+	}
+	if stride < 1 {
+		stride = 1
+	}
 	best, bestScore := 0, -1
 	// The loop must reach the END of the content. Its first form advanced while
 	// start+maxChars <= len(runes), so for a 433-rune memory at a 50-rune window it
@@ -730,42 +774,49 @@ func snippetWindow(runes, lower []rune, terms []string, maxChars int) (int, int)
 		end = len(runes)
 	}
 
-	// Do not end the window INSIDE a matched term. The window is chosen by how
-	// many terms start inside it, so a term beginning two characters before the
-	// boundary counts as found and is then delivered as a fragment: measured
-	// 2026-08-21, a real page returned "…a budget must be shor…" and the sentence
-	// the agent needed continued past the cut. Retrieval had already put the right
-	// drawer at rank 1; the aperture threw the answer away.
+	// Do not end the window in the MIDDLE OF A WORD. Measured 2026-08-21 against
+	// real queries, a page returned "…a budget must be shor…" and the sentence the
+	// agent needed continued past the cut: retrieval had put the right drawer at
+	// rank 1 and the aperture threw the answer away.
 	//
-	// Shift the window right so the clipped term completes, bounded by the content
-	// and never past the point where the window would start after it.
+	// The first attempt at this looked for a clipped query TERM inside the chosen
+	// window — which cannot work, because a term the window clips is by definition
+	// not wholly inside it, so strings.Index never found one and the shift never
+	// ran. That block was dead from the day it was written, and deleting it left
+	// the entire package suite green. The rule is stated over words instead: it
+	// needs no search, it is decidable from the two runes either side of the
+	// boundary, and it also completes the ordinary words a reader needs, not only
+	// the ones the query happened to name.
 	//
-	// Every index here is a RUNE index. The first form took a BYTE index from
-	// strings.Index over the lowercased window and sliced the ORIGINAL window with
-	// it. strings.ToLower maps runes one-for-one but not bytes: U+023A lowercases
-	// to U+2C65, two bytes becoming three, so the lowered window is longer than the
-	// original and an index near its end runs off the end of the original — a
-	// panic, on the path every single search result takes. `lower` is aligned with
-	// `runes` one rune to one rune, which is why the window is taken from it.
-	if end < len(runes) {
-		for _, t := range terms {
-			win := string(lower[best:end])
-			b := strings.Index(win, t)
-			if b < 0 {
-				continue
-			}
-			termEnd := best + utf8.RuneCountInString(win[:b]) + utf8.RuneCountInString(t)
-			if termEnd > end {
-				shift := termEnd - end
-				if best+shift+maxChars <= len(runes) {
-					best += shift
-					end += shift
-				} else {
-					end = len(runes)
-					if end-maxChars > 0 {
-						best = end - maxChars
-					}
+	// The window SHIFTS rather than grows, so maxChars stays the budget the caller
+	// asked for. maxWordTail bounds the shift: a run of word runes longer than
+	// that is not a word anybody is reading, it is an id or a hash, and chasing it
+	// would drag the window off the match.
+	if end < len(runes) && isWordRune(runes[end]) && isWordRune(runes[end-1]) {
+		const maxWordTail = 24
+		grow := 0
+		for end+grow < len(runes) && grow < maxWordTail && isWordRune(runes[end+grow]) {
+			grow++
+		}
+		if grow < maxWordTail {
+			shiftedStart, shiftedEnd := best, end
+			switch {
+			case best+grow+maxChars <= len(runes):
+				shiftedStart, shiftedEnd = best+grow, end+grow
+			default:
+				shiftedEnd = len(runes)
+				if shiftedEnd-maxChars > 0 {
+					shiftedStart = shiftedEnd - maxChars
 				}
+			}
+			// Completing a trailing word must never evict the match. The window
+			// moves RIGHT, so a long word at the boundary can push the term off the
+			// left edge — and "the answer is not in the returned text" is the exact
+			// failure this shift exists to fix, so producing it here would be the
+			// same bug with the opposite sign. A word cut in half is the lesser
+			// loss; the ellipsis already says the text continues.
+			if !windowHasTerm(lower, best, end, terms) || windowHasTerm(lower, shiftedStart, shiftedEnd, terms) {
+				best, end = shiftedStart, shiftedEnd
 			}
 		}
 	}
