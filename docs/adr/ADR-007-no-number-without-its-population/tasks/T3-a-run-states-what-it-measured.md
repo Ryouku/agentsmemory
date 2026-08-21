@@ -88,7 +88,12 @@ Each was applied to the real source, confirmed to COMPILE (`go vet` clean), and 
 
 - Refusing to run without `--cases` (permanent: the generate-then-save flow is how a case set first exists; a tool that needs a file that does not exist yet is one nobody can start)
 - Comparing two runs automatically by id (deferred: docs/adr/BACKLOG.md — this task makes incomparability visible; acting on it is a separate decision)
-- Writing a run record for a run that named no case file (deferred: docs/adr/BACKLOG.md — `cellsPath("")` is empty, so a generated run writes no `.cells.json` at all and there is no stem to derive one from. Inventing a path writes files the operator did not ask for; until a `--record` flag exists, the printed table is the only surface a generated run has, which is exactly why the id is printed on the `BEST` line rather than only written to disk.)
+- Writing a run record for a run that named no case file (deferred: docs/adr/BACKLOG.md)
+
+  `cellsPath("")` is empty, so a generated run writes no `.cells.json` at all and there is no stem
+  to derive one from. Inventing a path writes files the operator did not ask for; until a `--record`
+  flag exists the printed table is the only surface a generated run has, which is exactly why the id
+  is printed on the `BEST` line rather than only written to disk.
 
 ## Invariants
 
