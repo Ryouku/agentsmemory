@@ -105,20 +105,50 @@ func TestAbstentionCalibrationComesFromTheDefaultPage(t *testing.T) {
 	}
 	body := string(src)
 
-	i := strings.Index(body, "TopRerank:")
-	if i < 0 {
+	// EVERY assignment, not just the first. The original check read only the
+	// first occurrence, which silently assumed there would only ever be one —
+	// and the day a second appeared, the check began inspecting the new line and
+	// ignoring the one it was written to protect. A gate that stops watching its
+	// target the moment the file grows is worse than no gate, because it still
+	// reports green.
+	var lines []string
+	for off := 0; ; {
+		i := strings.Index(body[off:], "TopRerank:")
+		if i < 0 {
+			break
+		}
+		i += off
+		line := body[i:]
+		if j := strings.IndexByte(line, '\n'); j >= 0 {
+			line = line[:j]
+		}
+		lines = append(lines, strings.TrimSpace(line))
+		off = i + len("TopRerank:")
+	}
+	if len(lines) == 0 {
 		t.Fatal("no TopRerank assignment in eval.go — this check has stopped checking anything")
 	}
-	line := body[i:]
-	if j := strings.IndexByte(line, '\n'); j >= 0 {
-		line = line[:j]
+	for _, line := range lines {
+		// Two forms are legitimate: reading the served arm directly, or forwarding
+		// the value already taken from it. Anything else names another arm.
+		direct := strings.Contains(line, "prodTops[ArmProduction]")
+		forwarded := strings.Contains(line, "oc.TopRerank") || strings.Contains(line, "topRerank")
+		if !direct && !forwarded {
+			t.Errorf("the abstention gate is calibrated from %q. It must read prodTops[ArmProduction] — "+
+				"the page production actually serves — or forward the value taken from it, not any other arm", line)
+		}
+		if strings.Contains(line, "ArmProductionDeep") {
+			t.Error("calibrating the abstention gate on the deeper arm sets a threshold for a page " +
+				"size production never returns")
+		}
 	}
-	if !strings.Contains(line, "prodTops[ArmProduction]") {
-		t.Errorf("the abstention gate is calibrated from %q. It must read prodTops[ArmProduction] — "+
-			"the page production actually serves — not any other arm", strings.TrimSpace(line))
-	}
-	if strings.Contains(line, "ArmProductionDeep") {
-		t.Error("calibrating the abstention gate on the deeper arm sets a threshold for a page " +
-			"size production never returns")
+	// The forwarding forms above are only safe while the value they forward is
+	// itself taken from the served arm, so that origin is pinned separately —
+	// otherwise "forwarded" would be a hole any arm could be poured through.
+	if !strings.Contains(body, "TopRerank:   prodTops[ArmProduction].rerank") &&
+		!strings.Contains(body, "TopRerank:  prodTops[ArmProduction].rerank") &&
+		!strings.Contains(body, "TopRerank: prodTops[ArmProduction].rerank") {
+		t.Error("no assignment takes TopRerank from prodTops[ArmProduction].rerank — the forwarded " +
+			"values above now have no verified origin")
 	}
 }

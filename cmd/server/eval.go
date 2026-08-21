@@ -73,7 +73,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "allow-degraded", Usage: "run without the reranked arms when the configured reranker fails its preflight, instead of refusing the run. The arms are DROPPED and a warning is recorded — they are never silently scored as plain hybrid, which is what produced one wrong table already"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), temporal (asks for the current state of a fact an older memory still contradicts), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), temporal (asks for the current state of a fact an older memory still contradicts), absent (HARD negatives: questions the palace should NOT answer, keeping the note's identifiers so the negative is a real near-miss), absent-easy (the pre-2026-08-21 generator, which strips identifiers — kept so old case files replay), or real (replay recorded searches, gold judged by the generator model)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -477,11 +477,32 @@ func verifyPair(ctx context.Context, newer, older palace.Drawer, gen *questionGe
 	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES"), nil
 }
 
+// absentVerifyDepth is how deep the absence check looks before concluding that
+// nothing in the palace answers a question.
+//
+// Chosen from the retrieval ceiling of THIS corpus, re-measured 2026-08-21 on the
+// 449-memory palace with n=40 paraphrase questions: gold in top-1 67.5%, top-5
+// 82.5%, top-10 92.5%, top-20 95.0%, top-50 97.5%, and none never retrieved. At
+// depth 20 the check covers 38 of 40; depth 50 covers 39. At n=40 those differ by
+// ONE case, so the extra 30 searches per candidate buy noise.
+//
+// The previous value was 3, while the ADR claimed a corpus-wide check. The
+// justification written for it cited top-20 98% on a ~5,020-drawer mined corpus
+// that was reset on 2026-08-19 — figures describing a palace that no longer
+// exists. This constant now cites the corpus it is actually chosen for, with its
+// date and its n.
+//
+// It is NOT a corpus-wide proof and must not be read as one: 5% of answerable
+// golds sit below depth 20 here. A memory the dense channel never surfaces is one
+// recall could not have returned either, so the check matches what the system can
+// actually do rather than what the store contains.
+const absentVerifyDepth = 20
+
 func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question string, gen *questionGen) (string, error) {
 	// No distance gate: absence must be checked broadly. A hit the production
 	// gate would drop can still prove the knowledge exists in the palace.
 	hits, err := svc.drawers.Search(ctx, teamID, palace.SearchQuery{
-		Query: question, Wing: wing, Limit: 3, SkipTelemetry: true,
+		Query: question, Wing: wing, Limit: absentVerifyDepth, SkipTelemetry: true,
 	})
 	if err != nil {
 		return "", err
@@ -504,6 +525,22 @@ func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question str
 		}
 	}
 	return "", nil
+}
+
+// absentCaseOutcome decides what to do with one generated negative, given what
+// the absence check concluded.
+func absentCaseOutcome(answeredBy string, verr error) (keep bool, reason string) {
+	if verr != nil {
+		// Unknown is not confirmed. Keeping it writes a row indistinguishable
+		// from a verified one, and every downstream number then treats an
+		// unchecked assumption as a measurement. The temporal path already
+		// enforces this; this one only documented it.
+		return false, fmt.Sprintf("dropped: absence check failed, so absence is unverified (%v)", verr)
+	}
+	if answeredBy != "" {
+		return false, fmt.Sprintf("rejected: memory %s answers it, so it is not absent", answeredBy)
+	}
+	return true, ""
 }
 
 // caseSource is where a run's questions came from: the cases themselves, a label
@@ -599,6 +636,11 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		prompt, category = evalPromptCrossLingual, palace.CatCrossLingual
 	case "absent":
 		prompt, category = evalPromptAbsent, palace.CatAbsent
+	case "absent-easy":
+		// The pre-2026-08-21 negative generator. Kept selectable so case files
+		// made with it stay reproducible, and so the hard and easy regimes can be
+		// run against each other instead of one silently replacing the other.
+		prompt, category = evalPromptAbsentEasy, palace.CatAbsent
 	}
 	gen := &questionGen{
 		url:     genURL(c),
@@ -651,10 +693,12 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			expect = ""
 			// The seed note not answering it is not enough — verify the rest of
 			// the corpus cannot either, or drop the case.
-			if answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen); verr != nil {
-				fmt.Fprintf(out, "  [%2d/%2d] kept UNVERIFIED (absence check failed: %v)\n", i+1, len(drawers), verr)
-			} else if answeredBy != "" {
-				fmt.Fprintf(out, "  [%2d/%2d] rejected: memory %s answers it, so it is not absent\n", i+1, len(drawers), answeredBy)
+			answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen)
+			keep, reason := absentCaseOutcome(answeredBy, verr)
+			if reason != "" {
+				fmt.Fprintf(out, "  [%2d/%2d] %s\n", i+1, len(drawers), reason)
+			}
+			if !keep {
 				continue
 			}
 		}
@@ -793,7 +837,29 @@ QUESTION:`
 // evalPromptAbsent generates questions the palace should NOT answer. Recall has
 // only ever been measured on questions with an answer, which means the gate that
 // decides "we do not know this" has never been measured at all.
-const evalPromptAbsent = `You are writing a NEGATIVE evaluation question for a memory search system.
+const evalPromptAbsent = `You are writing a HARD NEGATIVE evaluation question for a memory search system.
+
+Below is a note an engineer wrote. Write ONE question about a NEIGHBOURING topic
+that this note does NOT answer and could not answer.
+
+Rules:
+- KEEP the note's distinctive identifiers, file names, flags and error strings.
+  The question must look like it belongs to this note's world.
+- Ask about something genuinely NOT covered: a different stage, a different
+  component, or the same subject in another project's codebase.
+- Plausible for this team to ask, and genuinely unanswered by the note.
+- One line, under 20 words, no quotes, no preamble.
+
+NOTE:
+%s
+
+QUESTION:`
+
+// evalPromptAbsentEasy is the previous negative generator, kept so existing case
+// files stay reproducible under --style absent-easy and so the two regimes can be
+// compared rather than swapped silently. It strips the identifiers, which makes
+// its negatives separable on surface vocabulary alone.
+const evalPromptAbsentEasy = `You are writing a NEGATIVE evaluation question for a memory search system.
 
 Below is a note an engineer wrote. Write ONE question about the same general area
 of work that this note does NOT answer and could not answer — a neighbouring

@@ -369,6 +369,22 @@ type EvalCaseResult struct {
 	// reading each arm's own 0 as "outside the pool" is the mistake that makes a
 	// vacuous case look like a success for every arm at once.
 	DistractorPoolRank int
+	// Population is which of the three calibration populations this case belongs
+	// to: PopReachable, PopUnreachable or PopAbsent.
+	//
+	// It exists because PoolRank == 0 is TWO opposite facts wearing one zero. A
+	// gold outside the pool is a retrieval failure no ranking arm could have
+	// fixed; counting it beside cases whose gold was retrievable makes a
+	// retrieval fact look like a ranking result, and a paired statistic over the
+	// mixture reports a zero delta that means "nobody could have won here"
+	// rather than "the arms agree".
+	Population string
+	// TopRerank is the production arm's cross-encoder score for the top document,
+	// and RerankScored says whether a reranker actually produced it. Carried per
+	// case rather than into the two flat GoldRerank/AbsentRerank arrays, which
+	// lose the label the calibration curve has to group by.
+	TopRerank    float64
+	RerankScored bool
 	// PoolRank is where the gold sat in the pool ordered by vector distance, or
 	// 0 when the dense channel never surfaced it. It duplicates what
 	// EvalReport.PoolRanks carries and it has to: PoolRanks skips absent cases
@@ -377,6 +393,41 @@ type EvalCaseResult struct {
 	// a zero delta there is a retrieval fact wearing a ranking result's clothes —
 	// and that exclusion is only expressible per case.
 	PoolRank int
+}
+
+// The three calibration populations. A curve fitted across them without the
+// label is fitted across three different questions at once.
+const (
+	// PopReachable: an answerable case whose gold entered the retrieved pool, so
+	// every arm had the chance to rank it. These are the only cases a ranking
+	// comparison may be drawn from.
+	PopReachable = "reachable"
+	// PopUnreachable: an answerable case whose gold never entered the pool. No
+	// arm could have surfaced it; its zero is a retrieval fact, not a ranking one.
+	PopUnreachable = "unreachable"
+	// PopAbsent: the palace holds no answer and any hit is a false positive.
+	PopAbsent = "absent"
+)
+
+// populationOf labels a case with the calibration population it belongs to.
+//
+// The decision lives in a function rather than inline so a test can drive it,
+// and it is deliberately total: every case gets exactly one label, because a
+// case with no label silently drops out of whichever group a later grouping
+// forgets to handle.
+//
+// An absent case has no gold, so its zero PoolRank says nothing about retrieval
+// and the category alone decides. For an answerable case the zero is the whole
+// question: gold in the pool means every arm had its chance, gold outside means
+// none of them did.
+func populationOf(cat string, poolRank int) string {
+	if cat == CatAbsent {
+		return PopAbsent
+	}
+	if poolRank <= 0 {
+		return PopUnreachable
+	}
+	return PopReachable
 }
 
 // Progress reports how far a run has got. An eval that prints nothing for
@@ -461,8 +512,12 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
-		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks, PoolRank: poolRank})
 		cat := c.category()
+		report.Details = append(report.Details, EvalCaseResult{
+			Query: c.Query, Category: cat, Ranks: ranks, PoolRank: poolRank,
+			Population: populationOf(cat, poolRank),
+			TopRerank:  topRerank, RerankScored: scored,
+		})
 		s.accumulate(byArm, &report, EvalCaseResult{Category: cat, Ranks: ranks}, arms)
 		if cat != CatAbsent {
 			report.PoolRanks = append(report.PoolRanks, poolRank)

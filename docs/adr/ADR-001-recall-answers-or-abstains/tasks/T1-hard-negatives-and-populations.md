@@ -33,7 +33,17 @@ Make the calibration set honest: negatives that keep the identifiers a real near
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace cmd/server | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestPopulation|TestAbsentPrompt|TestVerifyAbsent|TestEvaluate" -count=1'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+  apk add --no-cache bash >/dev/null
+  if [ -n "$(gofmt -l internal/palace cmd/server)" ]; then echo "gofmt"; exit 1; fi
+  go vet ./... || exit 1
+  go test ./internal/palace/ ./cmd/server/ -run "TestPopulationLabelsSeparateUnreachable|TestAbsentPromptKeepsIdentifiers|TestAbsentCaseOutcomeDropsOnVerifierError|TestAbstentionCalibrationComesFromTheDefaultPage" -count=1 -v 2>&1 | tee /tmp/a1t1.out
+  grep -q -- "--- PASS: TestPopulationLabelsSeparateUnreachable" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbsentPromptKeepsIdentifiers" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbsentCaseOutcomeDropsOnVerifierError" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbstentionCalibrationComesFromTheDefaultPage" /tmp/a1t1.out || exit 1
+  if grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a1t1.out; then echo "vacuous or failing"; exit 1; fi
+  go test ./... -count=1'
 ```
 
 ## Tests
@@ -42,7 +52,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestPopulationLabelsSeparateUnreachable` | `internal/palace/eval_test.go` | a gold outside the retrieved pool is `unreachable`, not `reachable` | — |
 | `TestAbsentPromptKeepsIdentifiers` | `cmd/server/eval_test.go` | the absent prompt does not instruct identifier removal | — |
-| `TestVerifyAbsentDropsOnVerifierError` | `cmd/server/eval_test.go` | a verifier error drops the case; nothing labelled absent survives unverified | — |
+| `TestAbsentCaseOutcomeDropsOnVerifierError` | `cmd/server/eval_test.go` | a verifier error drops the case; nothing labelled absent survives unverified. Named for the extracted decision `absentCaseOutcome` rather than for `verifyAbsent`, because the bug was in the CALLER's handling of the error, not in the check — a test of `verifyAbsent` would have passed throughout | — |
+| `TestAbstentionCalibrationComesFromTheDefaultPage` | `internal/palace/proddepth_test.go` | pre-existing gate, strengthened here: it read only the FIRST `TopRerank:` in the file and this task adds a second, so it was inspecting the new line and no longer watching the one it protects. Now checks every occurrence, and pins the origin separately so "forwarded" is not a hole | — |
 
 ## Invariants
 
@@ -65,3 +76,17 @@ Stop and ask if the identifier-preserving generator yields negatives that anothe
 - Growing the absent corpus beyond what `--n` produces, and mining hard negatives from real queries instead of generating them (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+- 2026-08-21 · 9a88b51* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec	0.022s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.006s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	1.566s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.012s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.224s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.008s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.003s
+  FAIL
+  ```
+- 2026-08-21 · 9a88b51* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

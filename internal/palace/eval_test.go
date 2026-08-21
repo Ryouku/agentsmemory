@@ -1315,3 +1315,57 @@ func TestEvaluateStampsTheCaseSetItScored(t *testing.T) {
 		t.Errorf("the report says origin %q, but the caller declared %q", report.CaseSetOrigin, CaseSetGenerated)
 	}
 }
+
+// TestPopulationLabelsSeparateUnreachable pins the distinction the calibration
+// curve depends on: a case whose gold never entered the retrieved pool is
+// UNREACHABLE, not a reachable case that ranked badly.
+//
+// The two are opposite facts wearing the same zero. A gold outside the pool is a
+// retrieval failure that no ranking arm could have fixed, so counting it as a
+// reachable case that every arm got wrong makes a retrieval fact look like a
+// ranking result — and a paired statistic over those cases reports a zero delta
+// that means "nobody could have won here", not "the arms agree".
+//
+// Driven through Evaluate rather than a helper, because the label is only worth
+// anything if the assembly actually carries it onto the result the report holds.
+func TestPopulationLabelsSeparateUnreachable(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// The fake embedder is a character histogram, so shared characters mean a
+	// near vector. "aaa…" and "zzz…" sit far apart by construction.
+	near, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "pop",
+		Content: "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa"})
+	if err != nil {
+		t.Fatalf("add near: %v", err)
+	}
+	far, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "pop",
+		Content: "zzzz zzzz zzzz zzzz zzzz zzzz zzzz zzzz"})
+	if err != nil {
+		t.Fatalf("add far: %v", err)
+	}
+
+	query := "aaaa aaaa aaaa aaaa"
+	cases := []EvalCase{
+		// pool of 1 holds only the near memory, so this gold IS in the pool
+		{Query: query, Expect: near.Drawers[0].ID, Category: CatSingle},
+		// same pool, and this gold is not in it — reachable is the wrong label
+		{Query: query, Expect: far.Drawers[0].ID, Category: CatSingle},
+		{Query: query, Category: CatAbsent},
+	}
+
+	report, err := svc.Evaluate(ctx, team, cases, 1, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(report.Details) != 3 {
+		t.Fatalf("want 3 details, got %d", len(report.Details))
+	}
+	want := []string{PopReachable, PopUnreachable, PopAbsent}
+	for i, w := range want {
+		if got := report.Details[i].Population; got != w {
+			t.Errorf("case %d: population %q, want %q (poolRank=%d)", i, got, w, report.Details[i].PoolRank)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -658,5 +659,63 @@ func TestSupersessionGateJudgesTheArmItWasGiven(t *testing.T) {
 	err := printSupersessionGate(&buf, palace.EvalReport{}, meta, "")
 	if err == nil {
 		t.Error("the gate produced a verdict for a served ranking no arm reconstructs")
+	}
+}
+
+// TestAbsentPromptKeepsIdentifiers pins that the negative generator writes HARD
+// negatives, not easy ones.
+//
+// A negative that drops the note's identifiers, file names and flags is a
+// question about a different vocabulary, and a retrieval system separates it from
+// an answerable one on surface overlap alone. The calibration curve fitted on
+// those negatives then reports a separation that will not survive contact with a
+// real near-miss — a question about a SIBLING project, phrased in the same words,
+// naming the same files, answered by nothing here.
+//
+// Measured on this corpus: pages whose wrong content is off-topic separate at
+// 0.994 AUC while on-topic ones separate at 0.831. Generating the easy half and
+// calibrating on it is how a gate ships that cannot do its job.
+func TestAbsentPromptKeepsIdentifiers(t *testing.T) {
+	low := strings.ToLower(evalPromptAbsent)
+	for _, banned := range []string{
+		"do not reuse the note's distinctive identifiers",
+		"do not reuse the note's distinctive nouns",
+	} {
+		if strings.Contains(low, strings.ToLower(banned)) {
+			t.Errorf("the absent prompt still instructs %q, which manufactures easy negatives", banned)
+		}
+	}
+	if !strings.Contains(low, "keep") {
+		t.Error("the absent prompt does not tell the generator to KEEP the note's identifiers, " +
+			"so nothing makes the negative hard")
+	}
+}
+
+// TestAbsentCaseOutcomeDropsOnVerifierError pins that a case whose absence could
+// not be CHECKED is dropped, not kept.
+//
+// This is the rule the temporal path already enforces and this one does not: an
+// unreachable checker returns an error, and keeping the case anyway writes a row
+// into the case file that is indistinguishable from a verified one. Every
+// downstream number then treats an unchecked assumption as a measurement.
+//
+// The three outcomes are tested together because the bug is not "error handling
+// is missing" — it is that two of the three were handled and the third fell
+// through to keep.
+func TestAbsentCaseOutcomeDropsOnVerifierError(t *testing.T) {
+	if keep, _ := absentCaseOutcome("", nil); !keep {
+		t.Error("a question nothing answers is a valid absent case and must be kept")
+	}
+	if keep, _ := absentCaseOutcome("drawer-7", nil); keep {
+		t.Error("a question a memory ANSWERS is not absent and must be rejected")
+	}
+	keep, reason := absentCaseOutcome("", errors.New("checker unreachable"))
+	if keep {
+		t.Error("a case whose absence check FAILED was kept — the case file cannot then " +
+			"distinguish a verified absence from an unchecked one")
+	}
+	if !strings.Contains(strings.ToLower(reason), "check") {
+		t.Errorf("the drop reason %q does not say the CHECK failed, so a reader cannot tell it "+
+			"from a case rejected for being answerable", reason)
 	}
 }
