@@ -35,12 +35,19 @@ func doctorCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
+			&cli.StringFlag{Name: "windows", Usage: "report every candidate snippet window for this QUERY against --drawer, and which one search returns (read-only)"},
+			&cli.StringFlag{Name: "drawer", Usage: "the memory id --windows reports on"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
-			if !c.Bool("index") && !c.Bool("graph") {
-				return fmt.Errorf("nothing to check: pass --index or --graph")
+			if !c.Bool("index") && !c.Bool("graph") && c.String("windows") == "" {
+				return fmt.Errorf("nothing to check: pass --index, --graph or --windows")
 			}
 			cfg := configFromCmd(c, def)
+			if q := c.String("windows"); q != "" {
+				if err := doctorWindows(ctx, cfg, c.String("project"), q, c.String("drawer"), os.Stdout); err != nil {
+					return err
+				}
+			}
 			if c.Bool("graph") {
 				if err := doctorGraph(ctx, cfg, c.String("project"), os.Stdout); err != nil {
 					return err
@@ -187,5 +194,51 @@ func requireExistingDB(path string) error {
 		return fmt.Errorf("no database at %q — doctor inspects an existing palace and will not "+
 			"create one; check --db (or AGENTSMEMORY_DB)", path)
 	}
+	return nil
+}
+
+// doctorWindows reports every candidate snippet window for a query against one
+// memory, and which one search returns.
+//
+// It answers the question ADR-019 turns on, with data rather than intuition: when
+// an agent gets the right memory and not the answer, is the answer in a window
+// the chooser scored and threw away, or in no window at all? The first is fixable
+// by showing more of the memory; the second is synthesis, and showing more buys
+// nothing.
+func doctorWindows(ctx context.Context, cfg config.Config, slug, query, drawerID string, out io.Writer) error {
+	if err := requireExistingDB(cfg.DBPath); err != nil {
+		return err
+	}
+	if drawerID == "" {
+		return fmt.Errorf("--windows needs --drawer: a window report is about ONE memory, and picking " +
+			"one for you would report on a memory you did not choose")
+	}
+	svc, err := buildServicesWith(cfg, false)
+	if err != nil {
+		return err
+	}
+	team, err := resolveProject(ctx, svc, slug)
+	if err != nil {
+		return err
+	}
+	d, err := svc.drawers.Get(ctx, team.ID, drawerID)
+	if err != nil {
+		return err
+	}
+	rep := palace.WindowReport(d.Content, query, palace.DefaultSnippetChars)
+
+	fmt.Fprintf(out, "memory %s — %d runes, %d-rune window, %d candidate(s)\n\n",
+		drawerID[:12], rep.Memory, rep.Window, len(rep.Windows))
+	for _, w := range rep.Windows {
+		mark := "  "
+		if w.Chosen {
+			mark = "->" // the one search actually returns
+		}
+		fmt.Fprintf(out, "%s [%5d,%5d) %d term(s)  %s\n", mark, w.Start, w.End, w.Terms, firstLineOf(w.Text, 88))
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "The marked window is what an agent receives. Read the others: if the answer to the")
+	fmt.Fprintln(out, "query is in one of them, showing more of the memory fixes it. If it is in none of")
+	fmt.Fprintln(out, "them, the answer is not in this memory and more windows would buy nothing.")
 	return nil
 }

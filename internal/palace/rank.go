@@ -742,6 +742,132 @@ func renderSnippet(runes []rune, start, end int) string {
 	return out
 }
 
+// windowCandidate is one scored position the chooser considered.
+type windowCandidate struct {
+	Start, End int
+	Terms      int // how many query terms fall wholly inside
+}
+
+// snippetCandidates scores every position the chooser considers, in order.
+//
+// Split out of snippetWindow so that a report of what was DISCARDED is built
+// from the real scoring rather than a copy of it. A measurement of a
+// re-implementation measures the re-implementation, and the question this exists
+// to answer — are the answers agents miss in windows we scored and threw away —
+// would then be answered about code nobody runs.
+func snippetCandidates(runes, lower []rune, terms []string, maxChars int) []windowCandidate {
+	// It must never exceed half the window, or consecutive candidates leave gaps
+	// that are never scored — see the note in snippetWindow, which this carries.
+	stride := 40
+	if stride > maxChars/2 {
+		stride = maxChars / 2
+	}
+	if stride < 1 {
+		stride = 1
+	}
+	var out []windowCandidate
+	for start := 0; ; start += stride {
+		if start+maxChars > len(runes) {
+			start = len(runes) - maxChars // the final window, flush with the end
+			if start < 0 {
+				start = 0
+			}
+		}
+		end := start + maxChars
+		if end > len(runes) {
+			end = len(runes)
+		}
+		window := string(lower[start:end])
+		score := 0
+		for _, t := range terms {
+			if strings.Contains(window, t) {
+				score++
+			}
+		}
+		if n := len(out); n == 0 || out[n-1].Start != start {
+			out = append(out, windowCandidate{Start: start, End: end, Terms: score})
+		}
+		if end >= len(runes) {
+			break
+		}
+	}
+	return out
+}
+
+// WindowScore is one candidate window as the report presents it: the verbatim
+// text, how many query terms fell inside, where it sits, and whether the chooser
+// took it.
+type WindowScore struct {
+	Start  int    `json:"start"`
+	End    int    `json:"end"`
+	Terms  int    `json:"terms_matched"`
+	Chosen bool   `json:"chosen"`
+	Text   string `json:"text"`
+}
+
+// WindowReportResult is every window a query scored against one memory.
+type WindowReportResult struct {
+	Memory  int           `json:"memory_runes"`
+	Window  int           `json:"window_runes"`
+	Windows []WindowScore `json:"windows"`
+}
+
+// WindowReport reports every candidate window and which one Snippet returns.
+//
+// Read-only and additive: it changes nothing about what Search delivers. It
+// exists to answer one question with data instead of intuition — when an agent
+// gets the right memory and not the answer, is the answer in a window the chooser
+// scored and discarded, or in no window at all? The first is fixable by showing
+// more; the second is a different failure entirely.
+func WindowReport(content, query string, maxChars int) WindowReportResult {
+	if maxChars <= 0 {
+		maxChars = DefaultSnippetChars
+	}
+	runes := []rune(content)
+	res := WindowReportResult{Memory: len(runes), Window: maxChars}
+	if len(runes) <= maxChars {
+		res.Windows = []WindowScore{{Start: 0, End: len(runes), Chosen: true, Text: content}}
+		return res
+	}
+	terms := tokenize(query)
+	if len(terms) == 0 {
+		res.Windows = []WindowScore{{Start: 0, End: maxChars, Chosen: true, Text: string(runes[:maxChars])}}
+		return res
+	}
+	lower := []rune(strings.ToLower(content))
+	chosenStart, chosenEnd := snippetWindow(runes, lower, terms, maxChars)
+
+	for _, c := range snippetCandidates(runes, lower, terms, maxChars) {
+		res.Windows = append(res.Windows, WindowScore{
+			Start: c.Start, End: c.End, Terms: c.Terms, Text: string(runes[c.Start:c.End]),
+		})
+	}
+
+	// The chosen entry is the window Snippet ACTUALLY returns, not the candidate it
+	// started from. The chooser may shift right to avoid cutting a word, so the two
+	// differ by a few runes — and a report whose "chosen" text is not what the
+	// caller received would be answering about a window nobody saw.
+	//
+	// It is ADDED rather than substituted for the candidate it came from. Replacing
+	// it left the runes before the shift in no window at all, which a coverage
+	// check at a narrow window caught: those runes could hold the answer, and this
+	// report would then have said it was in no window — the verdict that withdraws
+	// the decision this measurement exists to take.
+	terms0 := 0
+	win := string(lower[chosenStart:chosenEnd])
+	for _, t := range terms {
+		if strings.Contains(win, t) {
+			terms0++
+		}
+	}
+	res.Windows = append(res.Windows, WindowScore{
+		Start: chosenStart, End: chosenEnd, Terms: terms0, Chosen: true,
+		Text: string(runes[chosenStart:chosenEnd]),
+	})
+	sort.SliceStable(res.Windows, func(a, b int) bool { return res.Windows[a].Start < res.Windows[b].Start })
+	return res
+}
+
 // snippetWindow picks the [start,end) rune window of runes that carries the most
 // query terms. lower must be the lowercased form of the same content: ToLower
 // maps runes one for one, so the two index identically, and matching against a

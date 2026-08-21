@@ -1,6 +1,6 @@
 # ADR-019: A hit shows its matching regions and lets the agent choose
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-21
 **Owner:** unassigned
 **Spec:** None — no spec stage

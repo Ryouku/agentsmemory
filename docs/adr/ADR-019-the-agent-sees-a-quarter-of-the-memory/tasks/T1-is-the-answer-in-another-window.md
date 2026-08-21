@@ -19,7 +19,7 @@ The whole ADR rests on it. If the answer is usually in NO window of the returned
 | File | Change | Why |
 |------|--------|-----|
 | `cmd/server/doctor.go` | edit | a `--windows` report: for a memory and a query, what every candidate window scores and which the chooser took |
-| `cmd/server/doctor_windows_test.go` | add | the report names the winner the real chooser would pick, not a re-implementation of it |
+| `cmd/server/doctorwindowreport_test.go` | add | the report names the winner the real chooser would pick, not a re-implementation of it. NOT `doctor_windows_test.go`: Go reads `_windows` in a filename as a GOOS build constraint, so that file compiles only on Windows — it vetted clean, built clean and ran nothing |
 | `docs/adr/ADR-019-the-agent-sees-a-quarter-of-the-memory.md` | edit | the result is pasted into Context before T2 is written |
 
 ## Ordered Steps
@@ -55,8 +55,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestWindowReportNamesTheChosenWindow` | `cmd/server/doctor_windows_test.go` | the window the report marks as chosen is the one `Snippet` actually returns — not a re-derivation that could disagree | — |
-| `TestWindowReportCoversTheWholeMemory` | `cmd/server/doctor_windows_test.go` | every rune of the memory falls in at least one reported window, or the measurement has blind spots exactly where the answer might be | — |
+| `TestWindowReportNamesTheChosenWindow` | `cmd/server/doctorwindowreport_test.go` | the window the report marks as chosen is the one `Snippet` actually returns — not a re-derivation that could disagree | — |
+| `TestWindowReportCoversTheWholeMemory` | `cmd/server/doctorwindowreport_test.go` | every rune of the memory falls in at least one reported window, or the measurement has blind spots exactly where the answer might be | — |
 
 ## Reachability
 
