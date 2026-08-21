@@ -51,3 +51,55 @@ file says so.
   manufacture `not-stored` verdicts out of a working system.
 - Reading n=32 as precision. It is enough to rank failure modes, not to put an interval on any of
   them, and no decision below should be taken as if it were.
+
+---
+
+## RESULT, 2026-08-21 — the prediction was wrong
+
+32 queries: 12 answers (37.5%), 16 partial (50%), 4 hard failures (12.5%). The right drawer reached
+the page in 59% of queries; only 63% of those pages carried the answer in the text the agent
+receives.
+
+| mode | primary cause count |
+|------|--------------------|
+| **Delivery — retrieval worked, the payload lost the answer** | **6** |
+| Synthesis | 5 |
+| Wing scoping (4 of the 4 hard failures) | 5 |
+| Memory genuinely absent | 3 |
+| Exists but ranked below / under a stale top hit | 1 |
+
+**I predicted synthesis would be the largest mode. It was not.** It came joint-second, and the
+judge's own note is that 6/5/5 on n=32 is a near-tie rather than a clear winner — so the honest
+reading is that delivery, synthesis and wing scoping are of comparable size, and the prediction was
+wrong about which leads rather than wrong about synthesis mattering.
+
+**What nobody predicted, and it is the finding:** the mode MRR measures — the answer exists and did
+not reach the page — is **last, at one query**. The eval optimises the one thing that is almost never
+the problem.
+
+### What this does to the pre-registered table
+
+- **001 abstain** — the bet was `ranked-below` or `not-stored` (3 combined). Weak support. An
+  abstention verdict would fire on the wing-scoping failures, where it would be actively wrong: the
+  memory exists and the filter excluded it, so "I don't know" is a confident false statement.
+- **002 lexical normaliser / 003 closet prior / 009 auto-tune** — all bet on `ranked-below`, which is
+  the smallest mode. **Undermined as pre-registered.** 009 is the sharpest case: auto-tuning ranking
+  parameters against an eval whose metric is blind to the top three modes optimises confidently in a
+  direction that cannot help.
+- **010 supersede** — pre-registered to rise if synthesis dominated. It did not, but 010 gets support
+  from a different direction than predicted: the one `ranked-below` failure IS a stale top hit, a
+  superseded 10:50 snapshot at rank 1 with its own 11:16 correction at rank 3. Small n, real
+  mechanism.
+- **007 populations** — unaffected, as pre-registered. Nothing here can argue against it.
+
+### The work this actually points at
+
+Delivery was the cheapest to fix and two mechanisms were found and fixed the same day: the snippet
+window never scored the FINAL window, so a memory's conclusions were the least reachable text in it;
+and the window could end inside a matched term. Neither moves MRR by a point, because rank 1 was
+already correct — which is the whole point.
+
+Still open from the same measurement: wing scoping produced 4 of the 4 hard failures (queries scoped
+to wings that have never existed return an empty page in under a second, indistinguishable from a
+genuine miss), and 5 of 32 responses carried no rerank at all with nothing in the payload saying so.
+
