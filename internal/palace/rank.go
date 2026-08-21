@@ -613,6 +613,42 @@ const DefaultSnippetChars = 400
 // The window is chosen by term density, not position: the first paragraph of a
 // memory is usually its heading, and the sentence that answers the query is
 // usually not there.
+// SnippetHeadChars is how much of a memory's opening is always kept when the
+// snippet window would otherwise start past it.
+//
+// The first line of a memory is what it IS — the date, the project, the subject.
+// Measured 2026-08-21 against real queries: three pages returned a snippet
+// beginning mid-sentence somewhere in the middle of a memory, and the agent read
+// a fragment with no way to tell what it belonged to. The window is chosen to
+// centre on the match, which is right; discarding the identity to do it is not.
+const SnippetHeadChars = 120
+
+// SnippetWithHead is Snippet, keeping the memory's opening when the chosen window
+// starts past it. isHead says this content is the START of a memory — chunk 0, or
+// a memory that was never split — because for any later chunk there is no
+// identity at offset zero to preserve.
+func SnippetWithHead(content, query string, maxChars int, isHead bool) string {
+	if !isHead {
+		return Snippet(content, query, maxChars)
+	}
+	runes := []rune(content)
+	if maxChars <= 0 {
+		maxChars = DefaultSnippetChars
+	}
+	if len(runes) <= maxChars {
+		return content
+	}
+	head := SnippetHeadChars
+	if head > maxChars/2 {
+		head = maxChars / 2 // never let the head crowd out the match itself
+	}
+	body := Snippet(content, query, maxChars-head)
+	if strings.HasPrefix(body, string(runes[:1])) && !strings.HasPrefix(body, "…") {
+		return body // the window already starts at the head; nothing to prepend
+	}
+	return strings.TrimSuffix(string(runes[:head]), " ") + " … " + strings.TrimPrefix(body, "…")
+}
+
 func Snippet(content, query string, maxChars int) string {
 	if maxChars <= 0 {
 		maxChars = DefaultSnippetChars
@@ -633,7 +669,20 @@ func Snippet(content, query string, maxChars int) string {
 	// within a sentence of the best match.
 	const stride = 40
 	best, bestScore := 0, -1
-	for start := 0; start+maxChars <= len(runes) || start == 0; start += stride {
+	// The loop must reach the END of the content. Its first form advanced while
+	// start+maxChars <= len(runes), so for a 433-rune memory at a 50-rune window it
+	// stopped after 360-410 and NEVER scored the final window — any match in the
+	// last maxChars runes was invisible to the chooser, and the snippet fell back
+	// to the opening. Measured 2026-08-21: this was the mechanism behind the
+	// largest failure mode against real queries, "the right drawer at rank 1 and
+	// the answer not in the text", because a memory's conclusions live at its end.
+	for start := 0; ; start += stride {
+		if start+maxChars > len(runes) {
+			start = len(runes) - maxChars // the final window, flush with the end
+			if start < 0 {
+				start = 0
+			}
+		}
 		end := start + maxChars
 		if end > len(runes) {
 			end = len(runes)
@@ -648,7 +697,7 @@ func Snippet(content, query string, maxChars int) string {
 		if score > bestScore {
 			best, bestScore = start, score
 		}
-		if end == len(runes) {
+		if end >= len(runes) {
 			break
 		}
 	}
@@ -656,6 +705,37 @@ func Snippet(content, query string, maxChars int) string {
 	end := best + maxChars
 	if end > len(runes) {
 		end = len(runes)
+	}
+
+	// Do not end the window INSIDE a matched term. The window is chosen by how
+	// many terms start inside it, so a term beginning two characters before the
+	// boundary counts as found and is then delivered as a fragment: measured
+	// 2026-08-21, a real page returned "…a budget must be shor…" and the sentence
+	// the agent needed continued past the cut. Retrieval had already put the right
+	// drawer at rank 1; the aperture threw the answer away.
+	//
+	// Shift the window right so the clipped term completes, bounded by the content
+	// and never past the point where the window would start after it.
+	if end < len(runes) {
+		for _, t := range terms {
+			i := strings.Index(strings.ToLower(string(runes[best:end])), t)
+			if i < 0 {
+				continue
+			}
+			termEnd := best + len([]rune(string(runes[best:end])[:i])) + len([]rune(t))
+			if termEnd > end {
+				shift := termEnd - end
+				if best+shift+maxChars <= len(runes) {
+					best += shift
+					end += shift
+				} else {
+					end = len(runes)
+					if end-maxChars > 0 {
+						best = end - maxChars
+					}
+				}
+			}
+		}
 	}
 	out := string(runes[best:end])
 	if best > 0 {

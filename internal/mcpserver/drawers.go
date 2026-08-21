@@ -521,7 +521,10 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			if snippetChars > 0 {
 				// The window is centred on the query's own terms, so what comes
 				// back is the part that matched rather than the memory's heading.
-				if snippet := palace.Snippet(h.Drawer.Content, query, snippetChars); snippet != h.Drawer.Content {
+				// chunk 0 (and an unsplit memory) carries the identity line, so its
+				// opening is preserved even when the match is further down.
+				isHead := h.Drawer.ChunkIndex == 0
+				if snippet := palace.SnippetWithHead(h.Drawer.Content, query, snippetChars, isHead); snippet != h.Drawer.Content {
 					views[i].Content = snippet
 					views[i].Truncated = true
 					views[i].FullLength = len([]rune(h.Drawer.Content))
