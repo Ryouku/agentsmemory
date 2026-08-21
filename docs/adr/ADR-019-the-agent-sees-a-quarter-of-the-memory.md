@@ -92,6 +92,12 @@ with no way to appeal.
 1. **A hit carries its matching REGIONS.** Every part of the memory that scored, verbatim, each with
    the score that ranked it and its position. `snippetWindow` already computes this ranking and
    discards everything but the winner; the discard is the change.
+
+   They are computed at the TRANSPORT, beside the snippet, and not carried on `SearchHit`. The
+   caller's `snippet_chars` is the budget that governs them and it lives there, so a `SearchHit`
+   field would be one the domain could never fill — a field nothing populates, which is the exact
+   shape this repository keeps shipping. `palace` owns what a region IS; `mcpserver` owns how many
+   of them fit, exactly as it already does for `content`.
 2. **A hit carries the memory's IDENTITY LINE** — its own first line, which by this repository's
    convention says what the memory IS (the date, the project, the subject; `SnippetHeadChars` exists
    because of it). It is the summary, and it is not written by a model.
@@ -131,8 +137,8 @@ of short memories has neither the problem nor the fix.
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
 | `snippetWindow` | change — returns its ranked candidates rather than only the winner | `internal/palace/rank.go` | `Snippet`, `SearchHit` |
-| `SearchHit.Regions` — verbatim text, score, position | add | `internal/palace` | the search page |
-| `SearchHit.Identity` — the memory's own first line | add | `internal/palace` | the search page |
+| `palace.SnippetRegions` — verbatim text, score, position | add | `internal/palace/regions.go` | `internal/mcpserver/drawers.go` |
+| `palace.MemoryIdentity` — the memory's own first line | add | `internal/palace/regions.go` | `internal/mcpserver/drawers.go` |
 | `regions`, `identity`, `content_coverage` on the wire | add | `internal/mcpserver/drawers.go` | every agent |
 | `content` | UNCHANGED — still the single best window | `internal/mcpserver/drawers.go` | every existing reader |
 | `content_truncated` | unchanged — kept for compatibility, no longer the field to read | `internal/mcpserver/drawers.go` | every agent |

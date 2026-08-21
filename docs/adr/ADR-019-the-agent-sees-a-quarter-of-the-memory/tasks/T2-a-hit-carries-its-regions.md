@@ -4,7 +4,7 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `SearchHit.Regions` and `SearchHit.Identity`
+**Produces:** `palace.SnippetRegions` and `palace.MemoryIdentity`
 **Consumes:** T1's measurement — this task does not begin until it supports the change
 **Data dependency:** hermetic
 
@@ -17,10 +17,8 @@ Every part of a memory that matched is available to the agent, verbatim, with th
 | File | Change | Why |
 |------|--------|-----|
 | `internal/palace/rank.go` | edit | `snippetWindow` returns its ranked candidates; a new `SnippetRegions` renders them |
-| `internal/palace/palace.go` | edit | `SearchHit.Regions`, `SearchHit.Identity` |
-| `internal/palace/service.go` | edit | `Search` fills them beside the existing snippet |
-| `internal/palace/rank_test.go` | edit | regions are verbatim, ranked, non-overlapping, in position order |
-| `internal/palace/collapse_test.go` | edit | regions survive the memory collapse ADR-013 does |
+| `internal/palace/regions.go` | add | `SnippetRegions`, `MemoryIdentity`, and the neighbourhood/alignment rules |
+| `internal/palace/regions_test.go` | add | regions are verbatim, ranked, non-overlapping, position-ordered, budgeted |
 
 ## Ordered Steps
 
@@ -30,6 +28,7 @@ Every part of a memory that matched is available to the agent, verbatim, with th
 4. Order regions by POSITION, not score, and put the score in the field. A list that jumps backwards through a memory reads as nonsense; the agent can sort by score itself, and cannot un-jumble prose.
 5. Identity is the memory's own first line, bounded by `SnippetHeadChars`. Not generated, not derived — the line the author wrote, which by convention says what the memory IS.
 6. `content` must be byte-identical to what it is today. This task ADDS; anything that changes what existing readers see belongs to a different decision.
+   Do NOT put the regions on `SearchHit`: the budget that governs them is the caller's `snippet_chars`, which lives at the transport, so a domain field would be one the domain cannot fill.
 7. A floor on region size: below it, prefer one larger region. A list of fragments is worse than a passage.
 8. Falsify: return regions that are not slices of the memory; order by score; let regions overlap; change `content`.
 9. Run the acceptance command.
@@ -67,8 +66,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | Rung | How this task shows it |
 |------|------------------------|
 | 1 — exists | `TestRegionsCoverEveryMatch` |
-| 2 — something selects it | `Search` fills them for every hit; no flag, no opt-in |
-| 3 — the caller can discover it | T3 puts them on the wire — until then this is a domain field nothing serves, and the ADR says so rather than letting it look finished |
+| 2 — something selects it | NOT YET — T3's call in `drawers.go` is what selects them. Recorded here rather than claimed: at the end of this task the functions exist and nothing invokes them |
+| 3 — the caller can discover it | T3 puts them on the wire — until then these are exported functions nothing calls, and the ADR says so rather than letting them look finished |
 | 4 — it is used | T3's re-judging of the 32 |
 
 ## Mutants
@@ -103,4 +102,4 @@ Stop and ask if the caller's budget cannot hold two regions above the floor at t
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 95277e5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
