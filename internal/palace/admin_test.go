@@ -286,9 +286,68 @@ func TestMergeFailsLoudlyWhenTheIndexCannotBeCorrected(t *testing.T) {
 	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "one"})
 	svc.vectors = &patchFailingStore{VectorStore: svc.vectors}
 
-	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err == nil {
-		t.Error("the payload correction failed and the merge reported success — the caller is left " +
+	_, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme")
+	if err == nil {
+		t.Fatal("the payload correction failed and the merge reported success — the caller is left " +
 			"with relabelled rows over a stale index and nothing says so")
+	}
+	// And the error must name a recovery that WORKS. Re-running the merge does
+	// not: the rows have already moved, so a retry finds an empty source and does
+	// nothing, leaving the drawers unreachable from both wings while the tool
+	// reports success. An earlier version of this message advised exactly that.
+	if strings.Contains(err.Error(), "merges are idempotent") {
+		t.Error("the error advises re-running the merge, which cannot repair this state")
+	}
+	if !strings.Contains(err.Error(), "repair-payload") {
+		t.Errorf("the error does not name the command that DOES repair it: %v", err)
+	}
+}
+
+// TestAFailedMergeIsRepairableFromTheRows: after a merge fails partway, the rows
+// are authoritative and the payloads are stale — which is exactly the state
+// IndexDrift reports and a payload rebuild fixes.
+//
+// This is the recovery the error message now names, asserted rather than assumed.
+// The state is unreachable-from-both-wings until something repairs it, and a
+// repair nobody can name is the same as no repair.
+func TestAFailedMergeIsRepairableFromTheRows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-merge-recover"
+
+	mustAddOne(t, svc, team, AddInput{Wing: "wing_acme-legacy", Room: "decisions", Content: "one"})
+	real := svc.vectors
+	svc.vectors = &patchFailingStore{VectorStore: real}
+	if _, err := svc.MergeWing(ctx, team, []string{"wing_acme-legacy"}, "wing_acme"); err == nil {
+		t.Fatal("the merge was expected to fail")
+	}
+
+	// The damage is visible.
+	svc.vectors = real
+	report, err := svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift: %v", err)
+	}
+	if report.Clean() {
+		t.Fatal("a merge failed partway and the drift check reports clean")
+	}
+
+	// And repairing from the rows — what `sync --repair-payload` does — clears it.
+	wings, _, err := svc.repo.DrawerWings(ctx, team)
+	if err != nil {
+		t.Fatalf("DrawerWings: %v", err)
+	}
+	for id, wing := range wings {
+		if err := svc.vectors.SetPayload(ctx, team, []string{id}, map[string]string{"wing": wing}); err != nil {
+			t.Fatalf("repair: %v", err)
+		}
+	}
+	report, err = svc.IndexDrift(ctx, team)
+	if err != nil {
+		t.Fatalf("IndexDrift after repair: %v", err)
+	}
+	if !report.Clean() {
+		t.Errorf("rebuilding payloads from the rows did not clear the drift: %+v", report.Drifted)
 	}
 }
 

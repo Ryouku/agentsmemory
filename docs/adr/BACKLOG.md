@@ -726,3 +726,15 @@ Two consequences, and the second is the serious one:
 The fix needs a session id on `search_events` and a `session=` filter on `/stats`, which is a schema
 change plus a contract change plus a hook change — an ADR, not a patch. Until then the honest
 mitigation is for the hook to stop presenting the list as this session's.
+
+## From ADR-018 (a recall belongs to the session that ran it)
+
+- **Per-session WRITE statistics — drawers filed, facts added** — the same `session_id` column that
+  ADR-018 puts on `search_events` would serve it, and it is the other half of "is memory earning its
+  place": a session that recalled twenty times and filed nothing is a different story from one that
+  filed ten. Deferred because it is a different report over different tables, and ADR-018 is already
+  a schema change plus a contract change plus a hook change.
+- **The hosted multi-workspace deployment's session model** — ADR-018 was found and is valid on the
+  self-hosted single-palace shape, where several sessions share one local server. A hosted workspace
+  has the same missing column and a less acute symptom, because a token is closer to a session
+  there. Nobody has checked how much closer, and "less acute" is not "absent".

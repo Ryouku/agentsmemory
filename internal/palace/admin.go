@@ -80,9 +80,17 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 	// Correct the stored payloads, in batches bounded like every other id list
 	// here. A failure FAILS THE MERGE: rows relabelled over a stale index is a
 	// half-done state nobody can see from the outside, and reporting success over
-	// it is how the memories this fixes went missing in the first place. The rows
-	// are already moved, so the recovery is to re-run — which is safe, because a
-	// merge is idempotent and this patch is too.
+	// it is how the memories this fixes went missing in the first place.
+	//
+	// The recovery is NOT to re-run the merge, and an earlier version of this
+	// comment said it was. By the time a patch can fail the rows are already in
+	// the target, so a retry finds an empty source and does nothing, and naming
+	// the target as a source is dropped as a no-op — the drawers would stay
+	// unreachable from both wings while the tool reported success. The recovery is
+	// `agentsmemory sync --repair-payload`, which rebuilds payloads from the
+	// DRAWER ROWS, is indifferent to how they got that way, and writes both
+	// stores. The error below names it, because a half-done state whose repair
+	// nobody can name is the same as no repair.
 	for start := 0; start < len(moved); start += deleteBatch {
 		end := start + deleteBatch
 		if end > len(moved) {
@@ -91,7 +99,10 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 		if err := s.vectors.SetPayload(ctx, teamID, moved[start:end], map[string]string{"wing": tgt}); err != nil {
 			return MergeWingResult{}, fmt.Errorf(
 				"the drawers were relabelled to %q but their stored payloads were not, so they are "+
-					"unreachable from %q until this is re-run (merges are idempotent): %w", tgt, tgt, err)
+					"unreachable from %q. Re-running the merge will NOT fix it — the rows have already "+
+					"moved, so it finds nothing to do. Run `agentsmemory doctor --index` to see the "+
+					"damage and `agentsmemory sync --repair-payload` to rebuild the payloads from the "+
+					"rows: %w", tgt, tgt, err)
 		}
 	}
 	closets, err := s.repo.RelabelClosetWing(ctx, teamID, clean, tgt)

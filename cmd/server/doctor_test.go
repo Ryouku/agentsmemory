@@ -193,3 +193,14 @@ func TestDoctorTakesTheLocalFlag(t *testing.T) {
 		t.Error("doctor has no --local flag, so on a self-hosted install it checks a backend nobody runs")
 	}
 }
+
+// readRepoFile reads a file from the repository root, for the checks that can
+// only be made against the source because their subject needs a live service.
+func readRepoFile(t *testing.T, parts ...string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(append([]string{repoRoot(t)}, parts...)...))
+	if err != nil {
+		t.Fatalf("read %v: %v", parts, err)
+	}
+	return string(b)
+}

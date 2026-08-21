@@ -110,3 +110,4 @@ Three tasks: `tasks/README.md`.
 Both hooks are registered by the installer into a settings file it already manages idempotently, and both scripts exit 0 when disabled by env. Removing the registrations restores today's behaviour exactly; nothing is stored, migrated or re-shaped. The agent definitions are files in a directory Claude Code reads — deleting them is the rollback.
 
 ## Follow-ups
+- [ ] Received from ADR-018: attributing a SUBAGENT's recalls separately from its dispatcher's. ADR-018 adds a session identity to every recall; a subagent is dispatched BY a session and it is undecided whether its recalls should carry its own identity or its parent's. This ADR owns what a subagent is, so it owns the question — and it only arises once T2 here makes a subagent recall anything at all.
