@@ -17,7 +17,7 @@ An agent reading a page can see which part of which memory to expand, and we kno
 | File | Change | Why |
 |------|--------|-----|
 | `internal/mcpserver/drawers.go` | edit | `regions`, `identity`, `content_coverage` on `searchHitView` |
-| `internal/mcpserver/drawers_test.go` | edit | they reach the agent, and they VARY across a real page |
+| `internal/mcptest/regions_test.go` | add | they reach the agent, and they VARY across a real page — driven END TO END through the real server, because a unit test of the view passes whether or not the handler fills it |
 | `docs/adr/ADR-019-the-agent-sees-a-quarter-of-the-memory.md` | edit | the re-judged result, whatever it says |
 
 ## Ordered Steps
@@ -39,10 +39,11 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   apk add --no-cache bash >/dev/null
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/mcpserver/ -run "TestRegionsReachTheWire|TestCoverageVariesAcrossAPage|TestContentKeepsItsMeaningOnTheWire" -count=1 -v 2>&1 | tee /tmp/a19t3.out
-  grep -q -- "--- PASS: TestRegionsReachTheWire" /tmp/a19t3.out
-  grep -q -- "--- PASS: TestCoverageVariesAcrossAPage" /tmp/a19t3.out
-  grep -q -- "--- PASS: TestContentKeepsItsMeaningOnTheWire" /tmp/a19t3.out
+  go test ./internal/mcptest/ -run "TestScenarioRegionsReachTheAgent|TestScenarioCoverageVariesAcrossAPage|TestScenarioContentKeepsItsMeaning|TestScenarioCoverageIsOneWhenNothingWasCut" -count=1 -v 2>&1 | tee /tmp/a19t3.out
+  grep -q -- "--- PASS: TestScenarioRegionsReachTheAgent" /tmp/a19t3.out
+  grep -q -- "--- PASS: TestScenarioCoverageVariesAcrossAPage" /tmp/a19t3.out
+  grep -q -- "--- PASS: TestScenarioContentKeepsItsMeaning" /tmp/a19t3.out
+  grep -q -- "--- PASS: TestScenarioCoverageIsOneWhenNothingWasCut" /tmp/a19t3.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a19t3.out
   grep -qE "re-judged 2026|re-judged: " docs/adr/ADR-019-the-agent-sees-a-quarter-of-the-memory.md
   go test ./... -count=1'
@@ -52,9 +53,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestRegionsReachTheWire` | `internal/mcpserver/drawers_test.go` | regions and identity are in the JSON an agent receives — the domain has carried signals the wire discarded twice already | — |
-| `TestCoverageVariesAcrossAPage` | `internal/mcpserver/drawers_test.go` | on a page of mixed hits the values DIFFER — a constant field is the defect being replaced, and shipping a second one would be worse than keeping the first | — |
-| `TestContentKeepsItsMeaningOnTheWire` | `internal/mcpserver/drawers_test.go` | `content` is still the single best window — every existing reader is unaffected | — |
+| `TestScenarioRegionsReachTheAgent` | `internal/mcptest/regions_test.go` | regions and identity are in the JSON an agent receives, driven through the REAL server — the domain has carried signals the wire discarded twice already, and no unit test of either half can see that | — |
+| `TestScenarioCoverageVariesAcrossAPage` | `internal/mcptest/regions_test.go` | on a page of mixed hits the values DIFFER — a constant field is the defect being replaced, and shipping a second one would be worse than keeping the first | — |
+| `TestScenarioCoverageIsOneWhenNothingWasCut` | `internal/mcptest/regions_test.go` | a memory returned WHOLE reports 1, not 0. It reported 0, so "all of it" and "none of it" arrived identical — found by a mutant that made coverage constant and passed anyway, because that wrong zero supplied the variation the test above was looking for | — |
+| `TestScenarioContentKeepsItsMeaning` | `internal/mcptest/regions_test.go` | `content` is still the single best window — every existing reader is unaffected | — |
 
 ## Reachability
 
@@ -69,10 +71,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Mutation | Compiles? | Test that goes red |
 |----------|-----------|--------------------|
-| declare the fields and never populate them | yes | `TestRegionsReachTheWire` |
-| report coverage as a constant 1.0 | yes | `TestCoverageVariesAcrossAPage` |
-| set `content` to the joined regions | yes | `TestContentKeepsItsMeaningOnTheWire` |
-| mark `content_coverage` omitempty so 0 disappears | yes | `TestCoverageVariesAcrossAPage` |
+| compute the regions and never attach them | yes | `TestScenarioRegionsReachTheAgent` |
+| report coverage as a constant 1.0 | yes | `TestScenarioCoverageVariesAcrossAPage` — and it SURVIVED the first version, which is how the untruncated-hit bug was found |
+| set `content` to the joined regions | yes | `TestScenarioContentKeepsItsMeaning` |
+| mark `content_coverage` omitempty so 0 disappears | yes | `TestScenarioCoverageVariesAcrossAPage` |
 
 ## Out of Scope
 
@@ -94,4 +96,22 @@ Stop and report if the re-judged score is unchanged. That is not a failed task �
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 5ee6ad5* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  testing: warning: no tests to run
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.006s [no tests to run]
+  ```
+- 2026-08-21 · 5ee6ad5* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  2026/08/21 12:31:54 OK   00017_totp.sql (2.82ms)
+  2026/08/21 12:31:54 OK   00018_webauthn.sql (1.25ms)
+  2026/08/21 12:31:54 OK   00019_unlimited_plan.sql (1.26ms)
+  2026/08/21 12:31:54 OK   00020_api_keys_team_user_idx.sql (2.26ms)
+  2026/08/21 12:31:54 OK   00021_search_events.sql (2.15ms)
+  2026/08/21 12:31:54 OK   00022_drawer_anchors.sql (1.12ms)
+  2026/08/21 12:31:54 goose: successfully migrated database to version: 22
+  --- PASS: TestScenarioCoverageIsOneWhenNothingWasCut (0.05s)
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcptest	0.255s
+  ```

@@ -41,9 +41,12 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   apk add --no-cache bash >/dev/null
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./internal/palace/ -run "TestRegionsAreVerbatimSlicesOfTheMemory|TestRegionsCoverEveryMatch|TestContentIsUnchangedByRegions|TestIdentityIsTheMemorysOwnFirstLine|TestSnippetDoesNotEndMidWord" -count=1 -v 2>&1 | tee /tmp/a19t2.out
+  go test ./internal/palace/ -run "TestRegionsAreVerbatimSlicesOfTheMemory|TestRegionsCoverEveryMatch|TestRegionsAreOrderedByPositionNotScore|TestRegionsKeepOneRegionWhole|TestRegionsRespectTheBudget|TestContentIsUnchangedByRegions|TestIdentityIsTheMemorysOwnFirstLine|TestSnippetDoesNotEndMidWord" -count=1 -v 2>&1 | tee /tmp/a19t2.out
   grep -q -- "--- PASS: TestRegionsAreVerbatimSlicesOfTheMemory" /tmp/a19t2.out
   grep -q -- "--- PASS: TestRegionsCoverEveryMatch" /tmp/a19t2.out
+  grep -q -- "--- PASS: TestRegionsAreOrderedByPositionNotScore" /tmp/a19t2.out
+  grep -q -- "--- PASS: TestRegionsKeepOneRegionWhole" /tmp/a19t2.out
+  grep -q -- "--- PASS: TestRegionsRespectTheBudget" /tmp/a19t2.out
   grep -q -- "--- PASS: TestContentIsUnchangedByRegions" /tmp/a19t2.out
   grep -q -- "--- PASS: TestIdentityIsTheMemorysOwnFirstLine" /tmp/a19t2.out
   grep -q -- "--- PASS: TestSnippetDoesNotEndMidWord" /tmp/a19t2.out
@@ -55,10 +58,13 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestRegionsAreVerbatimSlicesOfTheMemory` | `internal/palace/rank_test.go` | every region is `strings.Contains` of the memory — nothing on this path is written by the machine, which is the ADR's refusal made mechanical | — |
-| `TestRegionsCoverEveryMatch` | `internal/palace/rank_test.go` | a memory matching in three places yields three regions, in position order, non-overlapping | — |
-| `TestContentIsUnchangedByRegions` | `internal/palace/rank_test.go` | `content` is byte-identical to today for the same input — every existing reader keeps working | — |
-| `TestIdentityIsTheMemorysOwnFirstLine` | `internal/palace/rank_test.go` | identity is the author's first line, bounded — not a summary, not a derivation | — |
+| `TestRegionsAreVerbatimSlicesOfTheMemory` | `internal/palace/regions_test.go` | every region is `strings.Contains` of the memory — nothing on this path is written by the machine, which is the ADR's refusal made mechanical | — |
+| `TestRegionsCoverEveryMatch` | `internal/palace/regions_test.go` | a memory matching in three places yields three regions, in position order, non-overlapping, INCLUDING the match nearest the end — the one the single-window chooser could never reach | — |
+| `TestRegionsAreOrderedByPositionNotScore` | `internal/palace/regions_test.go` | position order on a memory whose BEST region is the last one; the first version of this could not tell the two orderings apart because every region happened to score the same | — |
+| `TestRegionsKeepOneRegionWhole` | `internal/palace/regions_test.go` | one matching place returns one region — the budget is not shredded when there is nothing to spread it over | — |
+| `TestRegionsRespectTheBudget` | `internal/palace/regions_test.go` | the caller's ceiling holds at every budget | — |
+| `TestContentIsUnchangedByRegions` | `internal/palace/regions_test.go` | `content` is byte-identical to today for the same input — every existing reader keeps working | — |
+| `TestIdentityIsTheMemorysOwnFirstLine` | `internal/palace/regions_test.go` | identity is the author's first line, bounded — not a summary, not a derivation | — |
 | `TestSnippetDoesNotEndMidWord` | `internal/palace/snippethead_test.go` | both snippet entry points still honour the word boundary — this path has been broken twice in a day | — |
 
 ## Reachability
@@ -80,6 +86,9 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | trim or normalise a region's text | yes | `TestRegionsAreVerbatimSlicesOfTheMemory` |
 | set `content` to the joined regions | yes | `TestContentIsUnchangedByRegions` |
 | take identity from the highest-scoring region rather than the first line | yes | `TestIdentityIsTheMemorysOwnFirstLine` |
+| drop the neighbourhood suppression, so several regions view one paragraph | yes | `TestRegionsCoverEveryMatch` |
+| drop the match alignment, so a region starts at the candidate boundary | yes | `TestRegionsCoverEveryMatch` |
+| drop the minimum region size | yes | `TestRegionsCoverEveryMatch` |
 
 ## Out of Scope
 
@@ -103,3 +112,4 @@ Stop and ask if the caller's budget cannot hold two regions above the floor at t
 ## Verification Log
 
 - 2026-08-21 · 95277e5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-21 · 5ee6ad5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

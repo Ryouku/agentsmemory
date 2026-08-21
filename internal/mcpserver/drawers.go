@@ -460,12 +460,42 @@ type searchHitView struct {
 	ChunksMatched int `json:"chunks_matched,omitempty"`
 	// Truncated says the content above is a snippet around the match, not the
 	// whole memory — fetch it with am_get_drawer when the snippet is not enough.
+	//
+	// It is kept and it is no longer the field to read: it is true for 98% of
+	// hits, and a flag that almost never varies carries no information. Coverage
+	// and Regions below are what an agent can act on.
 	Truncated  bool `json:"content_truncated,omitempty"`
 	FullLength int  `json:"content_length,omitempty"`
+	// Coverage is the fraction of the memory `content` shows, 0..1.
+	//
+	// NOT omitempty: 0 is a real and important value — it means the snippet shows
+	// none of this memory — and this codebase has already shipped one field whose
+	// absence meant four different things at once.
+	Coverage float64 `json:"content_coverage"`
+	// Regions are the OTHER places in this memory that matched, verbatim, in
+	// position order. Present only when there is more than one: a single region is
+	// what `content` already carries, and repeating it would teach a reader to
+	// skip the field.
+	Regions []regionView `json:"regions,omitempty"`
+	// Identity is the memory's own first line — what its author wrote to say what
+	// this is. It is a label to choose by, and nothing generated it.
+	Identity string `json:"identity,omitempty"`
 	// Anchors are the code this memory was written about, with the verdict of the
 	// last verification pass. Stale is the summary an agent should branch on.
 	Anchors []anchorView `json:"code_anchors,omitempty"`
 	Stale   bool         `json:"stale,omitempty"`
+}
+
+// regionView is one matching part of a memory as search reports it: the verbatim
+// text, how many query terms fell inside, and where it starts.
+//
+// Verbatim is the contract, not an implementation detail. add_drawer promises
+// content is "stored exactly, never summarised", and an agent acting on prose
+// this server wrote would be that promise broken at the read end.
+type regionView struct {
+	Text  string `json:"text"`
+	Terms int    `json:"terms_matched"`
+	Start int    `json:"start"`
 }
 
 // anchorView is one code anchor as search reports it.
@@ -532,6 +562,48 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 					views[i].Content = snippet
 					views[i].Truncated = true
 					views[i].FullLength = len([]rune(h.Drawer.Content))
+
+					// Every OTHER place this memory matched, and the line its author
+					// wrote to say what it is.
+					//
+					// content above is one window, chosen by a score that saturates:
+					// once a window holds the query's terms every other window holding
+					// them ties, and ties go to the earliest position. On this corpus a
+					// memory opens with a header line carrying the date, project and
+					// subject, so the opening wins by construction and the body is never
+					// shown — measured across nine real queries, 7 of 9 chosen windows
+					// began within 130 runes of the start and 0 of 9 were beaten by a
+					// later one.
+					//
+					// content_truncated already said a memory was cut. It is true for
+					// 98% of hits, which is why it cannot be acted on: an agent cannot
+					// fetch five whole memories and nothing told it which one hid the
+					// answer. These fields are what let it choose.
+					regions := palace.SnippetRegions(h.Drawer.Content, query, snippetChars)
+					if len(regions) > 1 {
+						// One region is what content already is; repeating it would spend
+						// the page on a duplicate and teach a reader to skip the field.
+						for _, r := range regions {
+							views[i].Regions = append(views[i].Regions, regionView{
+								Text: r.Text, Terms: r.Score, Start: r.Start,
+							})
+						}
+					}
+					views[i].Identity = palace.MemoryIdentity(h.Drawer.Content)
+				}
+				// Coverage is set for EVERY hit, truncated or not.
+				//
+				// Setting it only when the snippet cut something left a hit that
+				// shows the WHOLE memory reporting 0 — which reads as "you see none
+				// of this", the exact opposite of the truth, and is worse than the
+				// uninformative flag it replaces. Found by a mutant that made
+				// coverage a constant and still passed, because the wrong zero on the
+				// untruncated hit supplied the variation the test was looking for.
+				if full := len([]rune(h.Drawer.Content)); full > 0 {
+					views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
+					if views[i].Coverage > 1 {
+						views[i].Coverage = 1 // the head join adds runes the memory does not have
+					}
 				}
 			}
 		}
