@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,151 @@ func TestGraphHallwaysAndEntityTunnels(t *testing.T) {
 	}
 	if !entityTunnel {
 		t.Fatalf("expected a Redis entity tunnel across wings, got %+v", tunnels)
+	}
+}
+
+// fillTo pads s with entity-free lowercase filler until it is exactly n runes.
+func fillTo(s string, n int) string {
+	for len([]rune(s)) < n {
+		s += " lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
+	}
+	return string([]rune(s)[:n])
+}
+
+// twoChunkMemory builds content longer than one chunk whose halves name
+// different pairs, separated by an entity-free gap exactly as wide as
+// ChunkOverlap — so the overlap cannot carry one half's names into the other
+// half's drawer, and "entities are per chunk" becomes an assertion with teeth
+// rather than a comment.
+//
+// Layout in runes: [0,1280) names a1/a2, [1280,1600) is filler, [1600,2800)
+// names b1/b2. ChunkText's stride is ChunkSize-ChunkOverlap = 1280, so chunk 0
+// is [0,1600) and chunk 1 is [1280,2800).
+func twoChunkMemory(a1, a2, b1, b2 string) string {
+	head := fillTo(strings.Repeat(a1+" powers it and "+a2+" backs it. ", 25), ChunkSize-ChunkOverlap)
+	gap := fillTo("", ChunkOverlap)
+	tail := fillTo(strings.Repeat(b1+" powers it and "+b2+" backs it. ", 25), 1200)
+	return head + gap + tail
+}
+
+// TestHallwaysDeriveFromDrawersAnAgentFiled is the assertion nothing in this
+// repository had ever made: that the path EVERY agent write takes feeds the
+// derived graph.
+//
+// Every hallway test before this one populated its wings with svc.Mine, so the
+// whole subsystem was thoroughly tested against the producer agents do not use
+// and untested against the one they do — which is why a live palace of 366
+// agent-filed drawers derived exactly zero hallways while the suite stayed green
+// (ADR-016). Deleting the mining test in favour of this one would just swap the
+// blind spot round; both producers have to be pinned.
+func TestHallwaysDeriveFromDrawersAnAgentFiled(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// Two memories filed the way an agent files them, each naming the same pair.
+	// hallwayMinCount is 2, so one drawer is not enough and the pair has to
+	// recur across separate writes.
+	for _, in := range []AddInput{
+		{Wing: "wing_acme", Room: "db", Content: "Redis powers the queue and Postgres backs it. Redis is fast, Postgres is durable."},
+		{Wing: "wing_acme", Room: "cache", Content: "Cutover notes: Redis fronts every read, Postgres owns the writes. Redis evicts, Postgres persists."},
+		{Wing: "wing_alpha", Room: "db", Content: "Redis fronts the API and Mongo stores documents. Redis expires keys, Mongo shards them."},
+		{Wing: "wing_alpha", Room: "cache", Content: "Redis holds the session, Mongo holds the profile. Redis is volatile, Mongo is not."},
+	} {
+		if _, err := svc.Add(ctx, team, in); err != nil {
+			t.Fatalf("add %s/%s: %v", in.Wing, in.Room, err)
+		}
+	}
+
+	res, err := svc.RecomputeGraph(ctx, team, "", true)
+	if err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+	if res.Hallways < 1 {
+		t.Fatalf("drawers filed through Add must derive hallways, got %d", res.Hallways)
+	}
+
+	halls, err := svc.ListHallways(ctx, team, "wing_acme")
+	if err != nil {
+		t.Fatalf("list hallways: %v", err)
+	}
+	var found bool
+	for _, h := range halls {
+		if h.EntityA == "Postgres" && h.EntityB == "Redis" { // sorted pair
+			found = true
+			if h.CoOccurrence < hallwayMinCount {
+				t.Fatalf("co-occurrence should be >= %d, got %d", hallwayMinCount, h.CoOccurrence)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a Postgres<->Redis hallway from Add-filed drawers, got %+v", halls)
+	}
+
+	// The derived half of tunnels shares the same input and was equally
+	// unreachable, so it is asserted from the same producer.
+	tunnels, err := svc.ListTunnels(ctx, team, "")
+	if err != nil {
+		t.Fatalf("list tunnels: %v", err)
+	}
+	var entityTunnel bool
+	for _, tn := range tunnels {
+		if tn.Kind == TunnelEntity && strings.Contains(tn.Label, "Redis") {
+			entityTunnel = true
+		}
+	}
+	if !entityTunnel {
+		t.Fatalf("Redis is named in both wings, so Add-filed drawers must weave an entity tunnel, got %+v", tunnels)
+	}
+}
+
+// TestAddExtractsEntitiesPerChunkNotPerMemory pins the locality half of the
+// contract: a memory that spans chunks must not hand every chunk the whole
+// memory's entities.
+//
+// Extracting from the full input instead of the chunk still derives hallways, so
+// the test above passes happily under that mutation — and the graph then records
+// connections the text never made, between things named a thousand characters
+// apart. Mining already extracts per chunk; this is what keeps Add honest.
+func TestAddExtractsEntitiesPerChunkNotPerMemory(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	if _, err := svc.Add(ctx, team, AddInput{
+		Wing:    "wing_acme",
+		Room:    "long",
+		Content: twoChunkMemory("Redis", "Postgres", "Kafka", "Mongo"),
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Read back from storage, not from the returned structs: the column is what
+	// RecomputeGraph reads, so the column is what has to be right.
+	stored, err := svc.List(ctx, team, "wing_acme", "long", 10, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("fixture should be exactly two chunks, got %d", len(stored))
+	}
+	sort.Slice(stored, func(i, j int) bool { return stored[i].ChunkIndex < stored[j].ChunkIndex })
+
+	for _, want := range []string{"Redis", "Postgres"} {
+		if !has(stored[0].Entities, want) {
+			t.Errorf("chunk 0 names %s, so it should carry it: %v", want, stored[0].Entities)
+		}
+		if has(stored[1].Entities, want) {
+			t.Errorf("chunk 1 never names %s — entities must come from the chunk, not the memory: %v", want, stored[1].Entities)
+		}
+	}
+	for _, want := range []string{"Kafka", "Mongo"} {
+		if !has(stored[1].Entities, want) {
+			t.Errorf("chunk 1 names %s, so it should carry it: %v", want, stored[1].Entities)
+		}
+		if has(stored[0].Entities, want) {
+			t.Errorf("chunk 0 never names %s — entities must come from the chunk, not the memory: %v", want, stored[0].Entities)
+		}
 	}
 }
 
