@@ -192,6 +192,8 @@ No persistent state, no contract, no production behaviour: reverting the commits
 
 ## Follow-ups
 
+- [x] **Corrected 2026-08-21.** This ADR named `ArmReranked` as the pool-scoped reconstruction of production. ADR-014 changed production on two dimensions — fusion to rrf and the closet prior off — so `ArmReranked` (linear plus a full closet prior) became a pipeline nobody runs. The gated arm is now DERIVED from the configuration by `gatedArmFor`, and `Service.SupersessionGatedArmFor` reports the arm a non-default deployment actually serves. The constant carried a comment saying it "must change in the same commit that changes production ranking"; that rule is executed now rather than remembered.
+
 
 - [ ] Record the gate's first verdict, its case count and its interval in `docs/adr/BACKLOG.md` whichever way it lands — a `not justified` that goes unwritten will be re-litigated within a month.
 - [ ] Re-derive the −0.05 MRR non-inferiority margin once the non-temporal case set can resolve less than that; today it is set by the instrument's resolution rather than by the recall loss we would actually accept, and it is the weakest number in this ADR.

@@ -287,3 +287,31 @@ func TestRerankBudgetIsShorterThanAnyClientWaits(t *testing.T) {
 			"configured and never used", d.RerankTimeout, d.RerankPool, worst)
 	}
 }
+
+// TestGatedArmMatchesTheShippedDefaults: internal/palace mirrors the shipped
+// fusion and closet defaults, because evalstats cannot import the config package.
+// A mirror with no check is exactly how supersessionGatedArm came to name a
+// pipeline nobody ran — the rule lived in a comment and the comment was not
+// executed.
+func TestGatedArmMatchesTheShippedDefaults(t *testing.T) {
+	d := config.Default()
+	rrf := strings.EqualFold(strings.TrimSpace(d.Fusion), "rrf")
+	closetOn := d.ClosetBoost > 0
+
+	// With a reranker configured, which is what the full stack ships.
+	want := palace.ArmRRFReranked
+	switch {
+	case rrf:
+		want = palace.ArmRRFReranked
+	case closetOn:
+		want = palace.ArmReranked
+	default:
+		want = palace.ArmHybridRerank
+	}
+	if got := palace.SupersessionGatedArm(); got != want {
+		t.Errorf("the supersession gate judges %q, but config.Default() (fusion=%q closet=%.2f) "+
+			"with a reranker is %q.\n"+
+			"  The gate would compare a pipeline nobody runs, and both arms are in the report so "+
+			"the lookup succeeds and says nothing.", got, d.Fusion, d.ClosetBoost, want)
+	}
+}

@@ -404,18 +404,56 @@ const (
 	// in this ADR and should be re-derived once the non-temporal case set can
 	// resolve less than it.
 	supersessionNonInferiority = 0.05
+
+	// The shipped ranking shape, mirrored here because evalstats cannot import the
+	// config package. TestGatedArmMatchesTheShippedDefaults keeps both honest.
+	defaultFusionIsRRF = true
+	defaultClosetIsOn  = false
 )
 
-// supersessionGatedArm is the arm the gate judges: the pool-scoped
-// reconstruction of what production ranks with.
+// gatedArmFor is the arm the supersession gate judges: the pool-scoped
+// reconstruction of what production ranks with, DERIVED from the configuration
+// rather than declared beside it.
 //
-// Chosen by IDENTITY and never by score. Scanning the table for the lowest
+// It was a constant, `ArmReranked`, under a comment reading "This must change in
+// the same commit that changes production ranking." ADR-014 then changed
+// production on two dimensions at once — fusion to rrf and the closet prior off —
+// and the constant did not move, so the gate judged linear-plus-full-closet: a
+// pipeline nobody runs. Both arms are in the report, so the lookup found one and
+// said nothing. A rule that must be obeyed by hand is a rule that eventually is
+// not, and a single constant could not have expressed it anyway: production is a
+// different arm with and without a reranker configured.
+//
+// Still chosen by IDENTITY and never by score. Scanning the table for the lowest
 // stale-above rate is the winner's curse the MRR table already warns about — the
 // arm that looks best on this corpus is the one most likely to be lucky on it.
-// This must change in the same commit that changes production ranking, and if
-// ADR-003 flips the closet prior off then production is ArmHybridRerank and this
-// constant moves with it.
-const supersessionGatedArm = ArmReranked
+//
+// No default branch. An unrepresentable configuration returns "", which
+// gatedArmCell reports as "no comparable arm" rather than silently judging
+// whichever arm the fallback named.
+func gatedArmFor(fusionRRF, closetOn, reranked bool) EvalArm {
+	switch {
+	case fusionRRF && reranked:
+		return ArmRRFReranked
+	case fusionRRF:
+		return ArmRRF
+	case closetOn && reranked:
+		return ArmReranked
+	case closetOn:
+		return ArmHybridCloset
+	case reranked:
+		return ArmHybridRerank
+	default:
+		return ArmHybrid
+	}
+}
+
+// supersessionGatedArm is what the gate judges for the SHIPPED configuration.
+// The reranker half cannot be read from a package-level value — whether one is
+// configured is a property of the running service — so this names the default
+// deployment shape, and SupersessionGatedArmFor lets a caller that holds a
+// Service ask about its own.
+var supersessionGatedArm = gatedArmFor(defaultFusionIsRRF, defaultClosetIsOn, true)
 
 // The three outcomes a supersession verdict can take.
 const (
@@ -548,6 +586,13 @@ func wilsonAt(successes, n int, alpha float64) Interval {
 // SupersessionGatedArm is the arm the gate is pre-registered against. Exported
 // so the command can refuse a report that does not contain it, by name.
 func SupersessionGatedArm() EvalArm { return supersessionGatedArm }
+
+// SupersessionGatedArmFor reports the arm that reconstructs THIS service's
+// ranking, so a run against a non-default configuration is gated on the arm it
+// actually serves rather than on the shipped default.
+func (s *Service) SupersessionGatedArmFor() EvalArm {
+	return gatedArmFor(s.fusionRRF, s.closetBoostScale > 0, s.rerank != nil)
+}
 
 // SupersessionMinCases is the floor on verified, non-vacuous pairs. Exported for
 // the command's refusal message.
