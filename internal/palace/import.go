@@ -67,6 +67,17 @@ func (s *Service) AbsorbDrawers(ctx context.Context, teamID string, in []ImportD
 		if filedAt == "" {
 			filedAt = now
 		}
+		// The source's entities are replayed verbatim when it has them — this is a
+		// migration, and re-deriving would overwrite another palace's extraction
+		// with this build's. When it has NONE, derive: an export from a palace
+		// predating ADR-016 carries no entities at all, and absorbing it filed
+		// every memory permanently outside the derived graph, because
+		// RecomputeGraph reads this column and never re-extracts. Deriving only
+		// into the gap keeps the verbatim contract for every record that has one.
+		entities := r.Entities
+		if len(entities) == 0 {
+			entities = extractEntities(r.Content)
+		}
 		drawers = append(drawers, Drawer{
 			ID:          DrawerID(teamID, wing, room, r.SourceFile, r.ChunkIndex, r.Content),
 			TeamID:      teamID,
@@ -75,7 +86,7 @@ func (s *Service) AbsorbDrawers(ctx context.Context, teamID string, in []ImportD
 			SourceFile:  r.SourceFile,
 			ChunkIndex:  r.ChunkIndex,
 			Content:     r.Content,
-			Entities:    r.Entities,
+			Entities:    entities,
 			FiledAt:     filedAt,
 			ContentDate: strings.TrimSpace(r.ContentDate),
 			Agent:       strings.TrimSpace(r.Agent),

@@ -268,6 +268,22 @@ func (r *Repo) Update(ctx context.Context, teamID, id string, patch DrawerPatch)
 	updates := map[string]any{}
 	if patch.Content != nil {
 		updates["content"] = *patch.Content
+		// Entities are DERIVED from content, so they are refreshed in the same
+		// statement that replaces it. Written here rather than by the caller so
+		// the two columns cannot diverge: a future call site that forgets is not
+		// a path this function has.
+		//
+		// Before this, Update replaced the content and left the previous
+		// content's entities on the row, and the derived graph went on asserting
+		// an edge the text no longer supported. That is worse than the missing
+		// entities ADR-016 fixed on the Add and WriteDiary paths: an empty graph
+		// sends an agent to go and look, a wrong one tells it not to.
+		//
+		// Per-chunk is per-memory here. Service.Update refuses a content change
+		// on any memory of more than one chunk, so the row being written holds
+		// the whole content and extracting from it matches what Add stores per
+		// chunk.
+		updates["entities"] = strings.Join(extractEntities(*patch.Content), ";")
 	}
 	if patch.Wing != nil {
 		updates["wing"] = *patch.Wing

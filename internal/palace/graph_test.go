@@ -313,3 +313,54 @@ func TestCreateAndFollowTunnel(t *testing.T) {
 		t.Fatalf("second delete should be a clean no-op, got %v", err)
 	}
 }
+
+// TestUpdateRefreshesEntities is the third producer of the same defect, and the
+// only one that writes a WRONG answer rather than no answer.
+//
+// Add and WriteDiary each built Drawer rows without Entities, so a memory filed
+// through them was absent from the derived graph (ADR-016 T2 and T4). Update is
+// worse in kind: it replaces the content and leaves the previous content's
+// entities on the row, so the graph keeps asserting an edge the text no longer
+// supports. An empty graph tells an agent to go and look; a graph that names the
+// wrong pair tells it not to.
+//
+// Read back from storage rather than from the returned Drawer: the column is
+// what RecomputeGraph reads, so the column is what has to be right.
+func TestUpdateRefreshesEntities(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	added, err := svc.Add(ctx, team, AddInput{
+		Wing:    "wing_acme",
+		Room:    "decisions",
+		Content: "We chose Redis over Postgres for the session cache. Redis wins on latency; Postgres wins on durability. Redis it is.",
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(added.Drawers) != 1 {
+		t.Fatalf("fixture should be a single chunk, got %d", len(added.Drawers))
+	}
+	id := added.Drawers[0].ID
+
+	replacement := "We reversed it and chose Kafka over Mongo for the event log. Kafka wins on ordering; Mongo wins on shape. Kafka it is."
+	if _, err := svc.Update(ctx, team, id, DrawerPatch{Content: &replacement}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	stored, err := svc.Get(ctx, team, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	for _, want := range []string{"Kafka", "Mongo"} {
+		if !has(stored.Entities, want) {
+			t.Errorf("the memory now names %s, so its row should carry it: %v", want, stored.Entities)
+		}
+	}
+	for _, gone := range []string{"Redis", "Postgres"} {
+		if has(stored.Entities, gone) {
+			t.Errorf("the memory no longer names %s, so the graph must not still join on it: %v", gone, stored.Entities)
+		}
+	}
+}

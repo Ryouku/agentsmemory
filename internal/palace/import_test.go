@@ -165,3 +165,78 @@ func TestAbsorbPreservesEmbeddedOnReabsorb(t *testing.T) {
 		t.Errorf("entities = %v, want refreshed to 2 on re-absorb", got.Entities)
 	}
 }
+
+// TestAbsorbDerivesEntitiesOnlyWhenSourceGaveNone pins both halves of the import
+// rule, because each half is a way to get this wrong.
+//
+// A source palace that already extracted entities is preserved VERBATIM — the
+// migration's whole contract is that it replays what the source held, and
+// re-deriving would silently rewrite another palace's data with this build's
+// extractor.
+//
+// A source that supplied NONE is derived from the content instead. That state is
+// not hypothetical: it is exactly what an export from any palace predating
+// ADR-016 contains, and this repository's own palace held 0 entity-bearing
+// drawers out of 359 the day before that ADR landed. Absorbing such an export
+// used to file every memory permanently outside the derived graph, because
+// RecomputeGraph reads the entities column and never re-extracts — so nothing
+// downstream could ever repair it.
+func TestAbsorbDerivesEntitiesOnlyWhenSourceGaveNone(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// Each name appears twice: extractEntities has a freq >= 2 threshold
+	// (TestExtractEntitiesFrequencyThreshold), so a fixture naming them once
+	// would go red whether or not the derive path runs.
+	const supplied = "Redis beat Postgres for the session cache. Redis on latency, Postgres on durability."
+	const derived = "Kafka beat Mongo for the event log. Kafka on ordering, Mongo on shape."
+
+	n, err := svc.AbsorbDrawers(ctx, team, []ImportDrawer{
+		{
+			Wing: "wing_acme", Room: "decisions", SourceFile: "a.md",
+			Content:  supplied,
+			Entities: []string{"SourcesOwnWord"}, // deliberately not in the text
+		},
+		{
+			Wing: "wing_acme", Room: "decisions", SourceFile: "b.md",
+			Content: derived, // no Entities: an export from before they were stamped
+		},
+	})
+	if err != nil {
+		t.Fatalf("absorb: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("absorbed %d, want 2", n)
+	}
+
+	stored, err := svc.List(ctx, team, "wing_acme", "decisions", 10, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byFile := map[string]Drawer{}
+	for _, d := range stored {
+		byFile[d.SourceFile] = d
+	}
+
+	a, ok := byFile["a.md"]
+	if !ok {
+		t.Fatalf("a.md was not stored: %+v", stored)
+	}
+	if !has(a.Entities, "SourcesOwnWord") {
+		t.Errorf("the source supplied its own entities and they must survive verbatim: %v", a.Entities)
+	}
+	if has(a.Entities, "Redis") {
+		t.Errorf("the source supplied entities, so this build's extractor must not add to them: %v", a.Entities)
+	}
+
+	b, ok := byFile["b.md"]
+	if !ok {
+		t.Fatalf("b.md was not stored: %+v", stored)
+	}
+	for _, want := range []string{"Kafka", "Mongo"} {
+		if !has(b.Entities, want) {
+			t.Errorf("the source gave no entities, so they must be derived from the content: %v", b.Entities)
+		}
+	}
+}
