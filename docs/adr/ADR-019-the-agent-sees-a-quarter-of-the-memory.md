@@ -47,6 +47,31 @@ In this corpus that is not a coin toss. A memory opens with a header line — a 
 
 That is enough on its own to say the ranking cannot discriminate at 400 runes against 1,600-rune memories: in nine real cases it never once found a window it preferred to the opening. Whether the ANSWERS are in those tied windows is the semantic half, judged separately below — a saturating score is a reason the chooser cannot help, not evidence that showing more would.
 
+**T1's semantic half, judged blind.** A second judge, given no knowledge of what this measurement is for, read each whole memory against the exact slice the agent was shown and answered one question: is the answer inside the shown slice, elsewhere in that memory, or nowhere in it?
+
+| where the answer is | count |
+|---|---|
+| **`in_rest`** — elsewhere in the memory, in the part the agent never saw | **4** |
+| `in_shown` — inside the slice the agent received | 3 |
+| `nowhere` — not stated anywhere in that memory | 2 |
+
+In the acceptance command's own vocabulary: answer in the chosen window: 3. answer in a different window: 4. answer in no window: 2.
+
+**Applying the criterion, with the denominator stated plainly because this is where a measurement gets fudged.** The pre-registration asks: *"for each hit whose snippet does not contain the answer, does a LOWER-ranked region of that same memory contain it?"* The population is therefore the six cases where the shown slice did NOT contain the answer — `in_rest` plus `nowhere`. Of those six, four have the answer elsewhere in the memory.
+
+- **4 of 6 (67%)** by the criterion as written. A clear majority. **T2 proceeds.**
+- 4 of 9 (44%) if all nine cases are counted, including the three the criterion excludes by its own wording.
+
+Both are recorded so nobody has to take the first on trust. The three `in_shown` cases are excluded because their snippet DID contain the answer — they are not instances of the question being asked.
+
+**Two honest caveats, neither of which changes the decision.**
+
+The two judges applied different bars, and the disagreement is informative rather than a fault. The first asked *"could an agent act on this and stop searching?"*; the second asked *"is the answer stated in this slice?"*. A slice saying a thing was later corrected, without the correction, fails the first and passes the second. That is why three cases the first judge called partial come back `in_shown`.
+
+And **n = 6**. The original pre-registration said of n=32 that it was "enough to rank failure modes, not to put an interval on any of them"; six is smaller again. This supports a direction, not a magnitude, and nothing downstream should be read as if it were precise.
+
+**Taken with the mechanical half, the two independent measurements agree.** The chooser cannot discriminate — the score saturates and ties go to the opening, in 9 of 9 cases. And in two thirds of the cases where the agent was given the wrong part, the right part was there to be given. The first says the current mechanism has no way to do better; the second says there is something better to reach.
+
 ## Existing Primitives Audit
 
 - **`snippetWindow`** (`internal/palace/rank.go`) — already scores every candidate window in a memory by how many query terms fall inside it, and already returns the best. Reshape: it computes the ranking of ALL windows and discards everything but the winner. The second-best window is the cheapest thing in this ADR.

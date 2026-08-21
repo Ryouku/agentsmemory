@@ -94,4 +94,13 @@ Stop and report if the answer is in NO window for most cases. That is the pre-re
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 632c857* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  === RUN   TestWindowReportNamesTheChosenWindow
+  --- PASS: TestWindowReportNamesTheChosenWindow (0.00s)
+  === RUN   TestWindowReportCoversTheWholeMemory
+  --- PASS: TestWindowReportCoversTheWholeMemory (0.00s)
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/cmd/server	0.008s
+  ```
+- 2026-08-21 · 632c857* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
