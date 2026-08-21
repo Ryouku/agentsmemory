@@ -15,14 +15,17 @@ This README is a derived index — when it disagrees with a task file, the task 
 | 3 | T3 | T2 |
 
 Strictly sequential, and T1 is not a formality. It asks whether the answers agents miss are in
-windows the chooser discarded. If they are not — if the answer is usually in no window at all — then
-the failure is synthesis or absence, T2 buys nothing, and the ADR is withdrawn. The hot path has
-been broken twice in one day; it is not being changed on a hypothesis.
+regions the chooser scored and discarded. If they are not — if the answer is usually in no region at
+all — then the failure is synthesis or absence, T2 buys nothing, and the ADR is withdrawn. The hot
+path has been broken twice in one day; it is not being changed on a hypothesis.
+
+T2 without T3 is a domain field nothing serves, which is this repository's signature defect. T2's
+Reachability table says so rather than letting it look finished.
 
 ## Task Index
 
 | Task | Goal | Produces | Consumes | Status |
 |------|------|----------|----------|--------|
 | [T1](T1-is-the-answer-in-another-window.md) | Is the answer in a window the chooser discarded? | the measurement that accepts or withdraws T2 | none | todo |
-| [T2](T2-a-snippet-shows-every-place-that-matched.md) | A snippet shows every place that matched | multi-window snippets | T1 | todo |
-| [T3](T3-say-what-was-left-out.md) | Say what was left out, in a field that varies | `content_coverage`, `regions_omitted` | T2 | todo |
+| [T2](T2-a-hit-carries-its-regions.md) | A hit carries its matching regions | `SearchHit.Regions`, `SearchHit.Identity` | T1 | todo |
+| [T3](T3-put-the-choice-on-the-wire.md) | Put the choice on the wire, and re-judge | `regions`, `identity`, `content_coverage` | T2 | todo |

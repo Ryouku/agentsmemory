@@ -1,11 +1,11 @@
-# ADR-019: A page must show the answer, not a quarter of the memory and a flag
+# ADR-019: A hit shows its matching regions and lets the agent choose
 
 **Status:** Proposed
 **Date:** 2026-08-21
 **Owner:** unassigned
 **Spec:** None — no spec stage
 **Cross-references:** ADR-013 (a page of memories, not chunks — this is the next question that page raises), ADR-007 (a number must carry its population — a flag that is almost always true is the same defect in a boolean)
-**Served-path change:** `Service.Search` returns a different snippet for a long memory: the windows that matched, rather than one window and a flag saying there are others. Every recall an agent makes takes this path.
+**Served-path change:** A search hit gains a `regions` array — every part of the memory that matched, verbatim, with the score that ranked it — and the memory's own identity line. `content` is unchanged, so nothing that reads it today breaks. Every recall an agent makes takes this path.
 
 ## Context
 
@@ -43,21 +43,44 @@ This is the same defect this repository keeps finding, in a boolean: a field who
 
 ## Decision
 
-**A snippet shows every part of the memory that matched, within the caller's budget, and says what it left out.**
+**A hit stops deciding for the agent which quarter of the memory it may see, and shows it the choice.**
 
-1. **Multiple windows, one budget.** When a memory matches in several places, the snippet is the best windows joined by the existing `" … "` — not the single best window. The caller's `snippet_chars` is unchanged and remains the ceiling: this spends the same characters on more of the answer, rather than spending more characters.
-2. **A signal that discriminates.** The page reports how much of the memory the snippet covers and how many matching regions were left out. `content_truncated` stays for compatibility and stops being the thing an agent reads.
+Today the server picks one window by term density and hands over 400 characters. The agent has the
+question; the server has the corpus; and the one decision that needs both — *which part of this
+memory answers what I asked* — is taken by the half that cannot see the question's intent, silently,
+with no way to appeal.
 
-**What would make this fail, and the data exists to check it today.** The claim is that answers live in windows the current chooser discards. It is falsifiable on the 32 queries: for each hit whose snippet does not contain the answer, does a LOWER-ranked window of that same memory contain it? If the answer is usually in no window — because it is spread across the memory, or genuinely absent — then this ADR buys nothing and the failure is synthesis, which it does not address. **T1 measures that before T2 changes the served path.** Below a clear majority the ADR is withdrawn rather than shipped hopefully.
+1. **A hit carries its matching REGIONS.** Every part of the memory that scored, verbatim, each with
+   the score that ranked it and its position. `snippetWindow` already computes this ranking and
+   discards everything but the winner; the discard is the change.
+2. **A hit carries the memory's IDENTITY LINE** — its own first line, which by this repository's
+   convention says what the memory IS (the date, the project, the subject; `SnippetHeadChars` exists
+   because of it). It is the summary, and it is not written by a model.
+3. **`content` is unchanged.** It stays the single best window, so every existing reader keeps
+   working and nothing has to be migrated. The new fields sit beside it.
+4. **Nothing on this path is generated.** Every string an agent receives is text from the memory. See
+   the alternative below — this is a deliberate refusal, not an omission.
 
-Valid for this corpus, whose median memory is 1,599 characters because `ChunkSize` is 1,600. A palace of short memories has neither the problem nor the fix.
+The cost is bytes, not seconds: the regions are already computed, and the caller's `snippet_chars`
+governs how many are returned.
+
+**What would make this fail, and the data exists to check it today.** The claim is that answers live
+in regions the current chooser discards. It is falsifiable on the 32 real queries: for each hit whose
+snippet does not contain the answer, does a LOWER-ranked region of that same memory contain it? If
+the answer is usually in no region — spread across the memory, or genuinely absent — then this buys
+nothing and the failure is synthesis, which this ADR does not address. **T1 measures that before T2
+changes the served path.** Below a clear majority the ADR is withdrawn rather than shipped hopefully.
+
+Valid for this corpus, whose median memory is 1,599 characters because `ChunkSize` is 1,600. A palace
+of short memories has neither the problem nor the fix.
 
 ## Alternatives Considered
 
 - **Raise `DefaultSnippetChars`.** The obvious move and rejected as the primary fix: at 95% of memories exceeding the window, any budget short of the whole memory has the same failure mode, and the budget exists because a five-hit page of whole memories is thousands of tokens. It is a dial, not a decision. It also cannot be ruled out as a COMPONENT — T1's measurement will say what coverage is actually needed.
 - **Return whole memories and let the agent skim.** Rejected on the numbers: five hits at 1,600 characters is 8,000, on every recall, for the case where 400 would have done.
 - **Tell the agent to fetch when truncated.** Rejected because it is already told, in a field that is true 98% of the time. More emphasis on an uninformative signal is not a signal.
-- **Make the reranker pick the window.** Attractive — a cross-encoder scores query against passage and that is exactly this question — and deferred rather than rejected: it costs an inference per candidate window, the pool is already the slowest step, and the cheap version has not been measured yet. If T1 shows term-matching picks the wrong window often, this is the next thing to try.
+- **Have the cross-encoder pick the regions.** The strongest version and genuinely close to being chosen: the reranker already scores query against passage, which is exactly this question, and it is already loaded and warm. Measured at roughly 0.4s per passage (pool 50 took 21.8s; pool 10 takes 5.1s), so scoring three regions across the top three hits is about four seconds on top of every search. Deferred rather than rejected because the cheap version has not been measured: if T1 shows term matching picks the wrong region often, this is the next thing to try and not a refinement.
+- **Generate a summary of each hit against the query.** The most pleasant thing to read, offered, considered, and REFUSED — and the reason is specific to this product rather than to cost. `am_add_drawer`'s own contract reads "The verbatim text to remember — stored exactly, never summarised." A generated summary on the read path puts prose no human wrote in front of an agent that will act on it, in a system whose entire promise is that a memory comes back as it was filed. The identity line gives the same affordance — a short thing to choose by — and it is text the author wrote. If this is ever revisited, the verbatim regions must ship alongside and the generated text must be labelled as generated, so an agent never mistakes one for the other.
 - **Re-chunk memories smaller so a chunk IS the answer.** Rejected here and recorded: it changes ids, invalidating every anchor, tunnel and knowledge-graph pointer, and it is a corpus migration rather than a retrieval change.
 
 ## Component / Boundary Impact
@@ -68,9 +91,11 @@ Valid for this corpus, whose median memory is 1,599 characters because `ChunkSiz
 
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
-| `Snippet` / `SnippetWithHead` | change — may return several joined windows | `internal/palace/rank.go` | `internal/mcpserver/drawers.go` |
-| `SearchHit.Coverage` (fraction of the memory shown) and `RegionsOmitted` | add | `internal/palace` | the search page |
-| `content_coverage`, `regions_omitted` on the wire | add | `internal/mcpserver/drawers.go` | every agent |
+| `snippetWindow` | change — returns its ranked candidates rather than only the winner | `internal/palace/rank.go` | `Snippet`, `SearchHit` |
+| `SearchHit.Regions` — verbatim text, score, position | add | `internal/palace` | the search page |
+| `SearchHit.Identity` — the memory's own first line | add | `internal/palace` | the search page |
+| `regions`, `identity`, `content_coverage` on the wire | add | `internal/mcpserver/drawers.go` | every agent |
+| `content` | UNCHANGED — still the single best window | `internal/mcpserver/drawers.go` | every existing reader |
 | `content_truncated` | unchanged — kept for compatibility, no longer the field to read | `internal/mcpserver/drawers.go` | every agent |
 
 ## Inter-task Contracts
@@ -78,8 +103,8 @@ Valid for this corpus, whose median memory is 1,599 characters because `ChunkSiz
 | Contract | Producing task | Consuming task(s) | Breaking? |
 |----------|----------------|-------------------|-----------|
 | the window-coverage measurement | T1 | T2 | No — T1 is a measurement and may withdraw T2 |
-| multi-window snippets | T2 | T3 | No — the rendering is the existing `" … "` join |
-| the coverage signal | T3 | T3 | No — additive fields |
+| ranked regions from the chooser | T2 | T3 | No — `Snippet`'s return is unchanged; T2 exposes what it already discards |
+| the wire fields | T3 | T3 | No — additive, and `content` keeps its meaning |
 
 ## Implementation
 
@@ -87,15 +112,16 @@ Three tasks: `tasks/README.md`.
 
 ## Consequences
 
-- **Positive:** the largest measured failure mode is addressed at its mechanism rather than at its edges. An agent that still cannot answer gets a signal that discriminates, so fetching becomes a decision rather than a guess.
-- **Negative:** a snippet of several windows is choppier to read than one continuous passage, and a human reading the dashboard will notice. The join marker is what makes it honest.
-- **Neutral:** `content_truncated` becomes a compatibility field. Anything reading it keeps working and learns nothing new, which is its current state.
+- **Positive:** the decision that needs the question moves to the half that has it. An agent that still cannot answer from `content` can see the other regions and their scores, so expanding becomes a choice rather than a guess — and every string it reads is text somebody wrote.
+- **Negative:** the page grows. Several regions plus an identity line per hit is more bytes than one window, on every recall, and the budget that governs it has to be defended rather than assumed.
+- **Neutral:** `content_truncated` becomes a compatibility field — anything reading it keeps working and learns nothing new, which is its current state.
 
 ## Out of Scope
 
 - Synthesis — answers spread across SEVERAL memories (permanent: a different capability from showing more of ONE memory, and the same judge scored it 1 of 32 on this corpus)
 - Wing scoping (deferred: docs/adr/BACKLOG.md — 5 of 32 and unchanged by anything here; the empty-wing note tells an agent what to do next and does not put the fact on the page)
-- Letting a cross-encoder choose the window (deferred: docs/adr/BACKLOG.md — the right idea and the expensive one; measure the cheap version first)
+- Letting a cross-encoder choose the regions (deferred: docs/adr/BACKLOG.md — the right idea and the expensive one; measure the cheap version first)
+- Generating summaries of hits (permanent: `am_add_drawer` promises text is "stored exactly, never summarised", and generated prose on the read path is that promise broken at the other end. The identity line is the same affordance written by the author.)
 - Re-chunking the corpus (permanent: it changes ids and invalidates every anchor, tunnel and KG pointer — a corpus migration, not a retrieval change)
 
 ## Risks
@@ -103,8 +129,9 @@ Three tasks: `tasks/README.md`.
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | The answer is usually in NO window, so more windows buy nothing | Med | High | T1 measures it on the 32 real queries before T2 is written, and the ADR withdraws rather than ships hopefully |
-| Several short windows read worse than one coherent passage, and an agent does worse with the same information | Med | Med | T3 re-runs the 32 through the SAME blind judge as this round, which is the only comparison this session has that is not confounded by a change of judge |
-| The budget is spent on many tiny fragments | Med | Med | A floor on window size, and T2 pins that a memory matching in one place still returns one window |
+| The regions are delivered and no agent reads them — the same fate as `content_truncated` | **High** | High | T3 re-runs the 32 through the SAME blind judge as this round, which is the only comparison this session has that is not confounded by a change of judge. And the identity line is placed where an agent already looks rather than in a new field it must learn |
+| The page grows enough to cost more context than the answers are worth | Med | Med | The caller's `snippet_chars` governs the regions too, and T2 pins that a memory matching in one place returns exactly what it returns today |
+| A region is a fragment too small to mean anything | Med | Med | A floor on region size; below it, one larger region |
 
 ## Rollback
 
