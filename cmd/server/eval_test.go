@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -227,7 +228,7 @@ func TestRunRecordCarriesProvenanceAndNoCaseText(t *testing.T) {
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		t.Fatalf("the cells file is not valid JSON: %v", err)
 	}
-	for _, key := range []string{"commit", "dirty", "style", "wing", "generator", "corpus_drawers", "cases", "pool", "closet_scale", "bm25_weight", "rerank_configured", "rerank_weight", "rerank_pool", "cells"} {
+	for _, key := range []string{"commit", "dirty", "style", "wing", "generator", "corpus_drawers", "cases", "pool", "closet_scale", "bm25_weight", "rerank_configured", "rerank_weight", "rerank_pool", "ranking", "case_set_id", "case_set_origin", "cells"} {
 		if _, ok := rec[key]; !ok {
 			t.Errorf("the run record has no %q; two runs of this eval cannot be compared without it", key)
 		}
@@ -435,5 +436,182 @@ func TestSupersessionGateIgnoresPageScopedArms(t *testing.T) {
 	}
 	if got.StaleAbove != 30 {
 		t.Errorf("the gate read the wrong arm: StaleAbove=%d, want 30 (the pre-registered arm's)", got.StaleAbove)
+	}
+}
+
+// TestCaseSetIDIsContentDerived pins the identity of a run's questions.
+//
+// Four n=30 runs were taken without --cases. Each sampled its own drawers and
+// generated its own questions, and each table labelled a BEST arm with nothing
+// saying the questions had changed between them. The labels moved, and were read
+// — in this repository — as three tables agreeing on a configuration. They were
+// three samples.
+//
+// The id has to be derived from the CONTENT of the case set, not from the file,
+// its path or the order the cases happen to sit in: a file hash makes replaying
+// a saved run produce a different id from the run that wrote it, which trains
+// people to ignore the field.
+func TestCaseSetIDIsContentDerived(t *testing.T) {
+	set := []palace.EvalCase{
+		{Query: "what is the rerank pool", Expect: "d1", Wing: "wing_acme", Category: palace.CatSingle},
+		{Query: "which fusion ships by default", Expect: "d2", ExpectAny: []string{"d2", "d7"}},
+		{Query: "nothing knows this", Category: palace.CatAbsent},
+	}
+	id := palace.CaseSetID(set)
+	if id == "" {
+		t.Fatal("a case set has no id at all")
+	}
+
+	shuffled := []palace.EvalCase{set[2], set[0], set[1]}
+	if got := palace.CaseSetID(shuffled); got != id {
+		t.Errorf("reordering one case set changed its id: %q vs %q — two orderings of the same questions are the same questions", got, id)
+	}
+
+	// nil and empty must canonicalise identically: ExpectAny is `json:",omitempty"`,
+	// so an empty slice is written as absent and read back nil. Without this,
+	// every replay of a saved file produces a different id from the run that
+	// wrote it.
+	empty := append([]palace.EvalCase(nil), set...)
+	empty[0].ExpectAny = []string{}
+	if got := palace.CaseSetID(empty); got != id {
+		t.Errorf("an empty ExpectAny hashed differently from a nil one (%q vs %q) — every replayed run would disagree with the run that saved it", got, id)
+	}
+
+	changed := append([]palace.EvalCase(nil), set...)
+	changed[0].Query = "what is the rerank pool?"
+	if got := palace.CaseSetID(changed); got == id {
+		t.Error("changing a question did not change the id — the id would say two different case sets are one")
+	}
+
+	// The invariant that actually breaks silently: save, replay, recompute.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cases.jsonl")
+	if err := writeCases(path, set, caseFileMeta{Generator: "g", Style: "paraphrase", Wing: "wing_acme"}); err != nil {
+		t.Fatalf("writeCases: %v", err)
+	}
+	back, _, err := readCasesWithMeta(path)
+	if err != nil {
+		t.Fatalf("readCasesWithMeta: %v", err)
+	}
+	if got := palace.CaseSetID(back); got != id {
+		t.Errorf("replaying a saved case file produced id %q, but the run that wrote it had %q", got, id)
+	}
+}
+
+// TestGeneratedRunSaysSoBesideBest pins the caveat to where the reader is.
+//
+// A BEST computed over questions nobody else will ever see is a claim about one
+// sample and reads as a claim about the system. The label is what gets quoted,
+// so the case set it is best over is printed on that line — a header the reader
+// scrolled past does not carry it.
+func TestGeneratedRunSaysSoBesideBest(t *testing.T) {
+	report := palace.EvalReport{
+		CaseSetID:     "cs-deadbeef01",
+		CaseSetOrigin: palace.CaseSetGenerated,
+		Arms: []palace.EvalMetrics{
+			{Arm: palace.ArmHybrid, MRR: 0.42, Ranks: []int{1, 2, 3}},
+			{Arm: palace.ArmRRF, MRR: 0.61, Ranks: []int{1, 1, 2}},
+		},
+	}
+	var buf strings.Builder
+	printEvalTable(&buf, report)
+
+	var bestLine string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "BEST") {
+			bestLine = line
+			break
+		}
+	}
+	if bestLine == "" {
+		t.Fatalf("the table printed no BEST row, so this test asserts on nothing:\n%s", buf.String())
+	}
+	for _, want := range []string{palace.CaseSetGenerated, "cs-deadbeef01"} {
+		if !strings.Contains(bestLine, want) {
+			t.Errorf("the BEST line does not carry %q: %q\nA winner over questions nobody else has reads as a winner over the system.", want, bestLine)
+		}
+	}
+
+	// A replayed run names its case set too, but must not be labelled generated.
+	report.CaseSetOrigin = palace.CaseSetReplayed
+	buf.Reset()
+	printEvalTable(&buf, report)
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "BEST") && strings.Contains(line, palace.CaseSetGenerated) {
+			t.Errorf("a replayed run's BEST line claims the questions were generated: %q", line)
+		}
+	}
+}
+
+// TestRunRecordCarriesTheCaseSet pins that the id reaches disk, not only the
+// terminal, and that the record and the table cannot disagree about it.
+func TestRunRecordCarriesTheCaseSet(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.cells.json")
+	report := closetReport()
+	report.CaseSetID = "cs-0123456789ab"
+	report.CaseSetOrigin = palace.CaseSetReplayed
+
+	if err := writeCells(path, report, caseFileMeta{Generator: "g", Style: "paraphrase", Wing: "wing_acme"}, cellsConfig{
+		Pool: 50, Cases: 4, Ranking: "fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off",
+	}); err != nil {
+		t.Fatalf("writeCells: %v", err)
+	}
+	var rec map[string]any
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("the cells file is not valid JSON: %v", err)
+	}
+	if got := rec["case_set_id"]; got != report.CaseSetID {
+		t.Errorf("the run record says case_set_id %v, the table says %q — the two cannot be allowed to disagree", got, report.CaseSetID)
+	}
+	if got := rec["case_set_origin"]; got != report.CaseSetOrigin {
+		t.Errorf("the run record says case_set_origin %v, want %q", got, report.CaseSetOrigin)
+	}
+}
+
+// TestRunRecordNamesTheRankingItMeasured pins the record against the defect a
+// reviewer found: the run record carried the closet scale, the BM25 weight and
+// the rerank settings, and named neither the fusion nor the lexical normaliser.
+// Two runs at the same commit with rrf against linear fusion, or page-max
+// against saturating normalisation, produced different numbers and identical
+// records.
+//
+// The resolved profile is recorded rather than the requested config, because a
+// setting that failed to resolve — a reranker that was configured and did not
+// come up — is exactly the case where the two differ and only the resolved one
+// describes what ranked.
+func TestRunRecordNamesTheRankingItMeasured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.cells.json")
+	ranking := "fusion=rrf lex-weight=auto-idf lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50)"
+	if err := writeCells(path, closetReport(), caseFileMeta{Generator: "g"}, cellsConfig{Pool: 50, Cases: 4, Ranking: ranking}); err != nil {
+		t.Fatalf("writeCells: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("the cells file is not valid JSON: %v", err)
+	}
+	if got := rec["ranking"]; got != ranking {
+		t.Errorf("the run record says ranking %v, want %q", got, ranking)
+	}
+
+	// Rung 2: the field exists AND the eval populates it from the service that
+	// actually ranked. A record field nothing assigns is this project's most
+	// expensive recurring defect.
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "eval.go"))
+	if err != nil {
+		t.Fatalf("read eval.go: %v", err)
+	}
+	if !regexp.MustCompile(`Ranking:\s*[A-Za-z0-9_.]*RankingProfile\(\)`).Match(src) {
+		t.Error("cmd/server/eval.go never assigns cellsConfig.Ranking from RankingProfile() — " +
+			"the field would be written empty on every real run while this test's own call passes it by hand")
 	}
 }
