@@ -112,6 +112,25 @@ func (f *fakeIndex) Delete(_ context.Context, _ string, _ []string) error {
 	return nil
 }
 
+// The index fake gains the read half too, now that every VectorStore has one.
+func (f *fakeIndex) PointsByIDs(_ context.Context, ns string, ids []string) ([]store.Point, error) {
+	return pointsByID(f.upserted[ns], ids), nil
+}
+
+func pointsByID(held []store.Point, ids []string) []store.Point {
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	var out []store.Point
+	for _, p := range held {
+		if want[p.ID] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func TestHybridUpsertWritesBothSoTFirst(t *testing.T) {
 	sot, idx := newFakeSoT(), newFakeIndex()
 	h := store.NewHybrid(sot, idx)

@@ -21,6 +21,6 @@ it the acceptance. Building T3 first would mean verifying a write by the fact th
 
 | Task | Goal | Produces | Consumes | Status |
 |------|------|----------|----------|--------|
-| [T1](T1-see-the-drift.md) | A command reports where the index disagrees with the rows | `VectorStore.Points`, `IndexDrift`, `doctor --index` | none | todo |
+| [T1](T1-see-the-drift.md) | A command reports where the index disagrees with the rows | `VectorStore.PointsByIDs`, `Hybrid.Halves`, `IndexDrift`, `doctor --index` | none | done |
 | [T2](T2-a-payload-can-be-corrected.md) | A stored point's payload can be corrected without its vector | `VectorStore.SetPayload` | none | todo |
 | [T3](T3-a-merge-corrects-what-it-invalidates.md) | A merge corrects the index it invalidates | a drift-free `MergeWing` | T1, T2 | todo |

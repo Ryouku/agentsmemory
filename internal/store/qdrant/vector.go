@@ -139,6 +139,40 @@ func matchFilter(filter store.Filter) map[string]any {
 	return map[string]any{"must": must}
 }
 
+// PointsByIDs retrieves points by their derived UUIDs and maps them back onto the
+// caller's own IDs, exactly as Search does.
+//
+// It does not ask for vectors: this is the search index, it stores them only to
+// search with, and a payload audit has no use for a thousand floats per point.
+func (c *Client) PointsByIDs(ctx context.Context, namespace string, ids []string) ([]store.Point, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	uuids := make([]string, len(ids))
+	for i, id := range ids {
+		uuids[i] = pointID(namespace, id)
+	}
+	body := map[string]any{"ids": uuids, "with_payload": true, "with_vector": false}
+	var resp struct {
+		Result []struct {
+			Payload map[string]any `json:"payload"`
+		} `json:"result"`
+	}
+	path := "/collections/" + CollectionName(namespace) + "/points"
+	if err := c.do(ctx, http.MethodPost, path, body, &resp); err != nil {
+		return nil, err
+	}
+	// Qdrant omits ids it does not hold, which is the contract this method
+	// promises, so there is nothing to filter here.
+	out := make([]store.Point, 0, len(resp.Result))
+	for _, r := range resp.Result {
+		id, _ := r.Payload[payloadIDKey].(string)
+		delete(r.Payload, payloadIDKey)
+		out = append(out, store.Point{ID: id, Payload: r.Payload})
+	}
+	return out, nil
+}
+
 // Delete removes points by their derived UUIDs, waiting for the deletion to
 // apply so search results are immediately consistent.
 func (c *Client) Delete(ctx context.Context, namespace string, ids []string) error {

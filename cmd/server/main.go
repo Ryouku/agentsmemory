@@ -66,8 +66,18 @@ func main() {
 	// in a local file during development; real env vars still take precedence.
 	_ = godotenv.Load()
 
-	def := config.Default()
+	if err := rootCommand(config.Default()).Run(context.Background(), os.Args); err != nil {
+		log.Fatal(err)
+	}
+}
 
+// rootCommand builds the whole CLI.
+//
+// Extracted from main so that WHICH subcommands exist is a question a test can
+// ask. A command that is written, correct and never added to this list is this
+// repository's characteristic defect, and until now the list lived inside a
+// function nothing could call.
+func rootCommand(def config.Config) *cli.Command {
 	// serveAction boots the HTTP server. It backs both the root command (so a
 	// bare `agentsmemory`, and the Docker image, keep serving) and the explicit
 	// `serve` subcommand — one behaviour, two entry points.
@@ -101,12 +111,11 @@ func main() {
 			setPlanCommand(def),
 			projectsCommand(def),
 			inspectCommand(def),
+			doctorCommand(def),
 		},
 	}
 
-	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		log.Fatal(err)
-	}
+	return cmd
 }
 
 // configFromCmd reads the storage/embed flags off a (sub)command into a Config.

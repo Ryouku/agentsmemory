@@ -66,6 +66,17 @@ func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32,
 	return h.index.Search(ctx, namespace, vector, k, filter)
 }
 
+// Halves exposes the two stores a Hybrid pairs, for a caller that must compare
+// them rather than use them.
+//
+// It exists for exactly one reason: the source of truth and the index each keep
+// their own copy of a point's payload, and a scoped search filters on the
+// INDEX's copy while every other part of the system trusts the row. Measured
+// 2026-08-21, those copies had drifted apart on a live palace and the memories
+// affected were unreachable from the wing they were filed in. A checker that
+// could only see one of the two would have reported clean.
+func (h *Hybrid) Halves() (SourceOfTruth, VectorStore) { return h.sot, h.index }
+
 // Delete removes from both, SoT first so the truth no longer claims a point the
 // index has already dropped.
 func (h *Hybrid) Delete(ctx context.Context, namespace string, ids []string) error {

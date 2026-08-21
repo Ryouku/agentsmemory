@@ -617,6 +617,30 @@ func (r *Repo) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, erro
 	return id == "", nil
 }
 
+// DrawerWings maps every drawer id to the wing it is filed in.
+//
+// Two columns of every row, which is the whole point: the drift check compares
+// this against what each vector store believes, and loading whole drawers to do
+// it would pull every memory's text into memory to read one field.
+func (r *Repo) DrawerWings(ctx context.Context, teamID string) (map[string]string, error) {
+	var rows []struct {
+		ID   string
+		Wing string
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Select("id", "wing").
+		Where("team_id = ?", teamID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.ID] = row.Wing
+	}
+	return out, nil
+}
+
 // WingNames lists the wings a team has written to, for an error message that
 // has to show the caller what exists. Wings() carries counts nobody needs here.
 func (r *Repo) WingNames(ctx context.Context, teamID string) ([]string, error) {

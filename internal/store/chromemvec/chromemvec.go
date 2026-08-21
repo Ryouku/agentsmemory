@@ -231,7 +231,43 @@ func (i *Index) Search(ctx context.Context, namespace string, vector []float32, 
 	return hits, nil
 }
 
+// PointsByIDs returns the stored points for ids, payloads included. The vector is
+// not returned: chromem keeps embeddings for search and this index is derived,
+// so a caller needing vectors goes to the source of truth.
+//
+// The payload is decoded from the JSON blob, exactly as Search does, and NOT
+// read off the flattened metadata keys. The flattened copy exists only so
+// chromem can filter on it: it holds string values only, and it sits beside the
+// reserved blob key, so reading it back would hand the caller a payload that
+// differs from the one Search returns for the same point — including an internal
+// key they never wrote.
+func (i *Index) PointsByIDs(ctx context.Context, namespace string, ids []string) ([]store.Point, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	col, err := i.collection(namespace)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Point, 0, len(ids))
+	for _, id := range ids {
+		doc, err := col.GetByID(ctx, id)
+		if err != nil {
+			continue // not held: omitted, matching Delete
+		}
+		var payload map[string]any
+		if raw := doc.Metadata[payloadKey]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				return nil, fmt.Errorf("decode payload of %q: %w", doc.ID, err)
+			}
+		}
+		out = append(out, store.Point{ID: doc.ID, Payload: payload})
+	}
+	return out, nil
+}
+
 // Delete removes points by ID, ignoring IDs the namespace does not hold.
+
 func (i *Index) Delete(ctx context.Context, namespace string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
