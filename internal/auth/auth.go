@@ -65,27 +65,6 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-// HTTPContextFunc returns a function matching mark3labs/mcp-go's HTTPContextFunc
-// signature. It runs once per MCP HTTP request: it reads the bearer token,
-// resolves the tenant, and stashes it on the context the tool handlers receive.
-//
-// A failed or missing token is NOT rejected here — it simply leaves no tenant
-// on the context, and each tool calls TenantFrom, which fails closed. Centralis-
-// ing the rejection in the tools keeps the transport layer dumb and uniform.
-func HTTPContextFunc(res Resolver) func(ctx context.Context, r *http.Request) context.Context {
-	return func(ctx context.Context, r *http.Request) context.Context {
-		token := bearerToken(r)
-		if token == "" {
-			return ctx
-		}
-		t, err := res.ResolveToken(ctx, token)
-		if err != nil {
-			return ctx // unresolved — tools will fail closed
-		}
-		return context.WithValue(ctx, tenantKey, t)
-	}
-}
-
 // TenantFrom returns the resolved tenant on the context. ok is false when the
 // request was unauthenticated or the token did not resolve, so every tool can
 // fail closed with a single check.

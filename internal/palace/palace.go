@@ -88,8 +88,6 @@ type TunnelKind string
 const (
 	// TunnelExplicit is a user-created link between two wings/rooms.
 	TunnelExplicit TunnelKind = "explicit"
-	// TunnelTopic is auto-generated when two wings share a topic label.
-	TunnelTopic TunnelKind = "topic"
 	// TunnelEntity is auto-generated when an entity has hallways in two wings.
 	TunnelEntity TunnelKind = "entity"
 )

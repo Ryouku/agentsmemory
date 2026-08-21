@@ -615,3 +615,22 @@ without the exit-code trap the first version had.
   is deciding the shape; whatever it lands on, the gate that matters is one that makes an arm unable
   to diverge from the served pipeline silently.
 
+## From the dead-code sweep (2026-08-21)
+
+- **Topic tunnels were designed and never built** — `TunnelTopic TunnelKind = "topic"` was declared
+  with the comment "auto-generated when two wings share a topic label", and nothing ever produced
+  one. The constant is removed rather than left as a promise; `graph.go:152` converts whatever string
+  the database holds, so a future producer needs no constant to exist first. Recorded here so the
+  intent is not lost with the declaration: entity tunnels exist, topic tunnels were the sibling idea.
+- **A trustworthy dead-export sweep needs type information** — a name-based scan over `internal/`
+  reported 66 exported functions with no caller, and spot-checking six showed most were false
+  positives: repository methods called from the same file, and interface implementations invoked by
+  dispatch (`WebAuthnName`, `GetByName`). The five real ones in this commit came from a careful
+  per-component audit, not from the scan. A `go/types`-based version — resolve each identifier,
+  count call sites, treat interface satisfaction as a use — would be worth having, and until it
+  exists nobody should act on the crude number.
+- **`Service.Clone` is production API with only test callers** — added for the mode-scope sweep
+  because every `With*` setter mutates. Not dead, but it exists for the benefit of a test, which is
+  the honest reading. Either the sweep constructs services another way, or `Clone` earns a
+  production use.
+

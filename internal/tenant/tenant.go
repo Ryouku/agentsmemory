@@ -739,23 +739,6 @@ func (r *Repo) EnsureLocalWorkspace(ctx context.Context) (Tenant, error) {
 	return Tenant{TeamID: team.ID, UserID: user.ID, Role: RoleAdmin}, nil
 }
 
-// CreateAPIKey mints an additional credential for a user within a workspace they
-// belong to. A user may hold many keys per workspace — e.g. one per agent or CI
-// job — each independently revocable.
-func (r *Repo) CreateAPIKey(ctx context.Context, teamID, userID, name string) (Credential, error) {
-	key, cred, err := newAPIKey(teamID, userID, name, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		return Credential{}, err
-	}
-	if key.TokenEnc, err = r.sealToken(cred.Secret); err != nil {
-		return Credential{}, err
-	}
-	if err := r.db.WithContext(ctx).Create(&key).Error; err != nil {
-		return Credential{}, err
-	}
-	return cred, nil
-}
-
 // RotateKey revokes the caller's OWN active API keys for a team and mints a fresh
 // one in a single transaction, returning the new one-time credential. Keys are
 // per-member, so rotation is scoped to (team, user): it only ever touches the

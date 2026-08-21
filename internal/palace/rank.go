@@ -18,11 +18,16 @@ const (
 	bm25K1 = 1.5
 	// bm25B is Okapi-BM25 length normalization (0=none, 1=full).
 	bm25B = 0.75
-	// hybridVectorWeight / hybridBM25Weight are the convex-combination weights:
-	// 0.6 semantic + 0.4 lexical, matching the frozen default. They sum to 1 so the
+	// hybridBM25Weight is the lexical half of the convex combination: 0.4 lexical
+	// against 0.6 semantic, matching the frozen default. The two sum to 1 so the
 	// fused score stays in the same [0,1]-ish range as each normalized term.
-	hybridVectorWeight = 0.6
-	hybridBM25Weight   = 0.4
+	//
+	// Only the lexical half is a constant. The semantic half is DERIVED —
+	// rankFused takes a vectorWeight parameter and every caller passes
+	// 1 - bm25Weight — so a `hybridVectorWeight = 0.6` constant sat here for a long
+	// time with zero references, redundant while bm25Base was 0.4 and quietly wrong
+	// the moment an operator set --bm25-weight to anything else.
+	hybridBM25Weight = 0.4
 	// hybridCandidateMultiplier is how far Search over-fetches beyond the requested
 	// page so BM25 has a meaningful pool to re-rank (frozen used n_results*3). A
 	// re-rank can only reorder what vector retrieval surfaced, so the pool must be
