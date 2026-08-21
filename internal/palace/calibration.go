@@ -1,7 +1,12 @@
 package palace
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"math"
+	"os"
 	"sort"
 )
 
@@ -192,4 +197,118 @@ func wilsonLower(successes, n int, z float64) float64 {
 		return lo
 	}
 	return 0
+}
+
+// CanaryPair is one fixed (query, document) probe scored through the configured
+// reranker at calibration time, with the spread observed across repeats.
+//
+// MaxDeviation is DERIVED from the instrument rather than typed: it is the widest
+// gap seen across the repeats on this machine. Deterministic inference yields
+// zero, and therefore an exact-match check at startup — which is the right answer
+// when it is true and a false alarm when it is not, so it must be measured rather
+// than assumed either way.
+type CanaryPair struct {
+	Query        string  `json:"query"`
+	Document     string  `json:"document"`
+	Mean         float64 `json:"mean"`
+	MaxDeviation float64 `json:"max_deviation"`
+}
+
+// Calibration is the operating point: two thresholds, the evidence behind them,
+// and a fingerprint of the instrument that produced them.
+//
+// It is a FILE rather than configuration on purpose. The tool writes it; an
+// operator still has to point the server at it. A bad calibration therefore
+// cannot become production behaviour on its own.
+type Calibration struct {
+	// ID is a short content hash naming this operating point in telemetry, so
+	// rows judged under two different calibrations are never pooled as one
+	// population. Stamped by Save.
+	ID string `json:"id"`
+
+	// Both thresholds are pointers because ABSENT is not zero. Zero is an
+	// ordinary score on every scale this carries, and the collapse fails OPEN: a
+	// nil answer_at means "do not gate", a 0.0 answer_at means "answer everything
+	// above zero", which on an unbounded scale is most of the corpus.
+	AnswerAt    *float64 `json:"answer_at"`
+	RefuseBelow *float64 `json:"refuse_below"`
+
+	// The targets are recorded beside the results because the achievable grid is
+	// discrete: a chosen threshold clears its target rather than meeting it, and
+	// without both numbers a reader takes the request for the result.
+	AnswerRecallTarget float64 `json:"answer_recall_target"`
+	RefuseAllowance    int     `json:"refuse_allowance"`
+	AchievedRecall     float64 `json:"achieved_recall"`
+
+	Reachable   int `json:"reachable"`
+	Absent      int `json:"absent"`
+	Unreachable int `json:"unreachable"`
+
+	GatePassed   bool    `json:"gate_passed"`
+	RefusalRate  float64 `json:"refusal_rate"`
+	RefusalLower float64 `json:"refusal_lower"`
+	RefusalBar   float64 `json:"refusal_bar"`
+
+	// RerankModel is operator-declared, not detected: Reranker.Rerank returns
+	// floats and does not say what produced them.
+	RerankModel string `json:"rerank_model"`
+	// Profile is the ranking configuration in force, because a threshold
+	// calibrated under one fusion mode and applied under another is calibrated on
+	// nothing.
+	Profile string `json:"profile"`
+
+	Canary []CanaryPair `json:"canary"`
+	// ScoresBounded records whether the canary scores landed in (0,1) or ranged
+	// unbounded — INFERRED from the instrument at calibration time and then
+	// FIXED, never re-guessed on load, because the same reranker read through two
+	// dialects produces two different scales for one threshold.
+	ScoresBounded bool `json:"scores_bounded"`
+}
+
+// Save writes the calibration, stamping ID from its content first.
+//
+// Pointer receiver so the ID lands on the CALLER's value, not on a copy. The ID
+// is what names this operating point in telemetry, and a caller that saved a
+// calibration and still holds an empty ID cannot label the rows it then judges —
+// which is exactly the pooling this field exists to prevent.
+func (c *Calibration) Save(path string) error {
+	c.ID = c.contentID()
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode calibration: %w", err)
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+// LoadCalibration reads a calibration, refusing anything it cannot parse.
+//
+// A corrupt file must NOT decode to a zero Calibration: its nil thresholds read
+// as "do not gate", so a silent failure would switch the gate off while every
+// report said it was on.
+func LoadCalibration(path string) (Calibration, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Calibration{}, fmt.Errorf("read calibration: %w", err)
+	}
+	var c Calibration
+	if err := json.Unmarshal(b, &c); err != nil {
+		return Calibration{}, fmt.Errorf("decode calibration %s: %w", path, err)
+	}
+	return c, nil
+}
+
+// contentID hashes everything that defines the operating point, with ID itself
+// zeroed so the hash does not depend on a previous hash.
+//
+// VALUE receiver deliberately, unlike Save: it blanks ID to compute the hash, and
+// doing that through a pointer would clear the caller's field as a side effect of
+// reading it.
+func (c Calibration) contentID() string {
+	c.ID = ""
+	b, err := json.Marshal(c)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:12]
 }
