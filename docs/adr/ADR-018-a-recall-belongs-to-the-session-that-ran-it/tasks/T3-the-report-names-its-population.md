@@ -88,4 +88,15 @@ Stop and ask if the Stop event carries no usable per-session key at all — the 
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · 9f1b093* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  === RUN   TestNoTaskListWithoutAttribution
+      hooks_test.go:86: the statistics were suppressed along with the task list; they are worth keeping:
+  --- FAIL: TestNoTaskListWithoutAttribution (0.00s)
+  === RUN   TestReportNamesItsPopulation
+      hooks_test.go:96: the report does not say whose recalls it describes, so it reads as this session's:
+  --- FAIL: TestReportNamesItsPopulation (0.00s)
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/clients/claude-code	0.004s
+  FAIL
+  ```

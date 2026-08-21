@@ -69,10 +69,15 @@ MSG
 # Self-hosted only, and deliberately silent when anything is off: no server, an
 # older server without /stats, no curl. A statistics line must never be the reason
 # a Stop hook fails.
-# The window is THIS SESSION, measured from the transcript file the event names,
-# not a fixed number of hours. A fixed window at the first Stop of a session
-# reports mostly the PREVIOUS session's work — the numbers looked plausible and
-# described the wrong thing, which is worse than no numbers.
+# The window is measured from the transcript file the event names rather than a
+# fixed number of hours, because a fixed window at the first Stop of a session
+# reports mostly the PREVIOUS session's work.
+#
+# It is NOT this session's recalls, and an earlier version of this comment said
+# it was. search_events carries no session identity, so /stats filters by team and
+# TIME — narrowing the window cannot separate sessions that overlap in it, and
+# concurrent sessions against one local palace are the normal case, not the
+# exception. The window bounds the report; it does not attribute it. See ADR-018.
 STATS_QUERY="hours=${AGENTSMEMORY_STATS_HOURS:-2}"
 TRANSCRIPT="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 if [ -n "${TRANSCRIPT:-}" ] && [ -f "$TRANSCRIPT" ]; then
@@ -108,19 +113,28 @@ if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; 
   # no match and `head` can SIGPIPE its producer — neither may kill the hook
   # under set -euo pipefail.
   REPORT="$(printf '%s\n' "$STATS" | grep -v '^  write: ' || true)"
-  TODO="$(printf '%s\n' "$STATS" | grep '^  write: ' | head -n 3 | sed 's/^  write: /  /' || true)"
+  # The report's own first line claims "this session", which the server cannot
+  # know. Say what it actually describes, so the numbers can be read at the scope
+  # they were measured at instead of at the one the heading implies.
+  REPORT="$(printf '%s\n' "$REPORT" | sed 's/^memory, this session:/memory, every session on this server in this window:/' || true)"
   # $(...) strips trailing newlines, so the report needs its last one back —
   # without it whatever the terminal prints next continues the report's last line.
   [ -n "$REPORT" ] && printf '\n%s\n' "$REPORT" >&2
-  # memories to write — the recall flywheel's actionable half. Each line is a
-  # cluster of this session's searches that found NOTHING, already collapsed
-  # across paraphrasings and counted server-side; the wing in brackets says
-  # where the memory belongs. Silent when there is nothing to say, capped at
-  # three lines so the nudge stays a nudge — answering them is exactly the
-  # am_add_drawer step the checkpoint above asks for.
-  if [ -n "$TODO" ]; then
-    printf '\nmemories to write — searched, found nothing (am_add_drawer each into its wing):\n%s\n' "$TODO" >&2
-  fi
+  # The "memories to write" list is NOT printed, and its absence is the fix.
+  #
+  # It was the most useful thing this hook emitted: the questions a team asked and
+  # could not answer are exactly the memories it should have written. But it is a
+  # TASK LIST, not a statistic, and the server cannot say whose searches it is
+  # built from — so each session was handed every other session's unanswered
+  # questions under a heading that read as its own. Following it means filing a
+  # memory about a question you never asked, into a wing you never opened, from no
+  # evidence you hold. One session noticed and refused; the more diligent the
+  # agent, the worse the outcome.
+  #
+  # It comes back the moment a recall can be attributed to the session that ran
+  # it — ADR-018 T2 adds the column and the filter. A list that is right most of
+  # the time is worse than none, because "most of the time" is not a property
+  # anyone can check at the moment they read it.
 fi
 
 exit 2
