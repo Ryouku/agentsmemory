@@ -185,3 +185,131 @@ func TestCanaryToleranceIsMeasuredNotTyped(t *testing.T) {
 		}
 	})
 }
+
+// TestRiskCoverageCurveShowsTheWholeTradeoff pins that the curve reports the
+// exchange rate between answering and refusing, not just the two endpoints.
+//
+// A gate verdict of FAIL says the chosen operating point misses the bar. It does
+// not say whether ANY point would clear it — and those are different findings with
+// different consequences. "This threshold is wrong" sends you to retune; "no
+// threshold on this corpus clears both bars at once" sends you to change the
+// signal, the corpus, or the declared targets. Reporting only the endpoint leaves
+// the reader unable to tell which they are looking at.
+func TestRiskCoverageCurveShowsTheWholeTradeoff(t *testing.T) {
+	// Answerable and absent overlap heavily, so recall and refusal trade off
+	// against each other across the range rather than separating cleanly.
+	rows := rowsFor(
+		[]float64{-5, -4, -3, -2, -1, 0, 1, 2, 3, 4},
+		[]float64{-4.5, -3.5, -2.5, -1.5, -0.5},
+	)
+	curve := RiskCoverageCurve(rows)
+	if len(curve) < 5 {
+		t.Fatalf("curve has %d points over 15 scored rows — it is not walking the range", len(curve))
+	}
+
+	// Recall must be non-increasing and refusal non-decreasing as the bar rises.
+	// If either moves the other way the two are not being computed against the
+	// same threshold, which is the bug that makes a curve look plausible and mean
+	// nothing.
+	for i := 1; i < len(curve); i++ {
+		if curve[i].Threshold <= curve[i-1].Threshold {
+			t.Fatalf("thresholds not ascending at %d: %v then %v", i, curve[i-1].Threshold, curve[i].Threshold)
+		}
+		if curve[i].AnswerRecall > curve[i-1].AnswerRecall+1e-9 {
+			t.Errorf("answer recall ROSE from %v to %v as the bar rose from %v to %v",
+				curve[i-1].AnswerRecall, curve[i].AnswerRecall, curve[i-1].Threshold, curve[i].Threshold)
+		}
+		if curve[i].CorrectRefusal < curve[i-1].CorrectRefusal-1e-9 {
+			t.Errorf("correct refusal FELL from %v to %v as the bar rose",
+				curve[i-1].CorrectRefusal, curve[i].CorrectRefusal)
+		}
+	}
+
+	// The ends must be the degenerate cases, or the curve is not spanning the range.
+	if curve[0].AnswerRecall != 1.0 {
+		t.Errorf("at the lowest threshold recall is %v, not 1.0 — the bar is not low enough to "+
+			"answer everything", curve[0].AnswerRecall)
+	}
+	if last := curve[len(curve)-1]; last.CorrectRefusal != 1.0 {
+		t.Errorf("at the highest threshold correct refusal is %v, not 1.0 — the bar is not high "+
+			"enough to refuse everything", last.CorrectRefusal)
+	}
+}
+
+// TestViablePointReportsWhetherAnyThresholdClearsBothBars pins the question a
+// FAIL verdict cannot answer on its own.
+func TestViablePointReportsWhetherAnyThresholdClearsBothBars(t *testing.T) {
+	// Separable: a point exists that answers everything and refuses everything.
+	sep := rowsFor([]float64{5, 6, 7, 8}, []float64{0, 1, 2})
+	if p := ViablePoint(RiskCoverageCurve(sep), 0.95, 0.30); p == nil {
+		t.Error("no viable point on perfectly separable data, where one plainly exists")
+	}
+
+	// Fully overlapping: every absent score sits among the answerable ones, so
+	// nothing can both keep recall high and refuse much.
+	over := rowsFor([]float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, []float64{1, 2, 3, 4, 5})
+	if p := ViablePoint(RiskCoverageCurve(over), 0.95, 0.90); p != nil {
+		t.Errorf("reported a viable point at %+v where the distributions fully overlap — a "+
+			"threshold that cannot exist is worse than none, because somebody will ship it", *p)
+	}
+}
+
+// TestAnsweredAndRefusedAreComplementary pins the boundary semantics the
+// monotonicity checks cannot see.
+//
+// This subtest exists because a mutant found its absence: flipping the refusal
+// count from `score < threshold` to `score <= threshold` broke nothing. Both
+// versions stay monotonic and both agree at the degenerate ends, so every existing
+// assertion passed — while a document scoring EXACTLY at the threshold was counted
+// as refused by one rule and answered by the other, at the same time.
+//
+// The invariant is that the two are complementary: at any threshold, a document is
+// answered when its score is at or above it and refused otherwise, so the counts
+// must sum to the population with no double-counting and no gap. An off-by-one
+// here shifts every rate on the curve by one case, which at n=17 is six percentage
+// points — larger than the margin most of these verdicts turn on.
+func TestAnsweredAndRefusedAreComplementary(t *testing.T) {
+	answerable := []float64{-2, -1, 0, 1, 2}
+	absent := []float64{-2, -1, 0, 1, 2} // deliberately IDENTICAL, so every
+	// threshold lands exactly on a score in both populations and the boundary
+	// rule is exercised at every point rather than only between values.
+	rows := rowsFor(answerable, absent)
+	curve := RiskCoverageCurve(rows)
+	if len(curve) == 0 {
+		t.Fatal("no curve")
+	}
+	for _, p := range curve {
+		// Recompute both sides independently of the implementation.
+		wantAnswered := 0
+		for _, s := range answerable {
+			if s >= p.Threshold {
+				wantAnswered++
+			}
+		}
+		wantRefused := 0
+		for _, s := range absent {
+			if s < p.Threshold {
+				wantRefused++
+			}
+		}
+		if p.Answered != wantAnswered {
+			t.Errorf("threshold %v: answered %d, want %d", p.Threshold, p.Answered, wantAnswered)
+		}
+		if p.Refused != wantRefused {
+			t.Errorf("threshold %v: refused %d, want %d — a document scoring exactly at the "+
+				"threshold is ANSWERED, so it cannot also be counted as refused",
+				p.Threshold, p.Refused, wantRefused)
+		}
+		// The two rules must partition the absent population exactly.
+		answeredAbsent := 0
+		for _, s := range absent {
+			if s >= p.Threshold {
+				answeredAbsent++
+			}
+		}
+		if answeredAbsent+p.Refused != len(absent) {
+			t.Errorf("threshold %v: %d absent answered + %d refused != %d total — the boundary "+
+				"rule double-counts or drops a case", p.Threshold, answeredAbsent, p.Refused, len(absent))
+		}
+	}
+}

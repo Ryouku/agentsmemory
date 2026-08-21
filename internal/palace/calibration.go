@@ -420,3 +420,117 @@ func ScoresLookBounded(pairs []CanaryPair) bool {
 	}
 	return len(pairs) > 0
 }
+
+// CurvePoint is one threshold and what it costs: how much of what the palace CAN
+// answer it still answers, and how much of what it cannot it correctly refuses.
+type CurvePoint struct {
+	Threshold      float64
+	AnswerRecall   float64 // over reachable-answerable rows
+	CorrectRefusal float64 // over verified-absent rows
+	Answered       int
+	Refused        int
+}
+
+// RiskCoverageCurve walks every threshold the data supports and reports the
+// exchange rate between answering and refusing.
+//
+// The two boundaries RecommendThresholds returns are points ON this curve. They
+// are what an operator ships; the curve is what tells them whether shipping is
+// possible at all. A gate verdict of FAIL says the chosen point misses the bar and
+// cannot say whether ANY point would clear it — and those are different findings.
+// "This threshold is wrong" sends you to retune. "No threshold clears both bars on
+// this corpus" sends you to change the signal, the corpus or the declared targets.
+//
+// Thresholds are the observed scores, plus one below the lowest and one above the
+// highest so the degenerate ends are present: answer-everything and
+// refuse-everything are the two points that bound what any tuning can achieve, and
+// a curve that omits them hides its own limits.
+func RiskCoverageCurve(rows []CalibrationRow) []CurvePoint {
+	var answerable, absent []float64
+	for _, r := range rows {
+		if !r.Scored || r.Population == PopUnreachable {
+			continue
+		}
+		if r.Population == PopAbsent {
+			absent = append(absent, r.Score)
+		} else {
+			answerable = append(answerable, r.Score)
+		}
+	}
+	if len(answerable) == 0 || len(absent) == 0 {
+		return nil
+	}
+	seen := map[float64]bool{}
+	var thresholds []float64
+	add := func(v float64) {
+		if !seen[v] {
+			seen[v] = true
+			thresholds = append(thresholds, v)
+		}
+	}
+	lo, hi := math.Inf(1), math.Inf(-1)
+	for _, s := range append(append([]float64(nil), answerable...), absent...) {
+		add(s)
+		if s < lo {
+			lo = s
+		}
+		if s > hi {
+			hi = s
+		}
+	}
+	// The degenerate ends, placed just outside the observed range rather than at
+	// infinity so they print as numbers a reader can compare with the rest.
+	span := hi - lo
+	if span == 0 {
+		span = 1
+	}
+	add(lo - span/100)
+	add(hi + span/100)
+	sort.Float64s(thresholds)
+
+	out := make([]CurvePoint, 0, len(thresholds))
+	for _, t := range thresholds {
+		answered := 0
+		for _, s := range answerable {
+			if s >= t {
+				answered++
+			}
+		}
+		refused := 0
+		for _, s := range absent {
+			if s < t {
+				refused++
+			}
+		}
+		out = append(out, CurvePoint{
+			Threshold:      t,
+			AnswerRecall:   float64(answered) / float64(len(answerable)),
+			CorrectRefusal: float64(refused) / float64(len(absent)),
+			Answered:       answered,
+			Refused:        refused,
+		})
+	}
+	return out
+}
+
+// ViablePoint returns the threshold that clears BOTH declared bars while
+// answering as much as possible, or nil when no such threshold exists.
+//
+// nil is the answer that matters. A gate that only ever reports its own operating
+// point leaves the reader unable to distinguish a bad choice of threshold from a
+// corpus on which the design cannot work — and the second is a finding about the
+// system, not about the tuning.
+//
+// Among the thresholds that clear both bars it returns the LOWEST, which is the
+// one that answers most: the bars are floors to satisfy, not quantities to
+// maximise, so exceeding the refusal bar by refusing more than necessary would
+// trade away answers nobody asked to lose.
+func ViablePoint(curve []CurvePoint, answerRecall, refusalBar float64) *CurvePoint {
+	for i := range curve {
+		p := curve[i]
+		if p.AnswerRecall >= answerRecall && p.CorrectRefusal >= refusalBar {
+			return &p
+		}
+	}
+	return nil
+}

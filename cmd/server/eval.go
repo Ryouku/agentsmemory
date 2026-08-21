@@ -1875,6 +1875,11 @@ func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, repo
 			"  'I am not sure'.\n")
 	}
 
+	// The curve BEFORE the verdict, because a FAIL is only actionable once the
+	// reader can see whether any threshold would have passed.
+	curve := palace.RiskCoverageCurve(rows)
+	printCurve(out, curve, c.Float("answer-recall"), c.Float("refusal-bar"))
+
 	refused := 0
 	if th.AnswerAt != nil {
 		for _, r := range rows {
@@ -1975,4 +1980,43 @@ func rankingProfileLabel(c *cli.Command) string {
 	return fmt.Sprintf("fusion=%s bm25=%s closet=%.2f rerank-pool=%d rerank-weight=%s",
 		c.String("fusion"), c.String("bm25-weight"), c.Float("closet-boost"),
 		c.Int("rerank-pool"), c.String("rerank-weight"))
+}
+
+// printCurve shows the exchange rate between answering and refusing, and then
+// answers the question a bare verdict cannot: is there any threshold at all that
+// clears both declared bars.
+//
+// Without that last line a FAIL is ambiguous. "Retune the threshold" and "this
+// corpus cannot support the design" look identical from a single failing operating
+// point, and they send the reader to completely different work.
+func printCurve(out io.Writer, curve []palace.CurvePoint, answerRecall, refusalBar float64) {
+	if len(curve) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n  risk-coverage — what each threshold costs:\n")
+	fmt.Fprintf(out, "    %-12s %-16s %s\n", "threshold", "answer recall", "correct refusal")
+	// A handful of rows rather than every observed score: the shape is the point,
+	// and forty near-identical lines bury it.
+	step := 1
+	if len(curve) > 12 {
+		step = len(curve) / 10
+	}
+	for i := 0; i < len(curve); i += step {
+		p := curve[i]
+		fmt.Fprintf(out, "    %-12.4f %5.3f (%2d)      %5.3f (%2d)\n",
+			p.Threshold, p.AnswerRecall, p.Answered, p.CorrectRefusal, p.Refused)
+	}
+	if last := curve[len(curve)-1]; (len(curve)-1)%step != 0 {
+		fmt.Fprintf(out, "    %-12.4f %5.3f (%2d)      %5.3f (%2d)\n",
+			last.Threshold, last.AnswerRecall, last.Answered, last.CorrectRefusal, last.Refused)
+	}
+	if p := palace.ViablePoint(curve, answerRecall, refusalBar); p != nil {
+		fmt.Fprintf(out, "    a threshold at %.4f clears BOTH bars (recall %.3f >= %.2f, refusal %.3f >= %.2f)\n",
+			p.Threshold, p.AnswerRecall, answerRecall, p.CorrectRefusal, refusalBar)
+	} else {
+		fmt.Fprintf(out, "    NO threshold on this corpus clears both bars (recall >= %.2f AND refusal >= %.2f).\n"+
+			"    That is a finding about the SIGNAL, not about the tuning: retuning cannot reach a\n"+
+			"    point that does not exist. Change the score the gate reads, the corpus it is\n"+
+			"    calibrated on, or the targets themselves.\n", answerRecall, refusalBar)
+	}
 }
