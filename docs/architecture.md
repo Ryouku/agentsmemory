@@ -123,6 +123,10 @@ graph TD
   RRK -.implements palace.Reranker.-> PAL
 ```
 
+The graph is **representative, not complete**: it shows 24 of the 70 first-party edges — the
+composition root, the two surfaces, the domain and the adapters. The remaining 46 are between
+modules this view does not name, and `internal/archguard` is what checks all of them.
+
 Solid arrows are imports; dotted arrows are implementations, which point the other way — the
 adapter depends on the port, never the reverse. `internal/palace` imports exactly one first-party
 package (`internal/store`) and `internal/tenant` imports none, which is what lets nine modules
@@ -131,7 +135,10 @@ share identity without a cycle.
 ## Dependency Contracts
 
 Measured off the real import graph on 2026-08-21; every rule was already true when written, so each
-is a ratchet rather than a wish. `Held by` records what actually prevents the violation — three of
+is a ratchet rather than a wish. **All of them are about PRODUCTION imports** — `archguard` excludes
+`_test.go`, deliberately, because a test may import anything it needs to stand the subject up. So
+"`internal/tenant` imports no other first-party package" is true of `tenant.go` and not of
+`tenant_test.go`, which imports `db`. `Held by` records what actually prevents the violation — three of
 the five are enforced by the Go toolchain, and the test must not be read as if it held them.
 
 | # | Rule | Held by | Check |
@@ -145,9 +152,14 @@ the five are enforced by the Go toolchain, and the test must not be read as if i
 
 ## Interfaces (the seams)
 
-Thirty-six interfaces, and the shape is consistent: almost all are declared at the CONSUMER and
-unexported, so a module depends on the one method set it needs rather than on a whole package. The
-exported ones are the ports an adapter is written against.
+Thirty-six interfaces. **20 are exported** — the ports an adapter is written against — and **16 are
+unexported**, declared at the consumer so a module depends on the one method set it needs rather than
+on a whole package. 28 of the 36 have at most two methods.
+
+An earlier version of this paragraph said "almost all are declared at the consumer and unexported"
+and the table below listed 30 of the 36. Both were wrong, and a different-lineage reviewer counted
+them. The narrowness claim is the one that survives — most of these are two methods wide — and it is
+the property worth keeping; the exported/unexported split is not evidence for it either way.
 
 | Interface | Declared in | Method set | Connects |
 |-----------|-------------|------------|----------|
@@ -168,6 +180,12 @@ exported ones are the ports an adapter is written against.
 | `share.requestStore`, `teamLookup`, `wingProvider` | `internal/share` | Create, Get… / TeamBySlug, MembershipRole / Wings, CopyWing | share → its repo, tenant and palace |
 | `billing.PlanStore`, `checkoutAPI`, `portalAPI`, `webhookParser` | `internal/billing` | PlanByCode, SetTeamPlan / createCheckout… | billing → tenant and the payment provider |
 | `embedworker.Service` | `internal/embedworker` | TeamsWithPending, EmbedPendingForTeam | the backfill loop → palace |
+| `web.WingTransfer` | `internal/web` | (wing export/import) | the dashboard → wingbundle |
+| `wingbundle.Source` | `internal/wingbundle` | (bundle contents) | the bundle writer → palace |
+| `assetSource` | `clients/claude-code` | ReadFile | the installer → its embedded assets |
+| `commandRunner` | `clients/claude-code` | run, runShell | the installer → the shell |
+| `mcpCaller` | `clients/claude-code` | CallTool | verify → the MCP surface |
+| `mineClient` | `clients/claude-code` | CallTool | mining → the MCP surface |
 
 `(deferred: docs/adr/BACKLOG.md)` — nothing checks that a consumer-side interface stays narrower
 than the concrete type it stands for, so an interface can grow to mirror a whole service and the
