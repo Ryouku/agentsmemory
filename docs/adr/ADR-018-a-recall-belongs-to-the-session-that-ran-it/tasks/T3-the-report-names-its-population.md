@@ -36,6 +36,12 @@ This task depends on nothing and ships first if the others are delayed. It needs
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
+  # The tests execute the SHIPPED hook, whose shebang is bash and which uses
+  # bash-isms. The base image has only ash, and without bash the hook never runs,
+  # stderr is empty, and every "output does not contain X" assertion passes
+  # against nothing. The test fails loudly in that case; installing bash is what
+  # lets it actually check something.
+  apk add --no-cache bash >/dev/null
   gofmt -l clients | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
   go test ./clients/... -run "TestReportNamesItsPopulation|TestNoTaskListWithoutAttribution" -count=1 -v 2>&1 | tee /tmp/a18t3.out
@@ -100,3 +106,4 @@ Stop and ask if the Stop event carries no usable per-session key at all — the 
   FAIL	github.com/atvirokodosprendimai/agentsmemory/clients/claude-code	0.004s
   FAIL
   ```
+- 2026-08-21 · c4c30e7* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

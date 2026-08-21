@@ -27,6 +27,16 @@ func runStopHook(t *testing.T, statsBody string, env ...string) string {
 		t.Fatalf("write fake curl: %v", err)
 	}
 
+	// A missing bash must FAIL, never skip and never pass quietly. Without it the
+	// command does not start, stderr is empty, and every assertion of the form
+	// "the output does not contain X" passes for free — which is exactly the
+	// vacuous green this repository has a rule about. The hook's shebang is bash
+	// and it uses bash-isms, so bash is a requirement of the test, not a detail.
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Fatalf("bash is not installed, so the shipped hook cannot be executed: %v. "+
+			"This test asserts on the hook's OUTPUT; without bash every negative assertion "+
+			"would pass against an empty string.", err)
+	}
 	hook := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks", "agentsmemory-stop-hook.sh")
 	cmd := exec.Command("bash", hook)
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`)
@@ -37,8 +47,15 @@ func runStopHook(t *testing.T, statsBody string, env ...string) string {
 	cmd.Env = append(cmd.Env, env...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	_ = cmd.Run() // the hook exits 2 by design; the output is the subject
-	return stderr.String()
+	// The hook exits 2 by design, so a non-zero status is expected and the OUTPUT
+	// is the subject. But empty output means it never ran, and asserting on that
+	// is asserting on nothing.
+	_ = cmd.Run()
+	out := stderr.String()
+	if strings.TrimSpace(out) == "" {
+		t.Fatalf("the hook produced no output at all, so every assertion below would be vacuous")
+	}
+	return out
 }
 
 func repoRootForHooks(t *testing.T) string {
