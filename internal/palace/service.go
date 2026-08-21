@@ -1349,12 +1349,17 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 			parentID = drawers[0].ID
 		}
 		drawers[i] = Drawer{
-			ID:          diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
-			TeamID:      teamID,
-			Wing:        wing,
-			Room:        DiaryRoom,
-			ChunkIndex:  c.Index,
-			Content:     c.Content,
+			ID:         diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
+			TeamID:     teamID,
+			Wing:       wing,
+			Room:       DiaryRoom,
+			ChunkIndex: c.Index,
+			Content:    c.Content,
+			// Per CHUNK, and the same extractor Add and Mine use. A diary entry is
+			// the richest source the derived graph has — a session summary names
+			// the systems that MET, which is exactly what a hallway is made of —
+			// and it was the last write path filing memories the graph never saw.
+			Entities:    extractEntities(c.Content),
 			FiledAt:     filedAt,
 			ContentDate: date,
 			ParentID:    parentID,

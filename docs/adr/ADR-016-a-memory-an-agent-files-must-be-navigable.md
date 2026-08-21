@@ -174,12 +174,13 @@ Two halves, and the second is not optional.
 | Contract | Producing task | Consuming task(s) | Breaking? |
 |----------|----------------|-------------------|-----------|
 | the measurement that decides half 1 | T1 | T2 | No — T1 is a measurement and may withdraw T2 |
+| the shared extractor and its corrected lexicon | T2 | T4 | No — T4 calls the same function from a third write path |
 | entities on the `Add` path | T2 | T2 | No — additive; existing drawers keep their empty column until a backfill |
 | `emptyGraphNote` | T3 | T3 | No — additive |
 
 ## Implementation
 
-Three tasks: `tasks/README.md`.
+Four tasks: `tasks/README.md`. T4 was added after T2 landed and measured what it had left out.
 
 ## Consequences
 
