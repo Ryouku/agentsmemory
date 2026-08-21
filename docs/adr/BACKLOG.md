@@ -787,3 +787,25 @@ Two smaller ones from the same review:
   `SQLITE_BUSY_SNAPSHOT` rather than corrupting it), but nothing PROVES it from the test suite. A
   hook that lets a test commit between the SELECT and the UPDATE would; adding one to production
   code purely for a test is the trade to weigh.
+
+## From ADR-019 (the agent sees a quarter of the memory)
+
+- **Let a cross-encoder choose the snippet window.** A cross-encoder scores a query against a
+  passage, which is exactly "which part of this memory answers the question" — the same model
+  already reranking the page, asked a question it is better suited to than term counting. Deferred
+  because it costs an inference per candidate window and the rerank pool is already the slowest step
+  in a search, and because the cheap version (rank the windows by term match, show more than one)
+  has not been measured yet. If ADR-019 T1 finds the term-matching chooser picks the wrong window
+  often, this is the next thing to try rather than a refinement of it.
+- **Acting on coverage inside the server — abstaining, or auto-fetching a low-coverage hit.** Once a
+  page reports how much of each memory it is showing, the server could refuse to answer below a
+  threshold or silently fetch more. Deferred deliberately: the agent has the question and the
+  server has the corpus, and the page's job is to make the agent's decision possible rather than to
+  take it. Worth revisiting only with evidence that agents do not act on the signal — which is the
+  same compliance question ADR-017 is measuring.
+- **Wing scoping is 5 of 32 and untouched by anything in ADR-019.** All four hard failures in the
+  first measurement and five in the second were queries scoped to a wing that does not hold the
+  answer. The empty-wing note (ADR-013) makes two of them actionable — it tells the agent the wing
+  is empty and names a near neighbour — and it does not put the fact on the page. The open question
+  is whether a scoped search that finds nothing should widen automatically, which is a product
+  decision about whether scoping is a filter or a preference, and nobody has taken it.
