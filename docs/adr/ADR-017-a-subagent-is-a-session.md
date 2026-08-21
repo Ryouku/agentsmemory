@@ -1,6 +1,6 @@
 # ADR-017: A subagent is a session, and must recall and persist like one
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-21
 **Owner:** unassigned
 **Spec:** None — no spec stage
