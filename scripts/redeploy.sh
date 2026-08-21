@@ -31,6 +31,11 @@ echo "==> tests must pass before anything is built"
 docker run --rm -v "$PWD":/src \
   -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod \
   -w /src golang:1.26-alpine sh -c '
+    # The hook tests execute the SHIPPED shell hooks, whose shebang is bash. The
+    # base image has only ash, and those tests FAIL LOUDLY without it rather than
+    # skipping — which is why this line exists: the first deploy after they landed
+    # was correctly refused, instead of shipping over a suite that had not run.
+    apk add --no-cache bash >/dev/null 2>&1 || true
     gofmt -l cmd internal | grep -q . && { echo "gofmt dirty"; exit 1; }
     go vet ./... || exit 1
     go test ./... -count=1 >/dev/null 2>&1
