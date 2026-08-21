@@ -95,7 +95,11 @@ privileges it was written with.
 ## Wiring & Contract Changes
 
 - `CatalogEntry` gains `Write bool`, set by the registration that enforces the role — so the flag and
-  the enforcement cannot disagree. It appears in `tools/list` and `am_status` payloads.
+  the enforcement cannot disagree. It reaches one wire surface: `am_skillset`'s `tools` payload,
+  which serialises `reg.catalog` directly (`internal/mcpserver/skillset.go:48`). It does NOT appear
+  in `tools/list`, which mcp-go builds from the registered tools and knows nothing of this field, nor
+  in `am_status`, which carries no catalogue. An earlier version of this line claimed both; corrected
+  2026-08-21 after an audit checked it.
 - Mutating tools now return a tool-level error for a read-only role. This is a behaviour change for
   any deployment that has member-role keys writing today: those writes begin to fail, correctly, and
   the refusal names the role and says an admin can grant `writer`.
@@ -134,7 +138,7 @@ fails, and neither the author nor the reviewer has to notice.
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | A deployment has member-role keys writing today and they break on upgrade | Medium | High for that workspace | The refusal names the role and the remedy; an admin grants `writer` in the dashboard. Stated in the changelog rather than discovered. |
-| The mutating-call list used by the structural gate goes stale, so a new write tool is not recognised | Medium | High — the gate silently stops covering | `mutatingCalls` is the gate's input and is itself the weakest point. Recorded as a known limit rather than claimed sound. |
+| The mutating-call list used by the structural gate goes stale, so a new write tool is not recognised | Medium | High — the gate silently stops covering | CLOSED 2026-08-21: `TestMutatingCallListIsComplete` derives the mutating set transitively from the domain packages and fails when a handler calls a write method absent from the list. Writing it found three methods the list had missed and three names in it that matched no method at all. |
 | A read tool is registered with `addWrite` and refuses members a read | Low | Medium | The behavioural scenario asserts a member CAN read; a guard that refused everything fails it. |
 
 ## Rollback
@@ -145,5 +149,6 @@ already stored and already resolved — this ADR only adds a consumer.
 
 ## Follow-ups
 
+- [ ] Make the memory-write / observability-write split derivable instead of judged: `incidentalWrites` currently excuses `Search`, `RecallStats` and `CheckDuplicate` by hand, because "writes a row" is in the source and "changes what someone can recall" is not. Resolving each method's reachable `TableName()` values against a declared observability-table set would derive it.
 - [ ] Report whether any real deployment had member-role keys performing writes, once anyone has
       upgraded — the risk table guesses "medium" with no evidence, and one operator's answer settles it.

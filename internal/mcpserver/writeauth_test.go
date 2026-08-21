@@ -31,7 +31,13 @@ var mutatingCalls = map[string]bool{
 	"DeleteHallway": true, "CreateTunnel": true, "WriteDiary": true,
 	"KGAdd": true, "KGInvalidate": true, "MarkAnchors": true,
 	"RecomputeGraph": true, "Reconnect": true, "Mine": true,
-	"UpdateSkill": true, "SaveSkill": true, "PutSkill": true,
+	// Skill writes go through skill.Service.Upsert, reached from the handler as
+	// Update; the three speculative spellings this list once carried
+	// (UpdateSkill, SaveSkill, PutSkill) named no method in the tree and were
+	// removed when TestMutatingCallListIsComplete reported them as matching
+	// nothing. A name that matches nothing is not harmless: it makes the list read
+	// as more complete than it is.
+	"Upsert": true,
 }
 
 // TestEveryMutatingToolIsRegisteredAsAWrite: a tool that changes stored memory
