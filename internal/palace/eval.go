@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -379,6 +380,23 @@ type EvalCaseResult struct {
 	// mixture reports a zero delta that means "nobody could have won here"
 	// rather than "the arms agree".
 	Population string
+	// TopGap and ScoreSpread are the CONTRASTIVE shape of the served page, and
+	// they exist because an absolute score is the weak family. Measured on this
+	// palace: an absolute rerank score separates a wrong page from a right one at
+	// 0.841 AUC and an absolute centroid distance at 0.728, while a contrastive
+	// margin reaches 0.985. A similarity score has no anchored zero and its scale
+	// moves with the query, which is why the query-performance-prediction family
+	// is defined as gaps and spreads rather than levels.
+	//
+	// TopGap is the WIG shape: the top document's score minus the mean of the
+	// rest of the page. ScoreSpread is the NQC shape: the spread of the page's
+	// scores. Both are 0 when the page is too short to have a shape, or when no
+	// reranker scored it — RerankScored says which.
+	//
+	// Added BESIDE TopRerank, never replacing it, so a calibration curve can be
+	// fitted on each and the better one chosen by measurement.
+	TopGap      float64
+	ScoreSpread float64
 	// TopRerank is the production arm's cross-encoder score for the top document,
 	// and RerankScored says whether a reranker actually produced it. Carried per
 	// case rather than into the two flat GoldRerank/AbsentRerank arrays, which
@@ -408,6 +426,44 @@ const (
 	// PopAbsent: the palace holds no answer and any hit is a false positive.
 	PopAbsent = "absent"
 )
+
+// pageShape reduces a served page's scores to the two reference-free statistics
+// a calibration curve can be fitted on without knowing the right answer.
+//
+// gap is the top score minus the mean of the REST of the page (the WIG shape):
+// how far the winner stands above the field. spread is the population standard
+// deviation of the whole page (the NQC shape): whether the page discriminates at
+// all or the scores are flat.
+//
+// Both are differences rather than levels, which is the point. A page of five
+// mediocre-but-similar scores and a page with one clear winner can share a top
+// score, and only the shape tells them apart.
+//
+// A page shorter than two has no shape and returns zeros — reported honestly
+// rather than as a small number, because a fabricated gap would be a confident
+// value on no evidence.
+func pageShape(scores []float64) (gap, spread float64) {
+	if len(scores) < 2 {
+		return 0, 0
+	}
+	var restSum float64
+	for _, v := range scores[1:] {
+		restSum += v
+	}
+	gap = scores[0] - restSum/float64(len(scores)-1)
+
+	var sum float64
+	for _, v := range scores {
+		sum += v
+	}
+	mean := sum / float64(len(scores))
+	var sq float64
+	for _, v := range scores {
+		d := v - mean
+		sq += d * d
+	}
+	return gap, math.Sqrt(sq / float64(len(scores)))
+}
 
 // populationOf labels a case with the calibration population it belongs to.
 //
@@ -517,6 +573,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 			Query: c.Query, Category: cat, Ranks: ranks, PoolRank: poolRank,
 			Population: populationOf(cat, poolRank),
 			TopRerank:  topRerank, RerankScored: scored,
+			TopGap: oc.TopGap, ScoreSpread: oc.ScoreSpread,
 		})
 		s.accumulate(byArm, &report, EvalCaseResult{Category: cat, Ranks: ranks}, arms)
 		if cat != CatAbsent {
@@ -797,6 +854,8 @@ type caseOutcome struct {
 	DistractorRanks    map[EvalArm]int
 	TopDistance        float64
 	TopRerank          float64
+	TopGap             float64
+	ScoreSpread        float64
 	RerankScored       bool
 	PoolRank           int
 	DistractorPoolRank int
@@ -991,6 +1050,8 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// page's number: there is no guard to forget, because there is no shared slot.
 	type prodTop struct {
 		rerank float64
+		gap    float64
+		spread float64
 		scored bool
 	}
 	prodTops := map[EvalArm]prodTop{}
@@ -1092,7 +1153,12 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			// arm always blends at a fixed weight — and a threshold calibrated on
 			// one and applied to the other is calibrated on nothing.
 			if len(page) > 0 {
-				prodTops[arm] = prodTop{page[0].RerankScore, page[0].Reranked}
+				scores := make([]float64, len(page))
+				for i, h := range page {
+					scores[i] = h.RerankScore
+				}
+				gap, spread := pageShape(scores)
+				prodTops[arm] = prodTop{page[0].RerankScore, gap, spread, page[0].Reranked}
 			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
@@ -1199,6 +1265,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		// default page never had.
 		TopDistance: topDistance,
 		TopRerank:   prodTops[ArmProduction].rerank, RerankScored: prodTops[ArmProduction].scored,
+		TopGap: prodTops[ArmProduction].gap, ScoreSpread: prodTops[ArmProduction].spread,
 		PoolRank: poolRank, DistractorPoolRank: distractorPoolRank, Degraded: rerankFailed,
 	}, nil
 }

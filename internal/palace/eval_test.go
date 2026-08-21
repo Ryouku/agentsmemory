@@ -1369,3 +1369,68 @@ func TestPopulationLabelsSeparateUnreachable(t *testing.T) {
 		}
 	}
 }
+
+// TestAbstentionStatsAreContrastiveNotAbsolute pins the two reference-free
+// statistics the calibration curve should be fitted on, and that they reach the
+// report.
+//
+// The gate this ADR builds decides "does this page contain an answer at all", and
+// the plan was to calibrate it on the top document's ABSOLUTE cross-encoder score.
+// Measured on this palace, that family is the weak one: an absolute rerank score
+// separates a wrong page from a right one at 0.841 AUC and an absolute centroid
+// distance at 0.728, while a contrastive margin reaches 0.985. Every strong signal
+// measured was a difference; every weak one was a position.
+//
+// The published reason is that a similarity score has no anchored zero — its scale
+// moves with the query — which is exactly why the query-performance-prediction
+// family (WIG, NQC) are defined as gaps and spreads over the retrieved set rather
+// than as levels. TopGap is the WIG shape, ScoreSpread the NQC shape.
+//
+// Both are ADDED beside TopRerank rather than replacing it, so the curve can be
+// fitted on each and the better one chosen by measurement instead of by this
+// comment.
+func TestAbstentionStatsAreContrastiveNotAbsolute(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t).WithReranker(&fakeReranker{}, DefaultRerankPool)
+	const team = "team-1"
+
+	// fakeReranker scores a document by how many query words it contains, so a
+	// page with one dominant hit and two weak ones has a real gap; a page whose
+	// hits all contain the terms equally has none.
+	for _, c := range []string{
+		"alpha beta gamma delta alpha beta gamma delta",
+		"alpha zzzz yyyy xxxx",
+		"alpha wwww vvvv uuuu",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "gap", Content: c}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	report, err := svc.Evaluate(ctx, team, []EvalCase{
+		{Query: "alpha beta gamma delta", Category: CatAbsent},
+	}, 10, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(report.Details) != 1 {
+		t.Fatalf("want 1 detail, got %d", len(report.Details))
+	}
+	d := report.Details[0]
+	if !d.RerankScored {
+		t.Fatalf("the fixture did not rerank, so neither statistic can be measured: %+v", d)
+	}
+	if d.TopGap <= 0 {
+		t.Errorf("TopGap is %v on a page whose top hit contains every query term and whose "+
+			"others contain one — a gap of zero here means the statistic is not measuring the "+
+			"page's shape", d.TopGap)
+	}
+	if d.ScoreSpread <= 0 {
+		t.Errorf("ScoreSpread is %v on a page with clearly unequal scores", d.ScoreSpread)
+	}
+	// The contrastive statistics must not be a relabelling of the absolute one.
+	if d.TopGap == d.TopRerank {
+		t.Errorf("TopGap equals TopRerank (%v) — the gap is not contrastive, it is the level "+
+			"under a new name", d.TopGap)
+	}
+}
