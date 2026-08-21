@@ -652,3 +652,29 @@ without the exit-code trap the first version had.
   enforced. Confirming a pair by checking the selected code path drops the parameter would make the
   rest enforceable.
 
+
+## From ADR-015 (a wing merge must correct the search index it invalidates)
+
+- **`DrawerID` hashes the wing, so a merge invalidates every id-derived reference** — the id is
+  content-and-location derived, `MergeWing` deliberately leaves ids unchanged, and the result is a
+  palace where a drawer's id encodes a wing it no longer lives in. Making the id independent of the
+  wing would remove the whole class of merge-drift, and it would also rewrite every id and
+  invalidate every anchor, tunnel and knowledge-graph source pointer. Too large for ADR-015; worth
+  deciding deliberately rather than inheriting.
+- **The drift check looks only at `wing`** — a point's payload also carries `room`, and nothing
+  compares it. `room` has no relabel path today, which is why it is not urgent, and "no path today"
+  is exactly the assumption that produced the wing drift.
+- **Patching payloads in bulk by filter rather than by id** — `SetPayload` takes ids because that is
+  what a merge has. A backend-side filter update would make a whole-wing correction one call
+  instead of N.
+
+## From ADR-016 (a memory an agent files must be navigable)
+
+- **Backfilling `entities` for drawers filed before the write path stamps them** — a palace will
+  otherwise have a derived graph over its recent memories and nothing over its older ones. The
+  extraction is pure and cheap, so a backfill is a batch job over existing rows with no model call;
+  what it needs is a decision about whether it runs automatically or on request.
+- **`am_recompute_graph` reports success when it derives nothing** — measured 2026-08-21 on a palace
+  where every recompute was necessarily a no-op, because no drawer carried an entity. ADR-016 T3
+  puts a note on the three READ tools; the write tool still reports a count of zero as though zero
+  were an answer.
