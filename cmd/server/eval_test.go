@@ -424,13 +424,18 @@ func TestSupersessionGateIgnoresPageScopedArms(t *testing.T) {
 		{Arm: palace.ArmProduction, Supersession: palace.SupersessionCell{Scope: palace.ScopePage, Cases: 40, StaleAbove: 0}},
 		{Arm: palace.ArmHybrid, Supersession: palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 1}},
 	}}
-	if _, err := gatedArmCell(report); err == nil {
+	want := palace.SupersessionGatedArm()
+	if _, err := gatedArmCell(report, want); err == nil {
 		t.Error("the gate accepted a report without its pre-registered arm — a page-scoped or " +
 			"merely-available arm answers a different question under the same name")
 	}
+	if _, err := gatedArmCell(report, ""); err == nil {
+		t.Error("the gate answered for a served ranking no arm reconstructs — naming the nearest arm " +
+			"is how it came to judge a configuration nobody ran")
+	}
 	report.Arms = append(report.Arms, palace.EvalMetrics{
-		Arm: palace.SupersessionGatedArm(), Supersession: palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 30}})
-	got, err := gatedArmCell(report)
+		Arm: want, Supersession: palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 30}})
+	got, err := gatedArmCell(report, want)
 	if err != nil {
 		t.Fatalf("the gated arm is present and was refused: %v", err)
 	}
@@ -613,5 +618,45 @@ func TestRunRecordNamesTheRankingItMeasured(t *testing.T) {
 	if !regexp.MustCompile(`Ranking:\s*[A-Za-z0-9_.]*RankingProfile\(\)`).Match(src) {
 		t.Error("cmd/server/eval.go never assigns cellsConfig.Ranking from RankingProfile() — " +
 			"the field would be written empty on every real run while this test's own call passes it by hand")
+	}
+}
+
+// TestSupersessionGateJudgesTheArmItWasGiven drives the REAL printing path with
+// two different served arms and requires two different verdict headers.
+//
+// The service-aware selector already existed and was already tested — and had no
+// production caller at all: every call site read the package-global, so a
+// deployment without a reranker was refused as degraded and a linear deployment
+// with one was silently judged as rrf+rerank. A test that calls the selector and
+// checks its answer passes identically in both worlds. This one asserts the
+// CALL, which is the only difference between them.
+func TestSupersessionGateJudgesTheArmItWasGiven(t *testing.T) {
+	cell := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 2}
+	meta := caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}
+
+	for _, arm := range []palace.EvalArm{palace.ArmRRF, palace.ArmRRFReranked} {
+		report := palace.EvalReport{Arms: []palace.EvalMetrics{
+			{Arm: palace.ArmRRF, Ranks: []int{1, 1, 2}, Supersession: cell},
+			{Arm: palace.ArmRRFReranked, Ranks: []int{1, 2, 1}, Supersession: cell},
+		}}
+		var buf strings.Builder
+		if err := printSupersessionGate(&buf, report, meta, arm); err != nil {
+			t.Fatalf("arm %q: %v", arm, err)
+		}
+		if !strings.Contains(buf.String(), string(arm)) {
+			t.Errorf("the gate was given arm %q and its verdict never names it:\n%s", arm, buf.String())
+		}
+		// ArmRRF is a prefix of ArmRRFReranked, so naming the wrong one is only
+		// detectable in the direction that is not a substring.
+		if arm == palace.ArmRRF && strings.Contains(buf.String(), string(palace.ArmRRFReranked)) {
+			t.Errorf("the gate was given %q and reported %q — it is reading a global, not its argument:\n%s",
+				arm, palace.ArmRRFReranked, buf.String())
+		}
+	}
+
+	var buf strings.Builder
+	err := printSupersessionGate(&buf, palace.EvalReport{}, meta, "")
+	if err == nil {
+		t.Error("the gate produced a verdict for a served ranking no arm reconstructs")
 	}
 }

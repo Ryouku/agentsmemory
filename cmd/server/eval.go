@@ -151,7 +151,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	printClosetBlock(out, report)
 	palace.PrintSupersessionTable(out, report)
 	if c.Bool("supersession-gate") {
-		if err := printSupersessionGate(out, report, runMeta); err != nil {
+		if err := printSupersessionGate(out, report, runMeta, svc.drawers.SupersessionGatedArmFor()); err != nil {
 			fmt.Fprintf(out, "\nsupersession gate: REFUSED — %v\n", err)
 		}
 	}
@@ -1523,8 +1523,14 @@ func supersessionGateReady(cell palace.SupersessionCell, meta caseFileMeta) erro
 // Never the nearest available arm: a degraded run drops the reranked arms, and
 // gating whatever is left answers a different question under the same name. That
 // substitution is the selection this gate exists to remove.
-func gatedArmCell(report palace.EvalReport) (palace.SupersessionCell, error) {
-	want := palace.SupersessionGatedArm()
+func gatedArmCell(report palace.EvalReport, want palace.EvalArm) (palace.SupersessionCell, error) {
+	if want == "" {
+		return palace.SupersessionCell{}, fmt.Errorf(
+			"this server's ranking is not reconstructed by any eval arm, so there is no faithful number to " +
+				"gate on — the arms are fixed pipelines and naming the nearest one is how the gate came to " +
+				"judge a configuration nobody ran. Run the gate on a served configuration an arm reproduces, " +
+				"or add the arm")
+	}
 	var reranked bool
 	for _, m := range report.Arms {
 		if m.Arm == want {
@@ -1557,8 +1563,8 @@ const defaultEvalPool = 50
 // floor the interval straddles almost any bar, and a gate that answers anyway
 // teaches people to ignore it. Each refusal names its own cause so an operator
 // can tell a thin corpus from an unhardened case file from a degraded run.
-func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta) error {
-	cell, err := gatedArmCell(report)
+func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta, want palace.EvalArm) error {
+	cell, err := gatedArmCell(report, want)
 	if err != nil {
 		return err
 	}
@@ -1582,7 +1588,7 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 		if !ok {
 			continue
 		}
-		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report))
+		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report, want))
 		v := palace.ApplyRecencyVeto(verdict, band, delta, palace.RecencyBandCount())
 		if v.Status != verdict.Status {
 			verdict = v
@@ -1594,8 +1600,8 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 	}
 
 	fmt.Fprintf(out, "\nsupersession gate — %s\n", strings.ToUpper(verdict.Status))
-	fmt.Fprintf(out, "  arm %s (pre-registered, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
-		palace.SupersessionGatedArm(), cell.Cases, defaultEvalPool)
+	fmt.Fprintf(out, "  arm %s (pre-registered from the SERVED ranking, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
+		want, cell.Cases, defaultEvalPool)
 	fmt.Fprintf(out, "  stale-above %.1f%% %s against a bar of %.2f; excluding unreachable corrections: %.1f%%\n",
 		100*verdict.Rate, verdict.Interval, palace.SupersessionBar(), 100*verdict.RateReachable)
 	if verdict.Reason != "" {
@@ -1610,9 +1616,9 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 // gatedArmRanks returns the pre-registered arm's per-case ranks, for the
 // non-inferiority comparison. Empty when the arm is absent, which the caller has
 // already refused on.
-func gatedArmRanks(report palace.EvalReport) []int {
+func gatedArmRanks(report palace.EvalReport, want palace.EvalArm) []int {
 	for _, m := range report.Arms {
-		if m.Arm == palace.SupersessionGatedArm() {
+		if m.Arm == want {
 			return m.Ranks
 		}
 	}

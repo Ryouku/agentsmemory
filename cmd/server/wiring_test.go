@@ -315,3 +315,32 @@ func TestGatedArmMatchesTheShippedDefaults(t *testing.T) {
 			"the lookup succeeds and says nothing.", got, d.Fusion, d.ClosetBoost, want)
 	}
 }
+
+// TestTheGateAsksTheServiceForItsArm is the check that was missing when
+// SupersessionGatedArmFor shipped with no production caller at all.
+//
+// The selector existed, was correct, and was tested — by a test that called it
+// directly. Every real call site read the package-level default instead, so a
+// deployment with no RERANK_URL was refused as "degraded" rather than judged on
+// ArmRRF, and a linear deployment with a working reranker was silently judged as
+// rrf+rerank: the "gate judges a pipeline nobody runs" defect, reintroduced by
+// the commit that fixed it.
+//
+// runEval needs a database, so the wiring cannot be driven from a unit test. It
+// is read off the source instead — crude, and it fails when the wire is cut,
+// which is the only property that matters here.
+func TestTheGateAsksTheServiceForItsArm(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "eval.go"))
+	if err != nil {
+		t.Fatalf("read eval.go: %v", err)
+	}
+	if !regexp.MustCompile(`printSupersessionGate\([^)]*SupersessionGatedArmFor\(\)`).Match(src) {
+		t.Error("cmd/server/eval.go does not pass the SERVICE's own arm to printSupersessionGate — " +
+			"the gate would judge the shipped default whatever this server is configured with")
+	}
+	if regexp.MustCompile(`palace\.SupersessionGatedArm\(\)`).Match(src) {
+		t.Error("cmd/server/eval.go reads palace.SupersessionGatedArm(), the SHIPPED default's arm. " +
+			"A running eval must gate on the ranking THIS server serves; the package-level value is the " +
+			"pre-registration, not the configuration.")
+	}
+}

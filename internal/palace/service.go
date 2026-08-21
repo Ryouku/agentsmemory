@@ -315,6 +315,34 @@ func (s *Service) WithLexNorm(name string) *Service {
 	return s
 }
 
+// fusionRanker is the ranking function this service fuses candidates with.
+//
+// Named rather than inlined in Search so that "which ranker does production
+// run?" is a question with one answer a test can call. The eval names an arm for
+// a served configuration, and the only honest way to check that mapping is to
+// run BOTH rankers on the same input and compare the order — a check on the arm
+// NAME passes happily while the two functions differ.
+func (s *Service) fusionRanker() func(query string, docs []string, dists, boosts []float64) []HybridScore {
+	switch {
+	case s.fusionRRF:
+		// Rank fusion ignores bm25Base entirely — the weight question does not
+		// arise when neither signal contributes a magnitude, only a position.
+		return rankRRF
+	case s.bm25Auto && s.bm25IDF:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptiveIDFNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	case s.bm25Auto:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptiveNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	default:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridWeightedNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	}
+}
+
 // RankingProfile is the fully resolved ranking configuration in one line: every
 // decision that will act on the next query, whether an operator set it or it came
 // from a default.
@@ -869,19 +897,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
-	var ranked []HybridScore
-	switch {
-	case s.fusionRRF:
-		// Rank fusion ignores bm25Base entirely — the weight question does not
-		// arise when neither signal contributes a magnitude, only a position.
-		ranked = rankRRF(query, docs, dists, boosts)
-	case s.bm25Auto && s.bm25IDF:
-		ranked = rankHybridAdaptiveIDFNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
-	case s.bm25Auto:
-		ranked = rankHybridAdaptiveNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
-	default:
-		ranked = rankHybridWeightedNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
-	}
+	ranked := s.fusionRanker()(query, docs, dists, boosts)
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
