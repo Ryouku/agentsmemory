@@ -33,6 +33,20 @@ This is the same defect this repository keeps finding, in a boolean: a field who
 
 **What this ADR does not claim.** The same run scored 18 answers where the first scored 12, and that is NOT evidence of improvement: different judges, and the original pages were not saved, so the two numbers cannot be compared. The corpus also grew by 26 drawers between the runs. Only the before/after on identical inputs is attributable, and that is what is quoted above.
 
+**T1's mechanical half, measured 2026-08-21 across the nine real queries the blind judge scored as not-answered and not wing-scoped.** No judgement is involved in any of it.
+
+| | |
+|---|---|
+| chosen windows starting within 130 runes of the memory's beginning | **7 of 9** |
+| chosen windows TIED on score by a later window the agent never sees | **5 of 9** |
+| cases where any later window scores HIGHER than the chosen one | **0 of 9** |
+
+The third row explains the first two, and it names a mechanism rather than a tendency. **The score saturates.** A window is ranked by how many distinct query terms fall inside it, so once a window contains the terms, every other window containing them scores identically — and the chooser resolves ties by position, because it keeps a candidate only on `score > bestScore` and the earliest maximum therefore wins.
+
+In this corpus that is not a coin toss. A memory opens with a header line — a date, the project, the subject — which is exactly where a query's terms live, so the opening ties or wins by construction and the body is never shown. The chooser is not picking the best part of the memory; it is picking the first part that mentions the subject.
+
+That is enough on its own to say the ranking cannot discriminate at 400 runes against 1,600-rune memories: in nine real cases it never once found a window it preferred to the opening. Whether the ANSWERS are in those tied windows is the semantic half, judged separately below — a saturating score is a reason the chooser cannot help, not evidence that showing more would.
+
 ## Existing Primitives Audit
 
 - **`snippetWindow`** (`internal/palace/rank.go`) — already scores every candidate window in a memory by how many query terms fall inside it, and already returns the best. Reshape: it computes the ranking of ALL windows and discards everything but the winner. The second-best window is the cheapest thing in this ADR.
