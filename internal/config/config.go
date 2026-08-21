@@ -203,6 +203,17 @@ type Config struct {
 	// the rrf arm in its table is for.
 	Fusion string
 
+	// LexNorm selects how raw BM25 scores are normalised before fusion:
+	// "page-max" (the default and what production has always done), "ceiling", or
+	// "saturating". The anchored transforms measure a candidate's lexical score
+	// against what the QUERY could have attained rather than against whichever
+	// candidate happened to win the page, so the lexical channel stops shouting
+	// when nothing in the page is a good lexical match.
+	//
+	// DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than
+	// magnitudes, so there is no lexical magnitude to normalise.
+	LexNorm string
+
 	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
 	// keeps the full boost, 0 disables it. On a curated palace the boost
 	// promotes what a human chose to keep; on a mined-transcript corpus the
@@ -312,7 +323,11 @@ func Default() Config {
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		ClosetBoost:      1,
 		Fusion:           "linear",
-		RerankTimeout:    90 * time.Second,
-		Debug:            false,
+		// Spelled here rather than imported: config must not depend on the domain.
+		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the
+		// two spellings cannot drift into two different defaults.
+		LexNorm:       "page-max",
+		RerankTimeout: 90 * time.Second,
+		Debug:         false,
 	}
 }

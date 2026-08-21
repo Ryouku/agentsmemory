@@ -126,3 +126,28 @@ func TestRerankSurvivesEveryFusionMode(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigureRankingAppliesTheLexicalNormaliser: the composition root must
+// carry the operator's choice into the service, and only driving it proves that.
+//
+// Unwiring the assignment survived every other test in this package: the AST
+// check that says "configureRanking reads cfg.LexNorm" still sees the read when
+// the branch is dead, and the palace tests drive WithLexNorm directly. A field
+// that is read and discarded looks identical to one that is used, from the
+// outside and from the source.
+func TestConfigureRankingAppliesTheLexicalNormaliser(t *testing.T) {
+	for _, tc := range []struct{ set, want string }{
+		{"", palace.DefaultLexNorm},
+		{"page-max", palace.DefaultLexNorm},
+		{"ceiling", "ceiling"},
+		{"saturating", "saturating"},
+		{"nonsense", palace.DefaultLexNorm},
+	} {
+		cfg := config.Default()
+		cfg.LexNorm = tc.set
+		svc, lines := configureRanking(bareService(), cfg, noReranker)
+		if got := svc.LexNormName(); got != tc.want {
+			t.Errorf("--lex-norm=%q produced %q, want %q; lines=%v", tc.set, got, tc.want, lines)
+		}
+	}
+}

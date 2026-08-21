@@ -719,3 +719,26 @@ func reorderByRecency(page []HybridScore, dates []string, band float64) []Hybrid
 	}
 	return out
 }
+
+// DefaultLexNorm is the normaliser production has always used. It is named here
+// so the default has one spelling rather than being implied by a wrapper.
+const DefaultLexNorm = "page-max"
+
+// lexNormByName resolves an operator-facing normaliser name, reporting whether it
+// is one this build knows. The names are the ones the eval's tables already
+// print, so a row that wins names the value that deploys it.
+func lexNormByName(name string) (lexNorm, bool) {
+	switch name {
+	case DefaultLexNorm:
+		return lexNormPageMax, true
+	case "ceiling":
+		return lexNormCeiling, true
+	case "saturating":
+		return lexNormSaturating, true
+	}
+	return nil, false
+}
+
+// LexNormNames are the selectable normalisers, for a flag's help text and for the
+// gate that keeps that help text honest.
+func LexNormNames() []string { return []string{DefaultLexNorm, "ceiling", "saturating"} }

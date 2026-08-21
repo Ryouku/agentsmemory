@@ -5,7 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/rank.go` (`rankFused`, `bm25Scores`, `adaptiveBM25Weight`, `LexicalCoverageIDF`), `internal/palace/eval.go` (arm registry, `evalCase`), `internal/palace/evalstats.go` (paired bootstrap), `internal/palace/armreach_test.go` (arm reachability), `internal/palace/service_test.go` (`TestLexicalIDFChangesWhatSearchReturns`, the behavioural-reachability pattern), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-003-retire-the-closet-prior.md` (it decides whether the prior this ADR must rank alongside survives at all)
-**Served-path change:** The lexical normaliser becomes an operator-selectable choice (`LEX_NORM` / `Service.WithLexNorm`) and the served fusion changes accordingly — T4, pending. **The two landed tasks changed only the eval**: `lexNormCeiling` and `lexNormSaturating` are referenced from `eval.go` and from nothing in `Search`.
+**Served-path change:** The lexical normaliser is an operator-selectable choice — `--lex-norm` / `LEX_NORM` / `Service.WithLexNorm`, landed 2026-08-21 — so `Search` can now run `ceiling` and `saturating`, which were previously reachable from an eval table and from nothing an operator runs. The DEFAULT is unchanged and stays `page-max`: which normaliser should win is T3's evidence question, and shipping the choice first means the answer is a changed default rather than a build.
 
 ## Context
 

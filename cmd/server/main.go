@@ -130,6 +130,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		EmbedURL:         strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:      c.Float("closet-boost"),
 		Fusion:           strings.TrimSpace(c.String("fusion")),
+		LexNorm:          strings.TrimSpace(c.String("lex-norm")),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
 		HTTPTimeout:      c.Duration("http-timeout"),
@@ -183,6 +184,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
@@ -822,6 +824,17 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	// operator reads before choosing it. Suppressing a contradictory line is worth
 	// one condition, never an early exit past wiring that is still wanted.
 	if !rrf {
+		// The anchored normalisers were built, tested and compared in the eval and
+		// production could select none of them until this line existed.
+		if n := strings.TrimSpace(cfg.LexNorm); n != "" && n != palace.DefaultLexNorm {
+			before := drawers.LexNormName()
+			drawers = drawers.WithLexNorm(n)
+			if drawers.LexNormName() == before {
+				say("lex norm: %q is not one of %v; keeping %s", n, palace.LexNormNames(), before)
+			} else {
+				say("lex norm: %s (default is %s)", drawers.LexNormName(), palace.DefaultLexNorm)
+			}
+		}
 		if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
 			drawers = drawers.WithLexicalIDF(true)
 			say("bm25 weight: auto (IDF-weighted coverage)")

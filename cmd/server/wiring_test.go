@@ -11,6 +11,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 )
 
 // A setting is wired only when BOTH halves exist: something puts an operator's
@@ -229,4 +232,26 @@ func configFields(t *testing.T, path string) []string {
 	})
 	sort.Strings(out)
 	return out
+}
+
+// TestLexNormDefaultsAgree: config spells the default normaliser as a literal
+// because internal/config must not import the domain, so the two spellings can
+// drift into two different defaults with nothing failing. This is the mechanical
+// check that stands in for the import.
+func TestLexNormDefaultsAgree(t *testing.T) {
+	if got, want := config.Default().LexNorm, palace.DefaultLexNorm; got != want {
+		t.Errorf("config.Default().LexNorm = %q but palace.DefaultLexNorm = %q — an operator who "+
+			"changes nothing would get a normaliser neither file claims", got, want)
+	}
+	names := palace.LexNormNames()
+	found := false
+	for _, n := range names {
+		if n == config.Default().LexNorm {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the default %q is not among the selectable names %v — the default is unreachable "+
+			"by anyone who states it explicitly", config.Default().LexNorm, names)
+	}
 }

@@ -36,6 +36,10 @@ type knob struct {
 var sweptKnobs = []knob{
 	{"--fusion", []string{"linear", "rrf"}, func(c config.Config, v string) config.Config { c.Fusion = v; return c }},
 	{"--bm25-weight", []string{"auto", "auto-idf", "0.0", "0.6"}, func(c config.Config, v string) config.Config { c.BM25Weight = v; return c }},
+	{"--lex-norm", []string{"page-max", "ceiling", "saturating"}, func(c config.Config, v string) config.Config {
+		c.LexNorm = v
+		return c
+	}},
 	{"--closet-boost", []string{"1", "0"}, func(c config.Config, v string) config.Config {
 		if v == "0" {
 			c.ClosetBoost = 0

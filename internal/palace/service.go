@@ -161,6 +161,22 @@ type Service struct {
 	// eval says it should be.
 	fusionRRF bool
 
+	// lexNorm is how the raw BM25 scores are normalised before fusion, and
+	// lexNormName is the operator-facing spelling of it.
+	//
+	// Three transforms were built, tested and compared in the eval — page-max,
+	// ceiling and saturating — and for a long time production could select none of
+	// them: Search called the page-max wrappers and there was no config key, no
+	// flag and no setter. They were reachable from a table and from nothing an
+	// operator runs, so an eval could report the best arm and leave no way to
+	// deploy it.
+	//
+	// The DEFAULT is unchanged. Which normaliser should win is an evidence
+	// question (ADR-002 T3); being able to choose one is not, and shipping the
+	// choice first means the answer is a changed default rather than a build.
+	lexNorm     lexNorm
+	lexNormName string
+
 	// closetBoostScale scales every closet rank boost: 1 is the full curation
 	// prior, 0 turns closets into a pure ranking no-op. It exists because the
 	// prior's worth depends on what the palace holds: on a curated palace the
@@ -194,6 +210,7 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// would silently make fusion vector-only, which is a measured regression
 		// on identifier queries.
 		bm25Auto: true, bm25Base: hybridBM25Weight,
+		lexNorm: lexNormPageMax, lexNormName: DefaultLexNorm,
 		// Pointers, not values: the eval's degraded path shallow-copies the
 		// service to drop the reranker, and a copied sync.Map is a vet error and
 		// a real hazard — the copy must SHARE these locks, it guards the same
@@ -281,6 +298,20 @@ func (s *Service) WithLexicalIDF(on bool) *Service {
 	s.bm25IDF = on
 	return s
 }
+
+// WithLexNorm selects the lexical normaliser by its operator-facing name. An
+// unrecognised name keeps the default rather than ranking differently in silence
+// — the same choice --fusion makes for an unrecognised value.
+func (s *Service) WithLexNorm(name string) *Service {
+	if n, ok := lexNormByName(name); ok {
+		s.lexNorm, s.lexNormName = n, name
+	}
+	return s
+}
+
+// LexNormName reports the normaliser in force, so startup and am_status can state
+// what is actually ranking rather than what was requested.
+func (s *Service) LexNormName() string { return s.lexNormName }
 
 // WithRerankWeight sets how much the cross-encoder's opinion counts against the
 // hybrid score it refines: 1 hands it the whole decision, 0 ignores it. Values
@@ -808,11 +839,11 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// arise when neither signal contributes a magnitude, only a position.
 		ranked = rankRRF(query, docs, dists, boosts)
 	case s.bm25Auto && s.bm25IDF:
-		ranked = rankHybridAdaptiveIDF(query, docs, dists, boosts, s.bm25Base)
+		ranked = rankHybridAdaptiveIDFNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
 	case s.bm25Auto:
-		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
+		ranked = rankHybridAdaptiveNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
 	default:
-		ranked = rankHybridWeighted(query, docs, dists, boosts, s.bm25Base)
+		ranked = rankHybridWeightedNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
 	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
