@@ -19,12 +19,12 @@
 | `internal/palace/repo.go` | edit | `WingIsEmpty(ctx, teamID, wing)` — one COUNT, no scan |
 | `internal/palace/service.go` | edit | expose it on the Service the MCP layer holds |
 | `internal/mcpserver/drawers.go` | edit | **the selection**: declare `confirm_new_wing` on the tool AND branch on the check before `Add`. A refusal function nothing calls is this repo's signature defect |
-| `internal/mcpserver/drawers_test.go` | edit | behavioural tests for the decision + a call-site test that the add path consults it |
+| `internal/mcpserver/handoff_test.go` | edit | behavioural tests for the decision + a call-site test that the add path consults it |
 | `internal/palace/repo_test.go` | edit | `WingIsEmpty` is true for an unwritten wing and false after one drawer |
 
 ## Ordered Steps
 
-1. Write the failing tests first (TDD red): `TestHandoffIntoAnUnresolvableWingIsRefused` and `TestHandoffRefusalCanBeOverridden` in `internal/mcpserver/drawers_test.go`. Commit them red.
+1. Write the failing tests first (TDD red): `TestHandoffIntoAnUnresolvableWingIsRefused` and `TestHandoffRefusalCanBeOverridden` in `internal/mcpserver/handoff_test.go`. Commit them red.
 2. Add `WingIsEmpty` to the repo as a `COUNT(*) … LIMIT 1`, and a passthrough on `Service`. Test it directly: an unwritten wing is empty, the same wing after one `Add` is not.
 3. Extract the decision into a function the test can DRIVE — `handoffRefusal(ctx, drawers, teamID, wing, room string, confirmed bool) string`, returning the refusal or `""`. Do not inline it at the call site: a guard whose only test greps the source passes against that guard disarmed with `&& false`, which this package has already been bitten by once.
 4. Declare `confirm_new_wing` on the `add_drawer` tool with a description that says what it is for, and branch on `handoffRefusal` before `drawers.Add`.
@@ -52,9 +52,9 @@ The new tests are named and grepped for individually, so the fence cannot be sat
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestHandoffIntoAnUnresolvableWingIsRefused` | `internal/mcpserver/drawers_test.go` | new wing + `room=inbox` refuses, and the text names the argument that proceeds | — |
-| `TestHandoffRefusalCanBeOverridden` | `internal/mcpserver/drawers_test.go` | `confirm_new_wing: true` files it; a new wing with any other room files without asking | — |
-| `TestAddPathConsultsTheHandoffCheck` | `internal/mcpserver/drawers_test.go` | the add path calls `handoffRefusal` and returns on it — the check can be right and unreached | — |
+| `TestHandoffIntoAnUnresolvableWingIsRefused` | `internal/mcpserver/handoff_test.go` | new wing + `room=inbox` refuses, and the text names the argument that proceeds | — |
+| `TestHandoffRefusalCanBeOverridden` | `internal/mcpserver/handoff_test.go` | `confirm_new_wing: true` files it; a new wing with any other room files without asking | — |
+| `TestAddPathConsultsTheHandoffCheck` | `internal/mcpserver/handoff_test.go` | the add path calls `handoffRefusal` and returns on it — the check can be right and unreached | — |
 | `TestWingIsEmptyCountsDrawers` | `internal/palace/repo_test.go` | true before the first write, false after | — |
 
 ## Out of Scope

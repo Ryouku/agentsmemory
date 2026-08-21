@@ -41,10 +41,12 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./cmd/server/ ./internal/palace/ -run "TestRerankedRecordsWhatHappened|TestCLISearchHonoursSearchScope|TestConfigFieldsAreSettableByAnOperator" -count=1 -v 2>&1 | tee /tmp/t4.out
+  go test ./cmd/server/ ./internal/palace/ -run "TestRerankedRecordsWhatHappened|TestRerankedIsTrueWhenItActuallyRan|TestDegradedRerankIsNotRecordedAsAPass|TestRerankPoolDoesNotWidenTheFetchForNothing|TestCLIWingDefaultsLikeARegistration|TestEveryConfigFieldIsPopulatedAndRead" -count=1 -v 2>&1 | tee /tmp/t4.out
   grep -q -- "--- PASS: TestRerankedRecordsWhatHappened" /tmp/t4.out
-  grep -q -- "--- PASS: TestCLISearchHonoursSearchScope" /tmp/t4.out
-  grep -q -- "--- PASS: TestConfigFieldsAreSettableByAnOperator" /tmp/t4.out
+  grep -q -- "--- PASS: TestRerankPoolDoesNotWidenTheFetchForNothing" /tmp/t4.out
+  grep -q -- "--- PASS: TestDegradedRerankIsNotRecordedAsAPass" /tmp/t4.out
+  grep -q -- "--- PASS: TestCLIWingDefaultsLikeARegistration" /tmp/t4.out
+  grep -q -- "--- PASS: TestEveryConfigFieldIsPopulatedAndRead" /tmp/t4.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/t4.out
   go test ./... -count=1'
 ```
@@ -57,8 +59,14 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestRerankedIsTrueWhenItActuallyRan` | `internal/palace/telemetry_test.go` | the true case, so the field cannot be hardcoded false | — |
 | `TestDegradedRerankIsNotRecordedAsAPass` | `internal/palace/telemetry_test.go` | a failed rerank records false, on the path that fires when something is wrong | — |
 | `TestRerankPoolDoesNotWidenTheFetchForNothing` | `internal/palace/telemetry_test.go` | a configured-but-disabled reranker stops paying for a wider fetch | — |
-| `TestCLISearchHonoursSearchScope` | `cmd/server/mcp_test.go` | the CLI path scopes to the registration wing by default | — |
-| `TestConfigFieldsAreSettableByAnOperator` | `cmd/server/wiring_test.go` | a field assigned only from `def.X` fails, as the message has always claimed | — |
+| `TestCLIWingDefaultsLikeARegistration` | `cmd/server/mcp_test.go` | the CLI path scopes to the registration wing by default | — |
+| `TestEveryConfigFieldIsPopulatedAndRead` | `cmd/server/wiring_test.go` | a field assigned only from `def.X` fails, as the message has always claimed | — |
+
+<Two names here were the PLAN's names and survived into the finished task: the CLI fix landed as a
+wing default rather than as a `SEARCH_SCOPE` read, and the config check was folded into the existing
+`TestEveryConfigFieldIsPopulatedAndRead` rather than added beside it. Both tests exist and both do
+what this table claims; only the names were stale. Nothing caught it for a day because the lint's
+done-check could not read this README's table shape.>
 
 ## Mutants
 
@@ -101,4 +109,17 @@ Stop and report if step 5 fails more than five fields — that is a finding abou
 
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-21 · aee8451* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  2026/08/21 03:57:17 OK   00017_totp.sql (1.38ms)
+  2026/08/21 03:57:17 OK   00018_webauthn.sql (5.16ms)
+  2026/08/21 03:57:17 OK   00019_unlimited_plan.sql (8.4ms)
+  2026/08/21 03:57:17 OK   00020_api_keys_team_user_idx.sql (1.98ms)
+  2026/08/21 03:57:17 OK   00021_search_events.sql (1.22ms)
+  2026/08/21 03:57:17 OK   00022_drawer_anchors.sql (1.12ms)
+  2026/08/21 03:57:17 goose: successfully migrated database to version: 22
+  --- PASS: TestRerankedRecordsWhatHappened (0.07s)
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.074s
+  ```
+- 2026-08-21 · aee8451* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
