@@ -537,11 +537,27 @@ func (i *Installer) writeAssets() error {
 		return err
 	}
 
+	// Subagent definitions are independent of hooks and must be written BEFORE the
+	// hookless early return below. They were not, and Cursor — the first agent
+	// with an agents/ directory and no hook system — silently got none: rung 1 of
+	// the reachability ladder with no rung 2, in the commit that made definitions
+	// kit-driven. Found by reading the installed config dir after a real install,
+	// not by a test; TestAgentWithoutACommandsDirWritesNoCommands ALLOWED the
+	// agents directory without requiring it, which is a check on what must not
+	// happen with nothing asserting what must.
+	if err := i.writeAgentDefinitions(); err != nil {
+		return err
+	}
+
 	// An agent with no hook system gets no hook script: pi retired hooks/ in
 	// favour of extensions, so its end-of-turn checkpoint ships inside the bridge
 	// extension (see registerPiMCP) and a stray .sh here would only confuse.
+	// Cursor is hookless for a different reason — its hook shape was never
+	// established — and gets no legacy note, which is pi's alone.
 	if i.kit.hooksFile == "" {
-		i.notePiLegacyHook()
+		if i.kit.name == agentPi {
+			i.notePiLegacyHook()
+		}
 		return nil
 	}
 
@@ -585,14 +601,6 @@ func (i *Installer) writeAssets() error {
 		}
 		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
 
-	}
-
-	// NOT inside the claude-only block above: codex reads <config>/agents/*.toml,
-	// so the one part of ADR-017 that changes what is POSSIBLE rather than what is
-	// asked applies to both. The kit says whether there is a directory and which
-	// dialect it wants.
-	if err := i.writeAgentDefinitions(); err != nil {
-		return err
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.

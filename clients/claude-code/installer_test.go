@@ -1419,6 +1419,16 @@ func TestAgentWithoutACommandsDirWritesNoCommands(t *testing.T) {
 				"writes it, so it is a file nothing reads", e.Name())
 		}
 	}
+
+	// ...and what the kit DOES declare must land. Allowing a directory without
+	// requiring it is how this test passed while Cursor got no subagent
+	// definition at all: writeAssets returned early for a hookless agent, before
+	// the definitions were written, and nothing said so.
+	if _, err := os.Stat(inst.agentDefinitionPath(agentAssets[0])); err != nil {
+		t.Errorf("the kit declares agentsDir %q but installed no definition: %v — an agent "+
+			"whose tool allowlist omits am_* cannot recall however it is instructed",
+			cursorKit.agentsDir, err)
+	}
 }
 
 // TestSandboxIsRefusedForAnAgentThatCannotRelocate pins that an install which
