@@ -90,7 +90,11 @@ Stop and ask if Claude Desktop does not surface `instructions` to its model at a
 
 ## Mutation Log
 
-<Tool-written by adr-verify --mutant. Do not hand-edit.>
+- 2026-08-22 · 347fdee* · mutant survived · exit 0 · `internal/web/windows-guide.md` · the guide keeps recommending npx mcp-remote for a self-hosted server that needs no Node.js, which is the documentation half of this task
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-22 · 347fdee* · mutant killed · exit 1 · `internal/web/windows-guide.md` · the guide reverts to recommending the Node.js bridge for a self-hosted server that ships its own, which is the documentation defect this task exists to correct
 
 ## Verification Log
 
