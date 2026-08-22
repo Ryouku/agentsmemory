@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -109,21 +110,21 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	}
 
 	// Stop hook must be registered pointing at the installed hook.
-	wantCmd := "bash " + filepath.Join(dir, hookFile)
+	wantCmd := bashHookCommand(filepath.Join(dir, hookFile))
 	if !hookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered", wantCmd)
 	}
 
 	// ...and its SessionStart companion, which is what makes anchor verification
 	// automatic rather than a command nobody remembers to run.
-	wantVerify := "bash " + filepath.Join(dir, verifyHookFile)
+	wantVerify := bashHookCommand(filepath.Join(dir, verifyHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionStart"), wantVerify) {
 		t.Errorf("SessionStart hook %q not registered", wantVerify)
 	}
 
 	// ...and the closing report, which is the only one of the three that sees a
 	// whole session.
-	wantEnd := "bash " + filepath.Join(dir, sessionEndHookFile)
+	wantEnd := bashHookCommand(filepath.Join(dir, sessionEndHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionEnd"), wantEnd) {
 		t.Errorf("SessionEnd hook %q not registered", wantEnd)
 	}
@@ -145,6 +146,47 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 		}
 		if len(c.env) == 0 || c.env[0] != "CLAUDE_CONFIG_DIR="+dir {
 			t.Errorf("call %q missing CLAUDE_CONFIG_DIR=%s env, got %v", c.rendered(), dir, c.env)
+		}
+	}
+}
+
+func TestInstallReplacesEveryPreQuoteHookCommand(t *testing.T) {
+	inst, _, dir := newTestInstaller(t, false)
+	legacyPaths := map[string]string{
+		"Stop":          inst.hookPath(),
+		"SessionStart":  inst.verifyHookPath(),
+		"SubagentStart": inst.subagentHookPath(),
+		"SubagentStop":  inst.hookPath(),
+		"SessionEnd":    inst.sessionEndHookPath(),
+	}
+	hooks := map[string]any{}
+	for event, path := range legacyPaths {
+		hooks[event] = []any{map[string]any{
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": "bash " + path,
+			}},
+		}}
+	}
+	body, err := json.Marshal(map[string]any{"hooks": hooks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(dir, claudeKit.hooksFile)
+	if err := os.WriteFile(settingsPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := inst.run(); err != nil {
+		t.Fatalf("upgrade install: %v", err)
+	}
+	for _, plan := range inst.hookPlans() {
+		entries := readHookEvent(t, settingsPath, plan.event)
+		if len(entries) != 1 {
+			t.Errorf("%s has %d registrations after upgrade, want 1", plan.event, len(entries))
+		}
+		if !hookPresent(entries, plan.cmd) {
+			t.Errorf("%s does not contain current quoted command %q", plan.event, plan.cmd)
 		}
 	}
 }
@@ -296,6 +338,43 @@ func TestResolveInstallTarget(t *testing.T) {
 	}
 }
 
+func TestResolveInstallTargetMakesConfigDirAbsolute(t *testing.T) {
+	start, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	if err := os.Chdir(base); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(start); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	target, _, _, err := resolveInstallTarget(codexKit, false, false, "", "relative-config", "/unused")
+	if err != nil {
+		t.Fatalf("resolve relative --config-dir: %v", err)
+	}
+	want := filepath.Join(base, "relative-config")
+	if target != want || !filepath.IsAbs(target) {
+		t.Fatalf("relative --config-dir resolved to %q, want absolute %q", target, want)
+	}
+}
+
+func TestHookPlansShellQuoteLiteralConfigPath(t *testing.T) {
+	inst := &Installer{
+		kit:       claudeKit,
+		targetDir: "/tmp/a b/it's;literal",
+	}
+	got := inst.hookPlans()[0].cmd
+	want := "bash -- '/tmp/a b/it'\"'\"'s;literal/agentsmemory-stop-hook.sh'"
+	if got != want {
+		t.Fatalf("Stop hook command = %q, want %q", got, want)
+	}
+}
+
 func TestResolveClaudeBinOverride(t *testing.T) {
 	got, err := resolveClaudeBin("my-claude")
 	if err != nil {
@@ -425,11 +504,30 @@ func TestDryRunnerRedactsToken(t *testing.T) {
 
 // TestInstallCodexCore covers the codex layout end to end: the same command
 // markdown lands in prompts/ instead of commands/, the Stop hook registers in
-// hooks.json instead of settings.json, AGENTS.md carries the protocol inlined
+// config.toml instead of Claude's settings.json, AGENTS.md carries the protocol inlined
 // (there is no @import on codex), and the MCP is registered with
 // --bearer-token-env-var since `codex mcp add` has no static-header flag.
 func TestInstallCodexCore(t *testing.T) {
 	inst, rr, dir := newTestInstallerFor(t, codexKit, false)
+	configBefore := []byte("# user formatting stays\nmodel = \"gpt-5.6-sol\"\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), configBefore, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantCmd := bashHookCommand(filepath.Join(dir, hookFile))
+	legacy := map[string]any{
+		"hooks": map[string]any{
+			"Stop": []any{map[string]any{
+				"hooks": []any{map[string]any{"type": "command", "command": wantCmd}},
+			}},
+		},
+	}
+	legacyBody, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hooks.json"), legacyBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := inst.run(); err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -443,9 +541,21 @@ func TestInstallCodexCore(t *testing.T) {
 		t.Error("codex install wrote a commands/ dir; codex reads prompts/")
 	}
 
-	wantCmd := "bash " + filepath.Join(dir, hookFile)
-	if !hookPresent(readStop(t, filepath.Join(dir, "hooks.json")), wantCmd) {
-		t.Errorf("Stop hook %q not registered in hooks.json", wantCmd)
+	configAfter, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(configAfter), string(configBefore)) {
+		t.Errorf("existing config.toml was reformatted or replaced:\n%s", configAfter)
+	}
+	if !strings.Contains(string(configAfter), `command = "`+wantCmd+`"`) {
+		t.Errorf("Stop hook %q not registered in config.toml:\n%s", wantCmd, configAfter)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hooks.json")); !os.IsNotExist(err) {
+		t.Errorf("legacy hooks.json was not removed: %v", err)
+	}
+	if backups, _ := filepath.Glob(filepath.Join(dir, "hooks.json.bak.*")); len(backups) != 1 {
+		t.Errorf("legacy hooks.json backups = %d, want 1", len(backups))
 	}
 
 	// AGENTS.md must hold the protocol itself: an @import line would be inert.
@@ -557,7 +667,7 @@ func TestInstallPiCore(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, hookFile)); err == nil {
 		t.Error("pi install wrote a Stop-hook script; pi has no hook system")
 	}
-	for _, name := range []string{"settings.json", "hooks.json"} {
+	for _, name := range []string{"settings.json", "config.toml", "hooks.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			t.Errorf("pi install wrote %s; pi registers no hooks", name)
 		}
@@ -656,7 +766,7 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 	if hookPresent(stop, legacyCmd) {
 		t.Error("the stale Stop entry survived; it would run a deleted file on every stop")
 	}
-	if want := "bash " + filepath.Join(dir, hookFile); !hookPresent(stop, want) {
+	if want := bashHookCommand(filepath.Join(dir, hookFile)); !hookPresent(stop, want) {
 		t.Errorf("relocated Stop hook %q not registered", want)
 	}
 }
@@ -761,8 +871,9 @@ func equalStrings(a, b []string) bool {
 // a promise about the CONNECTION — every call carries the wing, so a write lands
 // in the right project even when the agent names none — and a promise silently
 // unkept is worse than one refused: the memories still land, just in the wrong
-// wing. Claude carries it as a `mcp add --header`, pi as an env var its bridge
-// turns back into a header, and the two that cannot carry it must say so.
+// wing. Claude and Cursor carry it as a header, pi as an env var its bridge
+// turns back into a header, Codex as the server's supported URL query, and
+// Desktop as an mcp-stdio argument the bridge turns back into a header.
 func TestWingReachesEveryClientOrSaysWhyNot(t *testing.T) {
 	const wing = "wing_acme"
 
@@ -811,18 +922,132 @@ func TestWingReachesEveryClientOrSaysWhyNot(t *testing.T) {
 		}
 	})
 
-	t.Run("codex says it cannot", func(t *testing.T) {
-		inst, _, _ := newTestInstallerFor(t, codexKit, false)
-		out := &bytes.Buffer{}
-		inst.out = out
+	t.Run("cursor sends the header", func(t *testing.T) {
+		inst, _, dir := newTestInstallerFor(t, cursorKit, false)
 		inst.wing = wing
 		if err := inst.registerAgentsMemoryMCP(); err != nil {
 			t.Fatalf("register: %v", err)
 		}
-		if !strings.Contains(out.String(), "cannot ride this connection") {
-			t.Fatalf("codex install must warn that the wing is dropped; got %q", out.String())
+		body, err := os.ReadFile(filepath.Join(dir, cursorKit.mcpConfigFile))
+		if err != nil {
+			t.Fatalf("read Cursor MCP config: %v", err)
+		}
+		var got struct {
+			MCPServers map[string]struct {
+				Headers map[string]string `json:"headers"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("parse Cursor MCP config: %v\n%s", err, body)
+		}
+		if got.MCPServers[mcpName].Headers[wingHeader] != wing {
+			t.Fatalf("Cursor registration must pass %s=%s; got %s", wingHeader, wing, body)
 		}
 	})
+
+	t.Run("codex sends the query parameter", func(t *testing.T) {
+		inst, rr, _ := newTestInstallerFor(t, codexKit, false)
+		inst.mcpURL = "https://memory.example.test/mcp?existing=kept"
+		inst.wing = wing
+		if err := inst.registerAgentsMemoryMCP(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		var registeredURL string
+		for _, call := range rr.calls {
+			for n, arg := range call.args {
+				if arg == "--url" && n+1 < len(call.args) {
+					registeredURL = call.args[n+1]
+				}
+			}
+		}
+		parsed, err := url.Parse(registeredURL)
+		if err != nil {
+			t.Fatalf("parse registered URL %q: %v", registeredURL, err)
+		}
+		if got := parsed.Query().Get("wing"); got != wing {
+			t.Fatalf("Codex registration wing = %q, want %q (URL %q)", got, wing, registeredURL)
+		}
+		if got := parsed.Query().Get("existing"); got != "kept" {
+			t.Fatalf("Codex registration dropped existing query value: %q", registeredURL)
+		}
+	})
+
+	t.Run("claude desktop passes it to the bridge", func(t *testing.T) {
+		inst, _, dir := newTestInstallerFor(t, claudeDesktopKit, false)
+		inst.serverBin = "/opt/bin/aiagentmemory-server"
+		inst.wing = wing
+		if err := inst.registerAgentsMemoryMCP(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		body, err := os.ReadFile(filepath.Join(dir, claudeDesktopKit.mcpConfigFile))
+		if err != nil {
+			t.Fatalf("read Desktop MCP config: %v", err)
+		}
+		var got struct {
+			MCPServers map[string]struct {
+				Args []string `json:"args"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("parse Desktop MCP config: %v\n%s", err, body)
+		}
+		args := got.MCPServers[mcpName].Args
+		if !contains(args, "--wing") || !contains(args, wing) {
+			t.Fatalf("Desktop bridge args must carry --wing %s; got %v", wing, args)
+		}
+	})
+}
+
+func TestNoTokenRecoveryHintRetainsWingForEveryClient(t *testing.T) {
+	const wing = "wing_acme"
+	for _, kit := range []agentKit{claudeKit, codexKit, piKit, cursorKit, claudeDesktopKit} {
+		t.Run(kit.name, func(t *testing.T) {
+			inst, rr, _ := newTestInstallerFor(t, kit, false)
+			inst.token = ""
+			inst.yes = true
+			inst.wing = wing
+			inst.mcpURL = "https://memory.example.test/mcp?existing=kept"
+			extraWants := []string{}
+			switch kit.name {
+			case agentClaude:
+				inst.scope = "project"
+				inst.agentBin = "/opt/custom bins/claude"
+				extraWants = append(extraWants, "--scope 'project'", "--claude-bin '/opt/custom bins/claude'")
+			case agentCodex:
+				inst.agentBin = "/opt/custom bins/codex"
+				extraWants = append(extraWants, "--codex-bin '/opt/custom bins/codex'")
+			case agentPi:
+				inst.agentBin = "/opt/custom bins/pi"
+				extraWants = append(extraWants, "--pi-bin '/opt/custom bins/pi'")
+			case agentClaudeDesktop:
+				inst.serverBin = "/opt/bin/aiagentmemory-server"
+				extraWants = append(extraWants, "--server-bin '/opt/bin/aiagentmemory-server'")
+			}
+
+			if err := inst.registerAgentsMemoryMCP(); err != nil {
+				t.Fatalf("register without token: %v", err)
+			}
+			if len(rr.calls) != 0 {
+				t.Fatalf("no-token registration made calls: %+v", rr.calls)
+			}
+			got := inst.out.(*bytes.Buffer).String()
+			wants := []string{
+				"aiagentmemory install",
+				"--agent '" + kit.name + "'",
+				"--wing '" + wing + "'",
+				"--mcp-url 'https://memory.example.test/mcp?existing=kept'",
+			}
+			wants = append(wants, extraWants...)
+			for _, want := range wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("recovery hint missing %q:\n%s", want, got)
+				}
+			}
+			if (kit.name == agentCursor || kit.name == agentClaudeDesktop) && !strings.Contains(got, "--global") {
+				t.Errorf("%s recovery hint must use its supported global target:\n%s", kit.name, got)
+			}
+		})
+	}
 }
 
 // TestInstallerRegistersSubagentStart pins that the injector is installed and
@@ -839,7 +1064,7 @@ func TestInstallerRegistersSubagentStart(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, subagentHookFile)); err != nil {
 		t.Errorf("expected %s written: %v", subagentHookFile, err)
 	}
-	want := "bash " + filepath.Join(dir, subagentHookFile)
+	want := bashHookCommand(filepath.Join(dir, subagentHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SubagentStart"), want) {
 		t.Errorf("SubagentStart hook %q not registered — the injection then only exists on "+
 			"machines where someone edited settings.json by hand", want)
@@ -1050,7 +1275,7 @@ func TestInstallerRegistersSubagentStop(t *testing.T) {
 	if err := inst.run(); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	want := "bash " + filepath.Join(dir, hookFile)
+	want := bashHookCommand(filepath.Join(dir, hookFile))
 	settings := filepath.Join(dir, "settings.json")
 	if !hookPresent(readHookEvent(t, settings, "SubagentStop"), want) {
 		t.Fatalf("SubagentStop hook %q not registered — a subagent then finishes with its "+
@@ -1310,10 +1535,12 @@ func settingsBackups(t *testing.T, dir string) []string {
 // unreachable asset, one layer down: installed, well-formed, and inert.
 func TestInstalledAgentDefinitionNamesTheRealEndpoint(t *testing.T) {
 	const endpoint = "https://memory.example.test/mcp"
+	const wing = "wing_acme"
 	inst, _, _ := newTestInstaller(t, false)
 	inst.kit = codexKit
 	inst.agentBin = codexKit.bin
 	inst.mcpURL = endpoint
+	inst.wing = wing
 	if err := inst.writeAgentDefinitions(); err != nil {
 		t.Fatalf("write agent definitions: %v", err)
 	}
@@ -1329,8 +1556,8 @@ func TestInstalledAgentDefinitionNamesTheRealEndpoint(t *testing.T) {
 			t.Errorf("%s was installed with the placeholder still in it, so its memory tools "+
 				"point at a URL that does not exist", name)
 		}
-		if !strings.Contains(text, endpoint) {
-			t.Errorf("%s does not name the endpoint this install registered (%s)", name, endpoint)
+		if !strings.Contains(text, endpoint+"?wing="+wing) {
+			t.Errorf("%s does not name the scoped endpoint this install registered (%s, wing %s)", name, endpoint, wing)
 		}
 		checked++
 	}

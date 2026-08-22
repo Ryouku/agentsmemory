@@ -98,4 +98,11 @@ Stop and ask if Claude Desktop does not surface `instructions` to its model at a
 
 ## Verification Log
 
+- 2026-08-22 · live Claude Desktop 1.34493.1 · PASS · fully restarted Desktop,
+  opened a fresh chat, and asked `what happens to an am_search that names no
+  wing`; the bridge's raw initialize response carried the instructions and the
+  answer changed on both material points: registration-default scoping was
+  described correctly and `wing: "*"` was reserved for deliberate cross-project
+  recall. Mechanism 1 stays. Full evidence and the privacy-redacted treatment
+  transcript are in the parent ADR; limitation: one session, one prompt (`n = 1`).
 - 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

@@ -9,13 +9,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 )
 
 // upstreamTo builds an upstream pointed at a test server, so the proxy tests
 // exercise the real HTTP path rather than a stubbed client.
 func upstreamTo(t *testing.T, srv *httptest.Server) *upstream {
 	t.Helper()
-	up, err := newUpstream("", srv.URL, "")
+	up, err := newUpstream("", srv.URL, "", "")
 	if err != nil {
 		t.Fatalf("newUpstream: %v", err)
 	}
@@ -182,7 +185,7 @@ func TestProxyForwardsBearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	up, err := newUpstream("", srv.URL, "secret-key")
+	up, err := newUpstream("", srv.URL, "secret-key", "")
 	if err != nil {
 		t.Fatalf("newUpstream: %v", err)
 	}
@@ -190,6 +193,34 @@ func TestProxyForwardsBearerToken(t *testing.T) {
 
 	if seen != "Bearer secret-key" {
 		t.Fatalf("Authorization = %q, want %q", seen, "Bearer secret-key")
+	}
+}
+
+// TestStdioCommandForwardsRegistrationWing exercises the full CLI path. A unit
+// test that sets the header directly could pass while --wing is undeclared or
+// its parsed value never reaches newUpstream — the unreachable-feature defect
+// this repository explicitly guards against.
+func TestStdioCommandForwardsRegistrationWing(t *testing.T) {
+	const wing = "wing_acme"
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get(auth.WingHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer srv.Close()
+
+	var stdout strings.Builder
+	cmd := stdioCommandWithIO(
+		config.Default(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n"),
+		&stdout,
+	)
+	if err := cmd.Run(context.Background(), []string{"mcp-stdio", "--url", srv.URL, "--wing", wing}); err != nil {
+		t.Fatalf("mcp-stdio: %v", err)
+	}
+	if seen != wing {
+		t.Fatalf("%s = %q, want %q", auth.WingHeader, seen, wing)
 	}
 }
 
@@ -213,7 +244,7 @@ func TestProxyOverUnixSocket(t *testing.T) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"transport":"unix"}}`)
 	}))
 
-	up, err := newUpstream(path, "", "")
+	up, err := newUpstream(path, "", "", "")
 	if err != nil {
 		t.Fatalf("newUpstream: %v", err)
 	}
@@ -228,7 +259,7 @@ func TestProxyOverUnixSocket(t *testing.T) {
 // is nothing to dial, and that should be a clear error rather than a confusing
 // connection refused later.
 func TestNewUpstreamRequiresATarget(t *testing.T) {
-	if _, err := newUpstream("", "", ""); err == nil {
+	if _, err := newUpstream("", "", "", ""); err == nil {
 		t.Fatal("expected an error when neither --socket nor --url is set")
 	}
 }
@@ -236,7 +267,7 @@ func TestNewUpstreamRequiresATarget(t *testing.T) {
 // TestNewUpstreamPrefersSocket documents the precedence: --socket is the more
 // specific instruction, so it wins over a --url that is always defaulted.
 func TestNewUpstreamPrefersSocket(t *testing.T) {
-	up, err := newUpstream("/tmp/whatever.sock", defaultProxyURL, "")
+	up, err := newUpstream("/tmp/whatever.sock", defaultProxyURL, "", "")
 	if err != nil {
 		t.Fatalf("newUpstream: %v", err)
 	}

@@ -681,24 +681,29 @@ without the exit-code trap the first version had.
 
 ## From ADR-017 (a subagent is a session)
 
-- **codex and pi subagent models** — this ADR fixes the harness the defect was reported on.
-  **EXAMINED 2026-08-22, and the stated reason for deferring it does not hold.** codex-cli 0.144.5
-  supports the SAME hook events Claude does — `SessionStart`, `SessionEnd`, `SubagentStart`,
-  `SubagentStop`, plus PreToolUse/PostToolUse/UserPromptSubmit — read out of the shipped binary,
-  and another product on the reference machine already registers `SubagentStart` there. What differs
-  is the FILE and not the events: codex takes them as TOML tables in `config.toml`
-  (`[[hooks.SubagentStart]]` + `[[hooks.SubagentStart.hooks]]`, with the same `matcher` and
-  `type = "command"` shape), and our installer writes `hooks.json` instead.
-  Two consequences, both actionable now:
-  - **Our codex install produces a warning on every run**: *"loading hooks from both
-    ~/.codex/hooks.json and ~/.codex/config.toml; prefer a single representation for this layer"*.
-    codex still reads ours, so nothing is broken — but we are the second representation it is
-    complaining about, and hooks.json is the one it is steering away from.
-  - **ADR-017's mechanisms 2 and 3 could apply to codex unchanged.** The injector and the stop nudge
-    are shell scripts reading JSON on stdin; only the registration would change. Whether codex sends
-    the same payload FIELDS (`hook_event_name`, `stop_hook_active`, `agent_id`) is unverified, and
-    T3's lesson says capture one before branching on it.
-  pi remains genuinely different: no hook system at all.
+- **Codex subagent hook execution contract; pi remains hookless.**
+  **REASON AMENDED 2026-08-22.** Codex CLI 0.144.5 exposes
+  `SubagentStart` and `SubagentStop` as native TOML tables in `config.toml`.
+  Event availability and registration shape are therefore no longer valid
+  reasons to defer ADR-017. This audit did not establish the other Claude
+  lifecycle events and makes no parity claim about them.
+  The installer now writes its proven `Stop` checkpoint into `config.toml` and
+  removes its old `hooks.json` entry; if foreign JSON hooks remain it preserves
+  them and reports that Codex may keep warning about two representations.
+
+  What remains unmeasured is the execution contract ADR-017's scripts depend on.
+  Before registering either subagent hook, capture a real Codex start and stop
+  and prove:
+  - the payload fields used by the branches (`hook_event_name`, `agent_id`, and
+    `stop_hook_active`, or their measured equivalents);
+  - that `SubagentStart` stdout is injected into the dispatched subagent rather
+    than printed or discarded; and
+  - that exit 2 from `SubagentStop` feeds the nudge back to that subagent and
+    retries at most once.
+
+  ADR-017 T3 already showed why this is a gate: a hook can be registered, fire,
+  and remain inert when the harness does not consume its output. Pi is still a
+  separate permanent absence on the measured version: it has no hook system.
 - **Codex subagent definitions are TOML, not markdown** — shipped 2026-08-22 (`agents/*.toml`,
   `enabled_tools` with BARE tool names under `[mcp_servers.…]`, url substituted at install time).
   Recorded here because the same split will bite the next definition anyone adds: the two dialects
@@ -748,10 +753,6 @@ mitigation is for the hook to stop presenting the list as this session's.
 
 ## From ADR-021 (the handshake carries the protocol)
 
-- **`--wing` on the `mcp-stdio` bridge** — the bridge takes `--socket`/`--url`/`--token` and no wing,
-  so a Claude Desktop registration cannot be scoped to one project the way an HTTP registration can.
-  Rejected as ADR-021's primary fix because it addresses the sentence a client wrote rather than the
-  reason it wrote it, but genuinely useful on its own.
 - **Claude Desktop extensions (`~/Library/Application Support/Claude/Claude Extensions/`)** as a
   packaging route instead of a config-file entry. The directory exists on the reference machine with
   several installed; its format was never established, and ADR-017 T3's lesson is not to ship

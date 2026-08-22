@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +152,357 @@ func TestEnsureStopHookMalformedRefuses(t *testing.T) {
 	got, _ := os.ReadFile(path)
 	if string(got) != string(broken) {
 		t.Fatal("malformed settings.json was modified; it must be left untouched")
+	}
+}
+
+func TestEnsureCodexStopHookPreservesConfigAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	original := []byte(`# keep this comment and formatting exactly
+model = "gpt-5.6-sol"
+
+[[hooks.SessionStart]]
+matcher = "startup|resume"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "'/opt/codebase-memory' hook-augment"
+`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := "bash /Users/me/.codex/agentsmemory-stop-hook.sh"
+	changed, err := ensureCodexStopHook(path, cmd)
+	if err != nil {
+		t.Fatalf("ensure codex Stop hook: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true on first registration")
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), string(original)) {
+		t.Fatalf("existing config was reformatted or replaced\noriginal:\n%s\ngot:\n%s", original, got)
+	}
+	for _, want := range []string{
+		codexStopHookStart,
+		`[[hooks.Stop]]`,
+		`matcher = "*"`,
+		`[[hooks.Stop.hooks]]`,
+		`command = "bash /Users/me/.codex/agentsmemory-stop-hook.sh"`,
+		codexStopHookEnd,
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config.toml does not contain %q:\n%s", want, got)
+		}
+	}
+
+	backups, _ := filepath.Glob(path + ".bak.*")
+	if len(backups) != 1 {
+		t.Fatalf("backups after first registration = %d, want 1", len(backups))
+	}
+	backup, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != string(original) {
+		t.Fatal("config.toml backup does not match the original bytes")
+	}
+	backupInfo, err := os.Stat(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backupInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config.toml backup mode = %04o, want 0600", got)
+	}
+
+	changed, err = ensureCodexStopHook(path, cmd)
+	if err != nil {
+		t.Fatalf("re-register codex Stop hook: %v", err)
+	}
+	if changed {
+		t.Fatal("changed = true on an identical re-registration")
+	}
+	again, _ := os.ReadFile(path)
+	if string(again) != string(got) {
+		t.Fatal("idempotent registration rewrote config.toml")
+	}
+	if backups, _ := filepath.Glob(path + ".bak.*"); len(backups) != 1 {
+		t.Fatalf("idempotent registration created another backup: %d", len(backups))
+	}
+}
+
+func TestEnsureCodexStopHookReplacesOnlyItsManagedBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	oldBlock := codexStopHookBlock("bash /old/agentsmemory-stop-hook.sh")
+	original := "model = \"gpt-5.6\"\n\n" + oldBlock + "\n[features]\nweb_search = true\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := ensureCodexStopHook(path, "bash /new/agentsmemory-stop-hook.sh")
+	if err != nil {
+		t.Fatalf("replace codex Stop hook: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true for a relocated hook")
+	}
+	got, _ := os.ReadFile(path)
+	if strings.Contains(string(got), "/old/") {
+		t.Fatalf("old managed command survived replacement:\n%s", got)
+	}
+	if !strings.Contains(string(got), `command = "bash /new/agentsmemory-stop-hook.sh"`) {
+		t.Fatalf("new managed command missing:\n%s", got)
+	}
+	if !strings.Contains(string(got), "[features]\nweb_search = true\n") {
+		t.Fatalf("config after the managed block was lost:\n%s", got)
+	}
+	if strings.Count(string(got), codexStopHookStart) != 1 || strings.Count(string(got), codexStopHookEnd) != 1 {
+		t.Fatalf("managed block was duplicated:\n%s", got)
+	}
+}
+
+func TestCodexStopHookClosesOnItsCommandLine(t *testing.T) {
+	// `codex mcp add` inserts a new TOML table before a trailing standalone
+	// comment. If our closing marker occupies its own final line, Codex therefore
+	// puts the new table INSIDE our managed range and the next install deletes it.
+	// Keeping the marker on the command line makes the range impossible to grow
+	// when Codex appends another section.
+	block := codexStopHookBlock("bash /x/agentsmemory-stop-hook.sh")
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(line, "command = ") {
+			if !strings.Contains(line, codexStopHookEnd) {
+				t.Fatalf("closing marker is not on the managed command line: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("managed block has no command line:\n%s", block)
+}
+
+func TestEnsureCodexStopHookRefusesUnbalancedManagedMarkers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("model = \"gpt-5.6\"\n" + codexStopHookStart + "\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ensureCodexStopHook(path, "bash /x.sh"); err == nil {
+		t.Fatal("unbalanced managed markers were accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(original) {
+		t.Fatal("malformed managed block was modified")
+	}
+	if backups, _ := filepath.Glob(path + ".bak.*"); len(backups) != 0 {
+		t.Fatalf("refused config left %d backups, want none", len(backups))
+	}
+}
+
+func TestEnsureCodexStopHookRefusesInlineHookNamespaceConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	// Valid TOML, but inline tables are immutable: appending [[hooks.Stop]]
+	// attempts to reopen `hooks` and makes the whole file invalid.
+	original := []byte(`hooks = { SessionStart = [{ matcher = "*", hooks = [{ type = "command", command = "echo theirs" }] }] }
+model = "gpt-5.6-sol"
+`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ensureCodexStopHook(path, "bash /x/agentsmemory-stop-hook.sh"); err == nil {
+		t.Fatal("inline hooks namespace conflict was accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(original) {
+		t.Fatalf("conflicting valid config was modified:\n%s", got)
+	}
+	if backups, _ := filepath.Glob(path + ".bak.*"); len(backups) != 0 {
+		t.Fatalf("refused namespace conflict left %d backups, want none", len(backups))
+	}
+}
+
+func TestEnsureCodexStopHookRefusesMalformedTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	original := []byte("model = [this is not valid TOML\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ensureCodexStopHook(path, "bash /x/agentsmemory-stop-hook.sh"); err == nil {
+		t.Fatal("malformed config.toml was accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(original) {
+		t.Fatal("malformed config.toml was modified")
+	}
+}
+
+func TestRetireLegacyCodexHookDeletesOwnedHooksFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	original := []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash /Users/me/.codex/agentsmemory-stop-hook.sh"}]}]}}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, remains, err := retireLegacyCodexHook(path)
+	if err != nil {
+		t.Fatalf("retire legacy hook: %v", err)
+	}
+	if !changed || remains {
+		t.Fatalf("retire result = changed %v, remains %v; want true, false", changed, remains)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owned hooks.json still exists: %v", err)
+	}
+	backups, _ := filepath.Glob(path + ".bak.*")
+	if len(backups) != 1 {
+		t.Fatalf("legacy backups = %d, want 1", len(backups))
+	}
+	backup, _ := os.ReadFile(backups[0])
+	if string(backup) != string(original) {
+		t.Fatal("legacy backup does not match original bytes")
+	}
+}
+
+func TestRetireLegacyCodexHookPreservesCompositeCommand(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	owned := "bash /Users/me/.codex/" + hookFile
+	composite := "run-user-check && " + owned
+	original := []byte(`{"hooks":{"Stop":[{"hooks":[` +
+		`{"type":"command","command":` + strconv.Quote(owned) + `},` +
+		`{"type":"command","command":` + strconv.Quote(composite) + `}` +
+		`] }]}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, remains, err := retireLegacyCodexHook(path)
+	if err != nil {
+		t.Fatalf("retire legacy Codex hook: %v", err)
+	}
+	if !changed || !remains {
+		t.Fatalf("retire result = changed %v, remains %v; want true, true", changed, remains)
+	}
+	stop := readStop(t, path)
+	if hookPresent(stop, owned) {
+		t.Fatal("exact installer-owned command survived retirement")
+	}
+	if !hookPresent(stop, composite) {
+		t.Fatal("composite user command containing the hook filename was deleted")
+	}
+}
+
+func TestRetireLegacyCodexHookRecognizesOwnedPathWithSpaces(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "config with spaces")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "hooks.json")
+	owned := "bash " + filepath.Join(dir, hookFile)
+	original := []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":` +
+		strconv.Quote(owned) + `}]}]}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, remains, err := retireLegacyCodexHook(path)
+	if err != nil {
+		t.Fatalf("retire legacy Codex hook: %v", err)
+	}
+	if !changed || remains {
+		t.Fatalf("retire result = changed %v, remains %v; want true, false", changed, remains)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owned hooks.json with spaced config path still exists: %v", err)
+	}
+}
+
+func TestRetireLegacyCodexHookPreservesForeignContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	original := []byte(`{
+  "owner": "keep",
+  "hooks": {
+    "Stop": [
+      {"hooks":[{"type":"command","command":"bash /Users/me/.codex/agentsmemory-stop-hook.sh"}]},
+      {"hooks":[{"type":"command","command":"echo theirs"}]}
+    ]
+  }
+}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, remains, err := retireLegacyCodexHook(path)
+	if err != nil {
+		t.Fatalf("retire legacy hook: %v", err)
+	}
+	if !changed || !remains {
+		t.Fatalf("retire result = changed %v, remains %v; want true, true", changed, remains)
+	}
+	stop := readStop(t, path)
+	if hookPresent(stop, "bash /Users/me/.codex/agentsmemory-stop-hook.sh") {
+		t.Fatal("agentsmemory hook survived legacy cleanup")
+	}
+	if !hookPresent(stop, "echo theirs") {
+		t.Fatal("foreign Stop hook was removed")
+	}
+	raw, _ := os.ReadFile(path)
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["owner"] != "keep" {
+		t.Fatalf("foreign top-level content was lost: %v", got)
+	}
+}
+
+func TestRetireLegacyCodexHookPreservesLargeForeignInteger(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	original := []byte(`{"foreign":9007199254740993,"hooks":{"Stop":[{"hooks":[` +
+		`{"type":"command","command":"bash /Users/me/.codex/agentsmemory-stop-hook.sh"}` +
+		`] }]}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, remains, err := retireLegacyCodexHook(path)
+	if err != nil {
+		t.Fatalf("retire legacy Codex hook: %v", err)
+	}
+	if !changed || !remains {
+		t.Fatalf("retire result = changed %v, remains %v; want true, true", changed, remains)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "9007199254740993") {
+		t.Fatalf("foreign integer lost precision:\n%s", raw)
+	}
+}
+
+func TestRetireLegacyCodexHookRefusesMalformedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	original := []byte(`{"hooks":`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := retireLegacyCodexHook(path); err == nil {
+		t.Fatal("malformed legacy hooks.json was accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(original) {
+		t.Fatal("malformed legacy hooks.json was modified")
 	}
 }
 

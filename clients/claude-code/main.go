@@ -110,8 +110,8 @@ func installCommand() *cli.Command {
 				Name: "wing",
 				Usage: "file this project's memories into this wing. It rides as a header on every MCP call, so writes " +
 					"land in the right project even when the agent passes no wing — pair it with --scope project to keep " +
-					"the registration in this repo. Carried by claude and pi; codex has no static-header flag and a " +
-					"--socket bridge has no headers, so install warns there instead of dropping it silently",
+					"the registration in this repo. The installer uses each client's supported registration channel " +
+					"(header, URL query, bridge flag, or pi environment) rather than dropping the scope",
 			},
 			&cli.StringFlag{
 				Name: "claude-dir",

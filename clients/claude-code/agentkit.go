@@ -19,7 +19,7 @@ const (
 
 // agentKit describes the parts of an install that differ between the agent CLIs
 // we support. Everything structural is the same on both — a config dir holding
-// slash-command markdown, an agent memory file, a JSON hook registration, and an
+// slash-command markdown, an agent memory file, a hook registration, and an
 // MCP server list driven through the agent's own CLI — so the differences are
 // plain data plus the two registration steps that genuinely diverge (see
 // Installer.registerAgentsMemoryMCP and Installer.installRecommended).
@@ -29,8 +29,8 @@ const (
 // PI_CODING_AGENT_DIR), each reads top-level markdown in a commands dir as slash
 // commands with the same `description:`/`argument-hint:` front matter and
 // `$ARGUMENTS` expansion, and each loads an agent memory file from that dir. Only
-// Claude and codex take lifecycle hooks from JSON; pi retired hooks in favour of
-// extensions, so its kit carries no hooksFile.
+// Claude takes hooks from settings.json, Codex from config.toml, and pi retired
+// hooks in favour of extensions, so its kit carries no hooksFile.
 type agentKit struct {
 	name        string // agent identifier: claude | codex | pi
 	bin         string // default CLI binary name to drive
@@ -39,7 +39,7 @@ type agentKit struct {
 	commandsDir string // subdir under the config dir that holds slash commands
 	memoryFile  string // agent memory file our managed block merges into
 
-	// hooksFile is the JSON file holding the Stop-hook registration, empty for an
+	// hooksFile is the file holding the Stop-hook registration, empty for an
 	// agent with no hook system. pi is that case: it renamed hooks/ to extensions,
 	// so its end-of-turn nudge lives in the extension we install instead.
 	hooksFile string
@@ -110,7 +110,7 @@ var claudeKit = agentKit{
 }
 
 // codexKit is the codex-cli layout: ~/.codex, prompts/, AGENTS.md with the
-// protocol inlined, hooks registered in hooks.json.
+// protocol inlined, hooks registered in config.toml.
 var codexKit = agentKit{
 	name:        agentCodex,
 	bin:         "codex",
@@ -118,7 +118,7 @@ var codexKit = agentKit{
 	globalDir:   ".codex",
 	commandsDir: "prompts",
 	memoryFile:  "AGENTS.md",
-	hooksFile:   "hooks.json",
+	hooksFile:   "config.toml",
 	// codex reads ~/.codex/agents/*.toml — a different dialect, same directory
 	// name. pi gets neither: it has no subagent system to define agents for.
 	agentsDir:     "agents",

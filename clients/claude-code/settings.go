@@ -1,13 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
+)
+
+const (
+	codexStopHookStart = "# >>> agentsmemory managed Stop hook >>>"
+	codexStopHookEnd   = "# <<< agentsmemory managed Stop hook <<<"
 )
 
 // ensureHook registers hookCmd for a Claude Code hook EVENT ("Stop",
@@ -109,13 +120,8 @@ func ensureHooks(path string, regs []hookReg) (map[string]bool, error) {
 	}
 	settings["hooks"] = hooks
 
-	// Back up the original before writing, mirroring install.sh's .bak.<ts>.
-	// Nanosecond precision avoids clobbering an earlier backup on a same-second re-run.
-	if len(raw) > 0 {
-		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
-		if err := os.WriteFile(backup, raw, 0o644); err != nil {
-			return nil, fmt.Errorf("backup %s: %w", path, err)
-		}
+	if err := backupConfig(path, raw); err != nil {
+		return nil, err
 	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
@@ -129,6 +135,190 @@ func ensureHooks(path string, regs []hookReg) (map[string]bool, error) {
 		return nil, err
 	}
 	return changed, nil
+}
+
+// codexStopHookBlock renders the one TOML block the installer owns. Markers let
+// a later install replace only these bytes: config.toml also carries models,
+// MCPs, features, policies, and hooks from other products, so decoding and
+// re-encoding the whole file would turn one registration into an unsolicited
+// rewrite of the user's configuration. The closing marker deliberately shares
+// the command line: Codex inserts new tables before a trailing standalone
+// comment, which would otherwise put foreign config inside our managed range.
+func codexStopHookBlock(cmd string) string {
+	return codexStopHookStart + `
+[[hooks.Stop]]
+matcher = "*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = ` + strconv.Quote(cmd) + " " + codexStopHookEnd + "\n"
+}
+
+// ensureCodexStopHook registers the agentsmemory Stop hook in Codex's native
+// config.toml representation. It appends or replaces one marked block while
+// preserving every byte outside that block, writes one backup before a change,
+// and is a true no-op when the registration is already current.
+func ensureCodexStopHook(path, cmd string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if len(raw) > 0 {
+		var existing map[string]any
+		if err := toml.Unmarshal(raw, &existing); err != nil {
+			return false, fmt.Errorf("parse %s: %w", path, err)
+		}
+	}
+
+	text := string(raw)
+	starts := strings.Count(text, codexStopHookStart)
+	ends := strings.Count(text, codexStopHookEnd)
+	if starts != ends || starts > 1 {
+		return false, fmt.Errorf("parse %s: agentsmemory managed Stop-hook markers are unbalanced or duplicated", path)
+	}
+
+	block := codexStopHookBlock(cmd)
+	var out string
+	if starts == 0 {
+		out = text
+		if out != "" {
+			if !strings.HasSuffix(out, "\n") {
+				out += "\n"
+			}
+			out += "\n"
+		}
+		out += block
+	} else {
+		start := strings.Index(text, codexStopHookStart)
+		endMarker := strings.Index(text, codexStopHookEnd)
+		if endMarker < start {
+			return false, fmt.Errorf("parse %s: agentsmemory managed Stop-hook end marker precedes its start", path)
+		}
+		end := endMarker + len(codexStopHookEnd)
+		// The rendered block owns the line ending after its closing marker. Consume
+		// one existing line ending so replacing it cannot accumulate blank lines.
+		if end < len(text) && text[end] == '\r' {
+			end++
+		}
+		if end < len(text) && text[end] == '\n' {
+			end++
+		}
+		out = text[:start] + block + text[end:]
+	}
+
+	if out == text {
+		return false, nil
+	}
+	// Validating the candidate catches namespace collisions that a textual merge
+	// cannot see. In particular, a valid `hooks = { ... }` inline table is
+	// immutable in TOML and cannot later be reopened as [[hooks.Stop]]. Refuse
+	// before the backup or write rather than leave Codex unable to parse its config.
+	var candidate map[string]any
+	if err := toml.Unmarshal([]byte(out), &candidate); err != nil {
+		return false, fmt.Errorf("register Codex Stop hook in %s: generated TOML would be invalid: %w", path, err)
+	}
+	if err := backupConfig(path, raw); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// retireLegacyCodexHook removes only agentsmemory's Stop command from Codex's
+// previous hooks.json representation. When that was the file's sole content,
+// the file itself is removed so Codex no longer loads two hook layers. Foreign
+// content is preserved and reported to the caller through remains.
+func retireLegacyCodexHook(path string) (changed, remains bool, err error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+
+	settings := map[string]any{}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&settings); err != nil {
+		return false, true, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return false, true, fmt.Errorf("parse %s: trailing data: %w", path, err)
+	}
+	hooks, err := childObject(settings, "hooks")
+	if err != nil {
+		return false, true, fmt.Errorf("parse %s: %w", path, err)
+	}
+	entries, err := childArray(hooks, "Stop")
+	if err != nil {
+		return false, true, fmt.Errorf("parse %s: %w", path, err)
+	}
+	targetDir := filepath.Dir(path)
+	currentPath := filepath.Join(targetDir, hookFile)
+	preRelocationPath := filepath.Join(targetDir, legacyHookRel)
+	pruned, dropped := dropHook(entries, func(cmd string) bool {
+		return installerHookCommandMatches(cmd, currentPath) ||
+			installerHookCommandMatches(cmd, preRelocationPath)
+	})
+	if !dropped {
+		return false, true, nil
+	}
+
+	if len(pruned) == 0 {
+		delete(hooks, "Stop")
+	} else {
+		hooks["Stop"] = pruned
+	}
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	} else {
+		settings["hooks"] = hooks
+	}
+	if err := backupConfig(path, raw); err != nil {
+		return false, true, err
+	}
+	if len(settings) == 0 {
+		if err := os.Remove(path); err != nil {
+			return false, true, err
+		}
+		return true, false, nil
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return false, true, err
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		return false, true, err
+	}
+	return true, true, nil
+}
+
+// backupConfig writes the exact pre-change bytes beside a shared config file.
+// Nanosecond precision avoids clobbering an earlier backup on a same-second run.
+func backupConfig(path string, raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s before backup: %w", path, err)
+	}
+	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(backup, raw, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("backup %s: %w", path, err)
+	}
+	return nil
 }
 
 // childObject returns settings[key] as a JSON object, creating an empty one if
@@ -270,11 +460,8 @@ func ensureMCPServer(path, name string, entry map[string]any) (bool, error) {
 	servers[name] = entry
 	cfg["mcpServers"] = servers
 
-	if len(raw) > 0 {
-		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
-		if err := os.WriteFile(backup, raw, 0o644); err != nil {
-			return false, fmt.Errorf("backup %s: %w", path, err)
-		}
+	if err := backupConfig(path, raw); err != nil {
+		return false, err
 	}
 
 	out, err := json.MarshalIndent(cfg, "", "  ")

@@ -125,7 +125,7 @@ Three mechanisms — and the order below is the corrected one. The first draft l
 2. **A `SubagentStop` hook carries the persist nudge**, defaulting to every subagent stop rather than once per session, because a subagent stops once. This is a harness prompt at a moment the agent is already stopping, not another paragraph competing with the ones it already skipped — a different mechanism from instruction, which is why it survives the correction.
 3. **A `SubagentStart` injection — ONLY if T1 shows an instruction changes behaviour.** The full protocol already reaches every subagent, first and verbatim, so this adds emphasis to text that is present and ignored. T1 measures exactly that. If compliance does not move, this part is WITHDRAWN and the deferred alternative is promoted: have the hook run the recall and inject the RESULTS, which removes the compliance question rather than restating it.
 
-**What would make this fail, and the data exists to check it today.** For mechanism 3 the claim is that an injected instruction changes what a subagent does, and the diagnostic has already weakened it: the same instruction, at greater length, is present and not followed. It is falsifiable by dispatching subagents with ordinary tasks and counting how many recall before their first substantive action, with and without the injection. **Below a clear difference, mechanism 3 is withdrawn** — not softened, not shipped hopefully — and the honest reading becomes that a subagent will not be instructed into recalling and must either have it done for it or not have it. Mechanisms 1 and 2 do not depend on that result and ship either way. Valid for Claude Code; codex and pi have their own hook models and are out of scope.
+**What would make this fail, and the data exists to check it today.** For mechanism 3 the claim is that an injected instruction changes what a subagent does, and the diagnostic has already weakened it: the same instruction, at greater length, is present and not followed. It is falsifiable by dispatching subagents with ordinary tasks and counting how many recall before their first substantive action, with and without the injection. **Below a clear difference, mechanism 3 is withdrawn** — not softened, not shipped hopefully — and the honest reading becomes that a subagent will not be instructed into recalling and must either have it done for it or not have it. Mechanisms 1 and 2 do not depend on that result and ship either way. Valid for Claude Code. Codex exposes the same event names, but its wire behaviour has not been measured; pi has no hook system.
 
 ## Alternatives Considered
 
@@ -192,7 +192,14 @@ list stops covering the kit.
 
 ## Out of Scope
 
-- codex and pi subagent models (deferred: docs/adr/BACKLOG.md — they have their own hook shapes, and this ADR fixes the harness the defect was reported on)
+- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — **amended 2026-08-22**:
+  event availability is no longer the reason. Codex 0.144.5 exposes
+  `SubagentStart` and `SubagentStop` in native `config.toml`, but no live Codex
+  capture yet proves the fields these scripts branch on, that a start hook's
+  stdout reaches the subagent as context, or that exit 2 feeds a stop nudge back
+  exactly once with a loop guard. Registering the Claude scripts before those
+  three contracts are observed would make them reachable, not correct.)
+- pi subagent hooks (permanent for the measured version: pi has no hook system)
 - Mining sidechains so past subagent work is recoverable (deferred: docs/adr/BACKLOG.md — the filter is one flag serving two jobs, and separating them is its own decision)
 - Having the hook run the recall and inject the RESULTS rather than the instruction (deferred: docs/adr/BACKLOG.md — the strongest version of this idea; it needs the task text the hook does not have)
 - The read-only review exception, which stays (permanent: an independent reviewer sharing none of our context is valuable BECAUSE it shares none of it, and `AGENTS.md` already states the conditions)
@@ -211,6 +218,32 @@ list stops covering the kit.
 ## Rollback
 
 Both hooks are registered by the installer into a settings file it already manages idempotently, and both scripts exit 0 when disabled by env. Removing the registrations restores today's behaviour exactly; nothing is stored, migrated or re-shaped. The agent definitions are files in a directory Claude Code reads — deleting them is the rollback.
+
+## Codex deferral amended after capability audit
+
+The original deferral grouped Codex with pi as a different hook model. That
+reason is false for Codex 0.144.5: the binary exposes `SubagentStart` and
+`SubagentStop`, and accepts their registrations as `[[hooks.<Event>]]` plus
+`[[hooks.<Event>.hooks]]` tables in `config.toml`. The installer now uses that
+native file for its already-proven `Stop` checkpoint and migrates its previous
+`hooks.json` entry away. Both forms remain supported; Codex merges them but warns
+when one config layer uses both, so agentsmemory keeps one representation.
+
+The remaining deferral is narrower and empirical. Before enabling ADR-017's two
+subagent scripts for Codex, capture one real start and stop and prove all three
+contracts the scripts consume:
+
+1. the input names the event and carries the identity/loop fields used by the
+   branches (`hook_event_name`, `agent_id`, and `stop_hook_active`, or measured
+   Codex equivalents);
+2. the start hook's output is actually injected into the dispatched subagent,
+   rather than merely printed or ignored; and
+3. exit 2 on stop returns the nudge to that subagent and retries at most once.
+
+Event support settles none of those. ADR-017 T3 learned this exact lesson on
+Claude: a registered hook that fires but whose output nobody consumes is inert.
+The Codex work is therefore deferred for an unmeasured execution contract, not
+for a missing event or a different configuration file.
 
 ## Follow-ups
 - [ ] **The write half is delivered but only thinly measured.** T3's rung-4 trial: 3/3 subagents received the nudge and acted on it, 1/3 filed. The two abstentions took the nudge's documented out on tasks answerable from twenty lines of source — which the protocol says not to file — so 1/3 is a rate on re-derivable work, not a compliance number. The read half was corrected by a measurement with a control (T1); this half has neither a control nor a task set whose findings are unrecoverable from the code. Number to watch: drawers filed per dispatch over a week of real fan-outs. If it stays near zero on tasks that DO produce unrecoverable findings, the fallback is the one already named for the read side — do it for the agent rather than ask.

@@ -26,6 +26,7 @@ has rather than pretending:
 | slash commands | `commands/` | `prompts/` | none — no commands dir | none | `prompts/` |
 | lifecycle hooks | all five | `Stop` (trust it in `/hooks`) | none — hook shape not established | none | in the extension |
 | subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | none | none |
+| `--wing` registration scope | header | URL query | header | `mcp-stdio --wing` | bridge environment |
 | `--sandbox` | ✅ | ✅ | refused — no config-dir variable | refused — same reason | ✅ |
 | needs a host server binary | — | — | — | ✅ the `mcp-stdio` bridge | — |
 
@@ -36,7 +37,7 @@ bridge the server binary already ships:
 ```json
 "agentsmemory": {
   "command": "~/.local/bin/aiagentmemory-server",
-  "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp"]
+  "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp", "--wing", "wing_acme"]
 }
 ```
 
@@ -202,6 +203,7 @@ the sandbox name is forwarded to the agent untouched.
 | `--recommended` | off | Also install codebase-memory and the Claude-only codex review plugin. |
 | `--token <key>` | `$AGENTSMEMORY_TOKEN` | agentsmemory workspace token. |
 | `--mcp-url <url>` | `https://aiagentmemory.dev/mcp` | agentsmemory MCP endpoint. |
+| `--wing <name>` | — | Scope every MCP call from this registration to one project; a tool call can still pass `wing: "*"` for deliberate cross-project recall. |
 | `--scope <scope>` | `user` | Claude MCP/plugin scope: `user`, `local`, `project` (Claude only — codex has no scopes). |
 | `--claude-bin <bin>` | `$AIAGENTMEMORY_CLAUDE_BIN` → `claude` | Claude CLI to drive. |
 | `--codex-bin <bin>` | `$AIAGENTMEMORY_CODEX_BIN` → `codex` | codex CLI to drive. |
@@ -269,9 +271,21 @@ same content in different places:
 | Config dir | `~/.claude`, relocated by `CLAUDE_CONFIG_DIR` | `~/.codex`, relocated by `CODEX_HOME` |
 | Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
 | Always-on memory | `CLAUDE.md` + a managed `@agentsmemory-bootstrap.md` import | `AGENTS.md` with the protocol **inlined** in the managed block — codex has no `@import` |
-| Stop hook | `settings.json` | `hooks.json` (same JSON shape, same `Stop` event, same `stop_hook_active` loop guard) |
-| MCP auth | `--header "Authorization: Bearer <token>"` | `--bearer-token-env-var AGENTSMEMORY_TOKEN` — codex stores the variable *name* and reads the value from its environment |
+| Stop hook | `settings.json` | native TOML in `config.toml` (same `Stop` event and `stop_hook_active` loop guard) |
+| MCP auth/scope | `--header "Authorization: Bearer <token>"` plus `X-Agentsmemory-Wing` | `--bearer-token-env-var AGENTSMEMORY_TOKEN`; `--wing` is encoded in the registered URL because Codex has no arbitrary-header flag |
 | Recommended | codebase-memory + codex review plugin | codebase-memory only (the review plugin is for Claude) |
+
+On upgrade, the installer writes the native TOML registration first and then
+removes only agentsmemory's command from its previous `hooks.json`
+representation. Codex supports and merges both forms, but warns when the same
+config layer uses both. If another hook still lives in JSON, the installer
+preserves the file and warns that Codex may keep reporting two representations.
+
+Codex 0.144.5 also exposes `SubagentStart` and `SubagentStop`, but the installer
+does not register those yet. Event names alone do not prove the contract our
+Claude scripts depend on: a live Codex dispatch still has to capture the input
+fields, stdout feedback envelope, and exit-2 single-retry behaviour. See
+[ADR-017's amended deferral](../../docs/adr/ADR-017-a-subagent-is-a-session.md).
 
 Two codex-specific steps the installer prints and cannot do for you:
 
@@ -312,7 +326,7 @@ built-in MCP", pi's own docs). So the kit brings its own.
 | Config dir | `~/.codex`, relocated by `CODEX_HOME` | `~/.pi/agent`, relocated by `PI_CODING_AGENT_DIR` |
 | Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` (no namespace) |
 | Always-on memory | `AGENTS.md`, protocol inlined | `AGENTS.md`, protocol inlined (pi has no `@import` either) |
-| Stop hook | `hooks.json` | **none** — pi renamed `hooks/` to extensions |
+| Stop hook | `config.toml` | **none** — pi renamed `hooks/` to extensions |
 | Our MCP | `codex mcp add --bearer-token-env-var` | **bridged** by `extensions/agentsmemory.ts` |
 
 The bridge extension is written to `<config dir>/extensions/agentsmemory.ts`,

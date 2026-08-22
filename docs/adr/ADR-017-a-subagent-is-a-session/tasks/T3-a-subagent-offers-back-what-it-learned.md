@@ -139,6 +139,9 @@ for the read side: do it for the agent rather than ask.
 
 ## Out of Scope
 
+- Codex `SubagentStop` registration (deferred: docs/adr/BACKLOG.md — the event
+  exists, but its payload, exit-2 feedback, loop guard, and one-retry bound have
+  not been captured on a live Codex dispatch)
 - Mining past sidechains so already-finished subagent work is recoverable (deferred: docs/adr/BACKLOG.md)
 - Whether a subagent's writes should be attributed to it or to its dispatcher (deferred: docs/adr/BACKLOG.md — it needs a session identity the palace does not record; see the recall-stats attribution defect filed there)
 

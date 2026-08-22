@@ -82,7 +82,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- codex and pi subagent models (deferred: docs/adr/BACKLOG.md)
+- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — the events exist, but a
+  live dispatch has not yet proved the payload fields or that hook stdout is
+  injected as subagent context)
+- pi subagent hooks (no hook system in the measured version)
 - Running the recall in the hook and injecting the RESULTS (deferred: docs/adr/BACKLOG.md)
 
 ## Invariants

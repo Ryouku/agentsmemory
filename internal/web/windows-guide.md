@@ -148,13 +148,16 @@ no connector:
   "mcpServers": {
     "agentsmemory": {
       "command": "C:\\path\\to\\aiagentmemory-server.exe",
-      "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp"]
+      "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp", "--wing", "wing_acme"]
     }
   }
 }
 ```
 
-`aiagentmemory install --agent claude-desktop` writes exactly that for you. The
+`aiagentmemory install --agent claude-desktop --wing wing_acme` writes exactly
+that for you. Omit `--wing` only when this registration is intentionally allowed
+to search the whole workspace; `wing: "*"` remains the explicit per-call opt-in
+from a scoped registration. The
 two routes below are for the HOSTED service, where there is no local binary to
 bridge through.
 

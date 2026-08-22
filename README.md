@@ -438,8 +438,8 @@ A socket has no URL, so agents reach it through `mcp-stdio` — a bridge shipped
 the same binary that speaks MCP on stdin/stdout and forwards to the server:
 
 ```bash
-claude mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
-codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
+claude mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock --wing wing_acme
+codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock --wing wing_acme
 ```
 
 The server prints both lines on startup with its own absolute path filled in, so
@@ -464,11 +464,20 @@ Worth knowing:
 - **One server, many agents.** Each agent spawns its own bridge process, but they
   all share the one server — and therefore one SQLite writer and one embedding
   queue, rather than each opening the database itself.
-- **It works over HTTP too.** `mcp-stdio --url http://host:8080/mcp` (with
-  `--token` for a multi-tenant server) bridges any endpoint, which is the escape
-  hatch for a client that only supports stdio transport.
+- **It works over HTTP too.** `mcp-stdio --url http://host:8080/mcp --wing
+  wing_acme` (with `--token` for a multi-tenant server) bridges any endpoint,
+  which is the escape hatch for a client that only supports stdio transport.
+- **The registration can be project-scoped.** `--wing` becomes
+  `X-Agentsmemory-Wing` on every forwarded request, over HTTP or a socket. A tool
+  call can still pass `wing: "*"` when it deliberately needs every project.
 - **`AGENTSMEMORY_SOCKET` configures both halves** — the server's listen path and
   the bridge's dial path — so the pair cannot drift apart.
+- **`AGENTSMEMORY_WING` configures the bridge's `--wing` value** when a process
+  manager supplies registration scope through the environment:
+
+  ```bash
+  AGENTSMEMORY_WING=wing_acme
+  ```
 - **Socket paths are short.** The kernel caps them near 104 bytes (macOS) or 108
   (Linux); a deeply nested path fails to bind with a bare `invalid argument`.
 
@@ -787,7 +796,7 @@ first one for free:
 |---|---|---|
 | `am_skillset` | Server-side wakeup playbook — which tool, in what order — returned over MCP itself | **Automatic.** Seeded on first boot, including `--local` |
 | `CLAUDE.md` / `AGENTS.md` | The always-on protocol: recall at session start, persist before stopping | `aiagentmemory install` writes `agentsmemory-bootstrap.md` and merges an import into your memory file |
-| `/M`, `/am`, `/load-skill` + five hooks | Task-scoped grounding, the end-of-turn checkpoint that stops memory being lost, and the two that make a SUBAGENT a session: `SubagentStart` puts the recall instruction next to its task, `SubagentStop` asks it for what it found | Same installer |
+| `/M`, `/am`, `/load-skill` + Claude's five hooks | Task-scoped grounding, the end-of-turn checkpoint that stops memory being lost, and the two that make a Claude SUBAGENT a session: `SubagentStart` puts the recall instruction next to its task, `SubagentStop` asks it for what it found. Codex currently installs only the proven `Stop` hook. | Same installer |
 
 So after `docker compose up`, run the kit as well — `--local` wires it to your
 own server:
@@ -855,10 +864,10 @@ inferred from documentation.
 | memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | **the MCP handshake** — it can hold no file | inlined in `AGENTS.md` |
 | slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | **none** | `/M`, … |
 | Stop checkpoint | ✅ | ✅ (trust it in `/hooks`) | ❌ hook shape not established | ❌ | in the extension |
-| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered yet | ❌ | ❌ | ❌ |
-| `SubagentStart` / `SubagentStop` | ✅ | ❌ not registered yet — [codex supports them](docs/adr/BACKLOG.md) | ❌ | ❌ | ❌ |
+| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered; not part of the Codex subagent audit | ❌ | ❌ | ❌ |
+| `SubagentStart` / `SubagentStop` | ✅ | ❌ events exist; [payload, feedback, and retry contracts remain to measure](docs/adr/BACKLOG.md) | ❌ | ❌ | ❌ |
 | subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ | ❌ no subagent system |
-| `--wing` header | ✅ | ❌ no static-header flag | ✅ | ✅ (via `mcp-stdio --token`/url) | ✅ |
+| `--wing` registration scope | ✅ header | ✅ URL query | ✅ header | ✅ `mcp-stdio --wing` | ✅ bridge env |
 | `--sandbox` isolation | ✅ | ✅ | **refused** — no config-dir variable | **refused** — same reason | ✅ |
 | needs a host server binary | ❌ | ❌ | ❌ | **✅ — the stdio bridge** | ❌ |
 
@@ -877,9 +886,10 @@ Two things worth reading twice:
   of a loop does not happen on its own.
 - **Every client is told the rules on connection**, whether or not a kit could
   install a protocol file for it. The server returns `instructions` in the MCP
-  `initialize` response — recall before acting, and *pass no wing*. That last one
-  is there because a client without it invented the opposite rule and proposed
-  searching every project on every recall
+  `initialize` response — recall before acting, check `am_status` once, inherit a
+  named `default_wing`, and use `wing: "*"` only for a deliberate cross-project
+  search. That rule is there because a client without it invented an empty
+  namespace and proposed searching every project on every recall
   ([ADR-021](docs/adr/ADR-021-the-handshake-carries-the-protocol.md)).
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
@@ -937,7 +947,7 @@ table is checked against it.
 | `--mcp-url <url>` | the MCP endpoint (default the hosted service) |
 | `--socket <path>` | register over stdio against a `--local` server on a Unix socket; requires `--local` |
 | `--server-bin <path>` | server binary the `--socket` stdio bridge spawns |
-| `--wing <name>` | file this project's memories into this wing, as a header on every MCP call. Carried by claude, cursor and pi; codex and `--socket` cannot, and the install warns instead of dropping it silently |
+| `--wing <name>` | scope this registration to one project on every MCP call. The installer uses each client's supported channel: HTTP header (Claude/Cursor), URL query (Codex), bridge flag (Desktop/socket), or pi environment. `wing: "*"` remains an explicit per-call cross-project opt-in |
 | `--scope <scope>` | Claude MCP/plugin scope: `user` (default) · `local` · `project` |
 | `--recommended` | also install codebase-memory MCP and the codex review plugin |
 | `--copy` | seed a sandbox from the agent's global config (logins, MCP servers, plugins, settings). Needs `--sandbox`/`--config-dir` |
@@ -1028,8 +1038,15 @@ aiagentmemory run --agent codex acme                 # launch codex with CODEX_H
 | Config dir | `~/.claude` (`CLAUDE_CONFIG_DIR`) | `~/.codex` (`CODEX_HOME`) |
 | Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
 | Always-on memory | `CLAUDE.md` + managed `@import` | `AGENTS.md` with the protocol inlined — codex has no `@import` |
-| Stop hook | `settings.json` | `hooks.json` (same shape and `Stop` semantics) |
+| Stop hook | `settings.json` | native TOML in `config.toml`; an install retires its old `hooks.json` entry |
 | MCP auth | `Authorization: Bearer <token>` header | `bearer_token_env_var = "AGENTSMEMORY_TOKEN"` |
+
+On upgrade, the installer first lands the native TOML hook, then removes only
+agentsmemory's entry from its previous `hooks.json` representation. Codex
+supports both files but merges them and warns when one config layer uses both,
+so the installer keeps a single representation for its own hook. It deletes the
+JSON file when nothing else remains; foreign hooks are preserved with a warning,
+so migration never erases configuration it does not own.
 
 Two things codex needs that Claude does not, both printed by the installer:
 **trust the hook** (codex skips non-managed hooks until reviewed in `/hooks`), and
@@ -1087,7 +1104,7 @@ aiagentmemory run --agent pi acme                  # launch pi with PI_CODING_AG
 |---|---|---|
 | Config dir | `~/.codex` (`CODEX_HOME`) | `~/.pi/agent` (`PI_CODING_AGENT_DIR`) |
 | Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` |
-| Stop hook | `hooks.json` | none — the checkpoint ships in the extension |
+| Stop hook | `config.toml` | none — the checkpoint ships in the extension |
 | MCP | native, `--bearer-token-env-var` | bridged by the extension |
 
 The token and endpoint are written to `<config dir>/agentsmemory.env` (`0600`)
