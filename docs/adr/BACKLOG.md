@@ -729,15 +729,20 @@ mitigation is for the hook to stop presenting the list as this session's.
 
 ## From ADR-018 (a recall belongs to the session that ran it)
 
-- **Per-session WRITE statistics — drawers filed, facts added** — the same `session_id` column that
-  ADR-018 puts on `search_events` would serve it, and it is the other half of "is memory earning its
-  place": a session that recalled twenty times and filed nothing is a different story from one that
-  filed ten. Deferred because it is a different report over different tables, and ADR-018 is already
-  a schema change plus a contract change plus a hook change.
+- **Per-session WRITE statistics — drawers filed, facts added** — it is the other half of "is memory
+  earning its place": a session that recalled twenty times and filed nothing is a different story
+  from one that filed ten. **BLOCKED, and the blocker is now permanent rather than a sequencing
+  question.** This entry used to say "the same `session_id` column that ADR-018 puts on
+  `search_events` would serve it"; ADR-018 T2 was WITHDRAWN on 2026-08-22 in favour of keeping the
+  transport stateless, so that column does not exist and is not coming. There is no per-session
+  anything until `TestProductionStillRunsStateless` goes red.
 - **The hosted multi-workspace deployment's session model** — ADR-018 was found and is valid on the
   self-hosted single-palace shape, where several sessions share one local server. A hosted workspace
   has the same missing column and a less acute symptom, because a token is closer to a session
   there. Nobody has checked how much closer, and "less acute" is not "absent".
+  Still open after T2's withdrawal, and arguably more interesting because of it: the withdrawal was
+  decided on the self-hosted shape, where the transport is stateless by configuration. Whether the
+  hosted deployment runs the same way has not been checked.
 
 ## From ADR-016 T2's lexicon (found by review, 2026-08-21)
 

@@ -77,7 +77,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- Making the numbers per-session, which needs the schema change (deferred: docs/adr/ADR-018-a-recall-belongs-to-the-session-that-ran-it.md)
+- Making the numbers per-session, which needs a session identity the transport does not mint (permanent: T2 was WITHDRAWN 2026-08-22 in favour of keeping the transport stateless; this is no longer deferred to anything, and `TestProductionStillRunsStateless` is what would reopen it)
 
 ## Invariants
 

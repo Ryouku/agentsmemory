@@ -99,10 +99,16 @@ func callProbe(t *testing.T, srv *httptest.Server, clientSessionID string) strin
 // well-behaved client echoing that back sends nothing on every later request.
 //
 // This is the outcome ADR-018 names as acceptable rather than a failure: with no
-// identity reachable, T2 is unbuildable as designed and T3 ships alone. The test
-// asserts the emptiness so that a future switch away from stateless mode — which
-// WOULD make attribution possible — is announced by a red test rather than
-// discovered by someone wondering why the column is still blank.
+// identity reachable, T2 is unbuildable as designed and T3 ships alone. That is
+// no longer a pending question — T2 was WITHDRAWN on 2026-08-22, the decision
+// being that a stateless transport is worth more than per-session attribution.
+//
+// So this test is now the ONLY thing that would reopen it. It asserts the
+// emptiness so that a future switch away from stateless mode — which WOULD make
+// attribution possible — is announced by a red test rather than discovered by
+// someone wondering why the column is still blank. If it fails, the failure is
+// not a bug in the test: it means the premise the withdrawal rests on has
+// changed, and ADR-018 T2 should be reconsidered on its merits.
 func TestSearchHandlerCanNameItsSession(t *testing.T) {
 	srv, seen := probeServer(t, true) // true = production's configuration
 	defer srv.Close()
@@ -111,7 +117,8 @@ func TestSearchHandlerCanNameItsSession(t *testing.T) {
 	if served != "" {
 		t.Errorf("stateless mode served a non-empty Mcp-Session-Id %q — StatelessSessionIdManager."+
 			"Generate() returns \"\", so this means the transport configuration changed and "+
-			"attribution may now be possible; ADR-018 T2 should be revisited", served)
+			"attribution may now be possible; ADR-018 T2 was withdrawn on that premise and "+
+			"should be reconsidered", served)
 	}
 	if len(*seen) != 1 {
 		t.Fatalf("probe ran %d times, want 1", len(*seen))

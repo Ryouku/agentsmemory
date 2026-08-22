@@ -195,10 +195,19 @@ if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; 
   # evidence you hold. One session noticed and refused; the more diligent the
   # agent, the worse the outcome.
   #
-  # It comes back the moment a recall can be attributed to the session that ran
-  # it — ADR-018 T2 adds the column and the filter. A list that is right most of
-  # the time is worse than none, because "most of the time" is not a property
-  # anyone can check at the moment they read it.
+  # It is NOT coming back, and this comment used to say the opposite. It promised
+  # "ADR-018 T2 adds the column and the filter"; that task was WITHDRAWN on
+  # 2026-08-22 when the decision was taken to keep the transport stateless. The
+  # server therefore mints no session identity, a column would record an empty
+  # string for every row, and a report grouped by it would show every session as
+  # one session — which is worse than the defect, because it looks attributed.
+  #
+  # If that premise ever changes, a test says so rather than a comment:
+  # TestProductionStillRunsStateless (internal/mcpserver/session_test.go) fails
+  # the moment cmd/server/main.go stops passing server.WithStateLess(true), and
+  # ADR-018 T2 is reconsidered then. A list that is right most of the time is
+  # worse than none, because "most of the time" is not a property anyone can
+  # check at the moment they read it.
 fi
 
 exit 2

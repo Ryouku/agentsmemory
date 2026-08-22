@@ -1,4 +1,43 @@
-# Task ADR-018-T2: A recall records which session ran it
+# Task ADR-018-T2: A recall records which session ran it — WITHDRAWN
+
+**Status:** Withdrawn 2026-08-22. Not deferred, not blocked: this task will not be
+built, and the ADR named this outcome as acceptable before T1 was run.
+
+**Why.** T1 measured that the server mints no session identity — `cmd/server/main.go`
+builds its transport with `server.WithStateLess(true)`, whose session manager
+`Generate()`s the empty string and `Validate()`s nothing. The ADR left two ways
+forward: (a) require every client to send its own `Mcp-Session-Id` and record
+absence honestly, or (b) leave the transport stateless and withdraw this task.
+**(b) was chosen** — the decision is that a stateless transport is worth more than
+per-session attribution.
+
+**What that costs, stated plainly.** The "memories to write" list stays suppressed
+permanently, not until this task ships. It was the most useful thing the Stop hook
+emitted, and it is gone for good on the current transport. The numbers in the
+recall report stay palace-wide and stay labelled as such (T3, which shipped).
+
+**What would reopen it.** A switch away from stateless mode, which is pinned by a
+test rather than by this sentence: `TestProductionStillRunsStateless`
+(`internal/mcpserver/session_test.go`) fails the moment `main.go` stops passing
+`server.WithStateLess(true)`. That red test is the signal to reconsider this task;
+nothing else is.
+
+**Not chosen, and why (a) was rejected.** Requiring the client to send the header
+makes attribution depend on every caller's cooperation and degrades SILENTLY when
+one does not — every anonymous caller lands in one shared bucket that reads as a
+single busy session. An identity that is the same for everybody is worse than
+none, because a column fills and a report groups by it. Making that safe means
+recording absence as absence on every path that records a search, which is most of
+the task's cost for a feature that only works when clients volunteer.
+
+---
+
+*Everything below is the task as it was written before the decision, kept verbatim
+so the withdrawal can be read against what was actually proposed. None of it is to
+be executed. Its Acceptance command is not run and its Verification Log stays
+empty — an empty log on a withdrawn task is correct, where on a completed one it
+is the fabrication hole this pipeline exists to close.*
+
 
 **Depends-on:** T1
 **Covers:** none — no spec

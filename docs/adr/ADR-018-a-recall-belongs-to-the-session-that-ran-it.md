@@ -100,6 +100,44 @@ Three parts, and the third is what makes it safe before the first two land:
 
 Valid for the self-hosted single-palace deployment where the defect was found; a hosted workspace with one session per token has the same missing column and a less acute symptom.
 
+## Outcome, 2026-08-22 — parts 1 and 2 WITHDRAWN, part 3 shipped
+
+The Decision above is kept as written. It named its own failure condition and the
+condition was met, so this section records what was decided rather than editing
+the proposal into looking prescient.
+
+**T1 measured that no session identity reaches `recordSearch`**, because
+`cmd/server/main.go` builds the transport with `server.WithStateLess(true)` and
+that manager mints the empty string for everyone. The two ways forward were:
+require every client to send its own `Mcp-Session-Id`, or leave the transport
+stateless and withdraw the migration.
+
+**The decision is to keep the transport stateless.** Parts 1 and 2 —
+`search_events.session_id` and `/stats?session=` — are WITHDRAWN. Part 3 has
+shipped (T3): the report names its population, and no "memories to write" list is
+printed for recalls that cannot be attributed.
+
+**What it costs, said plainly rather than buried.** The task list was the most
+useful thing the Stop hook emitted — the questions a team asked and could not
+answer are exactly the memories it should write — and it is gone for good on this
+transport, not gone until a migration lands. Anyone reading the hook's comment
+before today was told the opposite; that comment is corrected in the same commit,
+because documentation is load-bearing here by policy.
+
+**Why the client-supplied header was rejected.** It makes attribution depend on
+every caller volunteering, and it degrades SILENTLY when one does not: anonymous
+callers land in one shared bucket that reads as a single very busy session. An
+identity that is the same for everybody is worse than none, because a column fills
+and a report groups by it, and nothing about the output says it is wrong. Making
+that safe means recording absence as absence on every path that records a search —
+most of the task's cost, for a feature that only works when clients cooperate.
+
+**What would reopen it, and it is a test rather than this paragraph.**
+`TestProductionStillRunsStateless` (`internal/mcpserver/session_test.go`) fails the
+moment `main.go` stops passing `server.WithStateLess(true)`. A switch to a stateful
+manager makes attribution possible, and that red test — not a memory of this
+decision — is the signal to reconsider T2.
+
 ## Alternatives Considered
 
 - **Narrow the time window further.** Rejected: it is what the hook already does, and it cannot work. Two sessions searching in the same minute are indistinguishable by time at any resolution.

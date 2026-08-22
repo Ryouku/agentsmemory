@@ -22,6 +22,16 @@ migration is withdrawn. The wrong percentages are an error; the misattributed ta
 
 | Task | Goal | Produces | Consumes | Status |
 |------|------|----------|----------|--------|
-| [T1](T1-is-a-session-identity-reachable.md) | Establish whether a session identity reaches the recall | the finding that shapes or withdraws T2 | none | todo |
-| [T2](T2-a-recall-records-who-ran-it.md) | A recall records which session ran it | `session_id`, `/stats?session=` | T1 | todo |
+| [T1](T1-is-a-session-identity-reachable.md) | Establish whether a session identity reaches the recall | the finding that shapes or withdraws T2 | none | done |
+| [T2](T2-a-recall-records-who-ran-it.md) | A recall records which session ran it | nothing — withdrawn | T1 | **withdrawn** |
 | [T3](T3-the-report-names-its-population.md) | The report names its population and refuses what it cannot attribute | an honest report | none | done |
+
+**T2 was withdrawn on 2026-08-22**, which is the outcome the execution order above
+was written to allow: T3 depends on nothing, ships regardless, and removes the
+harm. T1 measured that the server mints no session identity under
+`server.WithStateLess(true)`, and the decision taken was to keep the transport
+stateless rather than require every client to supply its own `Mcp-Session-Id`.
+
+So this ADR is CLOSED with two of three tasks shipped and the third deliberately
+not built. The "memories to write" list stays suppressed permanently. The signal
+to reconsider is a red `TestProductionStillRunsStateless`, not a note.
