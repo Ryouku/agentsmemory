@@ -681,9 +681,28 @@ without the exit-code trap the first version had.
 
 ## From ADR-017 (a subagent is a session)
 
-- **codex and pi subagent models** — this ADR fixes the harness the defect was reported on. Both
-  have their own hook shapes and neither was examined; the read/write gap is likely the same shape
-  and definitely not the same mechanism.
+- **codex and pi subagent models** — this ADR fixes the harness the defect was reported on.
+  **EXAMINED 2026-08-22, and the stated reason for deferring it does not hold.** codex-cli 0.144.5
+  supports the SAME hook events Claude does — `SessionStart`, `SessionEnd`, `SubagentStart`,
+  `SubagentStop`, plus PreToolUse/PostToolUse/UserPromptSubmit — read out of the shipped binary,
+  and another product on the reference machine already registers `SubagentStart` there. What differs
+  is the FILE and not the events: codex takes them as TOML tables in `config.toml`
+  (`[[hooks.SubagentStart]]` + `[[hooks.SubagentStart.hooks]]`, with the same `matcher` and
+  `type = "command"` shape), and our installer writes `hooks.json` instead.
+  Two consequences, both actionable now:
+  - **Our codex install produces a warning on every run**: *"loading hooks from both
+    ~/.codex/hooks.json and ~/.codex/config.toml; prefer a single representation for this layer"*.
+    codex still reads ours, so nothing is broken — but we are the second representation it is
+    complaining about, and hooks.json is the one it is steering away from.
+  - **ADR-017's mechanisms 2 and 3 could apply to codex unchanged.** The injector and the stop nudge
+    are shell scripts reading JSON on stdin; only the registration would change. Whether codex sends
+    the same payload FIELDS (`hook_event_name`, `stop_hook_active`, `agent_id`) is unverified, and
+    T3's lesson says capture one before branching on it.
+  pi remains genuinely different: no hook system at all.
+- **Codex subagent definitions are TOML, not markdown** — shipped 2026-08-22 (`agents/*.toml`,
+  `enabled_tools` with BARE tool names under `[mcp_servers.…]`, url substituted at install time).
+  Recorded here because the same split will bite the next definition anyone adds: the two dialects
+  share a directory NAME and agree on nothing inside it.
 - **Run the recall IN the hook and inject the RESULTS, not the instruction** — the strongest version
   of ADR-017's idea, because it removes the compliance question entirely: a subagent cannot skip a
   recall that already happened. Deferred only because the hook does not know the task, so it would
