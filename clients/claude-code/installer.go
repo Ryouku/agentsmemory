@@ -733,90 +733,88 @@ func (i *Installer) registerStopHook() error {
 		i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
 		return nil
 	}
-	hookCmd := "bash " + i.hookPath()
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
+	plans := i.hookPlans()
+
 	if i.dryRun {
-		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
+		for _, p := range plans {
+			fmt.Fprintf(i.out, "  would register %s hook in %s: %q\n", p.event, hooksFile, p.cmd)
+		}
 		return nil
 	}
-	changed, err := ensureHook(hooksFile, "Stop", hookCmd, foreignHookPredicate(hookCmd))
-	if err != nil {
-		return err
-	}
-	if changed {
-		i.ok("registered Stop hook in %s", i.kit.hooksFile)
-	} else {
-		i.ok("Stop hook already registered")
-	}
-	return i.registerVerifyHook()
-}
 
-// registerVerifyHook adds the SessionStart hook that verifies this project's code
-// anchors. Claude only: it is the agent with a SessionStart event.
-//
-// It is registered even though it does nothing until a memory carries an anchor —
-// the alternative is asking people to install a second thing later, at the exact
-// moment they are least likely to.
-func (i *Installer) registerVerifyHook() error {
-	if i.kit.name != "claude" || i.kit.hooksFile == "" {
-		return nil
+	regs := make([]hookReg, len(plans))
+	for n, p := range plans {
+		regs[n] = hookReg{event: p.event, cmd: p.cmd, obsolete: foreignHookPredicate(p.cmd)}
 	}
-	hookCmd := "bash " + i.verifyHookPath()
-	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
-	if i.dryRun {
-		fmt.Fprintf(i.out, "  would register SessionStart hook in %s: %q\n", hooksFile, hookCmd)
-		return nil
-	}
-	changed, err := ensureHook(hooksFile, "SessionStart", hookCmd, foreignHookPredicate(hookCmd))
+	changed, err := ensureHooks(hooksFile, regs)
 	if err != nil {
 		return err
 	}
-	if changed {
-		i.ok("registered SessionStart hook (verifies memories against your code)")
-	} else {
-		i.ok("SessionStart hook already registered")
-	}
-
-	endCmd := "bash " + i.sessionEndHookPath()
-	subCmd := "bash " + i.subagentHookPath()
-	subChanged, err := ensureHook(hooksFile, "SubagentStart", subCmd, foreignHookPredicate(subCmd))
-	if err != nil {
-		return err
-	}
-	if subChanged {
-		i.ok("registered SubagentStart hook (a subagent wakes knowing memory exists)")
-	} else {
-		i.ok("SubagentStart hook already registered")
-	}
-
-	// The WRITE half (ADR-017 T3). The SAME script as the session Stop hook, which
-	// branches on hook_event_name: the two nudges differ in text, not machinery,
-	// and a second script would be a second thing to keep in step.
-	//
-	// Without this, T2's recall is half a loop with the enforced half already
-	// working — a subagent reads memory and finishes with everything it learned
-	// inside a transcript `mineclaude` drops by design as "subagent traffic".
-	stopCmd := "bash " + i.hookPath()
-	subStopChanged, err := ensureHook(hooksFile, "SubagentStop", stopCmd, foreignHookPredicate(stopCmd))
-	if err != nil {
-		return err
-	}
-	if subStopChanged {
-		i.ok("registered SubagentStop hook (a subagent offers back what it found)")
-	} else {
-		i.ok("SubagentStop hook already registered")
-	}
-
-	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
-	if err != nil {
-		return err
-	}
-	if endChanged {
-		i.ok("registered SessionEnd hook (reports what recall did this session)")
-	} else {
-		i.ok("SessionEnd hook already registered")
+	for _, p := range plans {
+		if changed[p.event] {
+			i.ok("%s", p.note)
+		} else {
+			i.ok("%s hook already registered", p.event)
+		}
 	}
 	return nil
+}
+
+// hookPlan is one hook registration plus the line the operator is told when it
+// lands. The note travels WITH the registration rather than beside it, because
+// the previous shape — one hand-written if/else per event — is how SubagentStart
+// shipped registered and silently, its result assigned to `_`.
+type hookPlan struct {
+	event string
+	cmd   string
+	note  string
+}
+
+// hookPlans is every hook this kit registers, in the order they are reported.
+//
+// This list is the single answer to "what does an install put in my settings
+// file", and three things read it: the registration itself, the --dry-run
+// preview (which previously previewed two of five), and
+// TestReadmeNamesEveryHookEventTheInstallerRegisters, which fails when a README
+// stops naming one of them.
+//
+// Claude-only past the Stop hook. codex takes the same Stop shape and the same
+// stop_hook_active loop guard, so one script and one merge serve both; it has no
+// SessionStart, SessionEnd or subagent events to register. pi never reaches here
+// — it has no hooks file, and its checkpoint ships inside the bridge extension.
+func (i *Installer) hookPlans() []hookPlan {
+	plans := []hookPlan{
+		{event: "Stop", cmd: "bash " + i.hookPath(), note: "registered Stop hook in " + i.kit.hooksFile},
+	}
+	if i.kit.name != agentClaude {
+		return plans
+	}
+	return append(plans,
+		hookPlan{
+			event: "SessionStart",
+			cmd:   "bash " + i.verifyHookPath(),
+			note:  "registered SessionStart hook (verifies memories against your code)",
+		},
+		hookPlan{
+			event: "SubagentStart",
+			cmd:   "bash " + i.subagentHookPath(),
+			note:  "registered SubagentStart hook (a subagent wakes knowing memory exists)",
+		},
+		// The WRITE half (ADR-017 T3), and deliberately the SAME script as Stop:
+		// it branches on hook_event_name, so the two nudges differ in text and not
+		// in machinery. A second script would be a second thing to keep in step.
+		hookPlan{
+			event: "SubagentStop",
+			cmd:   "bash " + i.hookPath(),
+			note:  "registered SubagentStop hook (a subagent offers back what it found)",
+		},
+		hookPlan{
+			event: "SessionEnd",
+			cmd:   "bash " + i.sessionEndHookPath(),
+			note:  "registered SessionEnd hook (reports what recall did this session)",
+		},
+	)
 }
 
 // foreignHookPredicate matches any Stop registration of our hook script that is

@@ -26,9 +26,44 @@ import (
 // This is the Go replacement for the jq block in the old install.sh — same
 // behaviour and same on-disk shape, with no external jq dependency.
 func ensureHook(path, event, hookCmd string, isObsolete func(cmd string) bool) (bool, error) {
+	changed, err := ensureHooks(path, []hookReg{{event: event, cmd: hookCmd, obsolete: isObsolete}})
+	return changed[event], err
+}
+
+// hookReg is one event → command registration for ensureHooks. A nil obsolete
+// supersedes nothing, which is what a caller with no older command to retire
+// passes.
+type hookReg struct {
+	event    string
+	cmd      string
+	obsolete func(cmd string) bool
+}
+
+// ensureHooks registers every entry in regs in ONE read-modify-write of the
+// settings JSON at path, and returns the set of events it actually changed.
+//
+// Batching is not a micro-optimisation, it is the fix for a defect the
+// per-event version produced. Every write backs the file up first, so
+// registering five events one call at a time left FOUR timestamped backups in
+// the user's config dir on every install that added them — the config dir
+// filling with copies of itself, and the count growing by one with each hook the
+// product gains. One read, one backup, one write.
+//
+// When every registration is already present and nothing was superseded — the
+// common case on a re-install — it writes nothing at all: no file touched, no
+// backup, and an empty changed set. That is also why `changed` is a set rather
+// than a bool: the caller reports per event, and "which of these five are new"
+// is not answerable from a single flag.
+//
+// A registration that fails to parse or that finds a value of the wrong shape
+// aborts the WHOLE batch before anything is written, so the file is never left
+// carrying half of an install.
+func ensureHooks(path string, regs []hookReg) (map[string]bool, error) {
+	changed := map[string]bool{}
+
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
+		return nil, err
 	}
 
 	settings := map[string]any{}
@@ -36,34 +71,42 @@ func ensureHook(path, event, hookCmd string, isObsolete func(cmd string) bool) (
 		if err := json.Unmarshal(raw, &settings); err != nil {
 			// Refuse to touch a file we can't parse: overwriting a user's
 			// hand-edited settings.json would be worse than failing loudly.
-			return false, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
 
 	hooks, err := childObject(settings, "hooks")
 	if err != nil {
-		return false, err
-	}
-	stop, err := childArray(hooks, event)
-	if err != nil {
-		return false, err
+		return nil, err
 	}
 
-	pruned, dropped := dropHook(stop, isObsolete)
-	if hookPresent(pruned, hookCmd) && !dropped {
-		return false, nil
+	for _, reg := range regs {
+		entries, err := childArray(hooks, reg.event)
+		if err != nil {
+			return nil, err
+		}
+
+		pruned, dropped := dropHook(entries, reg.obsolete)
+		if hookPresent(pruned, reg.cmd) && !dropped {
+			continue
+		}
+
+		if !hookPresent(pruned, reg.cmd) {
+			// Append a matcher-less entry carrying our command — the same shape
+			// Claude Code writes and the same shape the old install.sh produced.
+			pruned = append(pruned, map[string]any{
+				"hooks": []any{
+					map[string]any{"type": "command", "command": reg.cmd},
+				},
+			})
+		}
+		hooks[reg.event] = pruned
+		changed[reg.event] = true
 	}
 
-	if !hookPresent(pruned, hookCmd) {
-		// Append a matcher-less entry carrying our command — the same shape
-		// Claude Code writes and the same shape the old install.sh produced.
-		pruned = append(pruned, map[string]any{
-			"hooks": []any{
-				map[string]any{"type": "command", "command": hookCmd},
-			},
-		})
+	if len(changed) == 0 {
+		return changed, nil
 	}
-	hooks[event] = pruned
 	settings["hooks"] = hooks
 
 	// Back up the original before writing, mirroring install.sh's .bak.<ts>.
@@ -71,21 +114,21 @@ func ensureHook(path, event, hookCmd string, isObsolete func(cmd string) bool) (
 	if len(raw) > 0 {
 		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
 		if err := os.WriteFile(backup, raw, 0o644); err != nil {
-			return false, fmt.Errorf("backup %s: %w", path, err)
+			return nil, fmt.Errorf("backup %s: %w", path, err)
 		}
 	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
-		return false, err
+		return nil, err
 	}
-	return true, nil
+	return changed, nil
 }
 
 // childObject returns settings[key] as a JSON object, creating an empty one if

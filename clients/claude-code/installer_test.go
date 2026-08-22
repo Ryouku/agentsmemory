@@ -1112,11 +1112,15 @@ func TestReadmeNamesEveryHookEventTheInstallerRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read installer.go: %v", err)
 	}
-	// ensureHook(hooksFile, "<Event>", …) — the one call that registers anything.
-	re := regexp.MustCompile(`ensureHook\([^,]+,\s*"([A-Za-z]+)"`)
+	// hookPlans' `event:` fields — the one list that says what an install
+	// registers. It was `ensureHook(hooksFile, "<Event>", …)` until the five
+	// per-event calls were batched into one; the guard below is what turned that
+	// refactor into a loud failure instead of a check that silently matched
+	// nothing.
+	re := regexp.MustCompile(`event:\s*"([A-Za-z]+)"`)
 	matches := re.FindAllStringSubmatch(string(src), -1)
 	if len(matches) < 2 {
-		t.Fatalf("found %d ensureHook registrations in installer.go — the pattern is wrong, and "+
+		t.Fatalf("found %d hook registrations in installer.go — the pattern is wrong, and "+
 			"an empty set would let this check pass against a README naming nothing", len(matches))
 	}
 	events := map[string]bool{}
@@ -1137,4 +1141,74 @@ func TestReadmeNamesEveryHookEventTheInstallerRegisters(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestOneInstallLeavesAtMostOneBackup pins the reason the five per-event
+// ensureHook calls were batched into one ensureHooks call.
+//
+// Every write of the settings file backs it up first. Registering five events one
+// at a time therefore wrote the file five times and left FOUR timestamped
+// backups in the user's config dir — observed on a real install — with the count
+// set to grow by one for every hook the product gains. The backups are of a file
+// the installer merges into rather than replaces, so they were pure accumulation.
+//
+// The fresh case leaves NONE, because there was no prior file to preserve.
+func TestOneInstallLeavesAtMostOneBackup(t *testing.T) {
+	t.Run("fresh config dir leaves no backups", func(t *testing.T) {
+		inst, _, dir := newTestInstaller(t, false)
+		if err := inst.run(); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		// Guard against the vacuous version of this test: if nothing was
+		// registered there would be nothing to back up either.
+		if len(readHookEvent(t, filepath.Join(dir, "settings.json"), "SubagentStop")) == 0 {
+			t.Fatal("no hooks were registered, so a backup count of zero proves nothing")
+		}
+		if backups := settingsBackups(t, dir); len(backups) != 0 {
+			t.Errorf("a fresh install left %d settings backups (%v); there was no prior file to "+
+				"preserve, so every one of them is a copy of something this install wrote",
+				len(backups), backups)
+		}
+	})
+
+	t.Run("existing settings file is backed up exactly once", func(t *testing.T) {
+		inst, _, dir := newTestInstaller(t, false)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		prior := []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`)
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), prior, 0o644); err != nil {
+			t.Fatalf("seed settings: %v", err)
+		}
+		if err := inst.run(); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		backups := settingsBackups(t, dir)
+		if len(backups) != 1 {
+			t.Fatalf("install left %d settings backups (%v), want exactly 1", len(backups), backups)
+		}
+		// The one backup must hold what was there BEFORE, which is the only thing
+		// a backup is for.
+		body, err := os.ReadFile(backups[0])
+		if err != nil {
+			t.Fatalf("read backup: %v", err)
+		}
+		if string(body) != string(prior) {
+			t.Errorf("the backup does not hold the pre-install file:\n got: %s\nwant: %s", body, prior)
+		}
+		// ...and the user's own hook survived the merge.
+		if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "Stop"), "echo mine") {
+			t.Error("the user's own Stop hook was dropped by the merge")
+		}
+	})
+}
+
+// settingsBackups lists the timestamped settings backups in a config dir.
+func settingsBackups(t *testing.T, dir string) []string {
+	t.Helper()
+	found, err := filepath.Glob(filepath.Join(dir, "settings.json.bak.*"))
+	if err != nil {
+		t.Fatalf("glob backups: %v", err)
+	}
+	return found
 }
