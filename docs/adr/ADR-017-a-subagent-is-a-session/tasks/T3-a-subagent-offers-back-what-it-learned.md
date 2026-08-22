@@ -85,7 +85,43 @@ file is the drift this pipeline exists to catch.
 | 1 — exists | the hook already exists; this is the second event |
 | 2 — something selects it | `TestInstallerRegistersSubagentStop` |
 | 3 — the caller can discover it | the harness fires it |
-| 4 — it is used | OBSERVED, not asserted. One live dispatch after install: the subagent was blocked at its stop, read the nudge, and answered it — "Nothing worth persisting — this was a read-only code review answering a specific question about the hook's logic", which is the out the nudge's last line offers verbatim. It also called `am_search` (T2's half) unprompted. What this does NOT show is a subagent filing when it HAS something to file; the nudge's escape hatch was the branch exercised, and that is the honest reading |
+| 4 — it is used | MEASURED, 2026-08-22, after installing the kit. Four live dispatches; counts below |
+
+### The rung-4 measurement, and what it does not show
+
+Four dispatches on the installed kit. The first is reported separately because it
+was **not a valid trial**: its `am_search` was permission-denied in the headless
+session, so it had no working write path either and "nothing worth persisting"
+was the only answer available to it, not a judgment. It is evidence the nudge is
+DELIVERED and read, and nothing more.
+
+The other three had the `am_*` tools allowed and reached the server (the server's
+own call counter moved on each):
+
+| | count |
+|---|---|
+| received the nudge and acted on it | **3 / 3** |
+| filed a drawer | **1 / 3** |
+| took the nudge's documented out, explicitly | **2 / 3** |
+
+The one that filed wrote a good memory: correct, in the right room, and **code-anchored**
+to `internal/palace/import.go` — an anchor the server later verified. Not a
+retelling of its task, which is what the nudge asks for.
+
+**The two abstentions may be correct rather than a compliance failure, and this
+design cannot tell.** All three tasks were "read this file and state X",
+answerable from about twenty lines of source — exactly what the protocol says not
+to file ("don't save what the repo already records"). So the honest reading is:
+the mechanism reaches every subagent and every subagent acts on it, and the write
+RATE on small re-derivable tasks is 1 in 3. Whether that is discrimination or
+avoidance needs trials whose finding is genuinely not recoverable from the code,
+which these were not.
+
+**The number to watch**, as the ADR's risk row already says: drawers filed per
+dispatch, over a week of real fan-outs. If it stays near zero on tasks that DO
+produce unrecoverable findings, the write half needs the same correction T1
+forced on the read half — and the fallback is the same one the ADR already names
+for the read side: do it for the agent rather than ask.
 
 ## Mutants
 
