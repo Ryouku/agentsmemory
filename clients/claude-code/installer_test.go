@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -1088,6 +1089,52 @@ func TestRedeployKitCheckCoversEveryInstalledArtifact(t *testing.T) {
 		if !strings.Contains(body, rel) {
 			t.Errorf("scripts/redeploy.sh's kit freshness list does not mention %s, so a stale "+
 				"installed copy of it reports as verified", rel)
+		}
+	}
+}
+
+// TestReadmeNamesEveryHookEventTheInstallerRegisters makes the install
+// documentation load-bearing, the way TestCatalogSizeIsWhatTheReadmeClaims does
+// for the tool count.
+//
+// Both READMEs described the install as shipping "the MCP, commands, and Stop
+// hook" for as long as there were five registrations. Three of them — SessionEnd,
+// SubagentStart, SubagentStop — were invisible to anyone deciding whether to
+// install, and to anyone auditing what an install had just done to their config.
+// Prose about what ships drifts exactly like prose about anything else.
+//
+// The expected set is read from the SOURCE, so adding a sixth `ensureHook` call
+// and forgetting the docs fails here rather than being noticed by a reader who
+// never had reason to look.
+func TestReadmeNamesEveryHookEventTheInstallerRegisters(t *testing.T) {
+	root := repoRootForHooks(t)
+	src, err := os.ReadFile(filepath.Join(root, "clients", "claude-code", "installer.go"))
+	if err != nil {
+		t.Fatalf("read installer.go: %v", err)
+	}
+	// ensureHook(hooksFile, "<Event>", …) — the one call that registers anything.
+	re := regexp.MustCompile(`ensureHook\([^,]+,\s*"([A-Za-z]+)"`)
+	matches := re.FindAllStringSubmatch(string(src), -1)
+	if len(matches) < 2 {
+		t.Fatalf("found %d ensureHook registrations in installer.go — the pattern is wrong, and "+
+			"an empty set would let this check pass against a README naming nothing", len(matches))
+	}
+	events := map[string]bool{}
+	for _, m := range matches {
+		events[m[1]] = true
+	}
+
+	for _, rel := range []string{"README.md", filepath.Join("clients", "claude-code", "README.md")} {
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		text := string(body)
+		for event := range events {
+			if !strings.Contains(text, event) {
+				t.Errorf("%s never mentions the %s hook, which the installer registers: someone "+
+					"reading it cannot tell what an install puts in their config", rel, event)
+			}
 		}
 	}
 }

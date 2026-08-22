@@ -701,7 +701,7 @@ first one for free:
 |---|---|---|
 | `am_skillset` | Server-side wakeup playbook — which tool, in what order — returned over MCP itself | **Automatic.** Seeded on first boot, including `--local` |
 | `CLAUDE.md` / `AGENTS.md` | The always-on protocol: recall at session start, persist before stopping | `aiagentmemory install` writes `agentsmemory-bootstrap.md` and merges an import into your memory file |
-| `/M`, `/am`, `/load-skill` + the Stop hook | Task-scoped grounding and the end-of-turn checkpoint that stops memory being lost | Same installer |
+| `/M`, `/am`, `/load-skill` + five hooks | Task-scoped grounding, the end-of-turn checkpoint that stops memory being lost, and the two that make a SUBAGENT a session: `SubagentStart` puts the recall instruction next to its task, `SubagentStop` asks it for what it found | Same installer |
 
 So after `docker compose up`, run the kit as well — `--local` wires it to your
 own server:
@@ -732,7 +732,9 @@ anyway instead of reporting "memory tools are off".
 The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code),
 [Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
 workspace: it installs the memory-grounded slash commands (`/M`, `/am`,
-`/load-skill`) and the Stop hook, registers the agentsmemory MCP, and can wrap the
+`/load-skill`), the five hooks (`Stop`, `SessionStart`, `SessionEnd`,
+`SubagentStart`, `SubagentStop`) and a subagent definition whose tool allowlist
+names the `am_*` tools, registers the agentsmemory MCP, and can wrap the
 agent CLI so each project runs against its own isolated configuration. It replaces
 the old shell installer; everything ships in one downloadable binary.
 
@@ -773,7 +775,7 @@ every file write and command without touching anything.
 
 | Mode | Command | What it does |
 |------|---------|--------------|
-| **Global** | `aiagentmemory install` | Wires the MCP, commands, and Stop hook into the global `~/.claude`. Wraps the Claude you already run. |
+| **Global** | `aiagentmemory install` | Wires the MCP, commands, all five hooks and the shipped subagent definition into the global `~/.claude`. Wraps the Claude you already run. |
 | **Sandboxed** | `aiagentmemory install --sandbox <name>` | Installs a self-contained config under `~/.sandboxes/<name>`, isolated from every other project and from the global `~/.claude`. |
 
 ### Sandboxed installation (per-project isolation)

@@ -61,10 +61,19 @@ below), and `--agent codex` / `--agent both` to install for codex as well (see
   + eidos flavour).
 - `commands/am.md` → the **`/am`** bootstrap command (agentsmemory-native `am_*`
   tools).
-- `agentsmemory-stop-hook.sh` → the Stop hook, registered in `settings.json`
-  (idempotent, with a timestamped backup; no `jq` needed). It sits flat in the
-  config dir, not under `hooks/`: a sandbox can be shared with pi, which halts
-  its launch on any `hooks/` directory it finds.
+- `agentsmemory-stop-hook.sh` → registered in `settings.json` for **two** events
+  (idempotent, with a timestamped backup; no `jq` needed). On `Stop` it is the
+  end-of-turn checkpoint; on `SubagentStop` it asks a finishing subagent for what
+  it FOUND — a drawer and a fact, not a session summary. One script, branching on
+  the event, because the two nudges differ in text and not in machinery. It sits
+  flat in the config dir, not under `hooks/`: a sandbox can be shared with pi,
+  which halts its launch on any `hooks/` directory it finds.
+- `agentsmemory-verify-hook.sh` → the `SessionStart` hook: before a session acts
+  on anything, it checks that memories carrying code anchors still match the code.
+  Detection that arrives after the wrong decision is not detection.
+- `agentsmemory-session-end-hook.sh` → the `SessionEnd` hook: what recall actually
+  did across the whole session. It is the only one of the hooks that can report
+  that, because at `Stop` the session has barely begun.
 - `agentsmemory-bootstrap.md` → the always-on operating protocol, pulled into
   the config dir's `CLAUDE.md` via a managed `@agentsmemory-bootstrap.md` import.
   Claude Code loads `$CLAUDE_CONFIG_DIR/CLAUDE.md` as user memory, so the
