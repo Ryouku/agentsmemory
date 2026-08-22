@@ -393,8 +393,8 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 // registerListDrawers: paginate a team's drawers, optionally filtered by wing/room.
 func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
-		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Naming no wing lists the wing this MCP registration was created for; pass \"*\" to list every wing."),
-		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, the listing is scoped to the wing this registration was created for, exactly as a recall is — enumeration and recall must agree, or one of them leaks. Pass \"*\" to list every wing.")),
+		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
 		mcp.WithNumber("offset", mcp.Description("Number of drawers to skip (default 0).")),
@@ -512,7 +512,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
-		mcp.WithNumber("limit", mcp.Description("Max results, 1-100 (default 5).")),
+		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse, 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
@@ -694,8 +694,8 @@ func registerListWings(reg *registrar, drawers *palace.Service, usageSvc *usage.
 // registerListRooms: per-room drawer counts, optionally within one wing.
 func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_rooms",
-		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing."),
-		mcp.WithString("wing", mcp.Description("Only rooms within this wing.")),
+		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only rooms within this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -751,12 +751,13 @@ func registerGetAAAKSpec(reg *registrar, _ *palace.Service, usageSvc *usage.Serv
 	})
 }
 
-// registerReconnect: a liveness probe over the tenant's vector namespace. In this
-// stateless server it has no cached client to drop (unlike the Python tool); it
-// re-readies the namespace and confirms the backend is reachable.
+// registerReconnect ensures the tenant's vector namespace exists and confirms
+// the backend is reachable. The server has no cached client to drop (unlike the
+// Python tool), but EnsureNamespace may create backend state, so reconnect stays
+// write-gated even though repeating it is idempotent.
 func registerReconnect(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("reconnect",
-		mcp.WithDescription("Re-ready the workspace's vector store and confirm the backend is reachable (a stateless liveness probe)."),
+		mcp.WithDescription("Ensure the workspace's vector namespace exists and confirm the backend is reachable. This idempotent operation is write-gated because it may create backend state."),
 	)
 	reg.addWrite(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -766,6 +767,6 @@ func registerReconnect(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err := drawers.Reconnect(ctx, t.TeamID); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"ok": true, "note": "stateless server: namespace re-readied, backend reachable"}), nil
+		return jsonResult(map[string]any{"ok": true, "note": "vector namespace ready, backend reachable"}), nil
 	})
 }

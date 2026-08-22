@@ -20,7 +20,7 @@ import (
 func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	list := newTool("list_anchors",
 		mcp.WithDescription("List code anchors — the (file, snippet) pairs memories are pinned to — so a client that can read the working tree can verify them. Filter by wing, repo label, or status (unchecked|verified|drifted|missing)."),
-		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing. Omitted, scoped to this registration's wing; pass \"*\" for every wing.")),
+		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithString("repo", mcp.Description("Only anchors carrying this repo label.")),
 		mcp.WithString("status", mcp.Description("Only anchors in this state.")),
 		mcp.WithNumber("limit", mcp.Description("Max anchors to return (default 500).")),

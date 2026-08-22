@@ -41,7 +41,7 @@ func registerDiaryWrite(reg *registrar, drawers *palace.Service, usageSvc *usage
 		mcp.WithString("entry", mcp.Description("The diary entry text, ideally in AAAK. Either entry or content is required; entry wins if both are given.")),
 		mcp.WithString("content", mcp.Description("Alias for entry — accepted because am_add_drawer uses \"content\".")),
 		mcp.WithString("topic", mcp.Description("Optional tag grouping entries (default \"general\").")),
-		mcp.WithString("wing", mcp.Description("Optional target wing (default wing_<agent_name>).")),
+		mcp.WithString("wing", mcp.Description("Optional journal destination. Omitted, uses this MCP registration's default_wing when configured; otherwise wing_<agent_name>.")),
 	)
 	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)

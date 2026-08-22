@@ -156,7 +156,7 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | `am_check_duplicate` | ✅ | Is content near-identical to an existing drawer? |
 | `am_list_wings` / `am_list_rooms` / `am_get_taxonomy` | ✅ | Indexed wing/room aggregations of a team's memory |
 | `am_get_aaak_spec` | ✅ | The AAAK compressed-memory dialect reference |
-| `am_reconnect` | ✅ | Re-ready the workspace's vector store (stateless liveness probe) |
+| `am_reconnect` | ✅ | Ensure the workspace's vector namespace exists; write-gated because this may create backend state |
 | `am_diary_write` / `am_diary_read` | ✅ | Append to / read an agent's append-only journal (timestamped, newest-first) |
 | `am_mine` | ✅ | Mine a text payload into chunked drawers (entities + content date) + the closet index; idempotent by source |
 | `am_list_hallways` / `am_delete_hallway` | ✅ | Within-wing entity co-occurrence links (derived from mined entities) |

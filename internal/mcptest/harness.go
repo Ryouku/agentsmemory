@@ -348,15 +348,27 @@ func UsableCatalogue(tools []string, err error) error {
 	return nil
 }
 
-// ListTools returns the tool names the running server advertises.
-func (h *Harness) ListTools(t *testing.T) ([]string, error) {
+// ListToolDefinitions returns the tool schemas the running server advertises.
+// Tests that audit a class of tools use the schemas to discover that class,
+// rather than keeping a second list that drifts when a tool is added.
+func (h *Harness) ListToolDefinitions(t *testing.T) ([]mcp.Tool, error) {
 	t.Helper()
 	res, err := h.cli.ListTools(context.Background(), mcp.ListToolsRequest{})
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(res.Tools))
-	for _, tool := range res.Tools {
+	return res.Tools, nil
+}
+
+// ListTools returns the tool names the running server advertises.
+func (h *Harness) ListTools(t *testing.T) ([]string, error) {
+	t.Helper()
+	tools, err := h.ListToolDefinitions(t)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
 		names = append(names, tool.Name)
 	}
 	return names, nil
