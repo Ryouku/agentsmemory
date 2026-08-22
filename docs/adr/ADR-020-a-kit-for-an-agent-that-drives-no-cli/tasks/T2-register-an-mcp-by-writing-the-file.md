@@ -92,6 +92,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and ask if `cursor-agent mcp list` does not show the server after a clean write — the file is the whole mechanism, and if it is not enough, the kit needs a different route rather than a louder message.
 
+## Mutation Log
+
+- 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/settings.go` · a fresh map instead of a merge silently deletes every other MCP server the user runs, and this is the first registration path with no CLI between us and their file
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

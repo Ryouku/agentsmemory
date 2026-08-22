@@ -723,8 +723,19 @@ func TestResolveAgentKits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kits) != 3 || kits[0].name != agentClaude || kits[1].name != agentCodex || kits[2].name != agentPi {
-		t.Errorf("resolveAgentKits(all) = %+v, want [claude codex pi]", kits)
+	// `all` grows as kits are added — cursor joined 2026-08-22 (ADR-020). The
+	// order is the docs' order, and the assertion names every member rather than
+	// only counting them: a count-only check passes when a kit is swapped for
+	// another.
+	wantAll := []string{agentClaude, agentCodex, agentPi, agentCursor}
+	if len(kits) != len(wantAll) {
+		t.Errorf("resolveAgentKits(all) returned %d kits, want %d (%v)", len(kits), len(wantAll), wantAll)
+	} else {
+		for n, want := range wantAll {
+			if kits[n].name != want {
+				t.Errorf("resolveAgentKits(all)[%d] = %q, want %q", n, kits[n].name, want)
+			}
+		}
 	}
 
 	if _, err := resolveAgentKits("gemini"); err == nil {
@@ -1490,5 +1501,104 @@ func TestCursorInstallRegistersTheMCP(t *testing.T) {
 	if out := inst.out.(*bytes.Buffer).String(); !strings.Contains(out, "cursor-agent mcp enable") {
 		t.Errorf("the install never mentions the approval step, without which Cursor loads "+
 			"nothing:\n%s", out)
+	}
+}
+
+// TestCursorInstallWritesTheProtocolRule and TestCursorRuleIsAlwaysApplied pin the
+// read half of the kit: Cursor has no CLAUDE.md/AGENTS.md, so the protocol reaches
+// it as a rule file or not at all.
+func TestCursorInstallWritesTheProtocolRule(t *testing.T) {
+	inst, _, dir := newTestInstallerFor(t, cursorKit, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, cursorKit.rulesFile))
+	if err != nil {
+		t.Fatalf("the protocol rule was not written: %v", err)
+	}
+	// Not a stub: the rule must carry the protocol body, and the cheapest proof
+	// that it does is the instruction the whole thing exists for.
+	if !strings.Contains(string(body), "am_search") {
+		t.Errorf("the rule does not carry the protocol — it never names am_search:\n%.400s", body)
+	}
+	if len(body) < 1000 {
+		t.Errorf("the rule is %d bytes; the protocol is thousands, so this is a stub", len(body))
+	}
+}
+
+// TestCursorRuleIsAlwaysApplied pins the one line that separates a protocol from a
+// document nobody opens. Without `alwaysApply: true` Cursor loads the rule on
+// demand, and "on demand" for an always-on operating protocol means never.
+func TestCursorRuleIsAlwaysApplied(t *testing.T) {
+	inst, _, dir := newTestInstallerFor(t, cursorKit, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, cursorKit.rulesFile))
+	if err != nil {
+		t.Fatalf("read rule: %v", err)
+	}
+	head := string(body)
+	if len(head) > 400 {
+		head = head[:400]
+	}
+	if !strings.HasPrefix(head, "---\n") {
+		t.Fatalf("the rule has no front matter, so Cursor reads it as plain content:\n%s", head)
+	}
+	for _, want := range []string{"alwaysApply: true", "description:"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the rule's front matter is missing %q:\n%s", want, head)
+		}
+	}
+}
+
+// TestReadmeNamesEveryInstallableAgent makes the install documentation
+// load-bearing, in the same shape as the hook-event gate.
+//
+// A kit that resolves from --agent and appears in no README is one only its
+// author installs. This reads the names out of resolveAgentKits — the single
+// function every --agent value goes through — so adding a fifth agent and
+// forgetting the docs fails a build.
+func TestReadmeNamesEveryInstallableAgent(t *testing.T) {
+	root := repoRootForHooks(t)
+	var agents []string
+	for _, name := range []string{agentClaude, agentCodex, agentPi, agentCursor} {
+		kits, err := resolveAgentKits(name)
+		if err != nil {
+			t.Fatalf("--agent %s does not resolve: %v", name, err)
+		}
+		if len(kits) != 1 {
+			t.Fatalf("--agent %s resolved to %d kits, want 1", name, len(kits))
+		}
+		agents = append(agents, name)
+	}
+	// `all` is the definitive list; anything it returns must be documented, and
+	// this catches a kit added to `all` without its own single-name case.
+	all, err := resolveAgentKits(agentAll)
+	if err != nil {
+		t.Fatalf("--agent all: %v", err)
+	}
+	for _, k := range all {
+		if !contains(agents, k.name) {
+			agents = append(agents, k.name)
+		}
+	}
+	if len(agents) < 4 {
+		t.Fatalf("found %d installable agents — fewer than the four that exist means the list "+
+			"is wrong and this check asserts almost nothing", len(agents))
+	}
+
+	for _, rel := range []string{"README.md", filepath.Join("clients", "claude-code", "README.md")} {
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		text := string(body)
+		for _, name := range agents {
+			if !strings.Contains(text, "--agent "+name) {
+				t.Errorf("%s never shows `--agent %s`, so a reader cannot tell the kit installs "+
+					"for it", rel, name)
+			}
+		}
 	}
 }

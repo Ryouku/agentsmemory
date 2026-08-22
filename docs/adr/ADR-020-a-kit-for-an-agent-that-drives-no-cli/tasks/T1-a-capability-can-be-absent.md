@@ -91,6 +91,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and ask if Cursor turns out to read a commands or memory file after all — then the kit sets those fields and the guards are still correct, but T3's protocol delivery changes shape.
 
+## Mutation Log
+
+- 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/installer.go` · without the guard filepath.Join(dir, "", "M.md") drops all three slash commands loose in the config root, files the agent never reads
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

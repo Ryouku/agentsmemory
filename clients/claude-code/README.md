@@ -1,16 +1,37 @@
 # agentsmemory — agent kit (`aiagentmemory`)
 
 A single binary that wires [Claude Code](https://claude.com/claude-code),
-[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
+[Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com) or
+[pi](https://pi.dev) into your
 **agentsmemory** workspace: it installs the memory-grounded slash commands and the
 Stop hook, registers the agentsmemory MCP, and can optionally pull in the
 recommended companion tools. It also wraps the agent CLI so each project can run
 against its own isolated configuration.
 
-Claude is the default; `--agent codex` and `--agent pi` install the same kit into
-those CLIs' own layouts, `--agent both` does Claude + codex (what it always meant)
-and `--agent all` does all three. Everything below describes Claude unless a
-per-agent column or the [Codex](#codex) / [pi](#pi) section says otherwise.
+`--agent claude` is the default; `--agent codex`, `--agent cursor` and
+`--agent pi` install the same kit into those tools' own layouts, `--agent both`
+does Claude + codex (what it always meant) and `--agent all` does all four.
+Everything below describes Claude unless a per-agent column or the
+[Codex](#codex) / [pi](#pi) section says otherwise.
+
+**The agents do not offer the same surfaces**, and the kit installs what each one
+has rather than pretending:
+
+| | claude | codex | cursor | pi |
+|---|---|---|---|---|
+| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/.pi/agent` |
+| MCP registered by | `claude mcp add` | `codex mcp add` | writing `mcp.json` — Cursor ships no `mcp add` | bridge extension |
+| protocol lands in | `CLAUDE.md` + `@import` | `AGENTS.md` (inlined) | `rules/agentsmemory.mdc` (`alwaysApply: true`) | `AGENTS.md` (inlined) |
+| slash commands | `commands/` | `prompts/` | none — no commands dir | `prompts/` |
+| lifecycle hooks | all five | `Stop` (trust it in `/hooks`) | none — hook shape not established | in the extension |
+| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | none |
+| `--sandbox` | ✅ | ✅ | refused — no config-dir variable to pin | ✅ |
+
+Cursor needs one manual step afterwards, and the install prints it every time:
+`cursor-agent mcp enable agentsmemory`. Cursor gates every MCP server behind an
+approval stored outside `mcp.json`, so a registered-but-unapproved server is
+byte-identical on disk to a working one — and an installer that approved its own
+server would defeat the gate.
 
 It replaces the old `install.sh` shell installer — everything now ships inside
 one downloadable binary, `aiagentmemory`.
@@ -52,6 +73,12 @@ Bootstrap environment knobs: `AIAGENTMEMORY_VERSION` (pin a tag),
 Add `--recommended` to either mode to also install the ecosystem tools (see
 below), and `--agent codex` / `--agent both` to install for codex as well (see
 [Codex](#codex)).
+
+Isolation works by pinning the agent's own config-dir variable at launch —
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`. **Cursor exposes none**,
+so `--agent cursor` with `--sandbox` or `--config-dir` is refused rather than
+writing a complete, correct kit into a directory Cursor will never open and
+reporting success.
 
 ## What gets installed
 

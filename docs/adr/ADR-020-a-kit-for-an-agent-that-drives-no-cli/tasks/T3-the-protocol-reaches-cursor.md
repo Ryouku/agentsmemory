@@ -96,6 +96,10 @@ proves the files are written, and only Cursor proves it loads them.
 
 Stop and ask if `alwaysApply: true` does not make the rule load — the mechanism would then be Cursor's per-project rules rather than the global ones, which is a different install target.
 
+## Mutation Log
+
+- 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/installer.go` · without alwaysApply the rule loads on demand, and on demand for an always-on operating protocol means never — the protocol ships and changes nothing
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

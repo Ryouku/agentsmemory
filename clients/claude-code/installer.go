@@ -763,8 +763,18 @@ func (i *Installer) writeFile(path string, data []byte, perm os.FileMode) error 
 // listed but skipped until it is trusted in `/hooks`. summary() says so.
 func (i *Installer) registerStopHook() error {
 	if i.kit.hooksFile == "" {
-		// pi has no hook system at all; the checkpoint rides in the extension.
-		i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
+		// Two different reasons, and saying the wrong one is worse than saying
+		// nothing. pi retired hooks in favour of extensions, so its checkpoint
+		// ships inside the bridge we install. Cursor has a hooks directory whose
+		// events and payloads were never established, so we register nothing there
+		// on purpose — and the operator should know the write half is missing
+		// rather than assume it landed.
+		if i.kit.name == agentPi {
+			i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
+		} else {
+			i.warn("%s gets no memory checkpoint: its hook shape is not established, so nothing "+
+				"will prompt you to persist a session", i.kit.name)
+		}
 		return nil
 	}
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
@@ -906,6 +916,8 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 		return i.registerCodexMCP(token)
 	case agentPi:
 		return i.registerPiMCP(token)
+	case agentCursor:
+		return i.registerCursorMCP(token)
 	default:
 		return i.registerClaudeMCP(token)
 	}
@@ -1060,6 +1072,59 @@ func resolveAgentCLI(kit agentKit, c *cli.Command) (string, error) {
 	default:
 		return resolveKitBin(kit, c.String("claude-bin"), kitBinEnv(kit))
 	}
+}
+
+// cursorMCPFile is where Cursor reads its MCP server list, relative to the config
+// dir. Both the IDE and cursor-agent read it, which is why driving the CLI is not
+// needed and also not possible: `cursor-agent mcp` has login, list, list-tools,
+// enable and disable, and no add.
+const cursorMCPFile = "mcp.json"
+
+// registerCursorMCP registers the agentsmemory MCP server by writing Cursor's own
+// config file, because Cursor ships no command that would do it.
+//
+// The entry shape is copied from Cursor's existing HTTP entries rather than
+// invented: {"type":"http","url":…}, plus a headers object when a token is
+// resolved. A self-hosted --local server usually has none, and an empty
+// Authorization header is worse than no header at all.
+//
+// The approval step is printed rather than performed. Cursor gates every server
+// behind an explicit approval, a registered-but-unapproved server is
+// byte-identical on disk to a working one, and an installer that approves its own
+// server on the user's behalf defeats the point of the gate.
+func (i *Installer) registerCursorMCP(token string) error {
+	path := filepath.Join(i.targetDir, cursorMCPFile)
+	entry := map[string]any{"type": "http", "url": i.mcpURL}
+	headers := map[string]any{}
+	if token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
+	// Cursor's entries carry arbitrary headers, so --wing rides the connection
+	// here as it does for Claude — unlike codex, which has no static-header flag
+	// and gets a warning instead.
+	if i.wing != "" {
+		headers[wingHeader] = i.wing
+	}
+	if len(headers) > 0 {
+		entry["headers"] = headers
+	}
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register the agentsmemory MCP in %s → %s\n", path, i.mcpURL)
+		return nil
+	}
+	changed, err := ensureMCPServer(path, mcpName, entry)
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered MCP %q in %s → %s", mcpName, cursorMCPFile, i.mcpURL)
+	} else {
+		i.ok("MCP %q already registered in %s", mcpName, cursorMCPFile)
+	}
+	// Say this every time, not only when the file changed: the approval is stored
+	// outside mcp.json, so a re-install cannot tell whether it has happened.
+	i.ok("approve it once so Cursor loads it:  cursor-agent mcp enable %s", mcpName)
+	return nil
 }
 
 // tokenPath is where the workspace token is persisted inside CODEX_HOME.

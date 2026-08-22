@@ -239,5 +239,53 @@ func hookPresent(stop []any, cmd string) bool {
 // edit with a trailing comma is common; overwriting it would destroy
 // configuration we never read.
 func ensureMCPServer(path, name string, entry map[string]any) (bool, error) {
-	return false, nil // TDD red — implemented in the next commit
+	raw, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+
+	cfg := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return false, fmt.Errorf("parse %s: %w", path, err)
+		}
+	}
+
+	servers, err := childObject(cfg, "mcpServers")
+	if err != nil {
+		return false, err
+	}
+	// Already identical: write nothing. Comparing the MARSHALLED forms rather than
+	// the maps is what makes a re-install a true no-op — reflect.DeepEqual on
+	// values that came back through json.Unmarshal compares interface types, and
+	// an entry we built and an entry we read back are not the same types even when
+	// they are the same JSON.
+	if existing, ok := servers[name]; ok {
+		was, err1 := json.Marshal(existing)
+		now, err2 := json.Marshal(entry)
+		if err1 == nil && err2 == nil && string(was) == string(now) {
+			return false, nil
+		}
+	}
+	servers[name] = entry
+	cfg["mcpServers"] = servers
+
+	if len(raw) > 0 {
+		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
+		if err := os.WriteFile(backup, raw, 0o644); err != nil {
+			return false, fmt.Errorf("backup %s: %w", path, err)
+		}
+	}
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }

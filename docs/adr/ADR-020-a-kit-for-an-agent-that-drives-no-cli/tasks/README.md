@@ -24,6 +24,6 @@ aspirational.
 
 | Task | Goal | Produces | Consumes | Status |
 |------|------|----------|----------|--------|
-| [T1](T1-a-capability-can-be-absent.md) | An absent capability is legal kit data, not a name comparison | `cursorKit`, the guards, the refusal | none | todo |
-| [T2](T2-register-an-mcp-by-writing-the-file.md) | Cursor's MCP server is registered without a CLI to drive | the `mcp.json` writer | T1 | todo |
-| [T3](T3-the-protocol-reaches-cursor.md) | Cursor wakes with the protocol and can dispatch a memory-aware subagent | the rule file, the definition, the docs | T2 | todo |
+| [T1](T1-a-capability-can-be-absent.md) | An absent capability is legal kit data, not a name comparison | `cursorKit`, the guards, the refusal | none | done |
+| [T2](T2-register-an-mcp-by-writing-the-file.md) | Cursor's MCP server is registered without a CLI to drive | the `mcp.json` writer | T1 | done |
+| [T3](T3-the-protocol-reaches-cursor.md) | Cursor wakes with the protocol and can dispatch a memory-aware subagent | the rule file, the definition, the docs | T2 | done |

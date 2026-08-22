@@ -477,8 +477,17 @@ Worth knowing:
 ```bash
 cp .env.docker.example .env.docker   # point OLLAMA_URL at your Ollama
 docker compose up -d
-claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+
+# then point your agents at it — the kit does the whole wiring, not just the MCP
+aiagentmemory install --local --agent all     # or: claude | codex | cursor | pi
 ```
+
+`--local` is what tells the kit the server is yours: it registers
+`http://localhost:8080/mcp`, prompts for no token, and installs globally unless
+`--sandbox`/`--config-dir` says otherwise. Registering the MCP by hand
+(`claude mcp add --transport http agentsmemory http://localhost:8080/mcp`) still
+works and gives you the tools — but not the protocol, the hooks or the subagent
+definition, which is [the difference between a server and a habit](#the-server-is-inert-without-the-protocol).
 
 Brings up `--local` with the embedded chromem index, so the whole stack is **one
 container and one volume** — `/data/agentsmemory.db` (truth) and
@@ -727,22 +736,57 @@ anyway instead of reporting "memory tools are off".
 
 ---
 
-## Connect Claude Code, Codex or pi (the `aiagentmemory` kit)
+## Connect Claude Code, Codex, Cursor or pi (the `aiagentmemory` kit)
 
 The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code),
-[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
-workspace: it installs the memory-grounded slash commands (`/M`, `/am`,
-`/load-skill`), the five hooks (`Stop`, `SessionStart`, `SessionEnd`,
-`SubagentStart`, `SubagentStop`) and a subagent definition whose tool allowlist
-names the `am_*` tools, registers the agentsmemory MCP, and can wrap the
-agent CLI so each project runs against its own isolated configuration. It replaces
-the old shell installer; everything ships in one downloadable binary.
+[Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com) or
+[pi](https://pi.dev) into your workspace: it registers the agentsmemory MCP,
+installs the always-on memory protocol, and adds whatever else that agent can
+take — slash commands, lifecycle hooks, a subagent definition whose tool
+allowlist names the `am_*` tools. It replaces the old shell installer; everything
+ships in one downloadable binary.
 
-Claude is the default. `--agent codex` installs the same kit into codex's layout
-(`~/.codex`, `prompts/`, `AGENTS.md`, `hooks.json`) and `--agent pi` into pi's
-(`~/.pi/agent`, `prompts/`, `AGENTS.md`, a bridge extension). `--agent both` is
-Claude + codex; `--agent all` is all three — see [Codex](#codex-agent-codex) and
-[pi](#pi-agent-pi).
+```bash
+aiagentmemory install                 # claude, the default
+aiagentmemory install --agent claude  # the same, said out loud
+aiagentmemory install --agent codex
+aiagentmemory install --agent cursor
+aiagentmemory install --agent pi
+aiagentmemory install --agent both    # claude + codex
+aiagentmemory install --agent all     # all four
+```
+
+### What each agent actually gets
+
+The agents do not offer the same surfaces, and the kit installs what each one has
+rather than pretending. Everything below is measured against a real install, not
+inferred from documentation.
+
+| | **claude** | **codex** | **cursor** | **pi** |
+|---|---|---|---|---|
+| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/.pi/agent` |
+| MCP registration | `claude mcp add` | `codex mcp add` | **writes `mcp.json`** — Cursor ships no `mcp add` | bridge extension |
+| memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | inlined in `AGENTS.md` |
+| slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | `/M`, … |
+| Stop checkpoint | ✅ | ✅ (trust it in `/hooks`) | ❌ hook shape not established | in the extension |
+| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered yet | ❌ | ❌ |
+| `SubagentStart` / `SubagentStop` | ✅ | ❌ not registered yet — [codex supports them](docs/adr/BACKLOG.md) | ❌ | ❌ |
+| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ no subagent system |
+| `--wing` header | ✅ | ❌ no static-header flag | ✅ | ✅ |
+| `--sandbox` isolation | ✅ | ✅ | **refused** — Cursor exposes no config-dir variable | ✅ |
+
+Two things worth reading twice:
+
+- **Cursor needs one manual step the installer deliberately does not take.**
+  Cursor gates every MCP server behind an approval that is stored outside
+  `mcp.json`, so a registered-but-unapproved server looks identical on disk to a
+  working one. Run `cursor-agent mcp enable agentsmemory` once. The install prints
+  this line every time, because a re-install cannot tell whether you have done it.
+- **Only Claude gets the write half.** The Stop checkpoint and the subagent hooks
+  are what ask an agent to persist what it learned. On codex that is one hook you
+  must trust in `/hooks`; on Cursor there is none. Those agents recall memory and
+  are never prompted to write it — see [ADR-017](docs/adr/ADR-017-a-subagent-is-a-session.md)
+  for why the advisory half of a loop does not happen on its own.
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
 
@@ -777,6 +821,42 @@ every file write and command without touching anything.
 |------|---------|--------------|
 | **Global** | `aiagentmemory install` | Wires the MCP, commands, all five hooks and the shipped subagent definition into the global `~/.claude`. Wraps the Claude you already run. |
 | **Sandboxed** | `aiagentmemory install --sandbox <name>` | Installs a self-contained config under `~/.sandboxes/<name>`, isolated from every other project and from the global `~/.claude`. |
+
+Sandboxing works by pinning the agent's own config-dir variable
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`) at launch. **Cursor
+exposes no such variable**, so `--agent cursor --sandbox x` is refused rather than
+writing a complete kit into a directory Cursor will never open.
+
+### Command options
+
+Every flag `install` takes. `aiagentmemory install --help` is the authority — this
+table is checked against it.
+
+| Flag | What it does |
+|------|--------------|
+| `--agent <name>` | `claude` (default) · `codex` · `cursor` · `pi` · `both` (claude+codex) · `all` |
+| `--global` | install into the agent's global config dir without the mode prompt |
+| `--sandbox <name>` | install into an isolated config at `~/.sandboxes/<name>` |
+| `--config-dir <dir>` | install into an explicit directory instead |
+| `--local` | wire up a self-hosted `agentsmemory --local` server (`http://localhost:8080/mcp`); no token is prompted for |
+| `--token <key>` | bearer token to present — hosted workspace key, or the one `--local` was started with. `$AGENTSMEMORY_TOKEN`, `$AGENTSMEMORY_LOCAL_TOKEN` |
+| `--mcp-url <url>` | the MCP endpoint (default the hosted service) |
+| `--socket <path>` | register over stdio against a `--local` server on a Unix socket; requires `--local` |
+| `--server-bin <path>` | server binary the `--socket` stdio bridge spawns |
+| `--wing <name>` | file this project's memories into this wing, as a header on every MCP call. Carried by claude, cursor and pi; codex and `--socket` cannot, and the install warns instead of dropping it silently |
+| `--scope <scope>` | Claude MCP/plugin scope: `user` (default) · `local` · `project` |
+| `--recommended` | also install codebase-memory MCP and the eidos + codex plugins |
+| `--copy` | seed a sandbox from the agent's global config (logins, MCP servers, plugins, settings). Needs `--sandbox`/`--config-dir` |
+| `--shared-auth` | link the sandbox's credential files to the global config, so one login serves every sandbox |
+| `--claude-bin` / `--codex-bin` / `--pi-bin` | override the agent CLI to drive |
+| `--dry-run` | print every file write and command without touching anything |
+| `--yes`, `-y` | never prompt |
+
+Other subcommands: `verify` (check memories still match the code they describe),
+`mine-claude`, `update` (the binary), `update-skill` (the protocol and commands),
+`init` / `load` (record and launch a project's agent), `run` / `wrap` (drive an
+agent against a sandbox or the global config), `mcp` (call a read-only memory tool
+from the shell).
 
 ### Sandboxed installation (per-project isolation)
 
