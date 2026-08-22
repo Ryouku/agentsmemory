@@ -91,5 +91,10 @@ Stop if the curve cannot be computed because too few rows carry a scored top-1 �
 - Applying a threshold automatically (permanent: an operator wires the file, so a bad calibration cannot silently become production behaviour).
 - A learned multi-feature abstention model over the same rows (deferred: docs/adr/BACKLOG.md)
 
+## Mutation Log
+
+- 2026-08-22 · 1c9506a* · mutant killed · exit 1 · `internal/palace/calibration.go` · the gate would compare the POINT ESTIMATE instead of the Wilson lower bound, so at these sample sizes it passes on noise about half the time it sits near the bar
+
 ## Verification Log
 - 2026-08-21 · c2e8992* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-22 · 1c9506a* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

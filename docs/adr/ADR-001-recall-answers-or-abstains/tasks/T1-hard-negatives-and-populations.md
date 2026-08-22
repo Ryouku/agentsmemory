@@ -154,6 +154,10 @@ correction here is to the CLAIM, not to the code — and `--style absent-easy` e
 precisely so the two regimes stay comparable rather than one silently replacing the
 other.
 
+## Mutation Log
+
+- 2026-08-22 · 1c9506a* · mutant killed · exit 1 · `internal/palace/eval.go` · a gold that never entered the pool would be labelled reachable, making a retrieval failure look like a ranking result the arms all got wrong
+
 ## Verification Log
 - 2026-08-21 · 9a88b51* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
   ```
@@ -169,3 +173,4 @@ other.
   FAIL
   ```
 - 2026-08-21 · 9a88b51* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-22 · 1c9506a* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

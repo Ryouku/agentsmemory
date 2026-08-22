@@ -5,6 +5,8 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; the decision rests on measurements recorded in the eval harness rather than on elicited requirements.
 **Cross-references:** `internal/palace/eval.go` (harness), `cmd/server/eval.go` (`verifyAbsent`, the absent generator), `internal/rerank/tei/tei.go` (the two-dialect rerank client), `db/migrations/00021_search_events.sql` (telemetry), `docs/adr/ADR-002-anchor-the-lexical-score.md` and `docs/adr/ADR-003-retire-the-closet-prior.md` (both change which document reaches production top-1, which is the document this ADR judges), `docs/adr/BACKLOG.md`, PR #20 comment recording the separation measurement
+**T3 verdict, 2026-08-22 — BLOCKED, not withdrawn.** The gate ran on the real corpus and exited 1: at a threshold holding 95% answer recall it correctly refuses 3 of 17 unanswerable questions, 90% Wilson lower bound 0.073 against the declared 0.30, and no threshold on the curve clears both bars. **But T3's own preflight disqualifies this corpus** — the retrieval ceiling measures 100% in-pool, the saturated state the preflight names, and a pool of 50 over 449 memories makes that arithmetic rather than retrieval. So the go/no-go cannot be taken here in either direction, and T4/T5/T6 are not started. Full run, curve, hard-vs-easy comparison and signal sweep: `evidence/abstain-gate-2026-08.md`.
+
 **Served-path change:** `Service.Search` returns a confidence verdict and ABSTAINS rather than answering when calibration says it cannot — `am_search` carries it. Not yet on the served path: 0 of 6 tasks done, and T4-T6, the three that touch it, are gated on T3's go/no-go.
 
 ## Context
