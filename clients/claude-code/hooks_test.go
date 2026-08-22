@@ -17,6 +17,27 @@ import (
 // actually runs on every Stop said something else.
 func runStopHook(t *testing.T, statsBody string, env ...string) string {
 	t.Helper()
+	out, _ := runStopHookWithInput(t,
+		`{"hook_event_name":"Stop","stop_hook_active":false}`, statsBody,
+		append([]string{"AGENTSMEMORY_STOP_HOOK=on"}, env...)...)
+	if strings.TrimSpace(out) == "" {
+		t.Fatalf("the hook produced no output at all, so every assertion below would be vacuous")
+	}
+	return out
+}
+
+// runStopHookWithInput drives the same script with a caller-supplied event JSON
+// and returns its stderr and exit code.
+//
+// The mode is NOT set here. runStopHook's callers want "on" and the subagent
+// tests want "once" or a second switch, and appending a duplicate key to the
+// child's environment leaves which one wins up to the platform — a test whose
+// subject is a mode must set exactly one.
+//
+// Nor does it fatal on empty output: silence is the expected result for a
+// disabled hook, and asserting on it is this task's job rather than the helper's.
+func runStopHookWithInput(t *testing.T, input, statsBody string, env ...string) (string, int) {
+	t.Helper()
 	dir := t.TempDir()
 
 	// A stand-in `curl` that ignores its arguments and prints the body. The hook
@@ -40,23 +61,25 @@ func runStopHook(t *testing.T, statsBody string, env ...string) string {
 	}
 	hook := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks", "agentsmemory-stop-hook.sh")
 	cmd := exec.Command("bash", hook)
-	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`)
+	cmd.Stdin = strings.NewReader(input)
 	cmd.Env = append(os.Environ(),
 		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"AGENTSMEMORY_STOP_HOOK=on",
 	)
 	cmd.Env = append(cmd.Env, env...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	// The hook exits 2 by design, so a non-zero status is expected and the OUTPUT
-	// is the subject. But empty output means it never ran, and asserting on that
-	// is asserting on nothing.
-	_ = cmd.Run()
-	out := stderr.String()
-	if strings.TrimSpace(out) == "" {
-		t.Fatalf("the hook produced no output at all, so every assertion below would be vacuous")
+	// The hook exits 2 by design, so a non-zero status is expected and the exit
+	// CODE is a subject in its own right: exit 0 means the text never reaches the
+	// agent, which is indistinguishable from a hook that was never registered.
+	code := 0
+	if err := cmd.Run(); err != nil {
+		ee, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run hook: %v (stderr: %s)", err, stderr.String())
+		}
+		code = ee.ExitCode()
 	}
-	return out
+	return stderr.String(), code
 }
 
 func repoRootForHooks(t *testing.T) string {
@@ -227,4 +250,163 @@ func runSubagentHookWithEnv(t *testing.T, env ...string) string {
 	t.Helper()
 	out, _ := runSubagentHook(t, env...)
 	return out
+}
+
+// subagentStopEvent is a REAL SubagentStop payload, captured from this harness by
+// registering a hook that did nothing but tee its stdin, and dispatching one
+// trivial subagent. Local paths and ids are neutralised; the SHAPE is verbatim.
+//
+// It is captured rather than written because a hand-authored fixture proves the
+// branch works for the JSON the test's author imagined. Two of its fields decide
+// this whole task and neither could be settled by reading:
+//
+//   - `stop_hook_active` IS sent on SubagentStop. The published payload reference
+//     does not list it, and without it an exit-2 nudge would re-fire forever. It
+//     is here, so the existing loop guard covers subagents too.
+//   - `session_id` is IDENTICAL to the parent session's. That is what makes the
+//     `once`-per-session marker a collision rather than a theory: the main
+//     session and every subagent under it key the same file.
+const subagentStopEvent = `{"session_id":"11111111-2222-3333-4444-555555555555",` +
+	`"transcript_path":"/tmp/projects/example/11111111.jsonl","cwd":"/tmp/work",` +
+	`"prompt_id":"66666666-7777-8888-9999-000000000000","permission_mode":"default",` +
+	`"agent_id":"a1b2c3d4e5f607182","agent_type":"general-purpose",` +
+	`"hook_event_name":"SubagentStop","stop_hook_active":false,` +
+	`"agent_transcript_path":"/tmp/projects/example/11111111/subagents/agent-a1b2c3d4e5f607182.jsonl",` +
+	`"last_assistant_message":"pong","background_tasks":[],"session_crons":[]}`
+
+// sessionStopEvent is the main-session Stop payload, for the same reason.
+const sessionStopEvent = `{"session_id":"11111111-2222-3333-4444-555555555555",` +
+	`"transcript_path":"/tmp/projects/example/11111111.jsonl",` +
+	`"hook_event_name":"Stop","stop_hook_active":false}`
+
+// TestStopHookAsksASubagentForFindingsNotASummary is the point of ADR-017 T3.
+//
+// A subagent is asked for what it FOUND — a drawer, a fact — and explicitly not
+// for a session summary. The dispatcher writes that one. A diary entry per
+// subagent is how a journal stops being read: a 16-way fan-out would file
+// seventeen summaries of one piece of work, sixteen of them written by an agent
+// that saw a sliver of it.
+//
+// It also pins the WING advice, which is not the same advice the start hook
+// gives. There, a guessed wing costs a bad recall — noise. Here it costs a WRITE
+// into another project's palace, which the protocol names as poisoning it. The
+// asymmetry is the reason this assertion exists on the stop side at all.
+func TestStopHookAsksASubagentForFindingsNotASummary(t *testing.T) {
+	sub, code := runStopHookWithInput(t, subagentStopEvent, statsWithSuggestions,
+		"AGENTSMEMORY_STOP_HOOK=on")
+	if code != 2 {
+		t.Errorf("subagent nudge exited %d, want 2 — any other code and the text never "+
+			"reaches the agent, so the hook is registered, fires, and changes nothing", code)
+	}
+	for _, want := range []string{"am_add_drawer", "am_kg_add"} {
+		if !strings.Contains(sub, want) {
+			t.Errorf("the subagent nudge does not name %s:\n%s", want, sub)
+		}
+	}
+	if strings.Contains(sub, "am_diary_write") {
+		t.Errorf("a subagent is being asked for a session summary; its dispatcher writes "+
+			"that, and one diary entry per subagent is how a journal stops being read:\n%s", sub)
+	}
+	// The wing: a wrong-wing READ is noise, a wrong-wing WRITE is another
+	// project's palace. The subagent must be told to pass none.
+	if !strings.Contains(sub, "no wing") {
+		t.Errorf("the subagent nudge does not tell it to pass no wing, so it will guess one "+
+			"and file this project's work somewhere else:\n%s", sub)
+	}
+	// The server-wide recall report belongs to a session, not to each of its
+	// subagents. The fake curl in the helper serves it on demand, so its presence
+	// here would mean the subagent branch ran the whole session path.
+	if strings.Contains(sub, "searches recalled") {
+		t.Errorf("the session recall report was printed into a subagent's nudge:\n%s", sub)
+	}
+
+	// And the two must actually DIFFER. Without this the mutant "use the session
+	// nudge verbatim" survives everything above that the session nudge happens to
+	// satisfy.
+	session, _ := runStopHookWithInput(t, sessionStopEvent, statsWithSuggestions,
+		"AGENTSMEMORY_STOP_HOOK=on")
+	if sub == session {
+		t.Errorf("a subagent gets the session checkpoint verbatim:\n%s", sub)
+	}
+}
+
+// TestSubagentStopIsNotSwallowedByTheOnceGuard pins the collision the captured
+// payload proved: SubagentStop carries the PARENT session's `session_id`, so the
+// `once`-per-session marker — the default mode — is one file shared by the main
+// session and every subagent under it.
+//
+// Both directions are defects and only one of them is obvious. The main session
+// stopping first silences every subagent afterwards; a subagent stopping first
+// silences the human's own checkpoint. The fix is that a subagent stop neither
+// reads nor writes that marker.
+func TestSubagentStopIsNotSwallowedByTheOnceGuard(t *testing.T) {
+	t.Run("a main stop that already fired does not silence subagents", func(t *testing.T) {
+		tmp := t.TempDir()
+		// The marker the session path writes, created directly: the subject here is
+		// the guard, not the path that happens to set it.
+		marker := filepath.Join(tmp, "agentsmemory-stop-11111111-2222-3333-4444-555555555555.done")
+		if err := os.WriteFile(marker, nil, 0o644); err != nil {
+			t.Fatalf("seed marker: %v", err)
+		}
+		out, code := runStopHookWithInput(t, subagentStopEvent, statsWithSuggestions,
+			"AGENTSMEMORY_STOP_HOOK=once", "TMPDIR="+tmp)
+		if code != 2 || !strings.Contains(out, "am_add_drawer") {
+			t.Errorf("the subagent nudge was swallowed by the session's marker (exit %d):\n%s",
+				code, out)
+		}
+	})
+
+	t.Run("a subagent stop does not silence the session", func(t *testing.T) {
+		tmp := t.TempDir()
+		if _, code := runStopHookWithInput(t, subagentStopEvent, statsWithSuggestions,
+			"AGENTSMEMORY_STOP_HOOK=once", "TMPDIR="+tmp); code != 2 {
+			t.Fatalf("subagent nudge exited %d, want 2", code)
+		}
+		marker := filepath.Join(tmp, "agentsmemory-stop-11111111-2222-3333-4444-555555555555.done")
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("a subagent stop claimed the session's once-marker at %s, so the human's "+
+				"own checkpoint is now silenced for the rest of the session", marker)
+		}
+		out, code := runStopHookWithInput(t, sessionStopEvent, statsWithSuggestions,
+			"AGENTSMEMORY_STOP_HOOK=once", "TMPDIR="+tmp)
+		if code != 2 || !strings.Contains(out, "am_diary_write") {
+			t.Errorf("the session checkpoint was swallowed by a subagent's stop (exit %d):\n%s",
+				code, out)
+		}
+	})
+}
+
+// TestUnknownStopEventKeepsTheSessionBehaviour pins the degradation.
+//
+// The subagent branch turns on a string match against `hook_event_name`. If a
+// future harness spells it differently, the match fails — and what must happen
+// then is the CURRENT behaviour, not silence. A branch that failed closed would
+// take the human's checkpoint away too, on a rename nobody announced.
+func TestUnknownStopEventKeepsTheSessionBehaviour(t *testing.T) {
+	out, code := runStopHookWithInput(t,
+		`{"session_id":"s","hook_event_name":"SomethingElse","stop_hook_active":false}`,
+		statsWithSuggestions, "AGENTSMEMORY_STOP_HOOK=on")
+	if code != 2 || !strings.Contains(out, "am_diary_write") {
+		t.Errorf("an unrecognised stop event lost the session checkpoint (exit %d):\n%s", code, out)
+	}
+}
+
+// TestSubagentStopHookCanBeDisabledOnItsOwn pins the switch.
+//
+// Exit 2 costs a subagent one extra turn, and a wide fan-out pays it once per
+// branch. That is a real bill, so it has its own off switch rather than forcing a
+// choice between subagent writes and the human's checkpoint.
+func TestSubagentStopHookCanBeDisabledOnItsOwn(t *testing.T) {
+	out, code := runStopHookWithInput(t, subagentStopEvent, statsWithSuggestions,
+		"AGENTSMEMORY_STOP_HOOK=on", "AGENTSMEMORY_SUBAGENT_STOP_HOOK=off")
+	if code != 0 || strings.TrimSpace(out) != "" {
+		t.Errorf("disabling the subagent half still nudged (exit %d):\n%s", code, out)
+	}
+	// ...and the session half is untouched by that switch.
+	sess, code := runStopHookWithInput(t, sessionStopEvent, statsWithSuggestions,
+		"AGENTSMEMORY_STOP_HOOK=on", "AGENTSMEMORY_SUBAGENT_STOP_HOOK=off")
+	if code != 2 || !strings.Contains(sess, "am_diary_write") {
+		t.Errorf("the subagent switch also disabled the session checkpoint (exit %d):\n%s",
+			code, sess)
+	}
 }

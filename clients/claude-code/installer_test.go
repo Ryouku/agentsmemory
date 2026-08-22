@@ -951,3 +951,37 @@ func TestShippedAgentDefinitionsNameTheMemoryTools(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallerRegistersSubagentStop pins the write half of ADR-017.
+//
+// T2 gave a subagent recall; without this it still finishes with everything it
+// learned inside a transcript that `mineclaude` drops by design as "subagent
+// traffic". Half a loop, and the enforced half is the one that was already
+// working.
+//
+// The registration reuses the SESSION stop script rather than a second file: the
+// two nudges differ in text, not in machinery, and a second script is a second
+// thing to keep in step with a shape that has already drifted once.
+func TestInstallerRegistersSubagentStop(t *testing.T) {
+	inst, _, dir := newTestInstaller(t, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	want := "bash " + filepath.Join(dir, hookFile)
+	settings := filepath.Join(dir, "settings.json")
+	if !hookPresent(readHookEvent(t, settings, "SubagentStop"), want) {
+		t.Fatalf("SubagentStop hook %q not registered — a subagent then finishes with its "+
+			"findings in a transcript nothing reads", want)
+	}
+
+	// A re-install must supersede rather than accumulate: two entries mean two
+	// blocking nudges on every subagent stop, which is how a checkpoint teaches
+	// an agent to dismiss it unread.
+	if err := inst.run(); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	entries := readHookEvent(t, settings, "SubagentStop")
+	if n := len(entries); n != 1 {
+		t.Errorf("re-install left %d SubagentStop entries, want 1", n)
+	}
+}
