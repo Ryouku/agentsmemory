@@ -746,6 +746,23 @@ The fix needs a session id on `search_events` and a `session=` filter on `/stats
 change plus a contract change plus a hook change — an ADR, not a patch. Until then the honest
 mitigation is for the hook to stop presenting the list as this session's.
 
+## From ADR-021 (the handshake carries the protocol)
+
+- **`--wing` on the `mcp-stdio` bridge** — the bridge takes `--socket`/`--url`/`--token` and no wing,
+  so a Claude Desktop registration cannot be scoped to one project the way an HTTP registration can.
+  Rejected as ADR-021's primary fix because it addresses the sentence a client wrote rather than the
+  reason it wrote it, but genuinely useful on its own.
+- **Claude Desktop extensions (`~/Library/Application Support/Claude/Claude Extensions/`)** as a
+  packaging route instead of a config-file entry. The directory exists on the reference machine with
+  several installed; its format was never established, and ADR-017 T3's lesson is not to ship
+  against a shape nobody captured.
+- **Windows and Linux Claude Desktop config paths** — ADR-021 T2's kit is written against the macOS
+  path that was measured (`~/Library/Application Support/Claude/claude_desktop_config.json`). The
+  Windows path appears in `internal/web/windows-guide.md` and was never exercised by the installer.
+- **Whether other MCP clients surface `instructions` to their model at all** — measured for Claude
+  Desktop in ADR-021 T3 and assumed nowhere else. Cursor, codex and Claude Code all receive the
+  field now; nothing establishes that any of them shows it to the model.
+
 ## From ADR-020 (a kit for an agent that drives no CLI)
 
 - **Cursor hooks — the Stop checkpoint and ADR-017's subagent pair** — `~/.cursor/hooks/` exists on
