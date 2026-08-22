@@ -168,12 +168,14 @@ func resolveAgentKits(name string) ([]agentKit, error) {
 		return []agentKit{codexKit}, nil
 	case agentPi:
 		return []agentKit{piKit}, nil
+	case agentCursor:
+		return []agentKit{cursorKit}, nil
 	case agentBoth:
 		return []agentKit{claudeKit, codexKit}, nil
 	case agentAll:
-		return []agentKit{claudeKit, codexKit, piKit}, nil
+		return []agentKit{claudeKit, codexKit, piKit, cursorKit}, nil
 	default:
-		return nil, fmt.Errorf("unknown --agent %q: use claude, codex, pi, both or all", name)
+		return nil, fmt.Errorf("unknown --agent %q: use claude, codex, pi, cursor, both or all", name)
 	}
 }
 

@@ -152,3 +152,92 @@ func TestEnsureStopHookMalformedRefuses(t *testing.T) {
 		t.Fatal("malformed settings.json was modified; it must be left untouched")
 	}
 }
+
+// TestCursorMCPRegistrationPreservesForeignServers is the highest-impact
+// assertion in ADR-020.
+//
+// mcp.json is a file the user shares with every other MCP server they run, and
+// this is the first registration path with no CLI between us and it. Every other
+// agent's registration goes through `<agent> mcp add`, which merges on our behalf
+// and cannot lose anything. Here a careless write silently deletes the user's
+// other servers, and they find out when a tool they rely on stops existing.
+func TestCursorMCPRegistrationPreservesForeignServers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	prior := `{
+  "mcpServers": {
+    "someone-elses": {"command": "/usr/local/bin/theirs", "args": ["--flag"]}
+  },
+  "unrelatedTopLevelKey": {"keep": "me"}
+}`
+	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	entry := map[string]any{"type": "http", "url": "http://localhost:8080/mcp"}
+	changed, err := ensureMCPServer(path, "agentsmemory", entry)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !changed {
+		t.Fatal("registering a new server reported no change")
+	}
+
+	var got map[string]any
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("the file we wrote does not parse: %v\n%s", err, body)
+	}
+	servers, _ := got["mcpServers"].(map[string]any)
+	if _, ok := servers["someone-elses"]; !ok {
+		t.Errorf("the user's own MCP server was lost:\n%s", body)
+	}
+	if _, ok := servers["agentsmemory"]; !ok {
+		t.Errorf("our server was not registered:\n%s", body)
+	}
+	if _, ok := got["unrelatedTopLevelKey"]; !ok {
+		t.Errorf("an unrelated top-level key was dropped:\n%s", body)
+	}
+
+	// One backup of the pre-existing file, and re-running writes nothing at all.
+	backups, _ := filepath.Glob(path + ".bak.*")
+	if len(backups) != 1 {
+		t.Errorf("expected exactly 1 backup, got %d", len(backups))
+	}
+	changed, err = ensureMCPServer(path, "agentsmemory", entry)
+	if err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if changed {
+		t.Error("re-registering an identical entry rewrote the file")
+	}
+	if again, _ := filepath.Glob(path + ".bak.*"); len(again) != 1 {
+		t.Errorf("a no-op registration left another backup: %d", len(again))
+	}
+}
+
+// TestCursorMCPRefusesUnparseableJSON: a file we cannot parse is a file we must
+// not replace. The same stance ensureHooks takes on settings.json, and it matters
+// more here — a hand-edited mcp.json with a trailing comma is common, and
+// overwriting it would destroy configuration we never read.
+func TestCursorMCPRefusesUnparseableJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	broken := `{"mcpServers": {"theirs": {"command": "x"},}}` // trailing comma
+	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := ensureMCPServer(path, "agentsmemory", map[string]any{"url": "u"}); err == nil {
+		t.Fatal("an unparseable mcp.json was accepted; the next step overwrites it")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(after) != broken {
+		t.Errorf("the unparseable file was modified:\n got: %s\nwant: %s", after, broken)
+	}
+}

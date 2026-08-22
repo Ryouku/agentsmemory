@@ -223,3 +223,21 @@ func hookPresent(stop []any, cmd string) bool {
 	}
 	return false
 }
+
+// ensureMCPServer registers an MCP server under "mcpServers" in the JSON file at
+// path, idempotently, and reports whether it changed the file.
+//
+// It exists because Cursor ships no command that registers one: `cursor-agent
+// mcp` offers login, list, list-tools, enable and disable, so this is the first
+// registration path with no CLI between us and another product's config file.
+// Every other agent's `mcp add` merges on our behalf and cannot lose anything.
+//
+// So it takes the same discipline ensureHooks takes with settings.json — read
+// once, merge, back the original up, write once, and write NOTHING when the entry
+// is already identical — and refuses a file it cannot parse rather than replacing
+// it. mcp.json is shared with every other MCP server the user runs, and a hand
+// edit with a trailing comma is common; overwriting it would destroy
+// configuration we never read.
+func ensureMCPServer(path, name string, entry map[string]any) (bool, error) {
+	return false, nil // TDD red — implemented in the next commit
+}

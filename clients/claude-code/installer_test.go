@@ -1439,3 +1439,56 @@ func TestSandboxIsRefusedForAnAgentThatCannotRelocate(t *testing.T) {
 		t.Errorf("--sandbox was refused for claude, which relocates fine: %v", err)
 	}
 }
+
+// TestCursorInstallRegistersTheMCP drives the whole install rather than the
+// writer, so the switch case in registerAgentsMemoryMCP is what is under test.
+//
+// A writer that works and a switch that never reaches it is rung 1 without rung
+// 2 — the defect this repository ships often enough to have a ladder for.
+func TestCursorInstallRegistersTheMCP(t *testing.T) {
+	inst, rr, dir := newTestInstallerFor(t, cursorKit, false)
+	inst.mcpURL = "http://localhost:8080/mcp"
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	if err != nil {
+		t.Fatalf("mcp.json was not written: %v", err)
+	}
+	var got struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("mcp.json does not parse: %v\n%s", err, body)
+	}
+	entry, ok := got.MCPServers["agentsmemory"]
+	if !ok {
+		t.Fatalf("no agentsmemory entry under mcpServers — Cursor reads that key and nothing "+
+			"else:\n%s", body)
+	}
+	if entry.Type != "http" || entry.URL != "http://localhost:8080/mcp" {
+		t.Errorf("entry = %+v, want type http at the install's mcpURL", entry)
+	}
+	if entry.Headers["Authorization"] != "Bearer TESTTOK" {
+		t.Errorf("the resolved token did not reach the entry: %+v", entry.Headers)
+	}
+
+	// Cursor has no CLI to drive for this, which is the whole point of the task:
+	// no agent command should have been run for the registration.
+	for _, c := range rr.calls {
+		t.Errorf("the cursor install shelled out to %q; cursor-agent has no `mcp add` and the "+
+			"registration is a file write", c.rendered())
+	}
+
+	// A registered-but-unapproved server is byte-identical on disk to a working
+	// one, so the install has to say the approval step out loud.
+	if out := inst.out.(*bytes.Buffer).String(); !strings.Contains(out, "cursor-agent mcp enable") {
+		t.Errorf("the install never mentions the approval step, without which Cursor loads "+
+			"nothing:\n%s", out)
+	}
+}

@@ -263,6 +263,16 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 	if global && (sandbox != "" || configDir != "") {
 		return "", "", false, fmt.Errorf("--global cannot be combined with --sandbox or --config-dir")
 	}
+	// An isolated install works by pinning the agent's config-dir variable at
+	// launch. An agent that exposes none cannot be pointed anywhere, so the kit
+	// would be written complete and correct into a directory it will never open —
+	// and the install would print the same green output as one that worked.
+	// Refuse: an install that cannot be honoured must not report success.
+	if kit.configEnv == "" && (sandbox != "" || configDir != "") {
+		return "", "", false, fmt.Errorf("--agent %s cannot use --sandbox or --config-dir: %s "+
+			"exposes no variable that relocates its config dir, so the kit would be installed "+
+			"where it will never be read. Install globally instead", kit.name, kit.name)
+	}
 	switch {
 	case sandbox != "":
 		if err := validSandboxName(sandbox); err != nil {
@@ -648,6 +658,14 @@ func (i *Installer) writeAgentDefinitions() error {
 // and `$ARGUMENTS` expansion Claude uses for commands/, so only the directory
 // name (and the invocation prefix) differs.
 func (i *Installer) writeCommands() error {
+	// Empty means the agent HAS no commands directory, the way an empty hooksFile
+	// means it has no hook system. Without this, filepath.Join(dir, "", "M.md") is
+	// dir/M.md and all three commands land loose in the config root — files the
+	// agent never reads, in a directory it shares with products we did not write.
+	if i.kit.commandsDir == "" {
+		i.ok("%s has no slash-command directory — the protocol loads itself", i.kit.name)
+		return nil
+	}
 	for _, name := range commandAssets {
 		data, err := i.source().ReadFile("commands/" + name)
 		if err != nil {
@@ -1088,6 +1106,14 @@ func (i *Installer) registerMemoryBootstrap() error {
 	}
 	i.ok("memory protocol %s", bootstrapFile)
 
+	// An agent with no memory file takes the protocol another way. Cursor loads
+	// every rules/*.mdc marked `alwaysApply: true`, which is a whole file we own
+	// rather than a managed block merged into the user's — so there is nothing to
+	// merge and nothing of theirs to preserve.
+	if i.kit.memoryFile == "" {
+		return i.writeProtocolRule(data)
+	}
+
 	body := memoryImportLine
 	if !i.kit.supportsImport {
 		body = string(data)
@@ -1110,6 +1136,32 @@ func (i *Installer) registerMemoryBootstrap() error {
 	} else {
 		i.ok("%s already carries the memory protocol", i.kit.memoryFile)
 	}
+	return nil
+}
+
+// writeProtocolRule delivers the always-on protocol to an agent that has no
+// memory file, as a rule file it loads every session.
+//
+// Cursor is the case. The front matter is what makes it always-on: without
+// `alwaysApply: true` the rule is loaded on demand, which is the difference
+// between a protocol and a document nobody opens. Both keys are copied from a
+// rule already loading on the reference machine, not invented.
+func (i *Installer) writeProtocolRule(protocol []byte) error {
+	if i.kit.rulesFile == "" {
+		return fmt.Errorf("%s has no memory file and no rules file: the protocol would reach it "+
+			"by no route at all", i.kit.name)
+	}
+	path := filepath.Join(i.targetDir, i.kit.rulesFile)
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would write the memory protocol to %s\n", path)
+		return nil
+	}
+	front := "---\ndescription: agentsmemory operating protocol — recall team memory before acting, " +
+		"persist before stopping\nalwaysApply: true\n---\n\n"
+	if err := i.writeFile(path, append([]byte(front), protocol...), 0o644); err != nil {
+		return err
+	}
+	i.ok("memory protocol %s (always applied)", i.kit.rulesFile)
 	return nil
 }
 
