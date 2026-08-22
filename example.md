@@ -35,7 +35,7 @@ Guidance for Claude Code when working in this repository. Bias toward correctnes
 You are (re)starting a session. **First** load context from the sources below,
 **then** plan, **then** code. Do not skip the bootstrap even if the task looks
 trivial — the whole point is to ground the work in idiomatic Go, polished UX/UI,
-spec intent, code reality, and prior decisions. **Quality and UX/UI are
+project intent, code reality, and prior decisions. **Quality and UX/UI are
 first-class citizens here, gated like correctness — never bolted on at the end.**
 
 ## Task
@@ -63,7 +63,7 @@ This is a gate, not a suggestion:
   the gate — **stop, load it now**, emit the line, then continue.
 
 Every line of Go you later read or write must stay idiomatic, so these
-conventions load before you touch spec, code, or keyboard.
+conventions load before you touch intent sources, code, or keyboard.
 
 ## Step 0b — UX/UI + hypermedia idioms (hard gate when any UI is touched)
 
@@ -99,7 +99,7 @@ UX/UI is held to the same bar as Go correctness: a feature that works but looks
 templated, breaks on mobile, drops focus states, or fights datastar idioms is
 **not done**.
 
-## Step 1 — Load memory (specs, code, why) — hard gate, do not skip
+## Step 1 — Load memory (intent, code, why) — hard gate, do not skip
 
 All three sources are **MUST**, not "run if convenient." Like Step 0, this is a
 gate: 1b (code index + search) and 1c (palace wake-up + search) are the ones that
@@ -109,22 +109,22 @@ its audit line appears in this turn.**
 
 Steps 1b and 1c are independent MCP calls — fire them in the **same message, in
 parallel** (1c is two calls: `am_status` to wake up, then
-`am_search`). Step 1a is a Skill invocation.
+`am_search`). Step 1a is a repository-source read.
 
-- **1a. Specs (intent)** — invoke the `eidos:spec` skill to load the project's
-  source-of-truth specs (`eidos/*.md`). These describe what the system *should*
-  be. After it loads, emit the literal audit line `specs loaded ✓`.
-- **1b. Code graph (reality) — MUST, do not skip.** **Reindex before any
-  action.** First call `index_repository(repo_path=<cwd>)` to index/reindex this
-  repo into the knowledge graph so the database is fresh — never search or act
-  against a stale graph. (Already-indexed repos reindex incrementally;
-  `index_status` / `detect_changes` confirm what moved.) Only **after** the
-  reindex, call `mcp__codebase-memory-mcp__search_code` with the task as the
-  query to locate the relevant symbols/files/routes in **this** repo. Both the
-  `index_repository` call **and** the `search_code` call are mandatory — a
-  reindex without a search, or a search without a reindex, does not satisfy the
-  gate. After both return, emit the literal audit line `code graph indexed +
-  searched ✓`.
+- **1a. Project intent** — discover and read what this repository actually
+  treats as authoritative: repository instructions, `docs/specs/`, ADRs,
+  architecture docs, OpenAPI or schema contracts, product/business rules, or
+  task acceptance criteria. Load only what bears on the task, name the exact
+  sources, and do not assume a directory shape or third-party skill. If none
+  exists, say `no explicit intent source found` and carry that uncertainty into
+  the plan. Emit the literal audit line `intent loaded ✓`.
+- **1b. Code reality — prefer codebase-memory when available.** When registered,
+  first call `index_repository(repo_path=<cwd>)`, then search with the task to
+  locate the symbols, files, and routes it touches. Reach for `get_architecture`
+  or `trace_path` when structure or call paths matter. When it is absent, say so
+  and use targeted source search over the paths, symbols, architecture docs, and
+  tests the task names; do not block on an optional integration. After either
+  route, emit the literal audit line `code reality searched ✓`.
 - **1c. Memory palace (who + why) — MUST, do not skip.** Two calls, both
   required, in order:
   - **Wake up first** — call
@@ -140,16 +140,16 @@ parallel** (1c is two calls: `am_status` to wake up, then
     the only source of cross-project rationale. After it returns, emit the literal
     audit line `palace searched ✓`.
 
-These four audit lines (`specs loaded ✓`, `code graph indexed + searched ✓`,
+These four audit lines (`intent loaded ✓`, `code reality searched ✓`,
 `palace woken ✓`, `palace searched ✓`) are **exempt from caveman compression** —
 emit them verbatim, exactly as written, never abbreviated.
 
-**Re-check before Step 2.** Before invoking `eidos:plan`, confirm all four
+**Re-check before Step 2.** Before planning, confirm all four
 audit lines actually appear earlier in this turn. If any is missing, you skipped
 that source — **stop, run it now**, emit its line, then continue. A plan built on
 a skipped source is invalid.
 
-Reconcile the sources. Call out explicitly any **conflict** between spec intent
+Reconcile the sources. Call out explicitly any **conflict** between project intent
 (1a), code reality (1b), and past decisions (1c) — those are human decisions,
 surface them before planning.
 
@@ -210,10 +210,10 @@ hesitates on the params, that hesitation **is** the cue to query the palace firs
 
 ## Step 2 — Plan
 
-Invoke the **`eidos:plan`** skill to turn the loaded context into a structured,
-multi-step plan grounded in spec intent and code reality. Cite concrete
-`file:line` from the code graph in the plan steps. Surface unresolved conflicts
-from Step 1 as decision points, not silent choices.
+Build the structured, multi-step plan directly from the loaded context using
+the harness's native plan/todo tool. Ground it in project intent and code
+reality. Cite concrete `file:line` from inspected source or the code graph.
+Surface unresolved conflicts from Step 1 as decision points, not silent choices.
 
 For any user-facing work, the plan **must** carry explicit UX/UI steps as
 first-class items — interaction states (loading/empty/error included),
@@ -251,7 +251,7 @@ list is mandatory, and it stays in sync with reality until the task lands.
 ## Step 3 — Code
 
 Implement the plan **by working through the Step 2b todo list**, staying within
-the `effective-go` idioms from Step 0 and the spec intent from Step 1a. Make
+the `effective-go` idioms from Step 0 and the project intent from Step 1a. Make
 surgical changes, verify as you go, and keep the todo list, plan, and code in
 sync — one item `in_progress`, mark it `completed` the moment its check passes. When the work reaches into code you haven't loaded, apply
 **Memory-first exploration** above — query the palace before you grep.
@@ -293,7 +293,7 @@ satisfy Step 3:
   invariant, the gotcha. Skip comments that parrot the code (`i++ // increment i`).
 - **Non-obvious blocks** — concurrency, error-handling choices, business rules,
   magic numbers, workarounds: a short comment on *why it is this way*. Tie it to
-  the spec intent (Step 1a) or recalled decision (Step 1c) when one drove it.
+  the project intent (Step 1a) or recalled decision (Step 1c) when one drove it.
 - **Comment as you write**, not after — and keep comments in sync when you edit
   code. A stale comment is worse than none; fix or delete it.
 
@@ -379,7 +379,7 @@ linked is memory lost. Skip only when the turn produced nothing worth recalling;
 say so if you skip.
 
 If `$ARGUMENTS` is empty, stop after Step 1 and emit a concise **session-start
-briefing** instead: what the specs cover, the current code shape, and the most
+briefing** instead: what the intent sources establish, the current code shape, and the most
 relevant recalled memories — no plan, no code.
 
 

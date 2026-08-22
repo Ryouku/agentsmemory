@@ -9,8 +9,9 @@ memory** (who did what, and why). Then plan, work, and — before you stop — w
 back what you learned so the next session starts ahead of where this one did.
 
 This command is **generic**: it combines the repository's own intent sources,
-the **agentsmemory MCP** (`am_*` tools), and the **codebase-memory** code graph.
-It assumes no particular documentation shape, language, framework, or UI stack.
+the **agentsmemory MCP** (`am_*` tools), and code-reality discovery using
+codebase-memory when available. It assumes no particular documentation shape,
+language, framework, or UI stack.
 
 ## Task
 
@@ -67,8 +68,8 @@ the next session recalls it.
 ## Step 2 — Plan
 
 Build a structured, multi-step plan directly from the loaded context using the
-harness's native plan/todo tool. Ground it in project intent (1a) and the code
-graph (1b). Cite concrete `file:line`. Surface unresolved conflicts as decision
+harness's native plan/todo tool. Ground it in project intent (1a) and code
+reality (1b). Cite concrete `file:line`. Surface unresolved conflicts as decision
 points, not silent choices.
 
 ## Step 2b — Todo list

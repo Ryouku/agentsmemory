@@ -191,7 +191,7 @@ hesitates on the params, that hesitation **is** the cue to query the palace firs
 
 Build the structured, multi-step plan directly from the loaded context using
 the harness's native plan/todo tool. Ground it in project intent and code
-reality. Cite concrete `file:line` from the code graph in the plan steps.
+reality. Cite concrete `file:line` from inspected source or the code graph.
 Surface unresolved conflicts from Step 1 as decision points, not silent choices.
 
 For any user-facing work, the plan **must** carry explicit UX/UI steps as

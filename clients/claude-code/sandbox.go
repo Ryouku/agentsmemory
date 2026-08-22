@@ -247,6 +247,15 @@ func resolveKitBin(kit agentKit, override, envVar string) (string, error) {
 	if env := os.Getenv(envVar); env != "" {
 		return env, nil
 	}
+	// A kit with no CLI at all is not a kit whose CLI is missing. Claude Desktop
+	// is an application rather than a command, so there is nothing to look up and
+	// nothing to spawn — its whole install is a config file write. Without this,
+	// the install died with "no claude-desktop CLI found on PATH (looked for )",
+	// an error naming an empty binary, and it was found by running the install
+	// rather than by the suite.
+	if kit.bin == "" {
+		return "", nil
+	}
 	if _, err := exec.LookPath(kit.bin); err == nil {
 		return kit.bin, nil
 	}

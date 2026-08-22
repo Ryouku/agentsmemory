@@ -233,7 +233,6 @@ var cursorKit = agentKit{
 	agentAssetExt: ".md",
 	rulesFile:     "rules/agentsmemory.mdc",
 	mcpConfigFile: "mcp.json",
-	commandHint:   "the protocol loads itself — Cursor has no slash-command directory",
 }
 
 // claudeDesktopKit is the thinnest kit there is: an MCP registration and nothing
@@ -258,5 +257,4 @@ var claudeDesktopKit = agentKit{
 	bin:           "", // there is no CLI to drive
 	globalDir:     "Library/Application Support/Claude",
 	mcpConfigFile: "claude_desktop_config.json",
-	commandHint:   "Claude Desktop has no slash commands — the tools appear under its connectors",
 }

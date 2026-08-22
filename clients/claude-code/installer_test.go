@@ -1723,3 +1723,30 @@ func TestClaudeDesktopRefusesWithoutAServerBinary(t *testing.T) {
 		t.Errorf("the refusal does not say what is missing or how to get it: %v", err)
 	}
 }
+
+// TestKitWithNoCLINeedsNoCLI pins the last absent capability, and the one that
+// made the Claude Desktop install fail on its first real run.
+//
+// Every kit until now drives an agent CLI, so resolveKitBin demanded one on PATH.
+// Claude Desktop has none — it is an application, not a command — and the install
+// died with "no claude-desktop CLI found on PATH (looked for )", an error naming
+// an empty binary. Same shape as ADR-020 T1's empty commandsDir: a capability
+// that is ABSENT rather than different, and a step that assumed it was there.
+//
+// Found by running the install, not by reading it. The suite was green.
+func TestKitWithNoCLINeedsNoCLI(t *testing.T) {
+	bin, err := resolveKitBin(claudeDesktopKit, "", "AIAGENTMEMORY_NOSUCH_BIN")
+	if err != nil {
+		t.Fatalf("a kit that drives no CLI still demanded one: %v", err)
+	}
+	if bin != "" {
+		t.Errorf("resolveKitBin returned %q for a kit with no CLI; nothing should be spawned", bin)
+	}
+
+	// The kits that DO drive a CLI must still fail loudly when it is missing —
+	// this guard must not become a blanket excuse.
+	missing := agentKit{name: "phantom", bin: "definitely-not-on-path-xyz"}
+	if _, err := resolveKitBin(missing, "", "AIAGENTMEMORY_NOSUCH_BIN"); err == nil {
+		t.Error("a kit that names a CLI was allowed to proceed without it")
+	}
+}

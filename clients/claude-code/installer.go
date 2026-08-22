@@ -294,6 +294,14 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 // saves it as.
 var serverBinCandidates = []string{"aiagentmemory-server", "agentsmemory"}
 
+// kitNeedsServerBin reports whether this kit registers by spawning the stdio
+// bridge rather than by driving an agent CLI or handing over a URL. Claude
+// Desktop is the case: its config file starts local processes, so the entry names
+// our binary and the install has to find one.
+func kitNeedsServerBin(kit agentKit) bool {
+	return kit.bin == "" && kit.mcpConfigFile != ""
+}
+
 // resolveServerBin finds the server binary the stdio bridge will be spawned from
 // and returns an ABSOLUTE path.
 //
@@ -365,6 +373,15 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		if serverBin, err = resolveServerBin(c.String("server-bin"), dryRun); err != nil {
 			return nil, err
 		}
+	}
+	// A kit with no CLI registers by SPAWNING the bridge, so it needs the server
+	// binary for the same reason --socket does. Resolving it only for --socket
+	// left Claude Desktop refusing an install on a machine where the binary was
+	// sitting on PATH the whole time — the refusal was right, the lookup never ran.
+	// Tolerated when missing: registerClaudeDesktopMCP produces the actionable
+	// error, and failing here would take the whole install down over one agent.
+	if serverBin == "" && kitNeedsServerBin(kit) {
+		serverBin, _ = resolveServerBin(c.String("server-bin"), true)
 	}
 
 	// We always register our MCP, which needs the agent's own CLI, so resolve it
@@ -1538,12 +1555,28 @@ func (i *Installer) summary() {
 	if i.sandboxName != "" {
 		fmt.Fprintf(i.out, "  - launch it in this sandbox:  aiagentmemory run --agent %s %s\n", i.kit.name, i.sandboxName)
 	} else {
-		fmt.Fprintf(i.out, "  - restart %s to pick up the new commands + hook\n", i.kit.name)
+		what := "the new commands + hook"
+		if i.kit.commandsDir == "" && i.kit.hooksFile == "" {
+			what = "the memory tools"
+		}
+		fmt.Fprintf(i.out, "  - restart %s to pick up %s\n", i.kit.name, what)
 	}
-	fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session via %s — no need to type %s\n",
-		i.kit.memoryFile, i.commandLabel("am.md"))
-	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
-		i.commandLabel("M.md"), i.commandLabel("am.md"))
+	// Both of these assume the agent HAS a memory file and slash commands. Claude
+	// Desktop has neither, and interpolating its commandHint into them printed
+	// "auto-loads every session via  — no need to type Claude Desktop has no slash
+	// commands…". A summary that garbles itself is how an install stops being read.
+	if i.kit.memoryFile != "" {
+		fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session via %s — no need to type %s\n",
+			i.kit.memoryFile, i.commandLabel("am.md"))
+	} else if i.kit.rulesFile != "" {
+		fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session from %s\n", i.kit.rulesFile)
+	} else {
+		fmt.Fprintf(i.out, "  - %s holds no protocol file; the server sends its instructions on the MCP handshake\n", i.kit.name)
+	}
+	if i.kit.commandsDir != "" {
+		fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
+			i.commandLabel("M.md"), i.commandLabel("am.md"))
+	}
 
 	if i.wing != "" {
 		fmt.Fprintf(i.out, "  - memories from this project file into %s on their own — no wing argument needed\n", i.wing)
