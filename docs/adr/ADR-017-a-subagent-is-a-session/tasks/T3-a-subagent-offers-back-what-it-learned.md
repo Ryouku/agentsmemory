@@ -85,7 +85,7 @@ file is the drift this pipeline exists to catch.
 | 1 — exists | the hook already exists; this is the second event |
 | 2 — something selects it | `TestInstallerRegistersSubagentStop` |
 | 3 — the caller can discover it | the harness fires it |
-| 4 — it is used | every subagent dispatch on an installed machine |
+| 4 — it is used | OBSERVED, not asserted. One live dispatch after install: the subagent was blocked at its stop, read the nudge, and answered it — "Nothing worth persisting — this was a read-only code review answering a specific question about the hook's logic", which is the out the nudge's last line offers verbatim. It also called `am_search` (T2's half) unprompted. What this does NOT show is a subagent filing when it HAS something to file; the nudge's escape hatch was the branch exercised, and that is the honest reading |
 
 ## Mutants
 
