@@ -10,6 +10,62 @@
 
 ## Context
 
+**T1's measurement, 2026-08-22. Treatment 5 of 5. Control 0 of 5.**
+
+Ten subagents dispatched on this machine against a palace holding 449 memories,
+with ordinary "why is this code like this" questions about this repository. No
+prompt mentioned memory, recall, or any tool. Compliance counted from
+`search_events`, which is the server's own log — not self-report.
+
+| arm | `SubagentStart` injection | subagents that called `am_search` |
+|---|---|---|
+| treatment | on | **5 / 5** |
+| control | off (documented switch) | **0 / 5** |
+
+Every treatment query maps one-to-one onto its task, so the recalls are the
+subagents doing the work rather than an artefact:
+
+```
+Service.Update drawer content change recompute entities palace
+absentVerifyDepth absence verification depth cmd/server
+wing scoping filter applied during Search in internal/palace
+eval --style absent-easy hard negatives generator
+closet prior search ranking
+```
+
+**What makes this worth acting on is what the control arm already contained.** It
+was not "no instruction". Every one of those five subagents received the global
+`CLAUDE.md`, the bootstrap protocol inlined, and this repo's `CLAUDE.md` and
+`AGENTS.md` — including the hard gate that says to verify the `am_*` tools before
+doing anything else — verbatim, in its first system-reminder block, ahead of the
+task. **All of that produced zero recalls.** One short paragraph, placed next to
+the task, produced five.
+
+So the conclusion T1 was written to allow — *"if it does not move, more
+instruction is the wrong answer and the tools go in the agent definition"* — does
+not apply. Instruction works; PLACEMENT is what was missing. T2 (make the
+injection standard through the installer) is justified as designed, and T3 keeps
+its purpose rather than becoming the only mechanism.
+
+**Three limits, stated because the numbers are small and clean enough to be
+over-read.**
+
+*n = 5 per arm.* 5/5 against 0/5 is unambiguous in direction, but it puts no
+interval on the effect, and a rate near either end is exactly where small samples
+flatter themselves.
+
+*The arms used DIFFERENT tasks.* Both sets are "why is this code shaped this way"
+questions of comparable difficulty, but a stronger design runs the SAME five tasks
+through both arms. Task difficulty is therefore not fully controlled, and the
+honest reading is "the injection is the plausible cause", not "the injection is
+the proven sole cause".
+
+*Another hook was already registered on `SubagentStart`* — a codebase-memory
+reminder — and fired in both arms. It does not mention `am_*` and cannot explain
+a 0-to-5 swing, but the control arm was not pristine.
+
+
+
 Reported by a colleague and confirmed 2026-08-21 against this machine's own configuration. Every finding below is a line of code or a line of config, not an inference.
 
 **Read side — a subagent recalls nothing, and NOT because it cannot.**
