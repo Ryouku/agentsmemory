@@ -88,6 +88,10 @@ served, and only a client proves it is read.
 
 Stop and ask if Claude Desktop does not surface `instructions` to its model at all — mechanism 1 would then be correct and undeliverable on this client, which is a different finding from "delivered and ignored" and deserves a different response.
 
+## Mutation Log
+
+<Tool-written by adr-verify --mutant. Do not hand-edit.>
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

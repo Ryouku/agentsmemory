@@ -3,7 +3,7 @@
 // embeds the slash-command files and the Stop hook, installs them into a Claude
 // config directory, registers the Stop hook and the agentsmemory MCP endpoint,
 // and can optionally pull in the recommended companion extensions
-// (codebase-memory MCP plus the eidos and codex plugins).
+// (the codebase-memory MCP plus the codex review plugin).
 //
 // It supports two installation modes:
 //

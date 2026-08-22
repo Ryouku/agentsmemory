@@ -84,7 +84,7 @@ func installCommand() *cli.Command {
 			"Every agent:        aiagentmemory install --agent all\n\n" +
 			"The default install wires up our slash commands, the Stop hook, and the\n" +
 			"agentsmemory MCP. --recommended additionally installs the codebase-memory\n" +
-			"MCP and (Claude only) the eidos and codex plugins. pi has no MCP client and\n" +
+			"MCP and (Claude only) the codex review plugin. pi has no MCP client and\n" +
 			"no hooks, so it gets a bridge extension that provides both.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -132,7 +132,7 @@ func installCommand() *cli.Command {
 			},
 			&cli.BoolFlag{
 				Name:  "recommended",
-				Usage: "also install the recommended extensions: codebase-memory MCP, eidos + codex plugins",
+				Usage: "also install the recommended extensions: codebase-memory MCP + codex review plugin",
 			},
 			&cli.StringFlag{
 				Name: "token",

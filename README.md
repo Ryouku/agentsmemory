@@ -824,13 +824,22 @@ allowlist names the `am_*` tools. It replaces the old shell installer; everythin
 ships in one downloadable binary.
 
 ```bash
-aiagentmemory install                 # claude, the default
-aiagentmemory install --agent claude  # the same, said out loud
+aiagentmemory install                          # claude, the default
+aiagentmemory install --agent claude           # the same, said out loud
 aiagentmemory install --agent codex
 aiagentmemory install --agent cursor
+aiagentmemory install --agent claude-desktop
 aiagentmemory install --agent pi
-aiagentmemory install --agent both    # claude + codex
-aiagentmemory install --agent all     # all four
+aiagentmemory install --agent both             # claude + codex
+aiagentmemory install --agent all              # all five
+```
+
+`--agent claude-desktop` needs the **server binary on this machine** — it registers
+a `mcp-stdio` bridge, and a Docker-only install produces no host binary. The
+install refuses rather than writing a command that is not there:
+
+```bash
+go build -o ~/.local/bin/aiagentmemory-server ./cmd/server
 ```
 
 ### What each agent actually gets
@@ -839,18 +848,19 @@ The agents do not offer the same surfaces, and the kit installs what each one ha
 rather than pretending. Everything below is measured against a real install, not
 inferred from documentation.
 
-| | **claude** | **codex** | **cursor** | **pi** |
-|---|---|---|---|---|
-| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/.pi/agent` |
-| MCP registration | `claude mcp add` | `codex mcp add` | **writes `mcp.json`** — Cursor ships no `mcp add` | bridge extension |
-| memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | inlined in `AGENTS.md` |
-| slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | `/M`, … |
-| Stop checkpoint | ✅ | ✅ (trust it in `/hooks`) | ❌ hook shape not established | in the extension |
-| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered yet | ❌ | ❌ |
-| `SubagentStart` / `SubagentStop` | ✅ | ❌ not registered yet — [codex supports them](docs/adr/BACKLOG.md) | ❌ | ❌ |
-| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ no subagent system |
-| `--wing` header | ✅ | ❌ no static-header flag | ✅ | ✅ |
-| `--sandbox` isolation | ✅ | ✅ | **refused** — Cursor exposes no config-dir variable | ✅ |
+| | **claude** | **codex** | **cursor** | **claude-desktop** | **pi** |
+|---|---|---|---|---|---|
+| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/Library/Application Support/Claude` | `~/.pi/agent` |
+| MCP registration | `claude mcp add` | `codex mcp add` | **writes `mcp.json`** — Cursor ships no `mcp add` | **writes `claude_desktop_config.json`**, spawning `mcp-stdio` | bridge extension |
+| memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | **the MCP handshake** — it can hold no file | inlined in `AGENTS.md` |
+| slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | **none** | `/M`, … |
+| Stop checkpoint | ✅ | ✅ (trust it in `/hooks`) | ❌ hook shape not established | ❌ | in the extension |
+| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered yet | ❌ | ❌ | ❌ |
+| `SubagentStart` / `SubagentStop` | ✅ | ❌ not registered yet — [codex supports them](docs/adr/BACKLOG.md) | ❌ | ❌ | ❌ |
+| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ | ❌ no subagent system |
+| `--wing` header | ✅ | ❌ no static-header flag | ✅ | ✅ (via `mcp-stdio --token`/url) | ✅ |
+| `--sandbox` isolation | ✅ | ✅ | **refused** — no config-dir variable | **refused** — same reason | ✅ |
+| needs a host server binary | ❌ | ❌ | ❌ | **✅ — the stdio bridge** | ❌ |
 
 Two things worth reading twice:
 
@@ -861,9 +871,16 @@ Two things worth reading twice:
   this line every time, because a re-install cannot tell whether you have done it.
 - **Only Claude gets the write half.** The Stop checkpoint and the subagent hooks
   are what ask an agent to persist what it learned. On codex that is one hook you
-  must trust in `/hooks`; on Cursor there is none. Those agents recall memory and
-  are never prompted to write it — see [ADR-017](docs/adr/ADR-017-a-subagent-is-a-session.md)
-  for why the advisory half of a loop does not happen on its own.
+  must trust in `/hooks`; on Cursor and Claude Desktop there is none. Those agents
+  recall memory and are never prompted to write it — see
+  [ADR-017](docs/adr/ADR-017-a-subagent-is-a-session.md) for why the advisory half
+  of a loop does not happen on its own.
+- **Every client is told the rules on connection**, whether or not a kit could
+  install a protocol file for it. The server returns `instructions` in the MCP
+  `initialize` response — recall before acting, and *pass no wing*. That last one
+  is there because a client without it invented the opposite rule and proposed
+  searching every project on every recall
+  ([ADR-021](docs/adr/ADR-021-the-handshake-carries-the-protocol.md)).
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
 
@@ -889,7 +906,7 @@ dashboard and copy or **Reveal** its key), then registers the agentsmemory MCP i
 one shot. Supply it non-interactively with `--token <key>` or the
 `AGENTSMEMORY_TOKEN` environment variable. Add `--recommended` to also install the
 companion tools: the [codebase-memory](https://github.com/DeusData/codebase-memory-mcp)
-MCP and the eidos and codex plugins. Preview any run with `--dry-run` — it prints
+MCP and the codex review plugin. Preview any run with `--dry-run` — it prints
 every file write and command without touching anything.
 
 ### Two ways to install
@@ -911,7 +928,7 @@ table is checked against it.
 
 | Flag | What it does |
 |------|--------------|
-| `--agent <name>` | `claude` (default) · `codex` · `cursor` · `pi` · `both` (claude+codex) · `all` |
+| `--agent <name>` | `claude` (default) · `codex` · `cursor` · `claude-desktop` · `pi` · `both` (claude+codex) · `all` |
 | `--global` | install into the agent's global config dir without the mode prompt |
 | `--sandbox <name>` | install into an isolated config at `~/.sandboxes/<name>` |
 | `--config-dir <dir>` | install into an explicit directory instead |
@@ -922,7 +939,7 @@ table is checked against it.
 | `--server-bin <path>` | server binary the `--socket` stdio bridge spawns |
 | `--wing <name>` | file this project's memories into this wing, as a header on every MCP call. Carried by claude, cursor and pi; codex and `--socket` cannot, and the install warns instead of dropping it silently |
 | `--scope <scope>` | Claude MCP/plugin scope: `user` (default) · `local` · `project` |
-| `--recommended` | also install codebase-memory MCP and the eidos + codex plugins |
+| `--recommended` | also install codebase-memory MCP and the codex review plugin |
 | `--copy` | seed a sandbox from the agent's global config (logins, MCP servers, plugins, settings). Needs `--sandbox`/`--config-dir` |
 | `--shared-auth` | link the sandbox's credential files to the global config, so one login serves every sandbox |
 | `--claude-bin` / `--codex-bin` / `--pi-bin` | override the agent CLI to drive |
@@ -945,7 +962,7 @@ credentials. Set one up once, with or without the recommended tools:
 
 ```bash
 aiagentmemory install --sandbox acme               # core: commands, hook, our MCP
-aiagentmemory install --sandbox acme --recommended # + codebase-memory, eidos, codex
+aiagentmemory install --sandbox acme --recommended # + codebase-memory, codex review
 ```
 
 The installer writes into `~/.sandboxes/acme/` and runs every `claude`
@@ -1077,7 +1094,7 @@ The token and endpoint are written to `<config dir>/agentsmemory.env` (`0600`)
 and exported by `aiagentmemory run --agent pi …`. A pi sandbox is the whole agent
 dir including `auth.json`, so it starts with no provider credentials.
 `--recommended` adds nothing for pi: codebase-memory is a stdio MCP and the
-eidos/codex plugins are Claude marketplaces.
+codex review plugin is a Claude marketplace.
 
 ---
 

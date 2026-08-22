@@ -210,9 +210,7 @@ func TestInstallRecommendedSequence(t *testing.T) {
 		"SHELL: " + codebaseMemoryInstall,
 		"mcp remove --scope user codebasememory",
 		"mcp add --transport stdio --scope user codebasememory -- " + bin,
-		// recommended: plugins
-		"plugin marketplace add agenticnotetaking/eidos",
-		"plugin install eidos@eidos",
+		// recommended: review plugin
 		"plugin marketplace add openai/codex-plugin-cc",
 		"plugin install codex@openai-codex",
 	}
@@ -602,8 +600,8 @@ func TestInstallPiCore(t *testing.T) {
 }
 
 // TestInstallPiRecommended pins that --recommended adds nothing for pi: the
-// codebase-memory MCP is stdio and the eidos/codex plugins are Claude
-// marketplaces, so neither has anything to attach to.
+// codebase-memory MCP is stdio and the codex review plugin belongs to Claude,
+// so neither has anything to attach to.
 func TestInstallPiRecommended(t *testing.T) {
 	inst, rr, _ := newTestInstallerFor(t, piKit, true)
 	if err := inst.run(); err != nil {
@@ -727,7 +725,7 @@ func TestResolveAgentKits(t *testing.T) {
 	// order is the docs' order, and the assertion names every member rather than
 	// only counting them: a count-only check passes when a kit is swapped for
 	// another.
-	wantAll := []string{agentClaude, agentCodex, agentPi, agentCursor}
+	wantAll := []string{agentClaude, agentCodex, agentPi, agentCursor, agentClaudeDesktop}
 	if len(kits) != len(wantAll) {
 		t.Errorf("resolveAgentKits(all) returned %d kits, want %d (%v)", len(kits), len(wantAll), wantAll)
 	} else {
@@ -1572,7 +1570,7 @@ func TestCursorRuleIsAlwaysApplied(t *testing.T) {
 func TestReadmeNamesEveryInstallableAgent(t *testing.T) {
 	root := repoRootForHooks(t)
 	var agents []string
-	for _, name := range []string{agentClaude, agentCodex, agentPi, agentCursor} {
+	for _, name := range []string{agentClaude, agentCodex, agentPi, agentCursor, agentClaudeDesktop} {
 		kits, err := resolveAgentKits(name)
 		if err != nil {
 			t.Fatalf("--agent %s does not resolve: %v", name, err)
@@ -1593,8 +1591,8 @@ func TestReadmeNamesEveryInstallableAgent(t *testing.T) {
 			agents = append(agents, k.name)
 		}
 	}
-	if len(agents) < 4 {
-		t.Fatalf("found %d installable agents — fewer than the four that exist means the list "+
+	if len(agents) < 5 {
+		t.Fatalf("found %d installable agents — fewer than the five that exist means the list "+
 			"is wrong and this check asserts almost nothing", len(agents))
 	}
 
@@ -1610,5 +1608,118 @@ func TestReadmeNamesEveryInstallableAgent(t *testing.T) {
 					"for it", rel, name)
 			}
 		}
+	}
+}
+
+// TestClaudeDesktopKitResolves pins that --agent claude-desktop reaches a kit.
+func TestClaudeDesktopKitResolves(t *testing.T) {
+	kits, err := resolveAgentKits(agentClaudeDesktop)
+	if err != nil {
+		t.Fatalf("--agent claude-desktop: %v", err)
+	}
+	if len(kits) != 1 || kits[0].name != agentClaudeDesktop {
+		t.Fatalf("--agent claude-desktop resolved to %v, want exactly the desktop kit", names(kits))
+	}
+	all, err := resolveAgentKits(agentAll)
+	if err != nil {
+		t.Fatalf("--agent all: %v", err)
+	}
+	if !contains(names(all), agentClaudeDesktop) {
+		t.Errorf("--agent all resolved to %v, which omits claude-desktop", names(all))
+	}
+	if both, _ := resolveAgentKits(agentBoth); contains(names(both), agentClaudeDesktop) {
+		t.Errorf("--agent both grew: %v. both is claude+codex and must not change", names(both))
+	}
+}
+
+// TestClaudeDesktopInstallRegistersTheBridge pins the registration, driven
+// through run() so the switch case is under test rather than the writer.
+//
+// It must be a STDIO entry. Claude Desktop's config file speaks to local
+// processes, and the product ships its own bridge (mcp-stdio --url) — so the
+// route the project's own windows-guide recommends, `npx mcp-remote`, drags in
+// Node.js for a self-hosted server that needs none.
+func TestClaudeDesktopInstallRegistersTheBridge(t *testing.T) {
+	inst, rr, dir := newTestInstallerFor(t, claudeDesktopKit, false)
+	inst.mcpURL = "http://localhost:8080/mcp"
+	inst.serverBin = "/opt/bin/aiagentmemory-server"
+
+	// A server the user already had must survive; this file is shared with every
+	// other MCP server they run.
+	cfgPath := filepath.Join(dir, claudeDesktopKit.mcpConfigFile)
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	prior := `{"mcpServers":{"theirs":{"command":"/usr/bin/theirs"}},"otherKey":1}`
+	if err := os.WriteFile(cfgPath, []byte(prior), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var got struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+			Type    string   `json:"type"`
+			URL     string   `json:"url"`
+		} `json:"mcpServers"`
+		OtherKey *int `json:"otherKey"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("config does not parse: %v\n%s", err, body)
+	}
+	if _, ok := got.MCPServers["theirs"]; !ok {
+		t.Errorf("the user's own MCP server was lost:\n%s", body)
+	}
+	if got.OtherKey == nil {
+		t.Errorf("an unrelated top-level key was dropped:\n%s", body)
+	}
+	entry, ok := got.MCPServers[mcpName]
+	if !ok {
+		t.Fatalf("no %s entry under mcpServers:\n%s", mcpName, body)
+	}
+	if entry.Type != "" || entry.URL != "" {
+		t.Errorf("an HTTP entry was written (%+v); Desktop's config file spawns local processes, "+
+			"so this must be the stdio bridge", entry)
+	}
+	if entry.Command != "/opt/bin/aiagentmemory-server" {
+		t.Errorf("command = %q, want the resolved server binary", entry.Command)
+	}
+	if len(entry.Args) < 3 || entry.Args[0] != "mcp-stdio" ||
+		!contains(entry.Args, "--url") || !contains(entry.Args, inst.mcpURL) {
+		t.Errorf("args = %v, want mcp-stdio --url %s", entry.Args, inst.mcpURL)
+	}
+
+	// Desktop has no CLI, so nothing should have been shelled out to.
+	for _, c := range rr.calls {
+		t.Errorf("the desktop install ran %q; Claude Desktop has no CLI and the registration is "+
+			"a file write", c.rendered())
+	}
+}
+
+// TestClaudeDesktopRefusesWithoutAServerBinary pins the prerequisite the
+// reference machine did not meet.
+//
+// The bridge is a binary on the HOST, and a Docker-only install produces none —
+// `command -v agentsmemory` was empty on the machine this was built for. Writing
+// a `command` that does not exist yields a client that fails at spawn with a
+// message naming our binary, which reads as our bug on the user's machine.
+func TestClaudeDesktopRefusesWithoutAServerBinary(t *testing.T) {
+	inst, _, _ := newTestInstallerFor(t, claudeDesktopKit, false)
+	inst.serverBin = "" // nothing resolvable
+	err := inst.registerAgentsMemoryMCP()
+	if err == nil {
+		t.Fatal("the install accepted a missing server binary; it would write a command that " +
+			"does not exist and Claude Desktop would fail at spawn")
+	}
+	// The error has to be actionable: it names the thing to build.
+	if !strings.Contains(err.Error(), "mcp-stdio") && !strings.Contains(err.Error(), "server") {
+		t.Errorf("the refusal does not say what is missing or how to get it: %v", err)
 	}
 }

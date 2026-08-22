@@ -139,6 +139,25 @@ reveal panel as the token:
 Custom connectors are not available on every Claude plan. If the option is
 missing, use route 2.
 
+**If the server is SELF-HOSTED, neither route below is the right one.** agentsmemory
+ships its own bridge in the server binary, so a local server needs no Node.js and
+no connector:
+
+```json
+{
+  "mcpServers": {
+    "agentsmemory": {
+      "command": "C:\\path\\to\\aiagentmemory-server.exe",
+      "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp"]
+    }
+  }
+}
+```
+
+`aiagentmemory install --agent claude-desktop` writes exactly that for you. The
+two routes below are for the HOSTED service, where there is no local binary to
+bridge through.
+
 **Route 2 — `mcp-remote` bridge.** Claude Desktop's config file speaks to local
 processes, so a remote server needs a small bridge. This requires **Node.js**
 installed on the machine — check with `node --version` before recommending it.

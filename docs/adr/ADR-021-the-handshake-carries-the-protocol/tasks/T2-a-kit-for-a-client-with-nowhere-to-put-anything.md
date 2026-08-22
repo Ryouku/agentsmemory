@@ -92,6 +92,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and ask if Claude Desktop's config turns out to accept an HTTP entry — the stdio bridge would then be an unnecessary dependency on a host binary, and the entry should be the simpler one.
 
+## Mutation Log
+
+- 2026-08-22 · 15bf930* · mutant killed · exit 1 · `clients/claude-code/installer.go` · a missing host binary writes a command that does not exist, and Claude Desktop then fails at spawn with an error naming our binary — which reads as our bug on the users machine
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

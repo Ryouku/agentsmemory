@@ -60,8 +60,8 @@ inferred from documentation.
 The reference install: native MCP, native hooks, and a memory file that resolves
 imports.
 
-- `--recommended` also installs the codebase-memory MCP and the eidos + codex
-  plugins.
+- `--recommended` also installs the codebase-memory MCP and the codex review
+  plugin.
 - A sandbox keeps its own commands, settings, MCP servers and token — nothing
   leaks into `~/.claude`.
 
@@ -86,8 +86,8 @@ extension.
   native pi tools, so `am_*` calls work unchanged.
 - A sandbox is the whole agent dir — including `auth.json` — so sign in inside
   it or pass a provider key.
-- `--recommended` adds nothing for pi: codebase-memory is a stdio MCP and
-  eidos/codex are Claude plugins.
+- `--recommended` adds nothing for pi: codebase-memory is a stdio MCP and the
+  codex review plugin is for Claude.
 
 ## Pinning a project's launch
 

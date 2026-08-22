@@ -87,6 +87,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and ask if `instructions` cannot be served without changing the transport — the field is standard, and needing more than a construction option means the mcp-go version is not what the audit found.
 
+## Mutation Log
+
+- 2026-08-22 · 15bf930* · mutant killed · exit 1 · `internal/mcpserver/server.go` · without the option the field is empty on every connection and a client with no protocol file invents its own scoping rule, which is the defect this ADR was opened by
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

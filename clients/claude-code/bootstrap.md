@@ -43,7 +43,7 @@ Bias toward correctness, small diffs, and verified changes.
 You are (re)starting a session. **First** load context from the sources below,
 **then** plan, **then** code. Do not skip the bootstrap even if the task looks
 trivial — the whole point is to ground the work in idiomatic code, polished
-UX/UI, spec intent, code reality, and prior decisions. **Quality and UX/UI are
+UX/UI, project intent, code reality, and prior decisions. **Quality and UX/UI are
 first-class citizens here, gated like correctness — never bolted on at the end.**
 
 ## Step 0 — Language idioms FIRST (hard gate, do not skip)
@@ -237,23 +237,31 @@ A wing that does not exist yet is not an error: it is created by the first write
 to it. On a fresh install every wing is missing, which is exactly when a "wrong
 palace" alarm would be wrong.
 
-## Step 1 — Load memory (specs, code, why) — hard gate, do not skip
+## Step 1 — Load memory (intent, code, why) — hard gate, do not skip
 
 All three sources are **MUST**, not "run if convenient." Fire the independent
 calls in parallel where you can; each answers a different question.
 
-- **1a. Specs (intent) — `eidos:spec`.** Invoke the `eidos:spec` skill to load the
-  project's source-of-truth specs (`eidos/*.md`): what the system is *supposed* to
-  do. If the project has no specs, say so and move on. Emit `specs loaded ✓`.
-- **1b. Code graph (reality) — codebase-memory.** Reindex first, then search —
-  never search a stale graph:
-  1. `index_repository(repo_path=<cwd>)` — refresh the code graph (it re-indexes
-     incrementally; `index_status` / `detect_changes` show what moved).
-  2. `search_code(pattern=<task>, project=<repo>)` — locate the symbols, files,
-     and routes the task touches. Reach for `get_architecture` or `trace_path`
-     when you need structure or call paths.
+- **1a. Project intent — use the repository's own sources.** Discover and read
+  what this project actually treats as authoritative before planning. Start with
+  repository instructions and documented conventions, then load the sources
+  relevant to the task: for example `docs/specs/`, an ADR corpus, architecture
+  docs, OpenAPI or schema contracts, product/business rules, or task acceptance
+  criteria. Do not assume a directory shape or a third-party skill. Name the
+  exact sources you found; if none exists, say `no explicit intent source found`
+  and carry that uncertainty into the plan. Emit `intent loaded ✓`.
+- **1b. Code reality — prefer codebase-memory when available.** When the
+  codebase-memory MCP is registered, reindex before searching: first call
+  `index_repository(repo_path=<cwd>)`, then `search_code(pattern=<task>,
+  project=<repo>)`. Reach for `get_architecture` or `trace_path` when structure
+  or call paths matter. Both graph calls are mandatory when that capability
+  exists; a stale graph is worse than no graph because it still answers.
 
-  Both calls are mandatory. Emit `code graph indexed + searched ✓`.
+  When codebase-memory is absent, say so and use targeted source search and
+  reading over the paths, symbols, architecture docs, and tests the task names.
+  Do not treat an optional integration's absence as a blocked gate. Name what
+  you inspected and the limitations of the fallback. After either route, emit
+  `code reality searched ✓`.
 - **1c. Team memory (who + why) — `am_*` MCP.** Four calls, in order:
   - **Read the playbook first** — call `am_skillset`. This is the server's own
     wake-up document: the standing instructions for *this* memory server (which
@@ -290,7 +298,7 @@ calls in parallel where you can; each answers a different question.
     if the idiom skill was not in your local list, it is very likely here. Emit
     `team skills loaded ✓` (or say plainly that the catalogue is empty).
 
-Reconcile the three sources. If the spec (1a), the code (1b), and past decisions
+Reconcile the three sources. If project intent (1a), the code (1b), and past decisions
 (1c) disagree, **surface the conflict** — that's a human decision, not one to
 make silently.
 
@@ -331,9 +339,10 @@ whenever the answer would change what you do next:
 
 ## Step 2 — Plan
 
-Invoke **`eidos:plan`** to turn the loaded context into a structured, multi-step
-plan grounded in the specs (1a) and the code graph (1b). Cite concrete
-`file:line`. Surface unresolved conflicts as decision points, not silent choices.
+Build the structured, multi-step plan directly from the loaded context, using
+the harness's native plan/todo tool. Ground it in project intent (1a) and the
+code reality (1b). Cite concrete `file:line`. Surface unresolved conflicts as
+decision points, not silent choices.
 For user-facing work, carry explicit UX/UI steps (interaction, loading/empty/error
 states, responsiveness, accessibility) as first-class items.
 

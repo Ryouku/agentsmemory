@@ -87,6 +87,29 @@ func TestProtocolDocsNameToolsThatExist(t *testing.T) {
 	}
 }
 
+// TestRuntimeProtocolDoesNotRequireEidos keeps the agentsmemory workflow
+// usable when no third-party spec or planning plugin is installed. The runtime
+// protocol must discover the repository's actual intent sources and use the
+// harness's native plan tracker instead of naming an optional plugin.
+func TestRuntimeProtocolDoesNotRequireEidos(t *testing.T) {
+	root := filepath.Join("..", "..")
+	docs := append(append([]string(nil), protocolDocs...), "example.md")
+	for _, rel := range docs {
+		raw, err := os.ReadFile(filepath.Join(root, rel))
+		if os.IsNotExist(err) {
+			continue // protocolDocs includes optional harness-specific files
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		for _, dependency := range []string{"eidos:spec", "eidos:plan"} {
+			if strings.Contains(string(raw), dependency) {
+				t.Errorf("%s requires optional third-party skill %q", rel, dependency)
+			}
+		}
+	}
+}
+
 func dedupe(in []string) []string {
 	out, seen := in[:0], map[string]bool{}
 	for _, s := range in {

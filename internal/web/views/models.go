@@ -940,7 +940,7 @@ func landingInstallOpts() []installOpt {
 		{
 			Signal: "_optrec",
 			Flag:   "--recommended",
-			Desc:   "Also install the extensions: the codebase-memory MCP and the eidos + codex plugins.",
+			Desc:   "Also install the extensions: the codebase-memory MCP and the codex review plugin.",
 		},
 	}
 }
@@ -1037,7 +1037,6 @@ func landingInstallGroups() []installGroup {
 			Cmd:   "aiagentmemory install --recommended",
 			Items: []string{
 				"codebase-memory MCP — live code graph",
-				"eidos plugin — spec + plan skills",
 				"codex plugin — independent review",
 			},
 		},
@@ -1112,7 +1111,7 @@ func sandboxAgents() []sandboxAgent {
 				{"Our MCP", "native: claude mcp add --transport http, bearer header"},
 			},
 			Notes: []string{
-				"--recommended also installs the codebase-memory MCP and the eidos + codex plugins.",
+				"--recommended also installs the codebase-memory MCP and the codex review plugin.",
 				"A sandbox keeps its own commands, settings, MCP servers and token — nothing leaks into ~/.claude.",
 			},
 		},
@@ -1153,7 +1152,7 @@ func sandboxAgents() []sandboxAgent {
 			Notes: []string{
 				"The bridge lists the workspace tools at startup and re-registers them as native pi tools, so am_* calls work unchanged.",
 				"A sandbox is the whole agent dir — including auth.json — so sign in inside it or pass a provider key.",
-				"--recommended adds nothing for pi: codebase-memory is a stdio MCP and eidos/codex are Claude plugins.",
+				"--recommended adds nothing for pi: codebase-memory is a stdio MCP and the codex review plugin is for Claude.",
 			},
 		},
 	}

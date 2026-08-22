@@ -209,7 +209,7 @@ type Installer struct {
 	resolvedToken string
 	copyGlobal    bool          // seed the target from the agent's global config dir
 	sharedAuth    bool          // link credentials back to the global config dir
-	recommended   bool          // also install codebase-memory + eidos + codex
+	recommended   bool          // also install codebase-memory + codex review
 	yes           bool          // non-interactive: never prompt
 	dryRun        bool          // print instead of doing
 	out           io.Writer     // progress + banners
@@ -448,9 +448,9 @@ func (i *Installer) run() error {
 	switch {
 	case i.kit.name == agentPi:
 		// Both companions need something pi does not have: codebase-memory is a
-		// stdio MCP server and eidos/codex are Claude plugin marketplaces. Say so
+		// stdio MCP server and codex review is a Claude plugin marketplace. Say so
 		// instead of running an installer whose output nothing would consume.
-		fmt.Fprintln(i.out, "  none for pi: codebase-memory is a stdio MCP and eidos/codex are Claude plugins — pi supports neither")
+		fmt.Fprintln(i.out, "  none for pi: codebase-memory is a stdio MCP and codex review is a Claude plugin — pi supports neither")
 	case i.recommended:
 		i.installRecommended()
 	default:
@@ -926,6 +926,8 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 		return i.registerPiMCP(token)
 	case agentCursor:
 		return i.registerCursorMCP(token)
+	case agentClaudeDesktop:
+		return i.registerClaudeDesktopMCP(token)
 	default:
 		return i.registerClaudeMCP(token)
 	}
@@ -1082,12 +1084,6 @@ func resolveAgentCLI(kit agentKit, c *cli.Command) (string, error) {
 	}
 }
 
-// cursorMCPFile is where Cursor reads its MCP server list, relative to the config
-// dir. Both the IDE and cursor-agent read it, which is why driving the CLI is not
-// needed and also not possible: `cursor-agent mcp` has login, list, list-tools,
-// enable and disable, and no add.
-const cursorMCPFile = "mcp.json"
-
 // registerCursorMCP registers the agentsmemory MCP server by writing Cursor's own
 // config file, because Cursor ships no command that would do it.
 //
@@ -1101,7 +1097,7 @@ const cursorMCPFile = "mcp.json"
 // byte-identical on disk to a working one, and an installer that approves its own
 // server on the user's behalf defeats the point of the gate.
 func (i *Installer) registerCursorMCP(token string) error {
-	path := filepath.Join(i.targetDir, cursorMCPFile)
+	path := filepath.Join(i.targetDir, i.kit.mcpConfigFile)
 	entry := map[string]any{"type": "http", "url": i.mcpURL}
 	headers := map[string]any{}
 	if token != "" {
@@ -1125,13 +1121,58 @@ func (i *Installer) registerCursorMCP(token string) error {
 		return err
 	}
 	if changed {
-		i.ok("registered MCP %q in %s → %s", mcpName, cursorMCPFile, i.mcpURL)
+		i.ok("registered MCP %q in %s → %s", mcpName, i.kit.mcpConfigFile, i.mcpURL)
 	} else {
-		i.ok("MCP %q already registered in %s", mcpName, cursorMCPFile)
+		i.ok("MCP %q already registered in %s", mcpName, i.kit.mcpConfigFile)
 	}
 	// Say this every time, not only when the file changed: the approval is stored
 	// outside mcp.json, so a re-install cannot tell whether it has happened.
 	i.ok("approve it once so Cursor loads it:  cursor-agent mcp enable %s", mcpName)
+	return nil
+}
+
+// registerClaudeDesktopMCP registers the server in Claude Desktop's own config
+// file, as a STDIO entry spawning the bridge this product already ships.
+//
+// Desktop's config file speaks to local processes. The project's own
+// windows-guide offers two remote routes — the Custom-connector UI, which is not
+// on every plan, and `npx mcp-remote`, which needs Node.js — and both are aimed
+// at the hosted service. For a self-hosted server there is a third and better
+// one: `mcp-stdio --url` is a bridge in the server binary that opens no database
+// and needs nothing else installed.
+//
+// It REFUSES rather than writing a command it cannot find. A Docker-only install
+// produces no host binary at all — measured on the reference machine, where both
+// candidate names resolved to nothing — and an entry naming a binary that is not
+// there fails at spawn inside Claude Desktop, where the error reads as ours.
+func (i *Installer) registerClaudeDesktopMCP(token string) error {
+	if i.serverBin == "" {
+		return fmt.Errorf("%s registers an mcp-stdio bridge, which needs the agentsmemory server "+
+			"binary on this machine, and none was found. Build one "+
+			"(go build -o ~/.local/bin/aiagentmemory-server ./cmd/server) or pass --server-bin "+
+			"<path>. A Docker-only install produces no host binary", i.kit.name)
+	}
+	path := filepath.Join(i.targetDir, i.kit.mcpConfigFile)
+	args := []any{"mcp-stdio", "--url", i.mcpURL}
+	if token != "" {
+		args = append(args, "--token", token)
+	}
+	entry := map[string]any{"command": i.serverBin, "args": args}
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register the agentsmemory MCP in %s → %s mcp-stdio --url %s\n",
+			path, i.serverBin, i.mcpURL)
+		return nil
+	}
+	changed, err := ensureMCPServer(path, mcpName, entry)
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered MCP %q in %s → %s mcp-stdio", mcpName, i.kit.mcpConfigFile, i.serverBin)
+	} else {
+		i.ok("MCP %q already registered in %s", mcpName, i.kit.mcpConfigFile)
+	}
+	i.ok("restart Claude Desktop to pick it up — it reads this file only at launch")
 	return nil
 }
 
@@ -1169,6 +1210,17 @@ func (i *Installer) mcpAddHint() string {
 // is inlined there instead; the sibling copy is still written, as the file the
 // block is regenerated from on the next install.
 func (i *Installer) registerMemoryBootstrap() error {
+	// Some agents can hold no protocol at all: Claude Desktop has no memory file,
+	// no rules directory and no commands directory. Writing the bootstrap into its
+	// config dir would be litter nothing reads, so the protocol reaches it through
+	// the MCP handshake instead (internal/mcpserver.serverInstructions, ADR-021
+	// T1) — which is the ONLY channel that reaches a client like this, and the
+	// reason that task exists.
+	if i.kit.memoryFile == "" && i.kit.rulesFile == "" {
+		i.ok("%s holds no protocol file — the server sends it on the MCP handshake instead",
+			i.kit.name)
+		return nil
+	}
 	data, err := i.source().ReadFile(bootstrapAsset)
 	if err != nil {
 		return err
@@ -1240,8 +1292,8 @@ func (i *Installer) writeProtocolRule(protocol []byte) error {
 
 // installRecommended installs the companion ecosystem. Both agents get the
 // codebase-memory MCP (its own installer + a stdio registration); Claude
-// additionally gets the eidos and codex plugins, which live in Claude plugin
-// marketplaces and have no codex equivalent. Each step is best-effort — one
+// additionally gets the codex review plugin, which has no codex equivalent.
+// Each step is best-effort — one
 // already-installed plugin or a network hiccup should not abort the whole install
 // — so failures are reported, not fatal.
 func (i *Installer) installRecommended() {
@@ -1266,25 +1318,20 @@ func (i *Installer) installRecommended() {
 	}
 
 	if i.kit.name == agentCodex {
-		// eidos and codex are Claude plugin marketplaces; codex has its own
-		// (openai-bundled) and carries no equivalent, so say what is not happening
-		// rather than silently installing less than the flag promises.
-		fmt.Fprintln(i.out, "  note: the eidos and codex plugins are Claude-only — nothing to install for codex")
+		// The codex review plugin is for Claude; codex has its own bundled review
+		// capabilities, so say what is not happening rather than silently
+		// installing less than the flag promises.
+		fmt.Fprintln(i.out, "  note: the codex review plugin is Claude-only — nothing to install for codex")
 		return
 	}
 
 	// Marketplace add is effectively idempotent; ignore its error and let the
 	// install surface any real problem.
-	for _, p := range []struct{ marketplace, plugin string }{
-		{"agenticnotetaking/eidos", "eidos@eidos"},
-		{"openai/codex-plugin-cc", "codex@openai-codex"},
-	} {
-		i.agent(true, "plugin", "marketplace", "add", p.marketplace)
-		if err := i.agent(false, "plugin", "install", p.plugin); err != nil {
-			i.warn("install plugin %s failed: %v", p.plugin, err)
-		} else {
-			i.ok("installed plugin %s", p.plugin)
-		}
+	i.agent(true, "plugin", "marketplace", "add", "openai/codex-plugin-cc")
+	if err := i.agent(false, "plugin", "install", "codex@openai-codex"); err != nil {
+		i.warn("install plugin codex@openai-codex failed: %v", err)
+	} else {
+		i.ok("installed plugin codex@openai-codex")
 	}
 }
 
@@ -1468,13 +1515,13 @@ func (i *Installer) extensionsLabel() string {
 }
 
 // extensionsList names the companion extensions --recommended installs for the
-// kit. The eidos and codex plugins live in Claude plugin marketplaces, so a codex
+// kit. The codex review plugin lives in a Claude plugin marketplace, so a codex
 // install gets the codebase-memory MCP only.
 func extensionsList(kit agentKit) string {
 	if kit.name == agentCodex {
 		return "codebase-memory"
 	}
-	return "codebase-memory, eidos, codex"
+	return "codebase-memory, codex"
 }
 
 func (i *Installer) step(title string)       { fmt.Fprintf(i.out, "\n> %s\n", title) }

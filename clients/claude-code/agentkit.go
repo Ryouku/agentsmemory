@@ -8,12 +8,13 @@ import (
 
 // Agent identifiers accepted by `install --agent` and `run --agent`.
 const (
-	agentClaude = "claude"
-	agentCodex  = "codex"
-	agentPi     = "pi"
-	agentCursor = "cursor"
-	agentBoth   = "both"
-	agentAll    = "all"
+	agentClaude        = "claude"
+	agentCodex         = "codex"
+	agentPi            = "pi"
+	agentCursor        = "cursor"
+	agentClaudeDesktop = "claude-desktop"
+	agentBoth          = "both"
+	agentAll           = "all"
 )
 
 // agentKit describes the parts of an install that differ between the agent CLIs
@@ -63,6 +64,12 @@ type agentKit struct {
 	// `alwaysApply: true`. Empty for the agents that merge a managed block into a
 	// memory file instead — the two are alternatives, never both.
 	rulesFile string
+
+	// mcpConfigFile is the JSON file this kit registers its MCP server into when
+	// the agent ships no CLI to do it, relative to the config dir. Empty for the
+	// agents that have a `mcp add` command — which is most of them, and is why
+	// this is a field rather than the default.
+	mcpConfigFile string
 
 	// supportsImport reports whether the memory file can pull in a sibling file
 	// by reference. Claude Code resolves `@file.md` imports, so it gets a
@@ -170,12 +177,14 @@ func resolveAgentKits(name string) ([]agentKit, error) {
 		return []agentKit{piKit}, nil
 	case agentCursor:
 		return []agentKit{cursorKit}, nil
+	case agentClaudeDesktop:
+		return []agentKit{claudeDesktopKit}, nil
 	case agentBoth:
 		return []agentKit{claudeKit, codexKit}, nil
 	case agentAll:
-		return []agentKit{claudeKit, codexKit, piKit, cursorKit}, nil
+		return []agentKit{claudeKit, codexKit, piKit, cursorKit, claudeDesktopKit}, nil
 	default:
-		return nil, fmt.Errorf("unknown --agent %q: use claude, codex, pi, cursor, both or all", name)
+		return nil, fmt.Errorf("unknown --agent %q: use claude, codex, pi, cursor, claude-desktop, both or all", name)
 	}
 }
 
@@ -223,5 +232,31 @@ var cursorKit = agentKit{
 	agentsDir:     "agents",
 	agentAssetExt: ".md",
 	rulesFile:     "rules/agentsmemory.mdc",
+	mcpConfigFile: "mcp.json",
 	commandHint:   "the protocol loads itself — Cursor has no slash-command directory",
+}
+
+// claudeDesktopKit is the thinnest kit there is: an MCP registration and nothing
+// else, because Claude Desktop has nowhere to put anything else.
+//
+// No commands directory, no memory file, no rules file, no hooks, no agents
+// directory, and no variable that relocates its config — every one of those is a
+// measured absence on macOS, 2026-08-22. What it has is
+// claude_desktop_config.json with an "mcpServers" object, the same shape Cursor
+// and Claude Code use.
+//
+// The entry spawns a LOCAL PROCESS: Desktop's config file speaks to local
+// processes, and the product already ships the bridge for that
+// (`mcp-stdio --url`), so the Node.js route the project's own windows-guide
+// recommends is unnecessary for a self-hosted server.
+//
+// The consequence worth stating: Desktop receives the tools and no protocol at
+// all. ADR-021 T1's handshake instructions exist because this kit cannot deliver
+// one — the read half without the write half, one step further than Cursor.
+var claudeDesktopKit = agentKit{
+	name:          agentClaudeDesktop,
+	bin:           "", // there is no CLI to drive
+	globalDir:     "Library/Application Support/Claude",
+	mcpConfigFile: "claude_desktop_config.json",
+	commandHint:   "Claude Desktop has no slash commands — the tools appear under its connectors",
 }

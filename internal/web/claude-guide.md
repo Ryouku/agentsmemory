@@ -54,7 +54,7 @@ aiagentmemory run <name>          # launch Claude against that sandbox
 ```
 
 Add `--recommended` to either mode to also install the codebase-memory MCP and the
-eidos and codex plugins. Preview any install without touching disk with
+codex review plugin. Preview any install without touching disk with
 `--dry-run`.
 
 ## 3. What it installs
@@ -82,6 +82,6 @@ run `/am <task>` or `/M <task>` to trigger the full grounding sequence on demand
 | `--global` | Install into `~/.claude` non-interactively (skips the mode prompt). |
 | `--sandbox <name>` | Install an isolated config at `~/.sandboxes/<name>`. |
 | `--token <key>` | Workspace API token (or `AGENTSMEMORY_TOKEN`). |
-| `--recommended` | Also install codebase-memory + the eidos and codex plugins. |
+| `--recommended` | Also install codebase-memory + the codex review plugin. |
 | `--dry-run` | Print the plan without writing files or running commands. |
 | `--yes`, `-y` | Never prompt (CI). |
