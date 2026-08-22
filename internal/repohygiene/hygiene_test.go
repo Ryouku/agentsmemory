@@ -324,3 +324,49 @@ func TestNoRealProjectNamesInWings(t *testing.T) {
 		t.Error("no wing names were found anywhere in the tree — this check has stopped checking anything")
 	}
 }
+
+// TestEveryComposeFileIsDocumented makes the deployment documentation
+// load-bearing, in the same shape as the hook-event and agent-name gates in
+// clients/claude-code.
+//
+// A compose file nobody documents is one nobody runs. That is not hypothetical
+// here: docker-compose.ollama.yml — the overlay that removes the single most
+// common first-run failure, "you have no embedder" — was named exactly once in
+// the whole README, inside a command block, with no heading a reader could find
+// it by.
+//
+// The expected set is the directory, so adding an overlay and forgetting the
+// README fails a build rather than being noticed by someone who never had reason
+// to look.
+func TestEveryComposeFileIsDocumented(t *testing.T) {
+	root := repoRoot(t)
+	files, err := filepath.Glob(filepath.Join(root, "docker-compose*.yml"))
+	if err != nil {
+		t.Fatalf("glob compose files: %v", err)
+	}
+	if len(files) < 2 {
+		t.Fatalf("found %d compose files — the glob is wrong, and an empty set would let this "+
+			"check pass against a README documenting nothing", len(files))
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	text := string(readme)
+	for _, path := range files {
+		name := filepath.Base(path)
+		if !strings.Contains(text, name) {
+			t.Errorf("README.md never mentions %s: an operator cannot run a compose file they "+
+				"cannot find, and the file's own header comment is not somewhere anyone looks "+
+				"before deciding what to run", name)
+		}
+	}
+
+	// The Dockerfile is the other half of "how do I run this": every compose file
+	// that builds rather than pulls depends on it, and the no-compose path is a
+	// plain `docker build`.
+	if !strings.Contains(text, "docker build") {
+		t.Error("README.md never shows `docker build`, so the image everything else is built " +
+			"from has no documented origin")
+	}
+}

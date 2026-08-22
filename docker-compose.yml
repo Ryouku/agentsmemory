@@ -12,10 +12,13 @@
 #
 #   cp .env.docker.example .env.docker
 #   docker compose up -d
-#   claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+#   aiagentmemory install --local --agent all    # claude | codex | cursor | pi
 #
-# Registering the MCP is only half of it — see the README: without the memory
-# protocol installed into your agent, the tools are available but never called.
+# That last line is the whole wiring, not just the MCP. Registering the server by
+# hand (`claude mcp add --transport http agentsmemory http://localhost:8080/mcp`)
+# gives an agent the tools and nothing else — no memory protocol, no hooks, no
+# subagent definition — so the tools are available and never called. This comment
+# said exactly that and then printed the half-command anyway.
 
 name: agentsmemory
 

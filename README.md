@@ -472,6 +472,30 @@ Worth knowing:
 - **Socket paths are short.** The kernel caps them near 104 bytes (macOS) or 108
   (Linux); a deeply nested path fails to bind with a bare `invalid argument`.
 
+### The compose files, and which one you want
+
+Five files, composed rather than copied: every stack is the base plus zero or
+more overlays, so there is no variant to keep in sync with another.
+
+| File | What it is | When |
+|------|-----------|------|
+| `docker-compose.yml` | the base — **one** container, embedded chromem index, one volume | one person, one machine. The default, and it stays the default |
+| `docker-compose.full.yml` | overlay: Qdrant + a cross-encoder | recall precision matters more than dependency count, or several machines share an index. **This is what we run** |
+| `docker-compose.ollama.yml` | overlay: the embedder in the stack, *and* points the server at it | you have no Ollama on the host. A profile could start the container but not repoint the server, which is why it is a file |
+| `docker-compose.host.yml` | overlay: host networking — **Linux only** | Ollama on `127.0.0.1:11434` with no `OLLAMA_HOST=0.0.0.0` and no `host.docker.internal`. Does nothing on macOS/Windows, where containers live in a VM |
+| `docker-compose.prod.yml` | hosted multi-workspace mode: dashboard, OAuth, billing | you are running the SaaS shape rather than a personal palace |
+
+Overlays stack. `-f docker-compose.yml -f docker-compose.full.yml -f
+docker-compose.ollama.yml` is a legitimate combination and means all three.
+
+**Every `-f` flag, every time.** An overlay alone is not a complete stack, and
+leaving one off does not fail — it starts a valid *different* stack. Either repeat
+the flags, or fix them once per shell with
+`export COMPOSE_FILE=docker-compose.yml:docker-compose.full.yml`, or put that same
+line in a `.env` beside the compose files to make it this directory's default.
+
+The image every one of them builds comes from the `Dockerfile` at the repo root.
+
 ### Docker Compose (one container)
 
 ```bash
@@ -506,6 +530,52 @@ process binds `:8080` (a published port cannot reach a loopback-bound process),
 so it logs the non-loopback warning on boot; there, the published interface is
 the boundary, and the warning is expected.
 
+### The stack this project runs on
+
+Everything above is a menu. This is the setup the maintainers actually run, and
+the one every measurement in `docs/adr/` was taken against — the base file plus
+the full-quality overlay, with Ollama on the host:
+
+```bash
+# 0. once: an embedder on the host, and the model pulled (see Preparing Ollama)
+ollama pull bge-m3
+
+# 1. the stack
+cp .env.docker.example .env.docker      # point OLLAMA_URL at your Ollama
+docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
+
+# 2. your agents — all four, or name one
+aiagentmemory install --local --agent all
+```
+
+Three containers: the server, Qdrant, and the cross-encoder. First boot pulls the
+reranker model into a volume, so give it a few minutes and watch
+`docker compose ... logs -f reranker` if you are impatient.
+
+**Verify it, rather than assume it.** The server prints what it actually resolved,
+which is the only thing that says the overlay applied:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.full.yml logs agentsmemory | grep 'ranking:'
+# ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50)
+```
+
+`rerank=on(...)` is the line to look for. If it says `rerank=off`, the overlay did
+not apply — you almost certainly dropped one of the two `-f` flags, which starts
+a *valid* base stack rather than failing.
+
+**Redeploying after a change**, including proving the running binary carries it:
+
+```bash
+scripts/redeploy.sh
+```
+
+It refuses to report success on a build it cannot verify: it runs the suite before
+building, greps the binary *inside the running container* for strings the change
+introduced, compares its digest against the image just built, runs one real search
+through `/mcp`, and checks the installed client kit against the checkout. A build's
+success is a claim about the build; this reads the artifact that is serving.
+
 ### Docker Compose (the full-quality stack)
 
 When recall quality matters more than dependency count, a second overlay swaps
@@ -521,11 +591,18 @@ docker compose -f docker-compose.yml -f docker-compose.full.yml run --rm agentsm
 
 That is three services: the server, **Qdrant** as the search index, and a
 **cross-encoder** (`bge-reranker-v2-m3`, served by llama.cpp) that rescores the
-top 50 candidates of every search before the page is cut. The embedder scores a
+top `RERANK_POOL` candidates of every search before the page is cut — **10** in
+this overlay, not the flag's own default of 50. Cost is linear: the cross-encoder
+scores every pair in a full forward pass, measured on this stack at ~435ms per
+document, so 50 candidates is ~22s and MCP clients give up long before the
+server's budget does. (This sentence said 50 while the overlay shipped 10, which
+is the drift `TestDocumentedEnvVarsAreRead` exists to catch one layer down.) The embedder scores a
 drawer against a query it never saw; the cross-encoder reads the pair together,
 which is the sharper judgement — and it only runs over what hybrid ranking
 already surfaced, so the cost is bounded per search rather than per palace. If it
 is down, search falls back to the fused vector+BM25 order instead of failing.
+
+#### No Ollama on the host (`docker-compose.ollama.yml`)
 
 If you have no Ollama at all, a third file adds it — and, unlike a profile,
 points the server at it:
