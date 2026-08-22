@@ -12,6 +12,52 @@
 
 Found 2026-08-21 by a peer session on the reference machine. It was handed a "memories to write" list naming failed searches in two wings it had never touched, noticed they were not its own, and refused to file drawers for them. That refusal is the only reason two fabricated memories do not exist.
 
+**T1's finding, measured 2026-08-22 — session identity: unavailable.** No identity is
+reachable at the point `recordSearch` runs, and the mechanism is not the missing column.
+
+One word overstates a two-part answer, so the qualification belongs beside it: the
+SERVER supplies none, while a CLIENT that sends its own header is accepted. Read
+"unavailable" as "unavailable by default, in the configuration production runs".
+
+`cmd/server/main.go` builds its transport with `server.WithStateLess(true)`, which installs mcp-go's `StatelessSessionIdManager`. Two lines of that library decide this ADR:
+
+```go
+func (s *StatelessSessionIdManager) Generate() string { return "" }
+func (s *StatelessSessionIdManager) Validate(id string) (bool, error) { return false, nil }
+```
+
+The server therefore **mints no identity at all** — it hands the client an empty
+`Mcp-Session-Id` on initialize — and **validates nothing** on later requests,
+simply echoing back whatever header the client sent. A well-behaved client
+echoing what it was given sends nothing, so every caller arrives anonymous.
+
+Driven through a real transport in the production configuration
+(`internal/mcpserver/session_test.go`):
+
+| case | what the handler sees |
+|---|---|
+| one default client | `""` |
+| two default clients | `""` and `""` — **indistinguishable** |
+| two clients supplying their own header | `session-alpha`, `session-beta` — distinguishable |
+
+**So the answer is not "impossible" but "possible only if the client cooperates,
+and silently degenerate if it does not".** That second half is the dangerous one
+and is why the falsification step exists: an identity that is the same for
+everybody is worse than none, because a column fills, a report groups by it, and
+every session appears to be one session.
+
+**What this means for T2.** The migration alone cannot work — adding a column to
+`search_events` records an empty string for every row until something supplies a
+value. T2 must either (a) require the client to send `Mcp-Session-Id` and record
+absence honestly rather than as a shared bucket, or (b) leave the transport
+stateless and be withdrawn. The ADR already names withdrawal as acceptable: T3
+has shipped and the harmful behaviour is gone.
+
+**Recorded as a regression guard, not just prose.** The tests assert the
+emptiness, so a future switch away from stateless mode — which would make
+attribution possible — announces itself with a red test rather than being
+discovered by someone wondering why the column is still blank.
+
 The mechanism is one missing column.
 
 - `db/migrations/00021_search_events.sql` records `team_id`, `wing`, `room`, `query`, `candidates`, `hits`, `top_score`, `reranked`, `created_at`. **There is no session identity.**

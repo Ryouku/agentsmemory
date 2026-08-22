@@ -34,11 +34,15 @@ The whole ADR rests on it. If no identity is reachable and none can be supplied,
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
-  gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
+  # NOT `gofmt -l | grep -q . && exit 1`: when gofmt is CLEAN grep exits 1, the &&
+  # list exits 1, and `set -e` aborts the whole script — a green tree failing the
+  # gate for being green. Third occurrence of this shape in the corpus.
+  if [ -n "$(gofmt -l cmd internal)" ]; then echo "gofmt"; exit 1; fi
   go vet ./...
-  go test ./internal/mcpserver/ -run "TestSearchHandlerCanNameItsSession|TestTwoSessionsGetDifferentIdentities" -count=1 -v 2>&1 | tee /tmp/a18t1.out
+  go test ./internal/mcpserver/ -run "TestSearchHandlerCanNameItsSession|TestTwoSessionsGetDifferentIdentities|TestProductionStillRunsStateless" -count=1 -v 2>&1 | tee /tmp/a18t1.out
   grep -q -- "--- PASS: TestSearchHandlerCanNameItsSession" /tmp/a18t1.out
   grep -q -- "--- PASS: TestTwoSessionsGetDifferentIdentities" /tmp/a18t1.out
+  grep -q -- "--- PASS: TestProductionStillRunsStateless" /tmp/a18t1.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a18t1.out
   grep -qE "session identity: (available|unavailable)" docs/adr/ADR-018-a-recall-belongs-to-the-session-that-ran-it.md
   go test ./internal/mcpserver/ -count=1'
@@ -84,6 +88,24 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and report if the identity exists but is stable across a client RESTART — that would attribute a week of one machine's work to one "session" and needs a different key.
 
+## Mutation Log
+
+- 2026-08-22 · d66e364* · mutant killed · exit 1 · `cmd/server/main.go` · a stateful transport MINTS session ids, making attribution possible and falsifying the finding — the premise test must notice
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · d66e364* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  === RUN   TestSearchHandlerCanNameItsSession
+  --- PASS: TestSearchHandlerCanNameItsSession (0.01s)
+  === RUN   TestTwoSessionsGetDifferentIdentities
+  === RUN   TestTwoSessionsGetDifferentIdentities/two_default_clients_are_indistinguishable
+  === RUN   TestTwoSessionsGetDifferentIdentities/a_client_that_supplies_its_own_id_is_distinguishable
+  --- PASS: TestTwoSessionsGetDifferentIdentities (0.00s)
+      --- PASS: TestTwoSessionsGetDifferentIdentities/two_default_clients_are_indistinguishable (0.00s)
+      --- PASS: TestTwoSessionsGetDifferentIdentities/a_client_that_supplies_its_own_id_is_distinguishable (0.00s)
+  PASS
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.027s
+  ```
+- 2026-08-22 · d66e364* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-22 · d66e364* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
