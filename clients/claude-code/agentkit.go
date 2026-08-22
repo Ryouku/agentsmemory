@@ -11,6 +11,7 @@ const (
 	agentClaude = "claude"
 	agentCodex  = "codex"
 	agentPi     = "pi"
+	agentCursor = "cursor"
 	agentBoth   = "both"
 	agentAll    = "all"
 )
@@ -55,6 +56,13 @@ type agentKit struct {
 	// them. Verified against codex-cli 0.144.5, whose ~/.codex/agents holds .toml.
 	agentsDir     string
 	agentAssetExt string
+
+	// rulesFile is where an agent that has no memory file takes its always-on
+	// protocol from, relative to the config dir. Cursor is that case: it has no
+	// CLAUDE.md/AGENTS.md equivalent and instead loads every rules/*.mdc marked
+	// `alwaysApply: true`. Empty for the agents that merge a managed block into a
+	// memory file instead — the two are alternatives, never both.
+	rulesFile string
 
 	// supportsImport reports whether the memory file can pull in a sibling file
 	// by reference. Claude Code resolves `@file.md` imports, so it gets a
@@ -187,4 +195,31 @@ func resolveAgentKit(name string) (agentKit, error) {
 // readable in the kit; FromSlash turns it into the host's separator.
 func (k agentKit) globalConfigDir(home string) string {
 	return filepath.Join(home, filepath.FromSlash(k.globalDir))
+}
+
+// cursorKit is the Cursor layout, and it is mostly a list of things Cursor does
+// not have. Every empty field below is a MEASURED absence on a real install
+// (2026-08-22, cursor-agent on the reference machine), not an omission:
+//
+//   - configEnv: the binary reads CURSOR_API_KEY and CURSOR_INVOKED_AS and no
+//     config-dir variable, so ~/.cursor cannot be relocated and --sandbox is
+//     refused rather than writing a kit nothing will open.
+//   - commandsDir: there is no ~/.cursor/commands.
+//   - memoryFile: there is no CLAUDE.md/AGENTS.md equivalent; the protocol goes
+//     in rules/agentsmemory.mdc with `alwaysApply: true`.
+//   - hooksFile: ~/.cursor/hooks exists and its events, payloads and registration
+//     file were never established. Registering against unverified events would
+//     ship a branch that may never fire and look complete doing it (ADR-017 T3).
+//
+// What it does have: agents/ in the SAME markdown dialect Claude reads, and no
+// CLI that registers an MCP server — `cursor-agent mcp` offers login, list,
+// list-tools, enable and disable, so the registration writes mcp.json directly.
+var cursorKit = agentKit{
+	name:          agentCursor,
+	bin:           "cursor-agent",
+	globalDir:     ".cursor",
+	agentsDir:     "agents",
+	agentAssetExt: ".md",
+	rulesFile:     "rules/agentsmemory.mdc",
+	commandHint:   "the protocol loads itself — Cursor has no slash-command directory",
 }

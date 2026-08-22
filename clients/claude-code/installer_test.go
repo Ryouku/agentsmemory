@@ -1376,3 +1376,66 @@ func TestCodexGetsItsOwnDialect(t *testing.T) {
 		t.Errorf("pi has no subagent system but got %v", entries)
 	}
 }
+
+// TestAgentWithoutACommandsDirWritesNoCommands pins that an empty capability means
+// "this agent has none", not "join the path with an empty segment".
+//
+// filepath.Join(dir, "", "M.md") is dir/M.md, so an unguarded write puts the slash
+// commands loose in the config root — files Cursor never reads, in a directory
+// the user shares with a product we did not write. The assertion is that NOTHING
+// unexpected lands, rather than that one named file is absent, because the failure
+// is a whole class of writes rather than one.
+func TestAgentWithoutACommandsDirWritesNoCommands(t *testing.T) {
+	inst, _, dir := newTestInstallerFor(t, cursorKit, false)
+	if err := inst.writeAssets(); err != nil {
+		t.Fatalf("write assets: %v", err)
+	}
+	for _, name := range commandAssets {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s was written into the config root because commandsDir is empty", name)
+		}
+	}
+	// Whatever DID land must be something the kit declares. Cursor's kit names an
+	// agents dir and a rules file and nothing else.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read config dir: %v", err)
+	}
+	allowed := map[string]bool{"agents": true, "rules": true}
+	for _, e := range entries {
+		if !allowed[e.Name()] {
+			t.Errorf("unexpected %q in a Cursor config dir: the kit declares no capability that "+
+				"writes it, so it is a file nothing reads", e.Name())
+		}
+	}
+}
+
+// TestSandboxIsRefusedForAnAgentThatCannotRelocate pins that an install which
+// cannot be honoured fails instead of reporting success.
+//
+// --sandbox works by pinning the agent's config-dir variable at launch. Cursor
+// exposes none, so a sandbox install writes a complete, correct kit into a
+// directory no Cursor will ever open — and prints the same green output as one
+// that worked. Silence is the defect; the error is the feature.
+func TestSandboxIsRefusedForAnAgentThatCannotRelocate(t *testing.T) {
+	for _, tc := range []struct{ name, sandbox, configDir string }{
+		{"--sandbox", "acme", ""},
+		{"--config-dir", "", "/tmp/somewhere"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, err := resolveInstallTarget(cursorKit, false, false, tc.sandbox, tc.configDir, "/home/u")
+			if err == nil {
+				t.Fatalf("%s with --agent cursor was accepted; the kit would be written where no "+
+					"Cursor looks, and the install would report success", tc.name)
+			}
+			if !strings.Contains(err.Error(), "cursor") {
+				t.Errorf("the refusal does not name the agent it applies to: %v", err)
+			}
+		})
+	}
+
+	// The agents that CAN relocate are unaffected.
+	if _, _, _, err := resolveInstallTarget(claudeKit, false, false, "acme", "", "/home/u"); err != nil {
+		t.Errorf("--sandbox was refused for claude, which relocates fine: %v", err)
+	}
+}
