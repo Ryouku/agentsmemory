@@ -45,7 +45,7 @@ import "embed"
 // system, so that one extension both re-registers the remote agentsmemory tools
 // natively and fires the end-of-turn memory checkpoint.
 //
-//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh hooks/agentsmemory-session-end-hook.sh hooks/agentsmemory-subagent-start-hook.sh agents/*.md bootstrap.md extensions/agentsmemory.ts
+//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh hooks/agentsmemory-session-end-hook.sh hooks/agentsmemory-subagent-start-hook.sh agents/*.md agents/*.toml bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS
 
 // commandAssets are the slash-command files the kit installs, in the order they
@@ -53,8 +53,11 @@ var assets embed.FS
 // one list so a command added here reaches every install path at once.
 var commandAssets = []string{"M.md", "am.md", "load-skill.md"}
 
-// agentAssets are the subagent definitions the kit installs into the agent's
-// agents/ directory. Claude only — it is the kit with an agents/ directory.
+// agentAssets are the subagent definitions the kit installs, as BASE NAMES: the
+// extension comes from the kit, because Claude reads markdown with a `tools:`
+// front-matter allowlist and codex reads TOML with `enabled_tools`. Every name
+// here must exist in every dialect an installing kit asks for, which
+// TestEveryShippedAgentDefinitionExistsInEveryDialect asserts.
 //
 // The list is explicit rather than a directory walk because assetSource is
 // ReadFile-only: `update-skill` fetches the same names over HTTP, where there is
@@ -62,7 +65,7 @@ var commandAssets = []string{"M.md", "am.md", "load-skill.md"}
 // against the directory, because "added the file, forgot the list" is the exact
 // shape that shipped agentsmemory-researcher.md embedded in the binary and
 // written to no disk anywhere.
-var agentAssets = []string{"agentsmemory-researcher.md"}
+var agentAssets = []string{"agentsmemory-researcher"}
 
 // assetSource supplies installable assets by their embed-relative name, e.g.
 // "commands/M.md" or "bootstrap.md". embed.FS satisfies it already, so the

@@ -913,21 +913,27 @@ func TestSubagentContextNeverGuessesTheWing(t *testing.T) {
 	}
 }
 
-// TestShippedAgentDefinitionsNameTheMemoryTools pins the half of ADR-017 T2 that
+// TestShippedAgentDefinitionsNameTheMemoryTools pins the half of ADR-017 that
 // does not depend on compliance at all.
 //
-// An agent definition with a `tools:` allowlist can only call what the list names.
-// A subagent so defined cannot reach memory HOWEVER it is instructed — the
+// An agent definition with a tool allowlist can only call what the list names. A
+// subagent so defined cannot reach memory HOWEVER it is instructed — the
 // injection measured at 5/5 in T1 would be wasted on it, silently, because the
-// instruction arrives and the tool does not exist to obey it. This is the one part
-// of the ADR that changes what is POSSIBLE rather than what is asked for.
+// instruction arrives and the tool does not exist to obey it. This is the one
+// part of the ADR that changes what is POSSIBLE rather than what is asked for.
+//
+// Both dialects are checked, because the allowlist is spelled differently in
+// each and only one of them was ever verified by hand: Claude's markdown lists
+// `mcp__agentsmemory__am_search` under `tools:`, codex's TOML lists the BARE
+// name `am_search` in `enabled_tools`. Getting that wrong produces a definition
+// the agent accepts and that grants nothing.
 //
 // The check is deliberately not vacuous: it fails if the directory is missing or
 // empty, so "zero definitions inspected" cannot be mistaken for "every definition
 // passed" — which is exactly what a glob pointed at the wrong path produces.
 func TestShippedAgentDefinitionsNameTheMemoryTools(t *testing.T) {
 	dir := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "agents")
-	entries, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	entries, err := filepath.Glob(filepath.Join(dir, "*"))
 	if err != nil {
 		t.Fatalf("glob agents: %v", err)
 	}
@@ -936,20 +942,87 @@ func TestShippedAgentDefinitionsNameTheMemoryTools(t *testing.T) {
 			"indistinguishable from every definition passing, which is how a check " +
 			"pointed at the wrong path reports success forever")
 	}
+	seen := map[string]int{}
 	for _, path := range entries {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		text := string(body)
-		if !strings.Contains(text, "tools:") {
-			continue // no allowlist means every tool is available; nothing to assert
+		text, base, ext := string(body), filepath.Base(path), filepath.Ext(path)
+		seen[ext]++
+		switch ext {
+		case ".md":
+			if !strings.Contains(text, "tools:") {
+				continue // no allowlist means every tool is available
+			}
+			if !strings.Contains(text, "mcp__agentsmemory__am_search") {
+				t.Errorf("%s restricts tools but does not name mcp__agentsmemory__am_search: a "+
+					"subagent under this definition cannot recall however it is instructed", base)
+			}
+		case ".toml":
+			if !strings.Contains(text, "enabled_tools") {
+				continue
+			}
+			// Bare names, NOT the mcp__server__tool form: codex scopes the
+			// allowlist by putting it under [mcp_servers.<name>]. Only the
+			// enabled_tools LINE is inspected — the file's comments contrast the
+			// two spellings on purpose, and a whole-file match would reject the
+			// explanation along with the mistake.
+			allow := ""
+			for _, line := range strings.Split(text, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "enabled_tools") {
+					allow = line
+					break
+				}
+			}
+			if allow == "" {
+				t.Errorf("%s mentions enabled_tools but has no enabled_tools assignment", base)
+				continue
+			}
+			if !strings.Contains(allow, `"am_search"`) {
+				t.Errorf("%s restricts enabled_tools but does not name am_search: %s", base, allow)
+			}
+			if strings.Contains(allow, "mcp__") {
+				t.Errorf("%s uses Claude's mcp__server__tool naming in a codex enabled_tools "+
+					"list; codex expects bare tool names and grants nothing for these: %s",
+					base, allow)
+			}
+		default:
+			t.Errorf("%s is in an unrecognised dialect (%s) — no kit reads it, so it ships "+
+				"in the binary and is installed nowhere", base, ext)
 		}
-		if !strings.Contains(text, "am_search") {
-			t.Errorf("%s restricts tools but does not name am_search: a subagent dispatched "+
-				"under this definition cannot recall however it is instructed, and the "+
-				"instruction will arrive anyway", filepath.Base(path))
+	}
+	for _, ext := range []string{".md", ".toml"} {
+		if seen[ext] == 0 {
+			t.Errorf("no %s definitions were inspected, so that dialect's assertions ran "+
+				"against nothing", ext)
 		}
+	}
+}
+
+// TestEveryShippedAgentDefinitionExistsInEveryDialect pins the cost of shipping
+// the same definition twice: a base name added for one agent and forgotten for
+// the other installs cleanly on the first and fails at read time on the second.
+func TestEveryShippedAgentDefinitionExistsInEveryDialect(t *testing.T) {
+	root := repoRootForHooks(t)
+	kits := []agentKit{claudeKit, codexKit, piKit}
+	checked := 0
+	for _, kit := range kits {
+		if kit.agentsDir == "" {
+			continue // no subagent system; nothing to ship
+		}
+		for _, name := range agentAssets {
+			rel := filepath.Join("clients", "claude-code", kit.agentsDir, name+kit.agentAssetExt)
+			if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+				t.Errorf("%s installs %s but %s is missing: the install fails at ReadFile, after "+
+					"it has already written half a kit", kit.name, name, rel)
+			}
+			checked++
+		}
+	}
+	if checked < 2 {
+		t.Fatalf("checked %d definitions across all kits — fewer than two dialects means this "+
+			"test is asserting almost nothing", checked)
 	}
 }
 
@@ -1007,7 +1080,8 @@ func TestInstallerInstallsAgentDefinitions(t *testing.T) {
 			"list here is indistinguishable from every definition installing")
 	}
 	for _, name := range agentAssets {
-		path := filepath.Join(dir, agentsDirName, name)
+		path := inst.agentDefinitionPath(name)
+		_ = dir
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("agent definition %s was not installed: %v — it exists in the binary and "+
@@ -1026,8 +1100,8 @@ func TestInstallerInstallsAgentDefinitions(t *testing.T) {
 // defect above: a definition added to the repository but not to agentAssets is
 // embedded, shipped, and installed nowhere, in silence.
 func TestEveryShippedAgentDefinitionIsInstalled(t *testing.T) {
-	dir := filepath.Join(repoRootForHooks(t), "clients", "claude-code", agentsDirName)
-	found, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	dir := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "agents")
+	found, err := filepath.Glob(filepath.Join(dir, "*"))
 	if err != nil {
 		t.Fatalf("glob agents: %v", err)
 	}
@@ -1040,9 +1114,11 @@ func TestEveryShippedAgentDefinitionIsInstalled(t *testing.T) {
 		listed[name] = true
 	}
 	for _, path := range found {
-		if name := filepath.Base(path); !listed[name] {
+		// agentAssets holds BASE names; the dialect extension comes from the kit.
+		base := filepath.Base(path)
+		if name := strings.TrimSuffix(base, filepath.Ext(base)); !listed[name] {
 			t.Errorf("%s is shipped in the repository but not in agentAssets, so no install "+
-				"writes it: it would be embedded in the binary and present on no disk", name)
+				"writes it: it would be embedded in the binary and present on no disk", base)
 		}
 	}
 }
@@ -1076,7 +1152,9 @@ func TestRedeployKitCheckCoversEveryInstalledArtifact(t *testing.T) {
 		want = append(want, "clients/claude-code/commands/"+name)
 	}
 	for _, name := range agentAssets {
-		want = append(want, "clients/claude-code/"+agentsDirName+"/"+name)
+		for _, ext := range []string{".md", ".toml"} {
+			want = append(want, "clients/claude-code/agents/"+name+ext)
+		}
 	}
 	for _, asset := range []string{hookAsset, verifyHookAsset, sessionEndHookAsset, subagentHookAsset} {
 		want = append(want, "clients/claude-code/"+asset)
@@ -1211,4 +1289,90 @@ func settingsBackups(t *testing.T, dir string) []string {
 		t.Fatalf("glob backups: %v", err)
 	}
 	return found
+}
+
+// TestInstalledAgentDefinitionNamesTheRealEndpoint pins the substitution.
+//
+// codex names the MCP server INSIDE the agent definition rather than inheriting
+// the global registration, and that URL is not a constant: a self-hosted install
+// points at localhost and a hosted one at the service. Shipping the placeholder
+// verbatim — or a hard-coded localhost — produces an agent whose memory tools
+// point nowhere, with no error saying so. That is the same defect class as an
+// unreachable asset, one layer down: installed, well-formed, and inert.
+func TestInstalledAgentDefinitionNamesTheRealEndpoint(t *testing.T) {
+	const endpoint = "https://memory.example.test/mcp"
+	inst, _, _ := newTestInstaller(t, false)
+	inst.kit = codexKit
+	inst.agentBin = codexKit.bin
+	inst.mcpURL = endpoint
+	if err := inst.writeAgentDefinitions(); err != nil {
+		t.Fatalf("write agent definitions: %v", err)
+	}
+
+	checked := 0
+	for _, name := range agentAssets {
+		body, err := os.ReadFile(inst.agentDefinitionPath(name))
+		if err != nil {
+			t.Fatalf("read installed %s: %v", name, err)
+		}
+		text := string(body)
+		if strings.Contains(text, mcpURLPlaceholder) {
+			t.Errorf("%s was installed with the placeholder still in it, so its memory tools "+
+				"point at a URL that does not exist", name)
+		}
+		if !strings.Contains(text, endpoint) {
+			t.Errorf("%s does not name the endpoint this install registered (%s)", name, endpoint)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no definitions were inspected, so this test asserts nothing")
+	}
+}
+
+// TestCodexGetsItsOwnDialect pins that the codex install writes TOML and the
+// Claude install writes markdown, from the same base name.
+//
+// The two agents share a directory NAME and disagree about everything in it. An
+// install that wrote Claude's markdown into ~/.codex/agents would leave a file
+// codex cannot parse, and the failure surfaces as a subagent that simply has no
+// memory tools.
+func TestCodexGetsItsOwnDialect(t *testing.T) {
+	for _, tc := range []struct {
+		kit                 agentKit
+		wantExt, wantMarker string
+	}{
+		{claudeKit, ".md", "mcp__agentsmemory__am_search"},
+		{codexKit, ".toml", "enabled_tools"},
+	} {
+		t.Run(tc.kit.name, func(t *testing.T) {
+			inst, _, dir := newTestInstaller(t, false)
+			inst.kit = tc.kit
+			inst.agentBin = tc.kit.bin
+			if err := inst.writeAgentDefinitions(); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			path := filepath.Join(dir, tc.kit.agentsDir, agentAssets[0]+tc.wantExt)
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s install did not write %s: %v", tc.kit.name, path, err)
+			}
+			if !strings.Contains(string(body), tc.wantMarker) {
+				t.Errorf("%s definition does not contain %q, so it is the wrong dialect",
+					tc.kit.name, tc.wantMarker)
+			}
+		})
+	}
+
+	// pi has no subagent system; writing definitions into its config dir would be
+	// litter, and the guard must be the kit rather than a name comparison.
+	inst, _, dir := newTestInstaller(t, false)
+	inst.kit = piKit
+	inst.agentBin = piKit.bin
+	if err := inst.writeAgentDefinitions(); err != nil {
+		t.Fatalf("pi write: %v", err)
+	}
+	if entries, _ := filepath.Glob(filepath.Join(dir, "agents", "*")); len(entries) != 0 {
+		t.Errorf("pi has no subagent system but got %v", entries)
+	}
 }

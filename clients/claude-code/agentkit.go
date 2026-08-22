@@ -42,6 +42,20 @@ type agentKit struct {
 	// so its end-of-turn nudge lives in the extension we install instead.
 	hooksFile string
 
+	// agentsDir is the subdir under the config dir that holds subagent
+	// definitions, empty for an agent with no subagent system.
+	//
+	// agentAssetExt is the DIALECT that directory expects, and the two agents
+	// that have one do not agree: Claude reads markdown with YAML front matter
+	// and a `tools:` allowlist, codex reads TOML with `developer_instructions`
+	// and an `enabled_tools` array under an `[mcp_servers.…]` table. The same
+	// definition therefore ships twice, once per dialect, rather than once with a
+	// converter — the two are different enough that a converter would be a second
+	// thing to get wrong, and both are checked into the tree where a human reads
+	// them. Verified against codex-cli 0.144.5, whose ~/.codex/agents holds .toml.
+	agentsDir     string
+	agentAssetExt string
+
 	// supportsImport reports whether the memory file can pull in a sibling file
 	// by reference. Claude Code resolves `@file.md` imports, so it gets a
 	// one-line import of the protocol; codex has no import mechanism in
@@ -70,6 +84,8 @@ var claudeKit = agentKit{
 	commandsDir:    "commands",
 	memoryFile:     "CLAUDE.md",
 	hooksFile:      "settings.json",
+	agentsDir:      "agents",
+	agentAssetExt:  ".md",
 	supportsImport: true,
 	commandHint:    "/M",
 	// Claude Code stores its OAuth credentials in the OS keychain on macOS and in
@@ -88,6 +104,10 @@ var codexKit = agentKit{
 	commandsDir: "prompts",
 	memoryFile:  "AGENTS.md",
 	hooksFile:   "hooks.json",
+	// codex reads ~/.codex/agents/*.toml — a different dialect, same directory
+	// name. pi gets neither: it has no subagent system to define agents for.
+	agentsDir:     "agents",
+	agentAssetExt: ".toml",
 	// AGENTS.md has no import directive — codex reads the file itself, so the
 	// protocol has to live in the managed block rather than beside it.
 	supportsImport: false,

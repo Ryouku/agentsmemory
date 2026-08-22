@@ -205,7 +205,8 @@ if command -v aiagentmemory >/dev/null 2>&1; then
     "agentsmemory-verify-hook.sh:clients/claude-code/hooks/agentsmemory-verify-hook.sh" \
     "agentsmemory-session-end-hook.sh:clients/claude-code/hooks/agentsmemory-session-end-hook.sh" \
     "agentsmemory-subagent-start-hook.sh:clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh" \
-    "agents/agentsmemory-researcher.md:clients/claude-code/agents/agentsmemory-researcher.md"; do
+    "agents/agentsmemory-researcher.md:clients/claude-code/agents/agentsmemory-researcher.md" \
+    "agents/agentsmemory-researcher.toml:clients/claude-code/agents/agentsmemory-researcher.toml"; do
     inst="$cfg/${pair%%:*}"; src="${pair##*:}"
     [ -f "$inst" ] || continue           # not installed is not stale
     if ! diff -q "$inst" "$src" >/dev/null 2>&1; then

@@ -575,9 +575,14 @@ func (i *Installer) writeAssets() error {
 		}
 		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
 
-		if err := i.writeAgentDefinitions(); err != nil {
-			return err
-		}
+	}
+
+	// NOT inside the claude-only block above: codex reads <config>/agents/*.toml,
+	// so the one part of ADR-017 that changes what is POSSIBLE rather than what is
+	// asked applies to both. The kit says whether there is a directory and which
+	// dialect it wants.
+	if err := i.writeAgentDefinitions(); err != nil {
+		return err
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
@@ -585,13 +590,17 @@ func (i *Installer) writeAssets() error {
 	return nil
 }
 
-// agentsDirName is where Claude Code reads subagent definitions from, relative to
-// the config dir.
-const agentsDirName = "agents"
+// mcpURLPlaceholder is what a shipped agent definition carries where the MCP
+// endpoint goes. codex names the server inside the definition rather than
+// inheriting the global registration, and that URL is not a constant: a
+// self-hosted install points at localhost, a hosted one at the service. Left
+// unsubstituted it produces an agent whose memory tools point nowhere, silently.
+const mcpURLPlaceholder = "__AGENTSMEMORY_MCP_URL__"
 
-// agentDefinitionPath is where a shipped subagent definition is installed.
+// agentDefinitionPath is where a shipped subagent definition is installed, in the
+// dialect this agent reads.
 func (i *Installer) agentDefinitionPath(name string) string {
-	return filepath.Join(i.targetDir, agentsDirName, name)
+	return filepath.Join(i.targetDir, i.kit.agentsDir, name+i.kit.agentAssetExt)
 }
 
 // writeAgentDefinitions installs the shipped subagent definitions.
@@ -610,15 +619,22 @@ func (i *Installer) agentDefinitionPath(name string) string {
 // against a file no install ever produced — the "exercises the component rather
 // than the selection" shape this repository has now shipped five times.
 func (i *Installer) writeAgentDefinitions() error {
+	if i.kit.agentsDir == "" {
+		return nil // pi has no subagent system to define agents for
+	}
 	for _, name := range agentAssets {
-		data, err := i.source().ReadFile(agentsDirName + "/" + name)
+		asset := i.kit.agentsDir + "/" + name + i.kit.agentAssetExt
+		data, err := i.source().ReadFile(asset)
 		if err != nil {
 			return err
 		}
+		// The endpoint the definition names must be the one this install just
+		// registered, not the one that happened to be in the checked-in file.
+		data = []byte(strings.ReplaceAll(string(data), mcpURLPlaceholder, i.mcpURL))
 		if err := i.writeFile(i.agentDefinitionPath(name), data, 0o644); err != nil {
 			return err
 		}
-		i.ok("agent %s", name)
+		i.ok("agent %s", filepath.Base(i.agentDefinitionPath(name)))
 	}
 	return nil
 }
