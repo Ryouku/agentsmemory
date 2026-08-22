@@ -220,3 +220,11 @@ func TestSubagentStartHookFailsOpen(t *testing.T) {
 			"dispatch over bookkeeping (stdout was %q)", code, out)
 	}
 }
+
+// runSubagentHookWithEnv is runSubagentHook's stdout-only sibling, used by the
+// installer tests that care about the context's CONTENT rather than its exit code.
+func runSubagentHookWithEnv(t *testing.T, env ...string) string {
+	t.Helper()
+	out, _ := runSubagentHook(t, env...)
+	return out
+}

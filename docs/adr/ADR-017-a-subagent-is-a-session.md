@@ -47,6 +47,16 @@ not apply. Instruction works; PLACEMENT is what was missing. T2 (make the
 injection standard through the installer) is justified as designed, and T3 keeps
 its purpose rather than becoming the only mechanism.
 
+**A bound T2 found, which the injection cannot cross.** An agent definition with a
+`tools:` allowlist can only call what the list names, so a subagent defined that
+way cannot recall however it is instructed — the instruction arrives and the tool
+does not exist to obey it. This repository ships one definition and it names the
+`am_*` tools; the reference machine carries three from another project whose
+allowlists name none, and those are not this ADR's to edit. The injection is
+therefore effective for `general-purpose` subagents (which carry the full tool
+set, measured) and inert for restricted definitions elsewhere. That half is a
+packaging problem in whoever ships the definition, not a compliance one.
+
 **Three limits, stated because the numbers are small and clean enough to be
 over-read.**
 

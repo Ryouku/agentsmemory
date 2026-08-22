@@ -22,6 +22,15 @@ const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
 // sessionEndHookAsset is the embedded SessionEnd hook: the closing recall report.
 const sessionEndHookAsset = "hooks/agentsmemory-session-end-hook.sh"
 
+// subagentHookAsset is the embedded SubagentStart hook: it puts the recall
+// instruction NEXT TO the subagent's task.
+//
+// It exists because ADR-017 T1 measured 5/5 subagents recalling with it and 0/5
+// without — on a control arm that already carried the whole protocol, the
+// bootstrap and this repo's hard gate, verbatim. Placement, not instruction, was
+// the gap, and a mechanism that decisive should not need hand-registration.
+const subagentHookAsset = "hooks/agentsmemory-subagent-start-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -35,6 +44,9 @@ const (
 	// and for the same reason: flat in the config dir, so the registered command
 	// is a stable path a user can read in settings.json.
 	verifyHookFile = "agentsmemory-verify-hook.sh"
+
+	// subagentHookFile is where the SubagentStart hook lands, beside the others.
+	subagentHookFile = "agentsmemory-subagent-start-hook.sh"
 
 	// sessionEndHookFile is where the SessionEnd hook lands.
 	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
@@ -545,6 +557,15 @@ func (i *Installer) writeAssets() error {
 		}
 		i.ok("hook %s", filepath.Base(i.verifyHookPath()))
 
+		subHook, err := i.source().ReadFile(subagentHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.subagentHookPath(), subHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.subagentHookPath()))
+
 		endHook, err := i.source().ReadFile(sessionEndHookAsset)
 		if err != nil {
 			return err
@@ -601,6 +622,11 @@ func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFi
 
 // verifyHookPath is where the SessionStart hook is installed.
 func (i *Installer) verifyHookPath() string { return filepath.Join(i.targetDir, verifyHookFile) }
+
+// subagentHookPath is where the SubagentStart hook is installed.
+func (i *Installer) subagentHookPath() string {
+	return filepath.Join(i.targetDir, subagentHookFile)
+}
 
 // sessionEndHookPath is where the SessionEnd hook is installed.
 func (i *Installer) sessionEndHookPath() string {
@@ -710,6 +736,13 @@ func (i *Installer) registerVerifyHook() error {
 	}
 
 	endCmd := "bash " + i.sessionEndHookPath()
+	subCmd := "bash " + i.subagentHookPath()
+	subChanged, err := ensureHook(hooksFile, "SubagentStart", subCmd, foreignHookPredicate(subCmd))
+	if err != nil {
+		return err
+	}
+	_ = subChanged
+
 	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
 	if err != nil {
 		return err

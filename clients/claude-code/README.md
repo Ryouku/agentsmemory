@@ -69,6 +69,10 @@ below), and `--agent codex` / `--agent both` to install for codex as well (see
   the config dir's `CLAUDE.md` via a managed `@agentsmemory-bootstrap.md` import.
   Claude Code loads `$CLAUDE_CONFIG_DIR/CLAUDE.md` as user memory, so the
   memory-first workflow applies **every session** — you never have to type `/am`.
+  Subagents too: a `SubagentStart` hook puts the recall instruction next to the
+  dispatched task. That is not redundant with the protocol above it — measured on
+  a 449-memory palace, subagents receiving the full protocol and nothing else
+  recalled in **0 of 5** dispatches, and **5 of 5** with the injection.
   The import is merged idempotently: an existing `CLAUDE.md` is preserved and
   backed up, and only the one managed block is added or updated.
 - The **agentsmemory MCP** — the remote Streamable-HTTP server at

@@ -37,13 +37,18 @@ Every subagent dispatched on a machine with agentsmemory installed starts with i
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
-  gofmt -l clients | grep -q . && { echo "gofmt"; exit 1; }
+  # NOT `gofmt -l | grep -q . && exit 1`: when gofmt is CLEAN grep exits 1, the &&
+  # list exits 1, and `set -e` aborts — a green tree failing its gate for being
+  # green. Fourth occurrence of this shape in this corpus.
+  if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
+  apk add --no-cache bash >/dev/null
   go vet ./...
-  go test ./clients/... -run "TestInstallerRegistersSubagentStart|TestSubagentContextNamesTheWing|TestSubagentContextStaysShort|TestShippedAgentDefinitionsNameTheMemoryTools" -count=1 -v 2>&1 | tee /tmp/a17t2.out
+  go test ./clients/... -run "TestInstallerRegistersSubagentStart|TestSubagentContextNamesTheWing|TestSubagentContextStaysShort|TestSubagentContextNeverGuessesTheWing|TestShippedAgentDefinitionsNameTheMemoryTools" -count=1 -v 2>&1 | tee /tmp/a17t2.out
   grep -q -- "--- PASS: TestInstallerRegistersSubagentStart" /tmp/a17t2.out
   grep -q -- "--- PASS: TestSubagentContextNamesTheWing" /tmp/a17t2.out
   grep -q -- "--- PASS: TestSubagentContextStaysShort" /tmp/a17t2.out
   grep -q -- "--- PASS: TestShippedAgentDefinitionsNameTheMemoryTools" /tmp/a17t2.out
+  grep -q -- "--- PASS: TestSubagentContextNeverGuessesTheWing" /tmp/a17t2.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a17t2.out
   go test ./... -count=1'
 ```
@@ -93,6 +98,23 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 Stop and ask if Claude Code does not deliver `additionalContext` from `SubagentStart` into the subagent's context — T1 should have caught that, and if it did not, the mechanism is wrong rather than the wording.
 
+## Mutation Log
+
+- 2026-08-22 · 23ee73d* · mutant killed · exit 1 · `clients/claude-code/installer.go` · the SubagentStart registration would point at nothing, so the injection T1 measured at 5/5 silently never runs on any installed machine
+
 ## Verification Log
 
-<Tool-written by adr-verify. Do not hand-edit.>
+- 2026-08-22 · 23ee73d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec	0.020s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.006s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	1.835s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.012s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.242s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.014s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.007s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.004s
+  FAIL
+  ```
+- 2026-08-22 · 23ee73d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

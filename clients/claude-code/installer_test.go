@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -812,4 +813,141 @@ func TestWingReachesEveryClientOrSaysWhyNot(t *testing.T) {
 			t.Fatalf("codex install must warn that the wing is dropped; got %q", out.String())
 		}
 	})
+}
+
+// TestInstallerRegistersSubagentStart pins that the injector is installed and
+// registered by the installer, not by hand.
+//
+// T1 measured 5/5 subagents recalling with the injection and 0/5 without it, on a
+// control arm that already carried the entire protocol. A mechanism that decisive
+// and only ever hand-registered is a mechanism nobody else gets.
+func TestInstallerRegistersSubagentStart(t *testing.T) {
+	inst, _, dir := newTestInstaller(t, false)
+	if err := inst.run(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, subagentHookFile)); err != nil {
+		t.Errorf("expected %s written: %v", subagentHookFile, err)
+	}
+	want := "bash " + filepath.Join(dir, subagentHookFile)
+	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SubagentStart"), want) {
+		t.Errorf("SubagentStart hook %q not registered — the injection then only exists on "+
+			"machines where someone edited settings.json by hand", want)
+	}
+}
+
+// TestSubagentContextNamesTheWing pins the one piece of orientation a subagent
+// cannot derive for itself cheaply.
+//
+// A recall scoped to the wrong wing returns confident, on-topic, irrelevant
+// results and says nothing about it — measured elsewhere in this repo at 16% of a
+// curated benchmark. Telling the subagent which wing it is in costs one line and
+// removes the failure entirely for the case where it would have guessed.
+func TestSubagentContextNamesTheWing(t *testing.T) {
+	out := runSubagentHookWithEnv(t, "AGENTSMEMORY_SUBAGENT_HOOK=on", "AGENTSMEMORY_WING=wing_acme")
+	if !strings.Contains(out, "wing_acme") {
+		t.Errorf("the injected context does not name the wing it was given:\n%s", out)
+	}
+	if !strings.Contains(out, "am_search") {
+		t.Errorf("the injected context does not name the recall call:\n%s", out)
+	}
+}
+
+// TestSubagentContextStaysShort pins the budget.
+//
+// A subagent has one job and a context window that its dispatcher is paying for.
+// The protocol it already receives is thousands of words and produced zero
+// recalls; restating it here would spend budget to repeat something measured not
+// to work. The ceiling is deliberately tight enough that a future edit which
+// starts re-explaining the protocol fails rather than merely bloats.
+func TestSubagentContextStaysShort(t *testing.T) {
+	out := runSubagentHookWithEnv(t, "AGENTSMEMORY_SUBAGENT_HOOK=on", "AGENTSMEMORY_WING=wing_acme")
+	var env struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("envelope did not parse: %v\n%s", err, out)
+	}
+	const ceiling = 1200
+	if n := len(env.HookSpecificOutput.AdditionalContext); n > ceiling {
+		t.Errorf("injected context is %d chars, ceiling %d — a subagent's context is paid for "+
+			"by its dispatcher, and the full protocol it already receives measured 0/5", n, ceiling)
+	}
+}
+
+// TestSubagentContextNeverGuessesTheWing pins the half that running the hook
+// exposed, and that reading it did not.
+//
+// An earlier version derived the wing from the git remote when nothing
+// authoritative was set. On THIS repository the derived name and the one the MCP
+// registration actually writes to differ — so every subagent would have been
+// told, in its first line, a wing that does not exist.
+//
+// The protocol already names the failure: a derived wing that disagrees with the
+// registration "does not move where your memories land, it only makes your report
+// of them wrong". And the guess buys nothing, because a recall that passes no
+// wing is ALREADY scoped correctly server-side. So the rule is: name a wing when
+// told one, say nothing about wings otherwise.
+func TestSubagentContextNeverGuessesTheWing(t *testing.T) {
+	// No AGENTSMEMORY_WING, and the test process runs inside this git repo, so an
+	// earlier version would have derived one here.
+	out := runSubagentHookWithEnv(t, "AGENTSMEMORY_SUBAGENT_HOOK=on")
+	var env struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("envelope did not parse: %v\n%s", err, out)
+	}
+	ctx := env.HookSpecificOutput.AdditionalContext
+	if strings.Contains(ctx, "working in wing_") {
+		t.Errorf("the hook asserted a wing with nothing authoritative to take it from:\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "already scoped") {
+		t.Errorf("with no wing available the context must say recall is already scoped, so the "+
+			"subagent passes no wing rather than inventing one:\n%s", ctx)
+	}
+}
+
+// TestShippedAgentDefinitionsNameTheMemoryTools pins the half of ADR-017 T2 that
+// does not depend on compliance at all.
+//
+// An agent definition with a `tools:` allowlist can only call what the list names.
+// A subagent so defined cannot reach memory HOWEVER it is instructed — the
+// injection measured at 5/5 in T1 would be wasted on it, silently, because the
+// instruction arrives and the tool does not exist to obey it. This is the one part
+// of the ADR that changes what is POSSIBLE rather than what is asked for.
+//
+// The check is deliberately not vacuous: it fails if the directory is missing or
+// empty, so "zero definitions inspected" cannot be mistaken for "every definition
+// passed" — which is exactly what a glob pointed at the wrong path produces.
+func TestShippedAgentDefinitionsNameTheMemoryTools(t *testing.T) {
+	dir := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "agents")
+	entries, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		t.Fatalf("glob agents: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no agent definitions found to inspect — an empty result here is " +
+			"indistinguishable from every definition passing, which is how a check " +
+			"pointed at the wrong path reports success forever")
+	}
+	for _, path := range entries {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, "tools:") {
+			continue // no allowlist means every tool is available; nothing to assert
+		}
+		if !strings.Contains(text, "am_search") {
+			t.Errorf("%s restricts tools but does not name am_search: a subagent dispatched "+
+				"under this definition cannot recall however it is instructed, and the "+
+				"instruction will arrive anyway", filepath.Base(path))
+		}
+	}
 }
