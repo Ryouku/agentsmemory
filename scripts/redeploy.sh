@@ -160,4 +160,62 @@ if [ "$elapsed" -gt 25 ]; then
   echo "    A search that times out returns nothing, which is worse than a bad ranking."
   exit 1
 fi
+# ---------------------------------------------------------------------------
+# The CLIENT half. Everything above proves the SERVER carries the change; none of
+# it says anything about the binary and kit installed on this machine.
+#
+# This exists for the same reason the rest of the script does. The server once ran
+# a 17-hour-old binary through a whole day and nothing noticed; on 2026-08-22 the
+# installed CLI was a day-old build, so the Stop hook embedded in it still printed
+# a "memories to write" list that had been removed from the source, and `/M` still
+# named `mempalace_*` tools that no longer exist. Both were discovered by the
+# defect firing, not by a check.
+#
+# It FAILS rather than warns. A gate whose result is printed and not branched on
+# is decoration, and this one has already been ignored once.
+echo "==> the installed client kit, against this checkout"
+kit_stale=0
+if command -v aiagentmemory >/dev/null 2>&1; then
+  want_rev="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  # sed, not awk: an unescaped $NF is expanded by the SHELL under `set -u`
+  # before awk sees it, and the gate then dies with "NF: unbound variable"
+  # instead of reporting staleness — a check that fails for its own reasons.
+  have_ver="$(aiagentmemory --version 2>/dev/null | sed -n 's/.* //p')"
+  case "$have_ver" in
+    *"$want_rev"*) echo "    binary  $have_ver" ;;
+    *) echo "    binary  STALE: $have_ver, checkout is $want_rev"; kit_stale=1 ;;
+  esac
+
+  # Byte-compare what the installer would lay down against what is there. The
+  # binary embeds these, so a stale binary shows up here too — but a kit that
+  # was never re-installed after a fresh binary shows up ONLY here.
+  cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  for pair in \
+    "commands/M.md:clients/claude-code/commands/M.md" \
+    "commands/am.md:clients/claude-code/commands/am.md" \
+    "commands/load-skill.md:clients/claude-code/commands/load-skill.md" \
+    "agentsmemory-bootstrap.md:clients/claude-code/bootstrap.md" \
+    "agentsmemory-stop-hook.sh:clients/claude-code/hooks/agentsmemory-stop-hook.sh" \
+    "agentsmemory-verify-hook.sh:clients/claude-code/hooks/agentsmemory-verify-hook.sh" \
+    "agentsmemory-session-end-hook.sh:clients/claude-code/hooks/agentsmemory-session-end-hook.sh"; do
+    inst="$cfg/${pair%%:*}"; src="${pair##*:}"
+    [ -f "$inst" ] || continue           # not installed is not stale
+    if ! diff -q "$inst" "$src" >/dev/null 2>&1; then
+      echo "    kit     STALE: ${pair%%:*}"
+      kit_stale=1
+    fi
+  done
+else
+  echo "    (aiagentmemory not on PATH — nothing installed to check)"
+fi
+if [ "$kit_stale" -ne 0 ]; then
+  echo
+  echo "    The server is current and the client is not. That gap is invisible until"
+  echo "    something embedded in the old kit misbehaves, which is how it was found."
+  echo "    Fix:  go build -o \$HOME/.local/bin/aiagentmemory ./clients/claude-code"
+  echo "          aiagentmemory install --agent claude --global --local --yes"
+  echo "    Skip: REDEPLOY_SKIP_KIT_CHECK=1 scripts/redeploy.sh"
+  [ "${REDEPLOY_SKIP_KIT_CHECK:-0}" = "1" ] || exit 1
+fi
+
 echo "==> deployed and verified"
