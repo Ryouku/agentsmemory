@@ -746,6 +746,28 @@ The fix needs a session id on `search_events` and a `session=` filter on `/stats
 change plus a contract change plus a hook change — an ADR, not a patch. Until then the honest
 mitigation is for the hook to stop presenting the list as this session's.
 
+## From ADR-020 (a kit for an agent that drives no CLI)
+
+- **Cursor hooks — the Stop checkpoint and ADR-017's subagent pair** — `~/.cursor/hooks/` exists on
+  the reference machine and its events, payloads and registration file were NOT established.
+  ADR-020 ships no hooks for Cursor rather than registering something plausible, so a Cursor user
+  reads memory and is never prompted to write it — ADR-017's asymmetry, in a new place. Capture a
+  real Cursor hook payload before branching on anything, per ADR-017 T3.
+- **Cursor skills (`~/.cursor/skills`) as a delivery route for centralised team skills** — the
+  directory exists beside `skills-cursor`; neither was examined. `am_load_skill` is the current
+  route and needs no filesystem.
+- **Project-scoped Cursor installs (`.cursor/rules`, `.cursor/mcp.json` inside a repo)** — ADR-020
+  installs globally, matching what the other kits do. Cursor reads a per-repository `.cursor` too,
+  which is the natural home for a `--wing`-scoped registration; the other kits express that through
+  `--sandbox`, which Cursor cannot support because it exposes no config-dir variable.
+- **stdio / `--socket` registration for Cursor** — ADR-020 T2 writes an HTTP entry only. Cursor's
+  `mcp.json` takes `command`/`args` entries as well, so a socket bridge is expressible; nobody has
+  needed it.
+- **Measuring whether a Cursor session actually recalls** — ADR-017 T1 measured Claude subagents
+  from `search_events` with a control arm. The same measurement for Cursor needs per-client
+  attribution, and ADR-018 T2's withdrawal means the server records none. Blocked on the same
+  premise: a red `TestProductionStillRunsStateless`.
+
 ## From ADR-018 (a recall belongs to the session that ran it)
 
 - **Per-session WRITE statistics — drawers filed, facts added** — it is the other half of "is memory
