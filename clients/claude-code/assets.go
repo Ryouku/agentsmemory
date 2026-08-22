@@ -53,6 +53,17 @@ var assets embed.FS
 // one list so a command added here reaches every install path at once.
 var commandAssets = []string{"M.md", "am.md", "load-skill.md"}
 
+// agentAssets are the subagent definitions the kit installs into the agent's
+// agents/ directory. Claude only — it is the kit with an agents/ directory.
+//
+// The list is explicit rather than a directory walk because assetSource is
+// ReadFile-only: `update-skill` fetches the same names over HTTP, where there is
+// nothing to walk. TestEveryShippedAgentDefinitionIsInstalled keeps it honest
+// against the directory, because "added the file, forgot the list" is the exact
+// shape that shipped agentsmemory-researcher.md embedded in the binary and
+// written to no disk anywhere.
+var agentAssets = []string{"agentsmemory-researcher.md"}
+
 // assetSource supplies installable assets by their embed-relative name, e.g.
 // "commands/M.md" or "bootstrap.md". embed.FS satisfies it already, so the
 // embedded kit above is the default implementation.

@@ -189,6 +189,12 @@ if command -v aiagentmemory >/dev/null 2>&1; then
   # Byte-compare what the installer would lay down against what is there. The
   # binary embeds these, so a stale binary shows up here too — but a kit that
   # was never re-installed after a fresh binary shows up ONLY here.
+  # This list is hand-maintained and has already drifted once: the SubagentStart
+  # hook shipped without being added, so the one artifact the kit had just gained
+  # was the one artifact this gate could not see. TestRedeployKitCheckCoversEveryInstalledArtifact
+  # now fails when a hook, command, or agent definition is added to the kit and
+  # not to this list — a gate maintained by intention is the thing this whole
+  # script exists to replace.
   cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   for pair in \
     "commands/M.md:clients/claude-code/commands/M.md" \
@@ -197,7 +203,9 @@ if command -v aiagentmemory >/dev/null 2>&1; then
     "agentsmemory-bootstrap.md:clients/claude-code/bootstrap.md" \
     "agentsmemory-stop-hook.sh:clients/claude-code/hooks/agentsmemory-stop-hook.sh" \
     "agentsmemory-verify-hook.sh:clients/claude-code/hooks/agentsmemory-verify-hook.sh" \
-    "agentsmemory-session-end-hook.sh:clients/claude-code/hooks/agentsmemory-session-end-hook.sh"; do
+    "agentsmemory-session-end-hook.sh:clients/claude-code/hooks/agentsmemory-session-end-hook.sh" \
+    "agentsmemory-subagent-start-hook.sh:clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh" \
+    "agents/agentsmemory-researcher.md:clients/claude-code/agents/agentsmemory-researcher.md"; do
     inst="$cfg/${pair%%:*}"; src="${pair##*:}"
     [ -f "$inst" ] || continue           # not installed is not stale
     if ! diff -q "$inst" "$src" >/dev/null 2>&1; then

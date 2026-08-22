@@ -42,8 +42,12 @@ If it does not, more instruction is the wrong answer: the tools go in the agent 
 test -f clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh &&
 bash -n clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh &&
 echo '{"hook_event_name":"SubagentStart"}' | bash clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh | grep -q additionalContext &&
-grep -qE 'with-injection: [0-9]+ of 5' docs/adr/ADR-017-a-subagent-is-a-session.md &&
-grep -qE 'without-injection: [0-9]+ of 5' docs/adr/ADR-017-a-subagent-is-a-session.md
+# The two counts, as the ADR actually records them. An earlier version of this
+# check grepped 'with-injection: N of 5', which the ADR never contained once the
+# numbers were written up as a table — a gate bound to wording that drifted away
+# from the artifact it guards. These bind to the ROWS, so a missing arm fails.
+grep -qE '^\| treatment \|.*\*\*[0-9]+ / 5\*\*' docs/adr/ADR-017-a-subagent-is-a-session.md &&
+grep -qE '^\| control \|.*\*\*[0-9]+ / 5\*\*' docs/adr/ADR-017-a-subagent-is-a-session.md
 ```
 
 **Human-observed acceptance, with the sign-off named:** the two counts are produced by dispatching real subagents and reading their transcripts. The command above proves the hook exists, parses, emits the right envelope, and that BOTH numbers were recorded — it cannot prove they were honestly measured, and no command can. The reviewer checks the transcripts.
@@ -96,3 +100,4 @@ Stop and report if compliance with injection is not clearly higher than without.
 ## Verification Log
 
 - 2026-08-22 · human-observed · hook written, envelope+fail-open tests green, registered by hand and CONFIRMED FIRING on a live dispatch (5 marker writes for 5 dispatches); measurement 2026-08-22 on a 449-memory palace, compliance counted from search_events not self-report: TREATMENT 5/5 subagents called am_search, CONTROL 0/5 with the injection disabled; every treatment query maps 1:1 to its task; the control arm already carried the ENTIRE protocol (global CLAUDE.md + bootstrap + repo CLAUDE.md/AGENTS.md incl. the hard gate) and produced zero recalls, so placement not instruction was the gap; T1's withdraw-branch does not apply and T2 proceeds as designed; limits: n=5 per arm, arms used different (comparable) tasks, and a codebase-memory SubagentStart hook fired in both
+- 2026-08-22 · 6c9347f* · exit 0 · `# Human-observed: this measures a live agent's behaviour and cannot be asserted …`

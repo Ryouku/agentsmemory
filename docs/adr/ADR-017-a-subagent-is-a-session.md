@@ -146,7 +146,7 @@ Three mechanisms — and the order below is the corrected one. The first draft l
 | `SubagentStart` hook registration | add | `clients/claude-code/installer.go` | every subagent, via `additionalContext` |
 | `SubagentStop` hook registration | add | `clients/claude-code/installer.go` | every subagent's final turn |
 | `agentsmemory-subagent-start-hook.sh` | add | `clients/claude-code/hooks/` | Claude Code |
-| shipped agent definitions naming the `am_*` tools | add | `clients/claude-code/agents/` | agents with a `tools:` allowlist |
+| shipped agent definitions naming the `am_*` tools | add | `clients/claude-code/agents/`, WRITTEN by the installer into `<config>/agents/` | agents with a `tools:` allowlist |
 | `README.md`'s "applies every session" claim | change — it is false for subagents until this ships, and must state what it covers | `clients/claude-code/README.md` | operators |
 
 ## Inter-task Contracts
@@ -166,6 +166,29 @@ Three tasks: `tasks/README.md`.
 - **Positive:** the participant doing a growing share of the work stops being the only one that neither reads nor writes memory. A dispatcher stops having to remember, which is the failure this was found by.
 - **Negative:** every subagent pays a small context cost at start, on a budget that is already the reason subagents exist. The injected text must stay one paragraph and that limit has to be defended.
 - **Neutral:** a subagent that writes to the palace makes the diary noisier — several entries per session rather than one. Whether that is an improvement or a regression is measurable and is T3's own risk row.
+- **Negative, and priced only on the start side until now:** the write half works by exit 2, which BLOCKS a subagent's stop and feeds the nudge back to it. That is the mechanism, not an accident — a `SubagentStop` hook that exits 0 emits text nobody reads. It costs one extra turn per subagent, and a 16-way fan-out pays it sixteen times. `stop_hook_active` is sent on `SubagentStop` (observed, though the published payload reference does not list it), so the loop guard bounds it at one; `AGENTSMEMORY_SUBAGENT_STOP_HOOK=off` drops the subagent half without touching the human's checkpoint.
+- **Negative:** a subagent whose definition restricts `tools:` without the `am_*` tools is blocked once and CANNOT comply. The bound is the same loop guard — it says it has no such tool and stops — and the nudge's last line gives it that out explicitly. This is the same packaging limit T2 found on the read side, arriving on the write side.
+
+## Mechanism 1 shipped unreachable, and T3 found it
+
+The Decision above calls the shipped agent definitions "the one unambiguous
+structural fix… the only one of the three that cannot fail for compliance
+reasons". T2 shipped it into the binary's `go:embed` directive and wrote it to no
+disk anywhere: rung 1 of the reachability ladder with no rung 2, in the very
+commit whose purpose was to add it.
+
+The test that was supposed to cover it globbed the REPOSITORY's `agents/`
+directory, so it passed against a file no install has ever produced — a check on
+the component rather than on the selection, which is this repository's named
+characteristic failure and now its fifth instance. It was found by asking a
+different question: not "does the definition say the right thing" but "does
+`scripts/redeploy.sh` compare it against what is installed", which it also did
+not, because that list was hand-maintained and had drifted for the same reason.
+
+Both halves are now mechanical. `writeAgentDefinitions` installs them,
+`TestInstallerInstallsAgentDefinitions` reads the installed file, and
+`TestRedeployKitCheckCoversEveryInstalledArtifact` fails when the deploy gate's
+list stops covering the kit.
 
 ## Out of Scope
 
@@ -182,6 +205,8 @@ Three tasks: `tasks/README.md`.
 | The context injection grows until it is scenery | High | Med | One paragraph, and T2's test asserts a length ceiling rather than trusting the author |
 | Subagent diary entries drown the human's own | Med | Med | T3 scopes what a subagent persists to findings and decisions, not a session summary; measured after one week of real use |
 | A hook that fails breaks every subagent dispatch | Low | High | Fail-open and always exit 0, copying `agentsmemory-verify-hook.sh`, whose comment already states this rule |
+| The write nudge costs a wide fan-out one turn per branch | **Certain — it is the mechanism** | Med | Bounded at one turn by the loop guard, and `AGENTSMEMORY_SUBAGENT_STOP_HOOK=off` drops it without losing the session checkpoint. Note the fail-open rule above applies to the START hook: a stop nudge that exits 0 is inert, so the two hooks deliberately have opposite exit contracts |
+| A shipped agent definition is embedded and installed nowhere | **Observed — T2 did exactly this** | High | `TestInstallerInstallsAgentDefinitions` asserts the INSTALLED file; `TestEveryShippedAgentDefinitionIsInstalled` fails when a definition is added to the repository but not to `agentAssets` |
 
 ## Rollback
 

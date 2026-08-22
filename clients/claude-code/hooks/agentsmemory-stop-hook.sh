@@ -8,10 +8,22 @@
 # 2 so Claude Code surfaces it as blocking Stop feedback — the turn pauses until
 # the session is persisted (or the reminder is acknowledged).
 #
+# It serves TWO events. `Stop` is the main agent finishing a turn; `SubagentStop`
+# is a subagent finishing for good, and it gets a different message — findings and
+# facts, not a session summary. The dispatcher writes the summary. A diary entry
+# per subagent is how a journal stops being read: a 16-way fan-out would file
+# seventeen accounts of one piece of work, sixteen of them by an agent that saw a
+# sliver of it. Same machinery, different text, one file to keep in step.
+#
 # Modes (env AGENTSMEMORY_STOP_HOOK):
 #   once (default) — remind on the first Stop of a session, then stay quiet.
 #   on             — remind on every Stop, like mempalace.
-#   off            — disabled.
+#   off            — disabled, both events.
+#
+# AGENTSMEMORY_SUBAGENT_STOP_HOOK=off disables the subagent half alone, leaving
+# the human's checkpoint. Exit 2 costs a subagent one extra turn and a wide
+# fan-out pays that once per branch, so the bill has its own switch rather than
+# forcing a choice between subagent writes and the session checkpoint.
 #
 # It also prints a short recall report from a self-hosted server (AGENTSMEMORY_STATS=off
 # to suppress, AGENTSMEMORY_STATS_HOURS to widen the window, AGENTSMEMORY_STATS_URL
@@ -29,6 +41,22 @@ INPUT="$(cat || true)"
 MODE="${AGENTSMEMORY_STOP_HOOK:-once}"
 [ "$MODE" = "off" ] && exit 0
 
+# Which event fired. `grep -o | head -n1` rather than a greedy sed, because the
+# SubagentStop payload also carries `last_assistant_message` — arbitrary agent
+# prose, after this key — and `sed 's/.*"hook_event_name"...'` matches the LAST
+# occurrence, so an agent that happened to quote the key would choose the branch.
+# Every pipeline here ends in `|| true`: grep exits 1 on no match and head can
+# SIGPIPE its producer, neither of which may kill the hook under set -euo pipefail.
+EVENT="$(printf '%s' "$INPUT" | grep -o '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+# Default to the SESSION path for anything unrecognised. If a future harness
+# renames the event, the human's checkpoint must survive the rename — a branch
+# that failed closed would take that away too, on a change nobody announced.
+IS_SUBAGENT=0
+if [ "${EVENT:-}" = "SubagentStop" ]; then
+  IS_SUBAGENT=1
+  [ "${AGENTSMEMORY_SUBAGENT_STOP_HOOK:-on}" = "off" ] && exit 0
+fi
+
 # Loop prevention — mirror mempalace's hook: Claude Code sets stop_hook_active=true
 # on every Stop *after the first* in a turn. The first genuine Stop has it false
 # (we fire); the re-fires caused by our own exit 2 have it true (we let through).
@@ -40,13 +68,49 @@ fi
 
 # In "once" mode, fire only the first time per harness session. The session id is
 # parsed from the event JSON without requiring jq, so the hook has no runtime deps.
-if [ "$MODE" = "once" ]; then
+#
+# A subagent stop neither READS nor WRITES this marker, and both halves of that
+# matter. SubagentStop carries the PARENT session's session_id — observed, not
+# assumed; the captured payload is in hooks_test.go — so the marker is one file
+# shared by the main session and every subagent under it. Reading it means a
+# session that already stopped once silences every subagent afterwards; writing it
+# means the first subagent to finish silences the human's own checkpoint for the
+# rest of the session. `once` is a statement about how often a HUMAN should be
+# interrupted, and a subagent stops exactly once regardless.
+if [ "$IS_SUBAGENT" -eq 0 ] && [ "$MODE" = "once" ]; then
   SID="$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
   MARKER="${TMPDIR:-/tmp}/agentsmemory-stop-${SID:-nosession}.done"
   if [ -n "${SID:-}" ] && [ -f "$MARKER" ]; then
     exit 0
   fi
   [ -n "${SID:-}" ] && : >"$MARKER" 2>/dev/null || true
+fi
+
+# A subagent is asked for what it FOUND, and then this hook is done: no session
+# summary, and no recall report either. That report describes every session on the
+# server in a window (see the long note at the bottom), and printing it into each
+# branch of a fan-out is the same server-wide number repeated N times at the one
+# audience that cannot act on it.
+#
+# The wing advice is deliberately NOT the advice the SubagentStart hook gives, and
+# the difference is the whole reason it is stated. There a guessed wing costs a bad
+# recall — confident, on-topic, irrelevant results. Here it costs a WRITE into
+# another project's palace, which the protocol names as poisoning it. `wing` is
+# optional on am_add_drawer and defaults to the wing this registration was created
+# for, so passing none is both the safe answer and the correct one.
+if [ "$IS_SUBAGENT" -eq 1 ]; then
+  cat >&2 <<'SUBMSG'
+agentsmemory — this subagent is stopping. Offer back what it found:
+  1. am_add_drawer — the finding or decision, verbatim, into the right room
+                     ("decisions", "incidents", …). Not a retelling of the task.
+  2. am_kg_add     — anything durable, as subject -> predicate -> object.
+Pass no wing unless you were given one: the registration already scopes the
+write, and a guessed wing files this work into another project's palace.
+Your dispatcher writes the session summary; you write the finding. Nothing worth
+another session's time, or dispatched read-only to review? Write nothing and say
+so in one line. AGENTSMEMORY_SUBAGENT_STOP_HOOK=off disables this.
+SUBMSG
+  exit 2
 fi
 
 # The checkpoint goes to stderr; exit 2 makes Claude Code show it as Stop feedback.

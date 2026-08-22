@@ -73,6 +73,15 @@ below), and `--agent codex` / `--agent both` to install for codex as well (see
   dispatched task. That is not redundant with the protocol above it — measured on
   a 449-memory palace, subagents receiving the full protocol and nothing else
   recalled in **0 of 5** dispatches, and **5 of 5** with the injection.
+  A `SubagentStop` hook closes the other half: a subagent is asked for what it
+  FOUND — a drawer, a fact — not for a session summary, which its dispatcher
+  writes. Set `AGENTSMEMORY_SUBAGENT_STOP_HOOK=off` to keep the session
+  checkpoint and drop the subagent one; a wide fan-out pays one extra turn per
+  branch.
+- `agents/agentsmemory-researcher.md` → a read-only research subagent whose
+  `tools:` allowlist names the `am_*` tools. An agent definition that restricts
+  tools can call only what it lists, so one defined without them cannot recall
+  however it is instructed.
   The import is merged idempotently: an existing `CLAUDE.md` is preserved and
   backed up, and only the one managed block is added or updated.
 - The **agentsmemory MCP** — the remote Streamable-HTTP server at

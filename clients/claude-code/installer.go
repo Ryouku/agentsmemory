@@ -574,10 +574,52 @@ func (i *Installer) writeAssets() error {
 			return err
 		}
 		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
+
+		if err := i.writeAgentDefinitions(); err != nil {
+			return err
+		}
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
 	i.clearLegacyHook()
+	return nil
+}
+
+// agentsDirName is where Claude Code reads subagent definitions from, relative to
+// the config dir.
+const agentsDirName = "agents"
+
+// agentDefinitionPath is where a shipped subagent definition is installed.
+func (i *Installer) agentDefinitionPath(name string) string {
+	return filepath.Join(i.targetDir, agentsDirName, name)
+}
+
+// writeAgentDefinitions installs the shipped subagent definitions.
+//
+// This is ADR-017's mechanism 1, and the ADR calls it "the one unambiguous
+// structural fix… the only one of the three that cannot fail for compliance
+// reasons, because it changes what is POSSIBLE rather than what is asked". An
+// agent whose definition declares a `tools:` allowlist can call only what the
+// list names, so a subagent defined without the am_* tools cannot recall however
+// it is instructed — the injection arrives and there is no tool to obey it.
+//
+// It exists as a separate function because T2 shipped the definition into the
+// binary's embed and wrote it nowhere: rung 1 of the reachability ladder with no
+// rung 2, in the very commit whose purpose was to add it. The test that was
+// supposed to cover it globbed the REPOSITORY's agents/ directory, so it passed
+// against a file no install ever produced — the "exercises the component rather
+// than the selection" shape this repository has now shipped five times.
+func (i *Installer) writeAgentDefinitions() error {
+	for _, name := range agentAssets {
+		data, err := i.source().ReadFile(agentsDirName + "/" + name)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.agentDefinitionPath(name), data, 0o644); err != nil {
+			return err
+		}
+		i.ok("agent %s", name)
+	}
 	return nil
 }
 
@@ -741,7 +783,29 @@ func (i *Installer) registerVerifyHook() error {
 	if err != nil {
 		return err
 	}
-	_ = subChanged
+	if subChanged {
+		i.ok("registered SubagentStart hook (a subagent wakes knowing memory exists)")
+	} else {
+		i.ok("SubagentStart hook already registered")
+	}
+
+	// The WRITE half (ADR-017 T3). The SAME script as the session Stop hook, which
+	// branches on hook_event_name: the two nudges differ in text, not machinery,
+	// and a second script would be a second thing to keep in step.
+	//
+	// Without this, T2's recall is half a loop with the enforced half already
+	// working — a subagent reads memory and finishes with everything it learned
+	// inside a transcript `mineclaude` drops by design as "subagent traffic".
+	stopCmd := "bash " + i.hookPath()
+	subStopChanged, err := ensureHook(hooksFile, "SubagentStop", stopCmd, foreignHookPredicate(stopCmd))
+	if err != nil {
+		return err
+	}
+	if subStopChanged {
+		i.ok("registered SubagentStop hook (a subagent offers back what it found)")
+	} else {
+		i.ok("SubagentStop hook already registered")
+	}
 
 	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
 	if err != nil {
