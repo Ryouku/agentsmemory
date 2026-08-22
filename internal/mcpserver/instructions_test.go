@@ -115,11 +115,24 @@ func TestInstructionsNameTheWingRule(t *testing.T) {
 		t.Fatalf("the instructions never mention wings, which is the thing a client got wrong "+
 			"unaided:\n%s", text)
 	}
-	// "no wing" is the rule, stated so a reader cannot take the opposite from it.
-	if !strings.Contains(lower, "no wing") {
-		t.Errorf("the instructions do not tell a client to pass NO wing by default. Without that "+
-			"sentence a client fills the gap itself, and the one that did chose to search every "+
-			"wing on every recall:\n%s", text)
+	// This assertion used to demand the string "no wing", and that is how a FALSE
+	// rule shipped: omitting the wing is only scoped when the registration carries
+	// a wing header, and most do not. The honest instruction is that a client must
+	// establish its own scope, so the test now pins the mechanism for doing that
+	// rather than a slogan.
+	if !strings.Contains(text, "am_status") {
+		t.Errorf("the instructions do not tell a client how to find out its own scope. Omitting "+
+			"the wing is scoped ONLY when the registration carries one; asserting it "+
+			"unconditionally is what shipped a wrong rule:\n%s", text)
+	}
+	if !strings.Contains(lower, "default_wing") {
+		t.Errorf("the instructions never name default_wing, which is the field that decides "+
+			"whether an omitted wing is scoped or workspace-wide:\n%s", text)
+	}
+	if !strings.Contains(lower, "every wing") {
+		t.Errorf("the instructions do not say what an omitted wing does when the registration "+
+			"has none — it searches EVERY wing, and a client that is not told assumes "+
+			"otherwise:\n%s", text)
 	}
 	// And the trap must be named, not merely avoided: "*" is a real argument a
 	// client will reach for precisely because it looks safe.
