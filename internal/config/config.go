@@ -191,16 +191,15 @@ type Config struct {
 	// of the query, not of the corpus.
 	BM25Weight string
 
-	// Fusion selects how vector and lexical evidence combine: "linear" (the
-	// default weighted blend, tuned by BM25Weight) or "rrf" (reciprocal-rank
-	// fusion, which bounds either signal's influence to a rank position).
+	// Fusion selects how vector and lexical evidence combine: "rrf" (the default
+	// reciprocal-rank fusion, which bounds either signal's influence to a rank
+	// position) or "linear" (the weighted blend tuned by BM25Weight).
 	//
 	// It matters most where lexical evidence is unreliable. On a large diverse
 	// palace the eval measured BM25 fusion BELOW vector alone, and because the
 	// cross-encoder's pool is taken off the fused head, the damage compounded:
-	// the reranker never saw what fusion buried. RRF was the best arm there.
-	// Run `agentsmemory eval` on your own corpus before switching — that is what
-	// the rrf arm in its table is for.
+	// the reranker never saw what fusion buried. RRF was the best arm there, which
+	// is why it ships. Run `agentsmemory eval` on your own corpus before changing it.
 	Fusion string
 
 	// LexNorm selects how raw BM25 scores are normalised before fusion:
@@ -214,18 +213,16 @@ type Config struct {
 	// magnitudes, so there is no lexical magnitude to normalise.
 	LexNorm string
 
-	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
-	// keeps the full boost, 0 disables it. On a curated palace the boost
+	// ClosetBoost scales the closet curation prior in ranking: 0 (the default)
+	// disables it, while 1 restores the full boost. On a curated palace the boost
 	// promotes what a human chose to keep; on a mined-transcript corpus the
 	// eval measured it demoting correct answers, and the operator is the one
 	// who knows which corpus theirs is.
 	//
-	// NOTE: 0 is a MEANINGFUL value here, not "unset", so this field's zero value
-	// silently turns the prior off. Build a Config from Default() (as
-	// configFromCmd does) rather than as a bare literal. The alternative — reading
-	// 0 as "use the default" — is the footgun RerankWeight already carries, where
-	// the one value an operator would pick to disable a feature is the one value
-	// that re-enables it.
+	// NOTE: 0 is a MEANINGFUL value here, not "unset": opting in requires a
+	// positive value. This deliberately avoids the footgun RerankWeight carries,
+	// where the one value an operator would pick to disable a feature is treated
+	// as "use the default" and re-enables it.
 	ClosetBoost float64
 
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
