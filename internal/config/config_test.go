@@ -5,7 +5,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -58,10 +60,18 @@ func TestChromemPath(t *testing.T) {
 	}
 }
 
-// TestRankingDefaultDocsMatchDefault keeps operator-facing field documentation
-// tied to the values the process actually starts with. Both fields drifted in a
-// previous change because the prose and Default were reviewed independently.
-func TestRankingDefaultDocsMatchDefault(t *testing.T) {
+// TestDocumentedDefaultsMatchDefault keeps operator-facing field documentation
+// tied to the values the process actually starts with. Both Fusion and
+// ClosetBoost drifted in a previous change because the prose and Default were
+// reviewed independently.
+//
+// The universe is DERIVED, not listed: every Config field whose doc comment
+// claims a default is checked against Default() by reflection. The first version
+// of this gate named two fields in a table, and that is precisely how three more
+// documented defaults stayed uncovered while it reported green — BM25Weight had
+// no coverage anywhere in the repo, so changing it broke nothing and the comment
+// simply began to lie.
+func TestDocumentedDefaultsMatchDefault(t *testing.T) {
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate config test source")
@@ -90,16 +100,70 @@ func TestRankingDefaultDocsMatchDefault(t *testing.T) {
 		return false
 	})
 
-	defaults := Default()
-	for _, tc := range []struct {
-		field string
-		want  string
-	}{
-		{"Fusion", fmt.Sprintf("%q (the default", defaults.Fusion)},
-		{"ClosetBoost", fmt.Sprintf("%g (the default)", defaults.ClosetBoost)},
-	} {
-		if !strings.Contains(docs[tc.field], tc.want) {
-			t.Errorf("Config.%s doc does not match Default(): want %q in %q", tc.field, tc.want, docs[tc.field])
+	defaults := reflect.ValueOf(Default())
+	checked := 0
+	for field, doc := range docs {
+		claimed, ok := documentedDefault(doc)
+		if !ok {
+			continue
 		}
+		value := defaults.FieldByName(field)
+		if !value.IsValid() {
+			t.Errorf("Config.%s documents a default but Default() has no such field", field)
+			continue
+		}
+		checked++
+		if actual := defaultLiteral(value); claimed != actual {
+			t.Errorf("Config.%s doc claims the default is %s, but Default() sets %s",
+				field, claimed, actual)
+		}
+	}
+
+	// A gate that finds nothing to require finds no gaps: if a refactor renames
+	// the phrase these comments use, every field silently stops being checked and
+	// this test keeps passing. The floor is what the file held when it was written.
+	const documentedFields = 5
+	if checked < documentedFields {
+		t.Errorf("only %d field(s) claim a default; expected at least %d — the doc convention "+
+			"probably changed and this gate stopped seeing them", checked, documentedFields)
+	}
+}
+
+// defaultClaim is the phrase every Config doc comment uses to name its default.
+const defaultClaim = "(the default"
+
+// documentedDefault returns the value a doc comment claims is the default.
+//
+// The claim is the token immediately before "(the default", which is the shape
+// every such comment in config.go uses whether the value is quoted ("rrf") or
+// bare (0). Matching on the phrase rather than per-field patterns is what makes
+// the universe derived: a new documented field is covered the day it is written.
+func documentedDefault(doc string) (string, bool) {
+	i := strings.Index(doc, defaultClaim)
+	if i < 0 {
+		return "", false
+	}
+	before := strings.Fields(doc[:i])
+	if len(before) == 0 {
+		return "", false
+	}
+	return before[len(before)-1], true
+}
+
+// defaultLiteral renders a config value the way a doc comment writes it —
+// quoted for a string, bare for a number — so the comparison is against the
+// prose an operator actually reads rather than against Go's formatting.
+func defaultLiteral(v reflect.Value) string {
+	switch v.Kind() {
+	case reflect.String:
+		return strconv.Quote(v.String())
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+	case reflect.Int, reflect.Int64:
+		return strconv.FormatInt(v.Int(), 10)
+	case reflect.Bool:
+		return strconv.FormatBool(v.Bool())
+	default:
+		return fmt.Sprint(v.Interface())
 	}
 }
