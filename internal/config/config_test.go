@@ -1,6 +1,14 @@
 package config
 
-import "testing"
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"runtime"
+	"strings"
+	"testing"
+)
 
 // TestIsLoopback pins the classification that decides whether local mode warns
 // about exposing its unauthenticated endpoint. The case that matters most is
@@ -46,6 +54,52 @@ func TestChromemPath(t *testing.T) {
 	for _, tc := range tests {
 		if got := ChromemPath(tc.dbPath); got != tc.want {
 			t.Errorf("ChromemPath(%q) = %q, want %q", tc.dbPath, got, tc.want)
+		}
+	}
+}
+
+// TestRankingDefaultDocsMatchDefault keeps operator-facing field documentation
+// tied to the values the process actually starts with. Both fields drifted in a
+// previous change because the prose and Default were reviewed independently.
+func TestRankingDefaultDocsMatchDefault(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate config test source")
+	}
+	source := strings.TrimSuffix(testFile, "_test.go") + ".go"
+	file, err := parser.ParseFile(token.NewFileSet(), source, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", source, err)
+	}
+
+	docs := map[string]string{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		typeSpec, ok := node.(*ast.TypeSpec)
+		if !ok || typeSpec.Name.Name != "Config" {
+			return true
+		}
+		configType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			return false
+		}
+		for _, field := range configType.Fields.List {
+			if len(field.Names) == 1 && field.Doc != nil {
+				docs[field.Names[0].Name] = field.Doc.Text()
+			}
+		}
+		return false
+	})
+
+	defaults := Default()
+	for _, tc := range []struct {
+		field string
+		want  string
+	}{
+		{"Fusion", fmt.Sprintf("%q (the default", defaults.Fusion)},
+		{"ClosetBoost", fmt.Sprintf("%g (the default)", defaults.ClosetBoost)},
+	} {
+		if !strings.Contains(docs[tc.field], tc.want) {
+			t.Errorf("Config.%s doc does not match Default(): want %q in %q", tc.field, tc.want, docs[tc.field])
 		}
 	}
 }

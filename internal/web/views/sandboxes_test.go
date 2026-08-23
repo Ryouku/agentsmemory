@@ -54,6 +54,21 @@ func TestSandboxesPageCoversEveryAgent(t *testing.T) {
 	}
 }
 
+// TestSandboxesPageDocumentsNativeCodexHook pins the rendered contract to the
+// installer: Codex reads the managed Stop hook from config.toml and needs no
+// legacy /hooks trust step.
+func TestSandboxesPageDocumentsNativeCodexHook(t *testing.T) {
+	page := renderSandboxes(t)
+	if !strings.Contains(page, "config.toml — native Stop hook") {
+		t.Error("Codex session-gate row does not name its native config.toml hook")
+	}
+	for _, stale := range []string{"hooks.json — Stop hook", "open /hooks", "hooks need trusting", "codex-cli 0.137"} {
+		if strings.Contains(page, stale) {
+			t.Errorf("sandbox page still contains stale Codex hook guidance %q", stale)
+		}
+	}
+}
+
 // TestSandboxesPageDocumentsProjectLaunch guards the #project band. The cards
 // alone cannot convey the two rules a reader would otherwise get wrong — which
 // layer wins, and that a missing sandbox is an error rather than a silent global

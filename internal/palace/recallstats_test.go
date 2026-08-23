@@ -28,7 +28,7 @@ func TestRecallStatsSeparatesAnsweredFromAsked(t *testing.T) {
 		t.Fatalf("search: %v", err)
 	}
 
-	stats, err := svc.RecallStats(ctx, team, time.Hour, 10)
+	stats, err := svc.RecallStats(ctx, team, "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}
@@ -67,6 +67,36 @@ func TestRecallStatsSeparatesAnsweredFromAsked(t *testing.T) {
 	}
 }
 
+// TestRecallStatsFiltersEverySectionByWing prevents a scoped report from
+// leaking another project's raw unanswered query or aggregate topology.
+func TestRecallStatsFiltersEverySectionByWing(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-scoped-stats"
+
+	mustAdd(t, svc, team, AddInput{Wing: "wing_alpha", Room: "private", Content: "alpha private release ritual"})
+	mustAdd(t, svc, team, AddInput{Wing: "wing_beta", Room: "private", Content: "beta private release ritual"})
+	recordUnanswered(svc, team, "wing_alpha", "ALPHA-UNANSWERED-MARKER", time.Now().Add(-time.Minute))
+	recordUnanswered(svc, team, "wing_beta", "BETA-UNANSWERED-MARKER", time.Now())
+
+	stats, err := svc.RecallStats(ctx, team, "wing_beta", time.Hour, 10)
+	if err != nil {
+		t.Fatalf("recall stats: %v", err)
+	}
+	if stats.Searches != 1 || stats.Writes != 1 {
+		t.Errorf("scoped totals = %d searches, %d writes; want 1 and 1", stats.Searches, stats.Writes)
+	}
+	if len(stats.Wings) != 1 || stats.Wings[0].Wing != "wing_beta" || stats.Wings[0].Drawers != 1 {
+		t.Errorf("scoped wings = %+v; want only wing_beta", stats.Wings)
+	}
+	if len(stats.Unanswered) != 1 || stats.Unanswered[0] != "BETA-UNANSWERED-MARKER" {
+		t.Errorf("scoped unanswered = %v; want only beta marker", stats.Unanswered)
+	}
+	if len(stats.Suggestions) != 1 || stats.Suggestions[0].Wing != "wing_beta" {
+		t.Errorf("scoped suggestions = %+v; want only wing_beta", stats.Suggestions)
+	}
+}
+
 // TestRecallStatsShowsWriteOnlyWings: a wing that is filled and never read is the
 // pattern most worth surfacing, and a search-only report would hide it entirely.
 func TestRecallStatsShowsWriteOnlyWings(t *testing.T) {
@@ -76,7 +106,7 @@ func TestRecallStatsShowsWriteOnlyWings(t *testing.T) {
 
 	mustAdd(t, svc, team, AddInput{Wing: "wing_unused", Room: "decisions", Content: "nobody ever asks about this"})
 
-	stats, err := svc.RecallStats(ctx, team, time.Hour, 10)
+	stats, err := svc.RecallStats(ctx, team, "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}
@@ -126,7 +156,7 @@ func TestSuggestionsCollapseParaphrases(t *testing.T) {
 		Hits: 2, TopScore: 0.9, CreatedAt: now.Add(-30 * time.Second).UTC().Format(time.RFC3339),
 	})
 
-	stats, err := svc.RecallStats(ctx, team, time.Hour, 10)
+	stats, err := svc.RecallStats(ctx, team, "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}
@@ -159,7 +189,7 @@ func TestSuggestionsAreWingScoped(t *testing.T) {
 	recordUnanswered(svc, team, "wing_beta", "redis eviction policy", now.Add(-2*time.Minute))
 	recordUnanswered(svc, team, "", "redis eviction policy", now.Add(-3*time.Minute))
 
-	stats, err := svc.RecallStats(ctx, team, time.Hour, 10)
+	stats, err := svc.RecallStats(ctx, team, "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}
@@ -184,7 +214,7 @@ func TestSuggestionsAreWingScoped(t *testing.T) {
 // and the report must stay silent rather than invent work.
 func TestSuggestionsEmptyTelemetry(t *testing.T) {
 	svc := newTestService(t)
-	stats, err := svc.RecallStats(context.Background(), "team-empty", time.Hour, 10)
+	stats, err := svc.RecallStats(context.Background(), "team-empty", "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}
@@ -214,7 +244,7 @@ func TestSuggestionsOrderCountThenRecency(t *testing.T) {
 	recordUnanswered(svc, team, "wing_acme", "qdrant payload indexes", now.Add(-25*time.Minute))
 	recordUnanswered(svc, team, "wing_acme", "qdrant payload indexes", now.Add(-10*time.Minute))
 
-	stats, err := svc.RecallStats(ctx, team, time.Hour, 10)
+	stats, err := svc.RecallStats(ctx, team, "", time.Hour, 10)
 	if err != nil {
 		t.Fatalf("recall stats: %v", err)
 	}

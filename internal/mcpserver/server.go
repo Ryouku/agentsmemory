@@ -242,7 +242,7 @@ func registerAll(reg *registrar, deps Deps) {
 	// Palace maintenance: merge_wing, memories_filed_away, and delete_wing when local.
 	registerAdmin(reg, deps.Drawers, deps.Usage, deps.Local)
 	// Recall measurement: how well the memory answers, per wing.
-	registerRecallStats(reg, deps.Drawers, deps.Usage)
+	registerRecallStats(reg, deps.Drawers, deps.Usage, deps.ScopeSearchToWing)
 	// Staleness: pin memories to code, and record what verification found.
 	registerAnchors(reg, deps.Drawers, deps.Usage, deps.ScopeSearchToWing)
 	// The wakeup playbook: how to use everything above. Registered last so its

@@ -797,9 +797,6 @@ func (i *Installer) writeFile(path string, data []byte, perm os.FileMode) error 
 // is merged into settings.json, while Codex's native TOML registration is one
 // marked block in config.toml. Both hand the script a Stop event carrying
 // stop_hook_active, which is what it uses for loop prevention.
-//
-// Codex additionally gates non-managed hooks behind a trust review: the hook is
-// listed but skipped until it is trusted in `/hooks`. summary() says so.
 func (i *Installer) registerStopHook() error {
 	if i.kit.hooksFile == "" {
 		// Two different reasons, and saying the wrong one is worse than saying
@@ -1699,9 +1696,8 @@ func (i *Installer) ok(f string, a ...any)   { fmt.Fprintf(i.out, "  [ok] "+f+"\
 func (i *Installer) warn(f string, a ...any) { fmt.Fprintf(i.out, "  [!!] "+f+"\n", a...) }
 
 // summary prints the closing next-steps block, tailored to the agent and the
-// install mode. The codex lines carry two things Claude does not need: the hook
-// trust review codex requires before a non-managed hook runs, and the token env
-// var, which codex reads from its environment rather than from its config.
+// install mode. The codex lines carry the token env var, which codex reads from
+// its environment rather than from its config.
 func (i *Installer) summary() {
 	fmt.Fprintln(i.out)
 	fmt.Fprintln(i.out, "Next steps:")
@@ -1780,7 +1776,6 @@ func (i *Installer) summary() {
 	if i.kit.name != agentCodex {
 		return
 	}
-	fmt.Fprintln(i.out, "  - codex skips untrusted hooks: open /hooks in codex and trust the agentsmemory Stop hook")
 	if i.sandboxName != "" {
 		// A sandbox is a whole CODEX_HOME, and codex keeps auth.json there — so an
 		// isolated config starts logged out and every request 401s until you say so.

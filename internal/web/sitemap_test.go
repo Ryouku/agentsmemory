@@ -150,6 +150,26 @@ func TestAISitemapCoversEveryBundleDoc(t *testing.T) {
 	}
 }
 
+// TestSandboxAIDocDocumentsNativeCodexHook keeps the machine-readable guide in
+// step with the same installer contract as the rendered public page.
+func TestSandboxAIDocDocumentsNativeCodexHook(t *testing.T) {
+	body, err := fs.ReadFile(aiDocs, "ai/sandboxes.md")
+	if err != nil {
+		t.Fatalf("read embedded sandbox guide: %v", err)
+	}
+	doc := string(body)
+	for _, want := range []string{"codex-cli 0.144.5", "`config.toml` — native Stop hook"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("AI sandbox guide is missing %q", want)
+		}
+	}
+	for _, stale := range []string{"codex-cli 0.137", "`hooks.json` — Stop hook", "open `/hooks`", "hooks need trusting"} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("AI sandbox guide still contains stale Codex guidance %q", stale)
+		}
+	}
+}
+
 // TestRobotsAllowsEveryoneAndAdvertisesOneSitemap checks the policy the task
 // asked for: allow all, and exactly one Sitemap line, because /sitemap.xml is an
 // index that leads to the rest.

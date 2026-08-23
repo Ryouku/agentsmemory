@@ -510,7 +510,7 @@ type anchorView struct {
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
 func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
-		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
+		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse, 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour.")),

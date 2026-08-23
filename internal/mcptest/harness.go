@@ -360,6 +360,27 @@ func (h *Harness) ListToolDefinitions(t *testing.T) ([]mcp.Tool, error) {
 	return res.Tools, nil
 }
 
+// ListCatalog returns the running server's self-described tool catalogue. It
+// comes through am_skillset rather than a package-level registration helper so
+// audits exercise the same write/read classification an agent actually sees.
+func (h *Harness) ListCatalog(t *testing.T) ([]mcpserver.CatalogEntry, error) {
+	t.Helper()
+	out, isErr, err := h.Call(t, "am_skillset", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	if isErr {
+		return nil, fmt.Errorf("am_skillset reported an error: %s", out)
+	}
+	var payload struct {
+		Tools []mcpserver.CatalogEntry `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return nil, fmt.Errorf("decode am_skillset catalogue: %w", err)
+	}
+	return payload.Tools, nil
+}
+
 // ListTools returns the tool names the running server advertises.
 func (h *Harness) ListTools(t *testing.T) ([]string, error) {
 	t.Helper()

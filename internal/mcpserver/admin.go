@@ -106,9 +106,10 @@ func registerMarkAnchors(reg *registrar, drawers *palace.Service, usageSvc *usag
 // registerRecallStats adds recall_stats: is the memory being used, and does it
 // answer? Drawer counts say how much is remembered; this says whether remembering
 // is working, which is the only question an operator can act on.
-func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("recall_stats",
 		mcp.WithDescription("How well memory is working, per wing: searches run, how many came back with something, drawers held, and the recent queries that found NOTHING (the memories the team looked for and does not have). Use it to see whether recall is earning its keep rather than guessing."),
+		mcp.WithString("wing", mcp.Description("Only report this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithNumber("hours", mcp.Description("Window to report on, in hours (default 24).")),
 		mcp.WithNumber("unanswered", mcp.Description("How many unanswered queries to list (default 10).")),
 	)
@@ -121,7 +122,11 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if hours <= 0 {
 			hours = 24
 		}
-		stats, err := drawers.RecallStats(ctx, t.TeamID, time.Duration(hours)*time.Hour, req.GetInt("unanswered", 10))
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		stats, err := drawers.RecallStats(ctx, t.TeamID, wing, time.Duration(hours)*time.Hour, req.GetInt("unanswered", 10))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

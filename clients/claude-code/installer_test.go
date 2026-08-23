@@ -347,6 +347,10 @@ func TestResolveInstallTargetMakesConfigDirAbsolute(t *testing.T) {
 	if err := os.Chdir(base); err != nil {
 		t.Fatal(err)
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := os.Chdir(start); err != nil {
 			t.Errorf("restore working directory: %v", err)
@@ -357,7 +361,9 @@ func TestResolveInstallTargetMakesConfigDirAbsolute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve relative --config-dir: %v", err)
 	}
-	want := filepath.Join(base, "relative-config")
+	// Use the OS-resolved working directory because macOS exposes /var through
+	// the /private/var symlink while filepath.Abs follows os.Getwd.
+	want := filepath.Join(cwd, "relative-config")
 	if target != want || !filepath.IsAbs(target) {
 		t.Fatalf("relative --config-dir resolved to %q, want absolute %q", target, want)
 	}
@@ -601,6 +607,21 @@ func TestInstallCodexCore(t *testing.T) {
 		if len(c.env) == 0 || c.env[0] != "CODEX_HOME="+dir {
 			t.Errorf("call %q missing CODEX_HOME=%s env, got %v", c.rendered(), dir, c.env)
 		}
+	}
+}
+
+// TestCodexSummaryDoesNotAskForLegacyHookTrust pins the next steps to Codex's
+// native config.toml hook. Reintroducing the old /hooks instruction would send
+// every successful install through a step that no longer applies.
+func TestCodexSummaryDoesNotAskForLegacyHookTrust(t *testing.T) {
+	inst, _, _ := newTestInstallerFor(t, codexKit, false)
+	out := &bytes.Buffer{}
+	inst.out = out
+	inst.summary()
+
+	got := strings.ToLower(out.String())
+	if strings.Contains(got, "/hooks") || strings.Contains(got, "trust the") {
+		t.Errorf("Codex summary still asks for legacy hook trust: %q", out.String())
 	}
 }
 

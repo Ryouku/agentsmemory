@@ -5,7 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/mine.go` (`closetBoosts`), `internal/palace/rank.go` (`closetRankBoosts`, `closetBoostStrength`), `internal/palace/eval.go` (`ArmHybrid` / `ArmHybridCloset`, `evalCase`, `CandidateUnion`), `internal/palace/evalstats.go` (`PairedDelta`), `cmd/server/eval.go` (the printed table and the run record), `internal/config/config.go` (`ClosetBoost`), `docs/adr/ADR-001-recall-answers-or-abstains.md` (judges the top result; what reaches the top is decided here), `docs/adr/ADR-002-anchor-the-lexical-score.md` (renormalises the fused score this prior is added to)
-**Served-path change:** The closet prior's default flips to off, changing the served ranking of every deployment that has not set `CLOSET_BOOST` — T4, pending. Both landed tasks changed only the eval; `config.Default()` still ships `ClosetBoost: 1`.
+**Served-path change:** At acceptance this flip was still T4 and `config.Default()` still shipped `ClosetBoost: 1`. ADR-014 subsequently pre-empted T4 and shipped `ClosetBoost: 0`; T3 remains the promised measurement of whether that shipped choice holds up.
 
 ## Context
 

@@ -1090,7 +1090,7 @@ type sandboxAgent struct {
 
 // sandboxAgents is the guide's source of truth, in the same order the installer
 // resolves them for `--agent all`. Every value here was verified against the
-// shipping CLIs (Claude Code, codex-cli 0.137, pi 0.84.2) rather than inferred
+// shipping CLIs (Claude Code, codex-cli 0.144.5, pi 0.84.2) rather than inferred
 // from docs: the three differ in their config-dir variable, their commands dir,
 // whether their memory file resolves imports, and — most consequentially —
 // whether they speak MCP at all.
@@ -1118,7 +1118,7 @@ func sandboxAgents() []sandboxAgent {
 		{
 			Key:     "codex",
 			Name:    "Codex",
-			Tagline: "Same shape as Claude, but the token travels through the environment and hooks need trusting.",
+			Tagline: "Same shape as Claude, but the token travels through the environment and the native Stop hook lives in config.toml.",
 			Install: "aiagentmemory install --agent codex --sandbox <name>",
 			Launch:  "aiagentmemory run --agent codex <name>",
 			Specs: []sandboxSpec{
@@ -1126,12 +1126,12 @@ func sandboxAgents() []sandboxAgent {
 				{"Global config dir", "~/.codex"},
 				{"Slash commands", "prompts/ — invoked /prompts:M"},
 				{"Memory file", "AGENTS.md — protocol inlined (no import directive)"},
-				{"Session gate", "hooks.json — Stop hook"},
+				{"Session gate", "config.toml — native Stop hook"},
 				{"Our MCP", "native: codex mcp add --bearer-token-env-var"},
 			},
 			Notes: []string{
 				"codex mcp add has no header flag, so the token is stored 0600 in agentsmemory.env and exported by run.",
-				"Codex skips untrusted hooks: open /hooks once and trust the agentsmemory Stop hook.",
+				"The installer retires only agentsmemory's previous hooks.json entry after landing the native TOML hook; foreign JSON hooks are preserved with a warning.",
 				"A sandbox is a whole CODEX_HOME — including auth.json — so it starts logged out: CODEX_HOME=<dir> codex login.",
 			},
 		},
@@ -1173,7 +1173,7 @@ func sandboxSpecLabels() []string {
 }
 
 // sandboxAllCmd installs one sandbox that every supported agent can open. The
-// agents never collide on a filename inside it (settings.json vs hooks.json,
+// agents never collide on a filename inside it (settings.json vs config.toml,
 // commands/ vs prompts/, CLAUDE.md vs AGENTS.md), which is what makes a single
 // shared directory safe.
 const sandboxAllCmd = "aiagentmemory install --agent all --sandbox <name> --recommended"

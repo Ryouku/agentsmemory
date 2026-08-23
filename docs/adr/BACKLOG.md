@@ -340,8 +340,8 @@ without the exit-code trap the first version had.
   inflates a fixed boost by exactly `1/s`, `s = 1 − w(1 − a)`; this palace has already lost recall@1 from
   92% to 17% to that class of scale mismatch. There is nothing to recalibrate from yet: after ADR-003 T1
   the arms that would measure it carry no prior, and the anchored tables have not been run. Note the
-  capability table above is ahead of the tree — the flip to a default of 0 has not landed, `config.Default()`
-  still ships `ClosetBoost: 1` — so the default path is still boosted.
+  ADR-014 subsequently shipped `ClosetBoost: 0`, so the default path is no longer boosted; this
+  recalibration remains relevant only to operators who deliberately restore the prior.
 
 ## From ADR-003 (retire the closet prior)
 
@@ -448,8 +448,9 @@ without the exit-code trap the first version had.
   stands two workspaces on one database and proves four read tools do not cross the tenancy boundary, and one
   further test does the same for `am_kg_query`. Five routes out of 41 registered tools: no mutation is asked,
   nor any by-id route where the caller already holds another workspace's drawer id, nor anything that makes a
-  tool added tomorrow answer at all. The wing boundary has that gate — `TestEveryEnumerationHonoursTheRegistrationWing`
-  — and the outer boundary, which is tenancy, does not. Deferred out of ADR-008 T4 as deserving its own scenarios.
+  tool added tomorrow answer at all. The wing boundary now has the broader
+  `TestEveryReadToolDeclaresItsWingScope` gate; the outer boundary, which is tenancy, still does not.
+  Deferred out of ADR-008 T4 as deserving its own scenarios.
 - **Concurrent mutation by two parties is untested, and the harness cannot honestly test it yet** — every
   multi-party scenario in `internal/mcptest` acts in sequence, so nothing covers two registrations updating or
   deleting one memory at once. Two things are missing and the second is the blocker: there is no statement of

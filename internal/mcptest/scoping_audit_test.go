@@ -11,24 +11,19 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// TestEveryEnumerationHonoursTheRegistrationWing audits the CLASS, not the
-// instance.
+// TestEveryReadToolDeclaresItsWingScope audits the CLASS, not the instance.
 //
 // am_list_drawers leaked because it took `wing` verbatim instead of resolving
-// it. Fixing that one tool answers nothing about the others: a source read finds
-// eight tools that take the argument raw, and reading cannot say which of those
-// are leaks and which are deliberate — am_diary_read is scoped by AGENT and
-// documents its empty wing as intentional, am_update_drawer's wing is a move
-// TARGET rather than a filter.
+// it. Later, am_recall_stats leaked raw unanswered queries despite taking no wing
+// argument at all. Deriving the audit universe from an argument spelling was
+// therefore the wrong abstraction: sensitive reads can omit that spelling.
 //
-// So this derives the candidate class from the RUNNING server's schemas: every
-// tool with an optional wing argument must either have a live scoping probe or
-// an explicit reason why wing is not a read filter. That second map is self-
-// checked so stale exemptions fail instead of accumulating. Each enumeration is
-// then asked the only question that settles it: with two projects in one
-// workspace, does naming no wing show me the other project's content, and does
-// wing:"*" deliberately widen the same call?
-func TestEveryEnumerationHonoursTheRegistrationWing(t *testing.T) {
+// The running server's own am_skillset catalogue classifies every tool as a read
+// or write. Every live read must now have either a cross-project behavioural
+// probe or a reviewed, specific reason that its contract is workspace-wide or
+// scoped by something else. Both maps are self-checked against the live surface,
+// so adding a read tool without deciding its boundary fails this test.
+func TestEveryReadToolDeclaresItsWingScope(t *testing.T) {
 	a, b := mcptest.Pair(t, "wing_alpha", "wing_beta")
 
 	// Two drawers per wing make one real hallway per project: hallway derivation
@@ -73,6 +68,14 @@ func TestEveryEnumerationHonoursTheRegistrationWing(t *testing.T) {
 		"label": "BETA-TUNNEL-LABEL beta's own cross reference",
 	})
 	a.MustCall(t, "am_recompute_graph", map[string]any{})
+	// A nonexistent room makes these searches deterministically unanswered, so
+	// recall_stats has verbatim query text whose cross-wing visibility is testable.
+	a.MustCall(t, "am_search", map[string]any{
+		"query": "ALPHA-UNANSWERED-MARKER", "room": "missing-room",
+	})
+	b.MustCall(t, "am_search", map[string]any{
+		"query": "BETA-UNANSWERED-MARKER", "room": "missing-room",
+	})
 
 	type probe struct {
 		args                     map[string]any
@@ -90,34 +93,60 @@ func TestEveryEnumerationHonoursTheRegistrationWing(t *testing.T) {
 			"a tunnel label is free text written by another project's session"},
 		"am_list_hallways": {map[string]any{}, "Atlas", "Vault",
 			"hallways disclose another project's named systems and relationships"},
+		"am_recall_stats": {map[string]any{"hours": 1, "unanswered": 10}, "ALPHA-UNANSWERED-MARKER", "BETA-UNANSWERED-MARKER",
+			"unanswered telemetry contains the verbatim query another project asked"},
 	}
 
-	// These tools also expose an optional wing in the live schema, but wing is a
-	// destination, a mutation target, or a deliberately different read scope. A
-	// new optional-wing tool cannot silently join this list: the audit fails until
-	// it either gains a probe above or a reviewed, specific reason here.
+	// These reads deliberately have a different boundary. A new read cannot
+	// silently join this list: the audit fails until it either gains a probe above
+	// or a reviewed, specific reason here.
 	allow := map[string]string{
-		"am_add_drawer":      "wing is the write destination and wingFor applies the registration default",
-		"am_update_drawer":   "wing is the destination of a move, not a read filter",
-		"am_search":          "recall scoping is covered by the positive/negative/cross-wing scenario trio",
-		"am_diary_write":     "wing is a destination: explicit wing wins, then registration default_wing, then wing_<agent_name>",
-		"am_diary_read":      "the primary boundary is agent_name; empty wing deliberately spans that agent's diary",
-		"am_mine":            "wing is the destination for newly mined memories",
-		"am_recompute_graph": "wing selects a mutating rebuild; empty intentionally rebuilds the workspace graph",
+		"am_status":              "the wake-up call intentionally names the workspace and its full taxonomy so clients can verify identity",
+		"am_load_skill":          "team skills are centralised workspace conventions selected by skill name",
+		"am_list_skills":         "the centralised team-skill catalogue is workspace-wide by contract",
+		"am_skillset":            "the wake-up playbook and live tool catalogue describe the whole MCP registration",
+		"am_memories_filed_away": "the recent filing summary is an intentional workspace aggregate",
+		"am_diary_read":          "the primary boundary is agent_name; empty wing deliberately spans that agent's diary",
+		"am_get_drawer":          "an explicit opaque drawer id is the read capability used by handoffs and tunnel traversal",
+		"am_search":              "recall scoping is covered by the positive, negative, and explicit cross-wing scenario trio",
+		"am_check_duplicate":     "duplicate prevention deliberately compares new content across the workspace",
+		"am_list_wings":          "listing wings is the intentional workspace map used to choose an explicit project",
+		"am_get_taxonomy":        "taxonomy intentionally describes the workspace's complete wing and room map",
+		"am_get_aaak_spec":       "the AAAK protocol is constant server guidance with no project content",
+		"am_find_tunnels":        "cross-wing tunnel discovery deliberately locates connectors spanning project boundaries",
+		"am_follow_tunnels":      "following an explicit wing and room deliberately crosses project boundaries",
+		"am_traverse":            "graph traversal is explicitly a whole-palace relationship query",
+		"am_graph_stats":         "graph statistics intentionally report workspace-wide cross-wing topology",
+		"am_kg_query":            "the knowledge graph is workspace-wide by contract and has a separate behavioural gate",
+		"am_kg_stats":            "knowledge-graph statistics share the graph's workspace boundary",
+		"am_kg_timeline":         "the knowledge-graph timeline shares the graph's workspace boundary",
 	}
 
 	tools, err := b.ListToolDefinitions(t)
 	if err != nil {
 		t.Fatalf("list live tool schemas: %v", err)
 	}
+	definitions := make(map[string]mcp.Tool, len(tools))
+	for _, tool := range tools {
+		definitions[tool.Name] = tool
+	}
+	catalog, err := b.ListCatalog(t)
+	if err != nil {
+		t.Fatalf("list live tool catalogue: %v", err)
+	}
 	seenProbes := map[string]bool{}
 	seenAllow := map[string]bool{}
-	for _, tool := range tools {
-		if _, hasWing := tool.InputSchema.Properties["wing"]; !hasWing || required(tool, "wing") {
+	for _, entry := range catalog {
+		if entry.Write {
 			continue
 		}
-		if c, ok := probes[tool.Name]; ok {
-			seenProbes[tool.Name] = true
+		tool, ok := definitions[entry.Name]
+		if !ok {
+			t.Errorf("read catalogue entry %s has no live tools/list definition", entry.Name)
+			continue
+		}
+		if c, ok := probes[entry.Name]; ok {
+			seenProbes[entry.Name] = true
 			assertWingScopeSchema(t, tool)
 			args := c.args
 			foreign := c.foreignNeedle
@@ -142,15 +171,14 @@ func TestEveryEnumerationHonoursTheRegistrationWing(t *testing.T) {
 			}
 			continue
 		}
-		if why, ok := allow[tool.Name]; ok {
-			seenAllow[tool.Name] = true
+		if why, ok := allow[entry.Name]; ok {
+			seenAllow[entry.Name] = true
 			if strings.TrimSpace(why) == "" {
-				t.Errorf("%s has an empty optional-wing exemption", tool.Name)
+				t.Errorf("%s has an empty read-scope exemption", entry.Name)
 			}
 			continue
 		}
-		t.Errorf("%s has an optional wing argument in the live schema but no scoping probe or justified exemption",
-			tool.Name)
+		t.Errorf("%s is a live read tool with no scoping probe or justified exemption", entry.Name)
 	}
 
 	for name := range probes {
@@ -160,7 +188,7 @@ func TestEveryEnumerationHonoursTheRegistrationWing(t *testing.T) {
 	}
 	for name := range allow {
 		if !seenAllow[name] {
-			t.Errorf("optional-wing exemption %s is stale or no longer optional", name)
+			t.Errorf("read-scope exemption %s is stale or no longer a live read", name)
 		}
 	}
 }
@@ -176,6 +204,10 @@ func TestToolSchemasStateTheScopeAndMutationContracts(t *testing.T) {
 	}
 
 	search := namedTool(t, tools, "am_search")
+	searchDescription := strings.ToLower(search.Description)
+	if !strings.Contains(searchDescription, "distinct memories") || strings.Contains(searchDescription, "recall drawers") {
+		t.Errorf("am_search description must name the page unit as distinct memories, not drawers: %s", searchDescription)
+	}
 	limit := strings.ToLower(propertyText(t, search, "limit"))
 	for _, want := range []string{"distinct memories", "collapse"} {
 		if !strings.Contains(limit, want) {
@@ -253,15 +285,6 @@ func TestReconnectIsActuallyWriteGated(t *testing.T) {
 	if got, isErr, err := writer.Call(t, "am_reconnect", map[string]any{}); err != nil || isErr {
 		t.Errorf("writer could not ensure the vector namespace: isErr=%v err=%v result=%s", isErr, err, got)
 	}
-}
-
-func required(tool mcp.Tool, property string) bool {
-	for _, name := range tool.InputSchema.Required {
-		if name == property {
-			return true
-		}
-	}
-	return false
 }
 
 func cloneArgs(in map[string]any) map[string]any {

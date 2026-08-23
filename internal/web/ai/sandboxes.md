@@ -43,7 +43,7 @@ leave it off to wire the kit into the agent you already run.
 Three agent CLIs are supported. They differ in their config-dir variable, their
 commands directory, whether their memory file resolves imports, and — most
 consequentially — whether they speak MCP at all. Every value below was verified
-against the shipping CLIs (Claude Code, codex-cli 0.137, pi 0.84.2) rather than
+against the shipping CLIs (Claude Code, codex-cli 0.144.5, pi 0.84.2) rather than
 inferred from documentation.
 
 | | Claude Code | Codex | pi |
@@ -52,7 +52,7 @@ inferred from documentation.
 | **Global config dir** | `~/.claude` | `~/.codex` | `~/.pi/agent` |
 | **Slash commands** | `commands/` — invoked `/M`, `/am`, `/load-skill` | `prompts/` — invoked `/prompts:M` | `prompts/` — invoked `/M` |
 | **Memory file** | `CLAUDE.md` — `@imports` the protocol beside it | `AGENTS.md` — protocol inlined (no import directive) | `AGENTS.md` — protocol inlined (no import directive) |
-| **Session gate** | `settings.json` — Stop hook | `hooks.json` — Stop hook | none native — the checkpoint ships in the extension |
+| **Session gate** | `settings.json` — Stop hook | `config.toml` — native Stop hook | none native — the checkpoint ships in the extension |
 | **Our MCP** | native: `claude mcp add --transport http`, bearer header | native: `codex mcp add --bearer-token-env-var` | bridged: `extensions/agentsmemory.ts` registers each remote tool natively |
 
 ## Claude Code
@@ -67,13 +67,13 @@ imports.
 
 ## Codex
 
-Same shape as Claude, but the token travels through the environment and hooks
-need trusting.
+Same shape as Claude, but the token travels through the environment and the
+native Stop hook lives in `config.toml`.
 
 - `codex mcp add` has no header flag, so the token is stored `0600` in
   `agentsmemory.env` and exported by `run`.
-- Codex skips untrusted hooks: open `/hooks` once and trust the agentsmemory
-  Stop hook.
+- The installer retires only agentsmemory's previous `hooks.json` entry after
+  landing the native TOML hook; it preserves foreign JSON hooks with a warning.
 - A sandbox is a whole `CODEX_HOME` — including `auth.json` — so it starts
   logged out: `CODEX_HOME=<dir> codex login`.
 

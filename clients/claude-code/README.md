@@ -24,7 +24,7 @@ has rather than pretending:
 | MCP registered by | `claude mcp add` | `codex mcp add` | writing `mcp.json` — no `mcp add` | writing `claude_desktop_config.json` | bridge extension |
 | protocol lands in | `CLAUDE.md` + `@import` | `AGENTS.md` (inlined) | `rules/agentsmemory.mdc` (`alwaysApply: true`) | the MCP handshake — it holds no file | `AGENTS.md` (inlined) |
 | slash commands | `commands/` | `prompts/` | none — no commands dir | none | `prompts/` |
-| lifecycle hooks | all five | `Stop` (trust it in `/hooks`) | none — hook shape not established | none | in the extension |
+| lifecycle hooks | all five | `Stop` — native TOML in `config.toml` | none — hook shape not established | none | in the extension |
 | subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | none | none |
 | `--wing` registration scope | header | URL query | header | `mcp-stdio --wing` | bridge environment |
 | `--sandbox` | ✅ | ✅ | refused — no config-dir variable | refused — same reason | ✅ |
@@ -287,11 +287,9 @@ Claude scripts depend on: a live Codex dispatch still has to capture the input
 fields, stdout feedback envelope, and exit-2 single-retry behaviour. See
 [ADR-017's amended deferral](../../docs/adr/ADR-017-a-subagent-is-a-session.md).
 
-Two codex-specific steps the installer prints and cannot do for you:
+One codex-specific step remains for launches outside the wrapper:
 
-1. **Trust the hook.** Codex lists non-managed hooks but skips them until you
-   review them — open `/hooks` in codex and trust the agentsmemory Stop hook.
-2. **Have the token in the environment.** The install writes it to
+1. **Have the token in the environment.** The install writes it to
    `<CODEX_HOME>/agentsmemory.env` (mode `0600`) and
    `aiagentmemory run --agent codex …` / `wrap --agent codex …` export it for
    you. To launch plain `codex`, source it from your shell rc:

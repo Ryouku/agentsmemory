@@ -24,7 +24,7 @@ const (
 // plain data plus the two registration steps that genuinely diverge (see
 // Installer.registerAgentsMemoryMCP and Installer.installRecommended).
 //
-// Values are verified against Claude Code, codex-cli 0.137 and pi 0.84.2: each
+// Values are verified against Claude Code, codex-cli 0.144.5 and pi 0.84.2: each
 // relocates its whole config with one env var (CLAUDE_CONFIG_DIR / CODEX_HOME /
 // PI_CODING_AGENT_DIR), each reads top-level markdown in a commands dir as slash
 // commands with the same `description:`/`argument-hint:` front matter and

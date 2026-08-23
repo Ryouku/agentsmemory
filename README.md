@@ -863,7 +863,7 @@ inferred from documentation.
 | MCP registration | `claude mcp add` | `codex mcp add` | **writes `mcp.json`** — Cursor ships no `mcp add` | **writes `claude_desktop_config.json`**, spawning `mcp-stdio` | bridge extension |
 | memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | **the MCP handshake** — it can hold no file | inlined in `AGENTS.md` |
 | slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | **none** | `/M`, … |
-| Stop checkpoint | ✅ | ✅ (trust it in `/hooks`) | ❌ hook shape not established | ❌ | in the extension |
+| Stop checkpoint | ✅ | ✅ — native TOML in `config.toml` | ❌ hook shape not established | ❌ | in the extension |
 | `SessionStart` / `SessionEnd` | ✅ | ❌ not registered; not part of the Codex subagent audit | ❌ | ❌ | ❌ |
 | `SubagentStart` / `SubagentStop` | ✅ | ❌ events exist; [payload, feedback, and retry contracts remain to measure](docs/adr/BACKLOG.md) | ❌ | ❌ | ❌ |
 | subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ | ❌ no subagent system |
@@ -878,9 +878,9 @@ Two things worth reading twice:
   `mcp.json`, so a registered-but-unapproved server looks identical on disk to a
   working one. Run `cursor-agent mcp enable agentsmemory` once. The install prints
   this line every time, because a re-install cannot tell whether you have done it.
-- **Only Claude gets the write half.** The Stop checkpoint and the subagent hooks
-  are what ask an agent to persist what it learned. On codex that is one hook you
-  must trust in `/hooks`; on Cursor and Claude Desktop there is none. Those agents
+- **Claude and Codex get the write half.** The Stop checkpoint and the subagent hooks
+  are what ask an agent to persist what it learned. Codex gets the Stop checkpoint
+  as a native `config.toml` hook; Cursor and Claude Desktop get none. Those agents
   recall memory and are never prompted to write it — see
   [ADR-017](docs/adr/ADR-017-a-subagent-is-a-session.md) for why the advisory half
   of a loop does not happen on its own.
@@ -1048,9 +1048,7 @@ so the installer keeps a single representation for its own hook. It deletes the
 JSON file when nothing else remains; foreign hooks are preserved with a warning,
 so migration never erases configuration it does not own.
 
-Two things codex needs that Claude does not, both printed by the installer:
-**trust the hook** (codex skips non-managed hooks until reviewed in `/hooks`), and
-**have the token in the environment** — it is written to
+One thing codex needs that Claude does not is **the token in the environment** — it is written to
 `<CODEX_HOME>/agentsmemory.env` (`0600`) and exported for you by
 `aiagentmemory run --agent codex …`; for plain `codex`, source it from your shell
 rc. A codex sandbox is a whole `CODEX_HOME`, so it also needs its own login:

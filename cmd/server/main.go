@@ -1109,7 +1109,7 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 				window = time.Duration(n) * time.Minute
 			}
 		}
-		stats, err := drawers.RecallStats(r.Context(), teamID, window, 5)
+		stats, err := drawers.RecallStats(r.Context(), teamID, "", window, 5)
 		if err != nil {
 			http.Error(w, "recall stats: "+err.Error(), http.StatusInternalServerError)
 			return

@@ -228,7 +228,7 @@ seam stops being a seam.
 | Unauthenticated → tenant | `auth.Bridge` puts a resolved `tenant.Tenant` on the context; every tool calls `admit` | `internal/mcpserver/writeauth_test.go` `TestAnUnauthenticatedCallIsRefusedBeforeTheRoleCheck` |
 | Read-only role → stored memory | `registrar.addWrite` refuses before the handler runs | `internal/mcptest/roles_test.go` `TestScenarioAMemberMayReadAndMayNotWrite` |
 | One workspace → another | every query is team-scoped | `internal/mcptest` `TestScenarioAnotherWorkspaceSeesNothing` |
-| One wing → another | recall is wing-scoped unless `wing:"*"` | `internal/mcpserver` `TestEveryEnumerationHonoursTheRegistrationWing` |
+| One wing → another | every read declares its wing boundary; scoped reads widen only with `wing:"*"` | `internal/mcptest` `TestEveryReadToolDeclaresItsWingScope` |
 | Stored credentials → an export | credential columns are redacted in the archive | `internal/dataexport/credentials_test.go` `TestExportedCredentialColumnsAreRedacted` |
 
 ## Superseded
