@@ -400,50 +400,80 @@ func seedKey(t *testing.T, db *gorm.DB, id, teamID, userID string, revoked bool)
 	}
 }
 
-// TestRoleGapsFindsOnlyKeysNothingAuthorises pins what the doctor check counts.
+// TestRefusedWritesCountsEveryRoleTheGuardRefuses pins the population, and is a
+// regression test for a real miss: the first version of this counted only the
+// missing and empty roles, so a workspace whose teammates all hold the
+// dashboard's DEFAULT read-only role reported clean while every one of their
+// agents was about to stop filing memories.
 //
-// The two faults are counted apart because they come from different accidents,
-// a key backed by a real role is not a gap, and a REVOKED key is not one either
-// — it cannot authenticate, so reporting it would send an operator looking for
-// a problem that no longer has a holder.
-func TestRoleGapsFindsOnlyKeysNothingAuthorises(t *testing.T) {
+// The three causes are counted apart because they need different answers, a key
+// backed by a writer role is not refused, and a REVOKED key is not either — it
+// cannot authenticate, so reporting it sends an operator hunting a problem with
+// no holder.
+func TestRefusedWritesCountsEveryRoleTheGuardRefuses(t *testing.T) {
 	db := newRoleGapDB(t)
 	seed(t, db, "team-a", "u-writer", "writer")
+	seed(t, db, "team-a", "u-admin", "admin")
+	seed(t, db, "team-a", "u-member", "member")
 	seed(t, db, "team-a", "u-empty", "")
 
-	seedKey(t, db, "k-writer", "team-a", "u-writer", false) // authorised
+	seedKey(t, db, "k-writer", "team-a", "u-writer", false) // may write
+	seedKey(t, db, "k-admin", "team-a", "u-admin", false)   // may write
+	seedKey(t, db, "k-member", "team-a", "u-member", false) // refused, deliberately
+	seedKey(t, db, "k-empty", "team-a", "u-empty", false)   // refused, a fault
 	seedKey(t, db, "k-missing", "team-a", "u-nobody", false)
-	seedKey(t, db, "k-empty", "team-a", "u-empty", false)
 	seedKey(t, db, "k-revoked", "team-a", "u-gone", true) // cannot authenticate
 
-	gaps, err := NewRepo(db).RoleGaps(context.Background())
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
 	if err != nil {
-		t.Fatalf("role gaps: %v", err)
+		t.Fatalf("refused writes: %v", err)
 	}
-	if len(gaps) != 1 {
-		t.Fatalf("want one affected workspace, got %d: %+v", len(gaps), gaps)
+	if len(refused) != 1 {
+		t.Fatalf("want one affected workspace, got %d: %+v", len(refused), refused)
 	}
-	got := gaps[0]
+	got := refused[0]
 	if got.Slug != "acme" {
 		t.Errorf("report names %q, not the workspace slug an operator recognises", got.Slug)
 	}
-	if got.Missing != 1 || got.Empty != 1 || got.Total() != 2 {
-		t.Errorf("want 1 missing + 1 empty (revoked and authorised keys excluded), got %+v", got)
+	if got.Member != 1 || got.Missing != 1 || got.Empty != 1 {
+		t.Errorf("want 1 member + 1 missing + 1 empty, got %+v", got)
+	}
+	if got.Total() != 3 || got.Faults() != 2 {
+		t.Errorf("Total=%d Faults=%d, want 3 and 2 (a chosen member role is not a fault)", got.Total(), got.Faults())
 	}
 }
 
-// TestRoleGapsIsSilentWhenEveryKeyIsBacked keeps the clean path honest: a report
-// that always finds something is a report nobody acts on.
-func TestRoleGapsIsSilentWhenEveryKeyIsBacked(t *testing.T) {
+// TestRefusedWritesSeesADeliberateMemberAlone is the miss, isolated: a workspace
+// with no data faults at all still has agents that stop writing.
+func TestRefusedWritesSeesADeliberateMemberAlone(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-member", "member")
+	seedKey(t, db, "k-member", "team-a", "u-member", false)
+
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
+	if err != nil {
+		t.Fatalf("refused writes: %v", err)
+	}
+	if len(refused) != 1 || refused[0].Member != 1 {
+		t.Fatalf("a member-only workspace reported clean: %+v", refused)
+	}
+	if refused[0].Faults() != 0 {
+		t.Errorf("a chosen member role was counted as a data fault: %+v", refused[0])
+	}
+}
+
+// TestRefusedWritesIsSilentWhenEveryKeyMayWrite keeps the clean path honest: a
+// report that always finds something is a report nobody acts on.
+func TestRefusedWritesIsSilentWhenEveryKeyMayWrite(t *testing.T) {
 	db := newRoleGapDB(t)
 	seed(t, db, "team-a", "u-writer", "writer")
 	seedKey(t, db, "k-writer", "team-a", "u-writer", false)
 
-	gaps, err := NewRepo(db).RoleGaps(context.Background())
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
 	if err != nil {
-		t.Fatalf("role gaps: %v", err)
+		t.Fatalf("refused writes: %v", err)
 	}
-	if len(gaps) != 0 {
-		t.Errorf("a fully authorised palace reported %d gap(s): %+v", len(gaps), gaps)
+	if len(refused) != 0 {
+		t.Errorf("a fully authorised palace reported %d workspace(s): %+v", len(refused), refused)
 	}
 }

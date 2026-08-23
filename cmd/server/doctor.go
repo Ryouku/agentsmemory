@@ -252,15 +252,18 @@ func doctorWindows(ctx context.Context, cfg config.Config, slug, query, drawerID
 
 // doctorRoles reports API keys that authenticate but may not write.
 //
-// The write guard refuses the least-privileged role, and tenantFromKey resolves
-// to it whenever a key's membership row is absent or carries an empty role. That
-// resolution predates the guard and was harmless under it: such a key wrote
-// normally and am_status merely called it a member. Arming the guard turns it
-// into a refusal at write time, per call, which is the worst place to find out.
+// The write guard refuses the least-privileged role. Three populations land
+// there: a deliberately assigned "member" — which is the dashboard's DEFAULT for
+// an invited teammate and is labelled read-only in its own UI — plus the two
+// data faults, an absent membership row and an empty role.
 //
-// No current code path produces the condition, so this reports historical rows —
-// and only an operator holding the database can see them. It takes no --project
-// because the fault belongs to the deployment rather than to one workspace.
+// All three wrote normally before the guard was armed and are refused after it,
+// per call, at write time. Counting only the faults would report a clean palace
+// while every read-only teammate's agent stopped filing memories, so this counts
+// all three and says which is which.
+//
+// It takes no --project because the fault belongs to the deployment rather than
+// to one workspace.
 func doctorRoles(ctx context.Context, cfg config.Config, out io.Writer) error {
 	if err := requireExistingDB(cfg.DBPath); err != nil {
 		return err
@@ -269,43 +272,50 @@ func doctorRoles(ctx context.Context, cfg config.Config, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	gaps, err := svc.tenants.RoleGaps(ctx)
+	refused, err := svc.tenants.RefusedWrites(ctx)
 	if err != nil {
 		return err
 	}
-	return reportRoleGaps(out, gaps)
+	return reportRefusedWrites(out, refused)
 }
 
-// reportRoleGaps renders the role report and returns the verdict as an error so
+// reportRefusedWrites renders the report and returns the verdict as an error so
 // the exit code carries it. Split from the lookup for the same reason reportDrift
 // is: the rendering is what an operator reads, and a report that needs a database
 // to exercise is a report that quietly stops saying anything.
 //
-// It prints team slugs and counts, never key material and never a token prefix:
-// a doctor report is pasted into an issue.
-func reportRoleGaps(out io.Writer, gaps []tenant.RoleGap) error {
-	if len(gaps) == 0 {
-		fmt.Fprintln(out, "roles: every active API key has a membership row naming what it may do")
+// It prints workspace slugs and counts, never key material: a doctor report gets
+// pasted into an issue.
+func reportRefusedWrites(out io.Writer, refused []tenant.ReadOnlyKeys) error {
+	if len(refused) == 0 {
+		fmt.Fprintln(out, "roles: every active API key may write")
 		return nil
 	}
 
-	total := 0
-	for _, g := range gaps {
-		total += g.Total()
+	total, faults := 0, 0
+	for _, k := range refused {
+		total += k.Total()
+		faults += k.Faults()
 	}
-	fmt.Fprintf(out, "roles: %d active key(s) across %d workspace(s) resolve to the read-only role\n\n", total, len(gaps))
-	fmt.Fprintf(out, "  %-28s %9s %9s\n", "workspace", "no row", "empty role")
-	fmt.Fprintf(out, "  %s\n", strings.Repeat("-", 48))
-	for _, g := range gaps {
-		slug := g.Slug
+	fmt.Fprintf(out, "roles: %d active key(s) across %d workspace(s) are refused EVERY write tool\n\n", total, len(refused))
+	fmt.Fprintf(out, "  %-26s %8s %8s %8s\n", "workspace", "member", "no row", "empty")
+	fmt.Fprintf(out, "  %s\n", strings.Repeat("-", 54))
+	for _, k := range refused {
+		slug := k.Slug
 		if slug == "" {
-			slug = g.TeamID // a key whose team row is gone still counts
+			slug = k.TeamID // a key whose workspace row is gone still counts
 		}
-		fmt.Fprintf(out, "  %-28s %9d %9d\n", slug, g.Missing, g.Empty)
+		fmt.Fprintf(out, "  %-26s %8d %8d %8d\n", slug, k.Member, k.Missing, k.Empty)
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Each of these authenticates, reads normally, and is REFUSED on every write tool —")
-	fmt.Fprintln(out, "per call, at write time. Give each one the role it should have had (writer for an")
-	fmt.Fprintln(out, "agent that files memories) before this reaches the people holding them.")
-	return fmt.Errorf("%d active key(s) resolve to the read-only role for want of a membership row", total)
+	fmt.Fprintln(out, "Each of these authenticates and reads normally, and is REFUSED on am_add_drawer,")
+	fmt.Fprintln(out, "am_diary_write, am_kg_add and every other write tool — per call, at write time.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  member  a role someone CHOSE, and the default for an invited teammate. If their")
+	fmt.Fprintln(out, "          agent is meant to file memories, promote them to writer before upgrading.")
+	if faults > 0 {
+		fmt.Fprintln(out, "  no row  / empty  no current code path creates either: this is historical data.")
+		fmt.Fprintln(out, "          Give each one the role it should have had.")
+	}
+	return fmt.Errorf("%d active key(s) are refused every write tool", total)
 }

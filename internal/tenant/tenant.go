@@ -313,60 +313,68 @@ func (r *Repo) tenantFromKey(ctx context.Context, key APIKey) Tenant {
 	return Tenant{TeamID: key.TeamID, UserID: key.UserID, Role: role}
 }
 
-// RoleGap counts the active API keys on one team that authenticate correctly but
-// resolve to the least-privileged role because nothing records what they may do.
-type RoleGap struct {
+// ReadOnlyKeys counts, for one workspace, the active API keys the write guard
+// will refuse — split by WHY, because the three causes need different answers.
+type ReadOnlyKeys struct {
 	TeamID string
 	Slug   string
+	// Member holds a deliberately assigned read-only role. This is the dashboard's
+	// DEFAULT for an invited teammate, so it is usually the largest of the three
+	// and the least alarming — but their agents wrote normally until the guard was
+	// armed, so it is also the number an upgrade is most likely to be surprised by.
+	Member int
 	// Missing has no membership row for the key's (team, user) at all; Empty has
-	// one whose role is the empty string. They are counted apart because they
-	// come from different accidents and a reader will want to know which.
+	// one whose role is the empty string. Both are data faults rather than
+	// decisions: no current code path produces either.
 	Missing int
 	Empty   int
 }
 
-// Total reports how many of this team's keys are affected.
-func (g RoleGap) Total() int { return g.Missing + g.Empty }
+// Total reports how many of this workspace's keys are refused every write tool.
+func (k ReadOnlyKeys) Total() int { return k.Member + k.Missing + k.Empty }
 
-// RoleGaps reports every team holding active API keys that tenantFromKey would
-// resolve to RoleMember for want of a membership row, or one with an empty role.
+// Faults reports the subset that nothing chose — a missing or empty role.
+func (k ReadOnlyKeys) Faults() int { return k.Missing + k.Empty }
+
+// RefusedWrites reports every workspace holding active API keys that the write
+// guard refuses, and why.
 //
-// It exists because the write guard turns that resolution into a refusal. Before
-// the guard such a key wrote normally and am_status merely reported its role as
-// "member"; after it, every write tool refuses — per call, at write time, which
-// is the worst place to discover it. No CURRENT code path creates the condition:
-// ValidRole rejects the empty role, all three key-minting paths create the
-// membership in the same transaction or are gated on one, and RemoveMember
-// revokes a member's keys before deleting their row. So a non-zero count here is
-// historical data, and an operator with the database is the only one who can see
-// it.
+// It exists because arming the guard changes what an existing key can do. A
+// member-role key wrote normally before it and is refused after it, per call, at
+// write time — which is the worst place to discover it. Counting the three causes
+// apart is the point: promoting a deliberate member is a decision someone makes,
+// while a missing or empty role is a fault to repair.
 //
-// Read-only, and deliberately across every team: tenancy is per workspace but
-// this fault is a property of the deployment.
-func (r *Repo) RoleGaps(ctx context.Context) ([]RoleGap, error) {
-	var rows []RoleGap
+// Read-only, and deliberately across every workspace: tenancy is per workspace
+// but an upgrade is a property of the deployment. Revoked keys are excluded —
+// they cannot authenticate, so reporting them sends an operator hunting a
+// problem with no holder.
+func (r *Repo) RefusedWrites(ctx context.Context) ([]ReadOnlyKeys, error) {
+	var rows []ReadOnlyKeys
 	if err := r.db.WithContext(ctx).
 		Table("api_keys AS k").
-		Select("k.team_id AS team_id, t.slug AS slug, " +
-			"SUM(CASE WHEN m.user_id IS NULL THEN 1 ELSE 0 END) AS missing, " +
-			"SUM(CASE WHEN m.user_id IS NOT NULL AND m.role = '' THEN 1 ELSE 0 END) AS empty").
+		Select("k.team_id AS team_id, t.slug AS slug, "+
+			"SUM(CASE WHEN m.role = ? THEN 1 ELSE 0 END) AS member, "+
+			"SUM(CASE WHEN m.user_id IS NULL THEN 1 ELSE 0 END) AS missing, "+
+			"SUM(CASE WHEN m.user_id IS NOT NULL AND m.role = '' THEN 1 ELSE 0 END) AS empty",
+			string(RoleMember)).
 		Joins("LEFT JOIN memberships m ON m.team_id = k.team_id AND m.user_id = k.user_id").
 		Joins("LEFT JOIN teams t ON t.id = k.team_id").
 		Where("k.revoked_at IS NULL").
 		Group("k.team_id, t.slug").
 		Order("k.team_id").
 		Scan(&rows).Error; err != nil {
-		return nil, fmt.Errorf("count role gaps: %w", err)
+		return nil, fmt.Errorf("count refused writes: %w", err)
 	}
 	// Filtering here rather than in HAVING keeps the aggregate expressions in one
 	// place and the query portable across the backends this runs on.
-	gaps := make([]RoleGap, 0, len(rows))
+	refused := make([]ReadOnlyKeys, 0, len(rows))
 	for _, row := range rows {
 		if row.Total() > 0 {
-			gaps = append(gaps, row)
+			refused = append(refused, row)
 		}
 	}
-	return gaps, nil
+	return refused, nil
 }
 
 // MembershipRole returns the signed-in user's role in a team, or ErrNotMember if

@@ -240,15 +240,38 @@ func TestDoctorRolesRunsWhenSelected(t *testing.T) {
 	}
 }
 
-// TestDoctorRolesExitsNonZeroOnGaps pins that the VERDICT is the exit code, and
-// that a clean report is not an error. Prose is not a gate.
-func TestDoctorRolesExitsNonZeroOnGaps(t *testing.T) {
-	if err := reportRoleGaps(io.Discard, nil); err != nil {
-		t.Errorf("a palace with no role gaps reported an error: %v", err)
+// TestDoctorRolesExitsNonZeroOnRefusals pins that the VERDICT is the exit code,
+// and that a clean report is not an error. Prose is not a gate.
+func TestDoctorRolesExitsNonZeroOnRefusals(t *testing.T) {
+	if err := reportRefusedWrites(io.Discard, nil); err != nil {
+		t.Errorf("a palace where every key may write reported an error: %v", err)
 	}
-	gaps := []tenant.RoleGap{{TeamID: "team-a", Slug: "acme", Missing: 2, Empty: 1}}
-	if err := reportRoleGaps(io.Discard, gaps); err == nil {
-		t.Error("role gaps printed a warning and exited 0, which sits green in every pipeline")
+	// A DELIBERATE member role alone must still fail: those agents stop writing
+	// on upgrade, and a green exit here is exactly the silence being fixed.
+	member := []tenant.ReadOnlyKeys{{TeamID: "team-a", Slug: "acme", Member: 3}}
+	if err := reportRefusedWrites(io.Discard, member); err == nil {
+		t.Error("member-role keys printed a warning and exited 0, which reads as nobody affected")
+	}
+}
+
+// TestDoctorRolesSeparatesAChoiceFromAFault: promoting a teammate and repairing
+// a broken row are different actions, so the report must not blur them.
+func TestDoctorRolesSeparatesAChoiceFromAFault(t *testing.T) {
+	out := &bytes.Buffer{}
+	_ = reportRefusedWrites(out, []tenant.ReadOnlyKeys{
+		{TeamID: "team-a", Slug: "acme", Member: 2, Missing: 1},
+	})
+	got := out.String()
+	for _, want := range []string{"acme", "3 active key(s)", "promote them to writer", "historical data"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report is missing %q:\n%s", want, got)
+		}
+	}
+
+	clean := &bytes.Buffer{}
+	_ = reportRefusedWrites(clean, []tenant.ReadOnlyKeys{{TeamID: "team-a", Slug: "acme", Member: 2}})
+	if strings.Contains(clean.String(), "historical data") {
+		t.Errorf("a workspace with no data faults was told to repair one:\n%s", clean.String())
 	}
 }
 
@@ -256,12 +279,10 @@ func TestDoctorRolesExitsNonZeroOnGaps(t *testing.T) {
 // issue, so it carries slugs and counts and never key material.
 func TestDoctorRolesNamesTheWorkspaceNotTheKey(t *testing.T) {
 	out := &bytes.Buffer{}
-	_ = reportRoleGaps(out, []tenant.RoleGap{{TeamID: "team-a", Slug: "acme", Missing: 2, Empty: 1}})
+	_ = reportRefusedWrites(out, []tenant.ReadOnlyKeys{{TeamID: "team-a", Slug: "acme", Member: 2, Empty: 1}})
 	got := out.String()
-	for _, want := range []string{"acme", "3 active key(s)"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("report is missing %q:\n%s", want, got)
-		}
+	if !strings.Contains(got, "acme") {
+		t.Errorf("report does not name the workspace:\n%s", got)
 	}
 	if strings.Contains(got, "team-a") {
 		t.Errorf("report leaks the internal team id where a slug would do:\n%s", got)
