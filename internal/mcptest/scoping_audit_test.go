@@ -354,7 +354,8 @@ func truncate(s string) string {
 // This test does not assert the behaviour is wrong — that is a design decision
 // with a real case on both sides, since a fact like "service X deploys to host Y"
 // is often exactly what another project needs. It pins the behaviour so the
-// decision is visible and cannot change by accident.
+// decision is visible and cannot change by accident: BOTH directions fail, so
+// scoping the graph by wing is as loud as widening it past the workspace.
 func TestKnowledgeGraphIsWorkspaceWideNotWingScoped(t *testing.T) {
 	a, b := mcptest.Pair(t, "wing_alpha", "wing_beta")
 
@@ -364,8 +365,15 @@ func TestKnowledgeGraphIsWorkspaceWideNotWingScoped(t *testing.T) {
 
 	got := b.MustCall(t, "am_kg_query", map[string]any{"entity": "alpha-billing-service"})
 	if !strings.Contains(got, "alpha-internal-idp") {
-		t.Skip("the graph appears to be wing-scoped after all — this test records the opposite; " +
-			"re-read it before trusting either")
+		// Deliberately a failure and not a Skip. A skip is green, so the recorded
+		// behaviour could change under a test whose whole purpose is that it
+		// cannot change silently — and the reader would find out from a comment
+		// that had quietly stopped being true.
+		t.Errorf("the knowledge graph is now WING-scoped; this test records it as workspace-wide.\n"+
+			"If that change was deliberate, update this test AND am_kg_query's exemption in\n"+
+			"TestEveryReadToolDeclaresItsWingScope, which cites this behaviour as its reason:\n%s",
+			truncate(got))
+		return
 	}
 	t.Logf("RECORDED: the knowledge graph is workspace-wide. A fact filed from wing_alpha is "+
 		"returned to a wing_beta registration that names no wing:\n%s", truncate(got))
