@@ -122,17 +122,17 @@ func upSection(sqlText string) string {
 // workspace.
 //
 // ⚠ IT MUST NOT MIGRATE THE DATABASE IT INSPECTS, which is why it opens the file
-// directly instead of going through buildServicesWith like doctorRoles and
-// doctorIndex do. Those build the full service stack, and that stack runs goose
-// on the way up. A schema check that migrates first would repair the very drift
-// it exists to report and then announce that everything is present — a check
-// structurally incapable of failing, reporting green from one layer about a
-// question asked of another. The direct open is the whole reason this can fail.
+// directly instead of building services it does not need. The other doctor
+// modes use inspectServices, which likewise disables migrations and index
+// reconciliation. A schema check that migrates first would repair the very
+// drift it exists to report and then announce that everything is present — a
+// check structurally incapable of failing, reporting green from one layer about
+// a question asked of another. The direct open is the whole reason this can fail.
 func doctorSchema(_ context.Context, cfg config.Config, out io.Writer) error {
 	if err := requireExistingDB(cfg.DBPath); err != nil {
 		return err
 	}
-	gdb, err := openDB(cfg.DBPath, cfg.Debug)
+	gdb, err := openInspectionDB(cfg.DBPath, cfg.Debug)
 	if err != nil {
 		return err
 	}

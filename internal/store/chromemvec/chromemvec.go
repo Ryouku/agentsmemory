@@ -56,6 +56,12 @@ const schemaFile = ".schema"
 // a different model and corrupting the index's vector space.
 var errPrecomputed = errors.New("chromemvec: index stores precomputed embeddings only")
 
+// errReadOnly rejects a write through an index opened for doctor. Returning an
+// error is safer than silently accepting a no-op: a future diagnostic that
+// accidentally selects a mutating method must fail instead of claiming it
+// inspected the original evidence.
+var errReadOnly = errors.New("chromemvec: index opened for read-only inspection")
+
 // Index is a chromem-go database used as the search index for one agentsmemory
 // process. Namespaces (tenant IDs) map one-to-one onto chromem collections, each
 // persisted in its own subdirectory of the database directory.
@@ -63,7 +69,8 @@ var errPrecomputed = errors.New("chromemvec: index stores precomputed embeddings
 // It is safe for concurrent use: chromem guards its own maps, and mu closes the
 // one gap that leaves (see collection).
 type Index struct {
-	db *chromem.DB
+	db       *chromem.DB
+	readOnly bool
 
 	// mu serializes get-or-create. chromem locks the lookup and the creation
 	// separately, so two goroutines touching a brand-new namespace at once can
@@ -83,11 +90,31 @@ func New(dir string) (*Index, error) {
 	if err := ensureSchema(dir); err != nil {
 		return nil, err
 	}
+	return open(dir, false)
+}
+
+// OpenExisting opens a current-layout chromem index without creating,
+// replacing, or repairing anything on disk. It is the doctor path: a missing or
+// stale index is evidence to report, not a boot condition to heal first.
+func OpenExisting(dir string) (*Index, error) {
+	stamp := filepath.Join(dir, schemaFile)
+	current, err := os.ReadFile(stamp)
+	if err != nil {
+		return nil, fmt.Errorf("read chromem schema stamp %q without modifying the index: %w", stamp, err)
+	}
+	if string(current) != schemaVersion {
+		return nil, fmt.Errorf("chromem schema at %q is %q, want %q; refusing to replace it during inspection",
+			dir, current, schemaVersion)
+	}
+	return open(dir, true)
+}
+
+func open(dir string, readOnly bool) (*Index, error) {
 	db, err := chromem.NewPersistentDB(dir, false)
 	if err != nil {
 		return nil, fmt.Errorf("open chromem db at %q: %w", dir, err)
 	}
-	return &Index{db: db}, nil
+	return &Index{db: db, readOnly: readOnly}, nil
 }
 
 // ensureSchema discards an index directory written by an older metadata layout
@@ -123,6 +150,11 @@ func ensureSchema(dir string) error {
 func (i *Index) collection(namespace string) (*chromem.Collection, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.readOnly {
+		return i.db.GetCollection(namespace, func(context.Context, string) ([]float32, error) {
+			return nil, errPrecomputed
+		}), nil
+	}
 	col, err := i.db.GetOrCreateCollection(namespace, nil, func(context.Context, string) ([]float32, error) {
 		return nil, errPrecomputed
 	})
@@ -138,6 +170,9 @@ func (i *Index) collection(namespace string) (*chromem.Collection, error) {
 // rather than being told a collection's width up front the way Qdrant is. A
 // vector of the wrong length fails at query time, when it is actually compared.
 func (i *Index) EnsureNamespace(_ context.Context, namespace string, _ int) error {
+	if i.readOnly {
+		return errReadOnly
+	}
 	_, err := i.collection(namespace)
 	return err
 }
@@ -147,6 +182,9 @@ func (i *Index) EnsureNamespace(_ context.Context, namespace string, _ int) erro
 func (i *Index) Upsert(ctx context.Context, namespace string, points []store.Point) error {
 	if len(points) == 0 {
 		return nil
+	}
+	if i.readOnly {
+		return errReadOnly
 	}
 	col, err := i.collection(namespace)
 	if err != nil {
@@ -197,6 +235,9 @@ func (i *Index) Search(ctx context.Context, namespace string, vector []float32, 
 	col, err := i.collection(namespace)
 	if err != nil {
 		return nil, err
+	}
+	if col == nil {
+		return nil, nil
 	}
 	// chromem rejects a query asking for more results than the collection holds,
 	// while the seam promises that fewer than k hits simply means there were
@@ -249,6 +290,9 @@ func (i *Index) PointsByIDs(ctx context.Context, namespace string, ids []string)
 	if err != nil {
 		return nil, err
 	}
+	if col == nil {
+		return nil, nil
+	}
 	out := make([]store.Point, 0, len(ids))
 	for _, id := range ids {
 		doc, err := col.GetByID(ctx, id)
@@ -279,6 +323,9 @@ func (i *Index) PointsByIDs(ctx context.Context, namespace string, ids []string)
 func (i *Index) SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error {
 	if len(ids) == 0 || len(patch) == 0 {
 		return nil
+	}
+	if i.readOnly {
+		return errReadOnly
 	}
 	col, err := i.collection(namespace)
 	if err != nil {
@@ -326,6 +373,9 @@ func (i *Index) Delete(ctx context.Context, namespace string, ids []string) erro
 	if len(ids) == 0 {
 		return nil
 	}
+	if i.readOnly {
+		return errReadOnly
+	}
 	col, err := i.collection(namespace)
 	if err != nil {
 		return err
@@ -346,6 +396,9 @@ func (i *Index) Count(namespace string) (int, error) {
 	col, err := i.collection(namespace)
 	if err != nil {
 		return 0, err
+	}
+	if col == nil {
+		return 0, nil
 	}
 	return col.Count(), nil
 }
