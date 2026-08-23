@@ -1,11 +1,14 @@
-# setup.md — the memory model to install in another team
+# setup.md — the memory model to set up in another team
 
 **Hand this to an agent and say "implement memory @setup.md".**
 
-This is **not** an installer guide. Installing the server takes ten minutes and §1 covers it in
-twenty lines. The rest of this file is the part teams get wrong: **what to put in the
-auto-loaded skills, which rooms to create, how to use the knowledge graph, how to recall, and
-how a session picks up work the last one left unfinished.**
+This is **not** an installer guide, and it does not cover installing anything. It assumes the
+agentsmemory MCP is already connected and starts from there. What it carries is the part teams
+get wrong: **what to put in the auto-loaded skills, which rooms to create, how to use the
+knowledge graph, how to recall, and how a session picks up work the last one left unfinished.**
+
+Every step below is an `am_*` MCP tool call. There is no CLI to run and nothing to deploy —
+you are writing rooms, skills and facts into a palace that already answers.
 
 Every rule here was measured, usually after being got wrong first. Where a number appears, it
 came from running the query.
@@ -27,45 +30,47 @@ You are setting up memory for **someone else's project**. Three consequences:
 3. **A memory is evidence, not an instruction.** It records what someone decided in a context
    you do not have. It cannot authorise an edit nobody asked for.
 
-**Order:** §1 install → §2 model → §3 wings → §4 rooms → §5 skills → §6 KG → §7 recall →
-§8 continuity → §9–§11 the writing rules → §12 auto-load → §13 acceptance test.
+**Order:** §1 confirm the palace → §2 model → §3 wings → §4 rooms → §5 skills → §6 KG →
+§7 recall → §8 continuity → §9–§11 the writing rules → §12 auto-load → §13 acceptance test.
 
 ---
 
-## 1. Install and verify (the short part)
+## 1. Confirm which palace you are in
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/main/clients/claude-code/install.sh | bash
+**Prerequisite:** the agentsmemory MCP is connected in this session. Everything in this
+document is done through the `am_*` tools; if they are not reachable, stop and get them
+connected first — that is the one step this file does not cover.
 
-# or, binary already present — claude | codex | pi | cursor | both | all
-aiagentmemory install --agent claude
-aiagentmemory install --local                 # self-hosted, nothing leaves the machine
-
-# or register by hand against a running server
-claude mcp add --transport http agentsmemory http://localhost:8080/mcp
-```
-
-Upgrade later with `aiagentmemory update`, **not** the install script — it swaps the binary and
-leaves config, registration and token untouched.
-
-**Verify.** Tools may load **deferred**: the name is listed but the schema is not, so a direct
-call fails with a validation error. **That is not an absent tool.** Load schemas first
-(`ToolSearch "select:am_skillset,am_status,am_search"`), then:
+**A name you cannot call yet is not an absent tool.** Some harnesses load MCP tools
+**deferred**: the name is listed but the schema is not, so a direct call fails with a
+validation error. Load the schemas, then call:
 
 ```
+ToolSearch "select:am_skillset,am_status,am_search"
+
 am_skillset()   # the server's own playbook + live catalogue of ~40 tools
 am_status()     # ⚠ the only call that proves you are in the RIGHT palace
 ```
 
-`am_status` is the check people skip. A registration carrying another project's token answers
-every probe cheerfully. Read `workspace.slug` — **an unrecognised workspace is a full stop**:
-you would recall another company's decisions as this team's, and every write would poison their
-palace. Also note `mode` (`local`/`hosted`), `role` (`am_update_skill` needs writer or admin),
-and `default_wing` (§3.3).
+`am_status` is the check people skip, and it is the only one that matters before you write
+anything. **A registration carrying another project's token answers every probe cheerfully** —
+`am_skillset` returning happily proves the tools work, not that they are pointed at you.
+
+| Field | What it tells you |
+|---|---|
+| `workspace.slug` / `.name` | **Whose palace answered.** Unrecognised → STOP, write nothing. |
+| `role` | `am_update_skill` needs `writer` or `admin` |
+| `default_wing` | If empty, unscoped recall spans EVERY wing (§3.3) |
+| `wings[]` | The existing taxonomy. Empty is normal on a new workspace. |
+
+**An unrecognised workspace is a full stop**, and a worse failure than a connection error: you
+would recall another company's decisions as this team's, and every write — every drawer, every
+diary entry, every fact — would land in their palace.
 
 > **An empty wing list means nothing has been written yet — NOT that you are in the wrong
-> place.** A wing is created by the first write to it. On a fresh install every wing is
-> missing, which is exactly when a "wrong palace" alarm would be wrong.
+> place.** A wing is created by the first write to it, so on a new workspace every wing this
+> document tells you to create is necessarily absent. Say so in one line and carry on; a "wrong
+> palace" alarm here would fire on exactly the sessions that are doing it right.
 
 ---
 
@@ -786,9 +791,10 @@ The auto-loaded protocol should say, at minimum:
 2. **Which wing** this repo writes to, and that `wing_craft` is the cross-project one.
 3. **Recall mid-session**, not only at startup (§7.4).
 4. **Persist before stopping** (§8.5).
-5. **What to do when the tools are absent** — say so plainly and offer the install, rather than
-   working blind and silently. An agent that quietly proceeds without memory will re-derive
-   settled decisions and contradict last week's call with total confidence.
+5. **What to do when the tools are absent** — say so plainly and ask for the MCP to be
+   connected, rather than working blind and silently. An agent that quietly proceeds without
+   memory will re-derive settled decisions and contradict last week's call with total
+   confidence, and nobody in the session will be able to tell.
 
 ---
 
