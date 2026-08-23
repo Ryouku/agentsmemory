@@ -93,7 +93,7 @@ type RecallStats struct {
 	Since    string
 	Searches int
 	Answered int
-	Writes   int // drawers filed in the window, all wings
+	Writes   int // drawers filed in the window and requested wing scope
 	Wings    []WingRecall
 	// Unanswered are recent queries that returned no hits, newest first. These are
 	// the actionable half of the report: each one names a memory the team looked
@@ -152,11 +152,13 @@ func randomID() string {
 }
 
 // RecallStats aggregates a team's recall over the last `since` duration.
+// A non-empty wing narrows every part of the report to that project; an empty
+// wing deliberately reports the whole workspace.
 //
 // Wings with no searches still appear when they hold drawers: a wing that is
 // written to and never read is exactly the pattern worth seeing, and it would be
 // invisible in a search-only report.
-func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Duration, unansweredLimit int) (RecallStats, error) {
+func (s *Service) RecallStats(ctx context.Context, teamID, wing string, since time.Duration, unansweredLimit int) (RecallStats, error) {
 	if since <= 0 {
 		since = 24 * time.Hour
 	}
@@ -174,11 +176,15 @@ func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Dur
 		LastUsed string
 	}
 	var rows []agg
-	if err := s.repo.db.WithContext(ctx).
+	searches := s.repo.db.WithContext(ctx).
 		Model(&searchEventRow{}).
 		Select("wing, COUNT(*) AS searches, SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) AS answered, "+
 			"SUM(CASE WHEN hits > 0 THEN top_score ELSE 0 END) AS sum_top, MAX(created_at) AS last_used").
-		Where("team_id = ? AND created_at >= ?", teamID, cutoff).
+		Where("team_id = ? AND created_at >= ?", teamID, cutoff)
+	if wing != "" {
+		searches = searches.Where("wing = ?", wing)
+	}
+	if err := searches.
 		Group("wing").
 		Scan(&rows).Error; err != nil {
 		return RecallStats{}, fmt.Errorf("aggregate search events: %w", err)
@@ -209,10 +215,14 @@ func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Dur
 		LastFiled string
 	}
 	var counts []wingCount
-	if err := s.repo.db.WithContext(ctx).
+	drawers := s.repo.db.WithContext(ctx).
 		Model(&drawerRow{}).
 		Select("wing, COUNT(*) AS drawers, MAX(filed_at) AS last_filed").
-		Where("team_id = ?", teamID).
+		Where("team_id = ?", teamID)
+	if wing != "" {
+		drawers = drawers.Where("wing = ?", wing)
+	}
+	if err := drawers.
 		Group("wing").
 		Scan(&counts).Error; err != nil {
 		return RecallStats{}, fmt.Errorf("count drawers per wing: %w", err)
@@ -226,11 +236,15 @@ func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Dur
 		w.Drawers, w.LastFiled = c.Drawers, c.LastFiled
 	}
 
-	// Writes in the window, across all wings.
+	// Writes in the window, across every requested wing.
 	var writes int64
-	if err := s.repo.db.WithContext(ctx).
+	writesQuery := s.repo.db.WithContext(ctx).
 		Model(&drawerRow{}).
-		Where("team_id = ? AND filed_at >= ?", teamID, cutoff).
+		Where("team_id = ? AND filed_at >= ?", teamID, cutoff)
+	if wing != "" {
+		writesQuery = writesQuery.Where("wing = ?", wing)
+	}
+	if err := writesQuery.
 		Count(&writes).Error; err != nil {
 		return RecallStats{}, fmt.Errorf("count writes: %w", err)
 	}
@@ -249,9 +263,13 @@ func (s *Service) RecallStats(ctx context.Context, teamID string, since time.Dur
 	// — a suggestion's count is only honest if the paraphrases beyond the first
 	// page are counted too.
 	var unanswered []searchEventRow
-	if err := s.repo.db.WithContext(ctx).
+	unansweredQuery := s.repo.db.WithContext(ctx).
 		Model(&searchEventRow{}).
-		Where("team_id = ? AND created_at >= ? AND hits = 0 AND query <> ''", teamID, cutoff).
+		Where("team_id = ? AND created_at >= ? AND hits = 0 AND query <> ''", teamID, cutoff)
+	if wing != "" {
+		unansweredQuery = unansweredQuery.Where("wing = ?", wing)
+	}
+	if err := unansweredQuery.
 		Order("created_at DESC").
 		Limit(max(unansweredLimit, suggestionScanLimit)).
 		Find(&unanswered).Error; err != nil {

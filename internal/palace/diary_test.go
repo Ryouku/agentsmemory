@@ -182,3 +182,37 @@ func TestDiaryWriteRejectsBadInput(t *testing.T) {
 		t.Fatal("expected error for path-traversal agent name")
 	}
 }
+
+// TestHallwaysDeriveFromADiaryEntry: the third write path, and the one holding
+// most of a real corpus.
+//
+// T2 gave Service.Add its entities and left WriteDiary alone, because the ADR
+// scoped that task to Add and widening it silently would have stopped it being a
+// decision. Measured the day T2 landed: 119 of 383 drawers on the live palace are
+// diary rooms, so 31% of the corpus stayed outside the graph. Half a feature.
+//
+// Diary entries are also the richest source the graph could have — a session
+// summary names the six systems that met, where an ordinary memory names one.
+func TestHallwaysDeriveFromADiaryEntry(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-diary-graph"
+
+	// Each sentence names both systems, so every chunk extracts both and they
+	// co-occur — the same construction the mining test uses, through the diary.
+	entry := strings.Repeat("Redis powers it and Postgres backs it. Redis is fast, Postgres is durable. ", 40)
+	if _, err := svc.WriteDiary(ctx, team, DiaryWriteInput{
+		Agent: "claude", Wing: "wing_acme", Topic: "session", Entry: entry,
+	}); err != nil {
+		t.Fatalf("WriteDiary: %v", err)
+	}
+
+	res, err := svc.RecomputeGraph(ctx, team, "", true)
+	if err != nil {
+		t.Fatalf("RecomputeGraph: %v", err)
+	}
+	if res.Hallways == 0 {
+		t.Error("a diary entry naming two systems repeatedly derived no hallway — the diary path " +
+			"files memories the graph never sees, and it is where most of a real palace lives")
+	}
+}

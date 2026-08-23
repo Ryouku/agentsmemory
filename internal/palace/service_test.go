@@ -498,17 +498,17 @@ func TestRerankBlendsRatherThanOverwrites(t *testing.T) {
 	svc.rerank = &staticReranker{scores: []float64{1, 2}} // B scored higher
 	svc.rerankPool = 2
 
-	blended := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight)
+	blended, _ := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight)
 	if survivors[blended[0].Index].Drawer.ID != "A" {
 		t.Errorf("a mild cross-encoder preference overturned a confident fused score at w=%.2f", DefaultRerankWeight)
 	}
 
 	// w=1 is the handover, kept reachable so the eval can measure what it costs.
-	if over := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 1); survivors[over[0].Index].Drawer.ID != "B" {
+	if over, _ := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 1); survivors[over[0].Index].Drawer.ID != "B" {
 		t.Error("w=1 must hand the decision to the cross-encoder")
 	}
 	// w=0 does not consult it at all.
-	if none := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 0); survivors[none[0].Index].Drawer.ID != "A" {
+	if none, _ := svc.applyRerankWith(context.Background(), "q", survivors, ranked, 0); survivors[none[0].Index].Drawer.ID != "A" {
 		t.Error("w=0 must leave the hybrid order alone")
 	}
 }
@@ -525,7 +525,7 @@ func TestRerankKeepsTheWholePage(t *testing.T) {
 	// Wrong count: upstream's guard rejects it and the hybrid order stands.
 	svc.rerank = &staticReranker{scores: []float64{5}}
 	svc.rerankPool = 3
-	if got := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight); len(got) != 3 {
+	if got, _ := svc.applyRerankWith(context.Background(), "q", survivors, ranked, DefaultRerankWeight); len(got) != 3 {
 		t.Fatalf("page shrank to %d", len(got))
 	}
 }

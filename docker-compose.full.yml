@@ -53,19 +53,34 @@ services:
       # silently falls back to the hybrid order — which is exactly how it read in
       # an eval run before the fallback started logging why.
       RERANK_URL: http://reranker:8080/v1
-      # 20, not 50: the cross-encoder scores every pair in a full forward pass, so
-      # cost is linear here. On CPU a drawer-sized pair takes ~0.2-0.5s, and 50 of
-      # them overran a 30s budget during an eval run — which degrades silently to
-      # the hybrid order, the worst possible way to lose a feature.
-      # How many fused candidates the cross-encoder scores. This used to say
-      # RERANK_TOP_K, which the server has never read — so the stack advertised a
-      # pool of 20 while actually running the default 50. The knob is RERANK_POOL.
-      RERANK_POOL: "50"
+      # How many fused candidates the cross-encoder scores. Cost is LINEAR: it
+      # scores every pair in a full forward pass. Measured on this stack
+      # 2026-08-21 with drawer-sized documents: ~435ms per document, so
+      # 1 doc 0.45s · 10 docs 4.1s · 25 docs 10.9s · 50 docs 21.8s.
+      #
+      # It said 50 until 2026-08-21, and the comment directly above it argued for
+      # 20 on the grounds that 50 "overran a 30s budget ... which degrades silently
+      # to the hybrid order, the worst possible way to lose a feature." The comment
+      # was right and the value contradicted it. What actually happened was worse
+      # than silent degradation: an MCP session's searches timed out 3 times out of
+      # 3 and received NOTHING, because the client gave up long before the server's
+      # own 90s budget did.
+      #
+      # (This block has form: it once said RERANK_TOP_K, which the server has never
+      # read, so the stack advertised a pool of 20 while running the default 50.)
+      #
+      # What a larger pool BUYS is still unmeasured at any size. Raise it if your
+      # cross-encoder is on a GPU — and keep RERANK_TIMEOUT above pool x per-doc
+      # cost, or every search degrades.
+      RERANK_POOL: "10"
       # How much the cross-encoder decides versus the hybrid score it refines.
       # 1.0 lets it overwrite the lexical evidence entirely, which measurably
       # ranks worse; see `agentsmemory eval` and its weight sweep.
       RERANK_WEIGHT: "0.5"
-      RERANK_TIMEOUT: "90s"
+      # Shorter than any client will wait, so the SERVER gives up first and returns
+      # the fused order it already has. At 90s it never did: the caller died
+      # holding nothing while a perfectly good page sat one fallback away.
+      RERANK_TIMEOUT: "10s"
 
   qdrant:
     image: qdrant/qdrant:v1.15.0

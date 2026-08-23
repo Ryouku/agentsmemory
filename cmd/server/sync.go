@@ -106,7 +106,7 @@ func syncIndex(ctx context.Context, cfg config.Config, recreate, repairPayload b
 			}
 		}
 		if repairPayload {
-			n, err := repairNamespacePayload(ctx, gdb, index, ns)
+			n, err := repairNamespacePayload(ctx, gdb, hybrid, ns)
 			if err != nil {
 				return fmt.Errorf("repair payload for %q: %w", ns, err)
 			}
@@ -134,7 +134,14 @@ func syncIndex(ctx context.Context, cfg config.Config, recreate, repairPayload b
 // are missing, and on a large palace the difference is minutes against days. The
 // rows are paged so a corpus of any size costs bounded memory, and points are
 // grouped by (wing, room) so one HTTP call labels thousands at a time.
-func repairNamespacePayload(ctx context.Context, gdb *gorm.DB, index *qdrant.Client, namespace string) (int, error) {
+//
+// dst is the HYBRID, not the index. It was the raw Qdrant client, which repaired
+// the index and left the source of truth stale — so the very next `sync` replayed
+// that stale payload back over the repair. Two commands that undo each other, and
+// the one an operator reaches for first is the one that loses. A reviewer caught
+// this AFTER a commit message claimed it had been fixed; the type of the payload
+// map had been changed and the receiver had not.
+func repairNamespacePayload(ctx context.Context, gdb *gorm.DB, dst store.VectorStore, namespace string) (int, error) {
 	const page = 2000
 	repo := palace.NewRepo(gdb)
 	repaired := 0
@@ -152,13 +159,13 @@ func repairNamespacePayload(ctx context.Context, gdb *gorm.DB, index *qdrant.Cli
 			byLabel[key] = append(byLabel[key], d.ID)
 		}
 		for label, ids := range byLabel {
-			payload := map[string]any{"wing": label[0], "room": label[1]}
+			patch := map[string]string{"wing": label[0], "room": label[1]}
 			for start := 0; start < len(ids); start += 512 {
 				end := start + 512
 				if end > len(ids) {
 					end = len(ids)
 				}
-				if err := index.SetPayload(ctx, namespace, ids[start:end], payload); err != nil {
+				if err := dst.SetPayload(ctx, namespace, ids[start:end], patch); err != nil {
 					return repaired, err
 				}
 				repaired += end - start

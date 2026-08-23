@@ -60,9 +60,24 @@ func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 	}
 	// The counts it used to claim must be gone, or the new number sits beside the
 	// stale one and a reader picks whichever they meet first.
-	for _, stale := range []string{"36 of the planned 37", "All 37 MCP tools", "gives your agent 37 tools"} {
+	for _, stale := range []string{
+		"36 of the planned 37", "All 37 MCP tools", "gives your agent 37 tools",
+		"stateless liveness probe",
+	} {
 		if strings.Contains(text, stale) {
 			t.Errorf("README still says %q — the server exposes %d/%d", stale, wantHosted, wantLocal)
+		}
+	}
+	var reconnectRow string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "`am_reconnect`") {
+			reconnectRow = strings.ToLower(line)
+			break
+		}
+	}
+	for _, want := range []string{"write-gated", "may create backend state"} {
+		if !strings.Contains(reconnectRow, want) {
+			t.Errorf("README am_reconnect row does not explain its backend write; missing %q: %s", want, reconnectRow)
 		}
 	}
 }

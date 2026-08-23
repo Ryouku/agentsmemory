@@ -22,11 +22,11 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerGetDrawer(reg, drawers, usageSvc)
 	registerUpdateDrawer(reg, drawers, usageSvc)
 	registerDeleteDrawer(reg, drawers, usageSvc)
-	registerListDrawers(reg, drawers, usageSvc)
+	registerListDrawers(reg, drawers, usageSvc, scopeSearchToWing)
 	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
 	registerListWings(reg, drawers, usageSvc)
-	registerListRooms(reg, drawers, usageSvc)
+	registerListRooms(reg, drawers, usageSvc, scopeSearchToWing)
 	registerGetTaxonomy(reg, drawers, usageSvc)
 	registerGetAAAKSpec(reg, drawers, usageSvc)
 	registerReconnect(reg, drawers, usageSvc)
@@ -89,8 +89,14 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 				"Paste the exact code, NOT a line number — line numbers move on every edit above them. When the snippet later "+
 				"disappears from the file, search marks this memory STALE instead of letting the next session act on a fact "+
 				"that stopped being true. Anchor whenever a memory explains a specific piece of code.")),
+		mcp.WithBoolean("confirm_new_wing", mcp.Description(
+			"Set true to file an inbox item into a wing that holds no memories yet. Without it that "+
+				"combination is refused, because it is what an undeliverable handoff looks like: a "+
+				"target wing named for the direction of travel (wing_to-x) instead of the project "+
+				"(wing_x) is a wing no session will ever look in. Pass it when the project really "+
+				"has no memories filed for it yet.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -106,6 +112,13 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		content, err := req.RequireString("content")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		// An inbox item into a wing that holds nothing is what an undeliverable
+		// handoff looks like — see handoffRefusal. Refuse here, while the filer
+		// still has the context to correct the name; nobody notices later.
+		if refusal := handoffRefusal(ctx, drawers, t.TeamID, wing, room,
+			req.GetBool("confirm_new_wing", false)); refusal != "" {
+			return mcp.NewToolResultError(refusal), nil
 		}
 		created, err := drawers.Add(ctx, t.TeamID, palace.AddInput{
 			Wing:        wing,
@@ -241,8 +254,9 @@ const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder co
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("get_drawer",
-		mcp.WithDescription("Fetch a single drawer by its id."),
+		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
+		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -252,6 +266,22 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		id, err := req.RequireString("id")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		// A chunked memory had no read path that could return it whole: the query
+		// existed (repo.MemoryChunks) and was called only by update and delete.
+		// An agent handed one chunk of a long note had no second call to complete
+		// it, which is why collapsing a search page to one hit per memory could
+		// not ship on its own.
+		if req.GetBool("whole", false) {
+			chunks, err := drawers.GetMemory(ctx, t.TeamID, id)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			views := make([]drawerView, 0, len(chunks))
+			for _, c := range chunks {
+				views = append(views, toView(c))
+			}
+			return jsonResult(map[string]any{"chunks": views, "count": len(views)}), nil
 		}
 		d, err := drawers.Get(ctx, t.TeamID, id)
 		if err != nil {
@@ -270,8 +300,14 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithString("content", mcp.Description("New verbatim content (re-embedded on change).")),
 		mcp.WithString("wing", mcp.Description("Move the drawer to this wing.")),
 		mcp.WithString("room", mcp.Description("Move the drawer to this room.")),
+		mcp.WithArray("code_anchors", mcp.Description(
+			"REPLACE this memory's code anchors, as [{\"path\":\"internal/x/y.go\",\"snippet\":\"<verbatim lines>\",\"repo\":\"<optional label>\"}]. "+
+				"Send [] to remove them all. Omit the field to leave them untouched. "+
+				"Correcting a memory without re-anchoring it leaves the old anchor pinned to text that "+
+				"changed, so the staleness check meant to protect the memory is what marks the correction "+
+				"out of date — that is the case this exists for.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -296,19 +332,31 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 			v := req.GetString("room", "")
 			patch.Room = &v
 		}
-		d, err := drawers.Update(ctx, t.TeamID, id, patch)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		// Anchors are REPLACED, not merged. This exists for the case that
 		// motivated it: a memory is corrected, and its old anchor still pins the
 		// old text — so the staleness check meant to protect the memory is what
 		// marks the correction out of date. Merging would leave both live.
-		if raw, present := args["code_anchors"]; present {
-			anchors, refusal := anchorReplacement(raw)
-			if refusal != "" {
+		//
+		// Validated BEFORE anything is written. The first version updated the
+		// drawer and then checked the anchors, so a call carrying new content and
+		// a malformed anchor list changed the content and returned an error
+		// announcing that it had refused — a caller reading that error and
+		// retrying would apply the content twice. An argument the caller got
+		// wrong must leave the memory as it found it.
+		raw, wantsAnchors := args["code_anchors"]
+		var anchors []palace.AnchorInput
+		if wantsAnchors {
+			var refusal string
+			if anchors, refusal = anchorReplacement(raw); refusal != "" {
 				return mcp.NewToolResultError(refusal), nil
 			}
+		}
+
+		d, err := drawers.Update(ctx, t.TeamID, id, patch)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if wantsAnchors {
 			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, anchors)
 			if aerr != nil {
 				return mcp.NewToolResultError(aerr.Error()), nil
@@ -325,7 +373,7 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithDescription("Delete a memory by the id of any of its drawers (removes every chunk's metadata and embedding). A memory over the chunk size is several drawers sharing a parent, and deleting one of them would leave the rest live and searchable with nothing to belong to, so all of them go."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -343,10 +391,10 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 }
 
 // registerListDrawers: paginate a team's drawers, optionally filtered by wing/room.
-func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
-		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging."),
-		mcp.WithString("wing", mcp.Description("Only drawers in this wing.")),
+		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
 		mcp.WithNumber("offset", mcp.Description("Number of drawers to skip (default 0).")),
@@ -356,8 +404,17 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if !ok {
 			return errResult, nil
 		}
+		// Resolved exactly as a recall is. am_search has scoped to the
+		// registration's wing since scoping landed and this did not, so a listing
+		// that named no wing enumerated EVERY wing — including other projects'
+		// inboxes, which is the call am_status recommends to a waking agent. A
+		// scope one enumeration route ignores is not a scope.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		list, err := drawers.List(ctx, t.TeamID,
-			req.GetString("wing", ""), req.GetString("room", ""),
+			wing, req.GetString("room", ""),
 			req.GetInt("limit", 50), req.GetInt("offset", 0))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -383,14 +440,62 @@ type searchHitView struct {
 	// into score because the two are not on the same scale — an agent reading the
 	// page should be able to see which signal moved a hit.
 	RerankScore float64 `json:"rerank_score,omitempty"`
+	// Reranked says a cross-encoder actually SCORED this hit. It exists because
+	// rerank_score's absence was ambiguous four ways: no reranker configured, a
+	// reranker at weight 0, a hit below the pool cutoff that was never scored, and
+	// a cross-encoder that genuinely returned 0.0 all produced the same missing
+	// key. The domain has carried this bool since ADR-006 T4 made the telemetry
+	// honest; the agent-facing surface discarded it, so the one reader who acts on
+	// the answer could not see it.
+	// NOT omitempty. The whole reason this field exists is that an absent
+	// rerank_score meant four things at once; dropping the false case would leave
+	// three of them merged. A hit that says reranked:false is a hit the
+	// cross-encoder did not score, stated.
+	Reranked bool `json:"reranked"`
+	// ChunksMatched is how many chunks of this memory were in the ranked pool.
+	// A memory that matched in four places is stronger evidence than one that
+	// matched in one, and ADR-013's collapse would otherwise destroy that signal
+	// silently — which it did, for exactly as long as this field existed in the
+	// domain and not on the wire.
+	ChunksMatched int `json:"chunks_matched,omitempty"`
 	// Truncated says the content above is a snippet around the match, not the
 	// whole memory — fetch it with am_get_drawer when the snippet is not enough.
+	//
+	// It is kept and it is no longer the field to read: it is true for 98% of
+	// hits, and a flag that almost never varies carries no information. Coverage
+	// and Regions below are what an agent can act on.
 	Truncated  bool `json:"content_truncated,omitempty"`
 	FullLength int  `json:"content_length,omitempty"`
+	// Coverage is the fraction of the memory `content` shows, 0..1.
+	//
+	// NOT omitempty: 0 is a real and important value — it means the snippet shows
+	// none of this memory — and this codebase has already shipped one field whose
+	// absence meant four different things at once.
+	Coverage float64 `json:"content_coverage"`
+	// Regions are the OTHER places in this memory that matched, verbatim, in
+	// position order. Present only when there is more than one: a single region is
+	// what `content` already carries, and repeating it would teach a reader to
+	// skip the field.
+	Regions []regionView `json:"regions,omitempty"`
+	// Identity is the memory's own first line — what its author wrote to say what
+	// this is. It is a label to choose by, and nothing generated it.
+	Identity string `json:"identity,omitempty"`
 	// Anchors are the code this memory was written about, with the verdict of the
 	// last verification pass. Stale is the summary an agent should branch on.
 	Anchors []anchorView `json:"code_anchors,omitempty"`
 	Stale   bool         `json:"stale,omitempty"`
+}
+
+// regionView is one matching part of a memory as search reports it: the verbatim
+// text, how many query terms fell inside, and where it starts.
+//
+// Verbatim is the contract, not an implementation detail. add_drawer promises
+// content is "stored exactly, never summarised", and an agent acting on prose
+// this server wrote would be that promise broken at the read end.
+type regionView struct {
+	Text  string `json:"text"`
+	Terms int    `json:"terms_matched"`
+	Start int    `json:"start"`
 }
 
 // anchorView is one code anchor as search reports it.
@@ -405,10 +510,10 @@ type anchorView struct {
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
 func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
-		mcp.WithDescription("Semantically recall drawers most similar to a query. Optionally filter by wing/room and a max cosine distance."),
+		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
-		mcp.WithNumber("limit", mcp.Description("Max results, 1-100 (default 5).")),
-		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for, so one project's memories do not answer another's. Pass another wing to look there instead, or \"*\" to search EVERY wing — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour. SEARCH_SCOPE=workspace makes searching everything the default.")),
+		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse, 1-100 (default 5).")),
+		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
 		mcp.WithNumber("snippet_chars", mcp.Description(
@@ -445,15 +550,60 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore}
+			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
 			ids[i] = h.Drawer.ID
 			if snippetChars > 0 {
 				// The window is centred on the query's own terms, so what comes
 				// back is the part that matched rather than the memory's heading.
-				if snippet := palace.Snippet(h.Drawer.Content, query, snippetChars); snippet != h.Drawer.Content {
+				// chunk 0 (and an unsplit memory) carries the identity line, so its
+				// opening is preserved even when the match is further down.
+				isHead := h.Drawer.ChunkIndex == 0
+				if snippet := palace.SnippetWithHead(h.Drawer.Content, query, snippetChars, isHead); snippet != h.Drawer.Content {
 					views[i].Content = snippet
 					views[i].Truncated = true
 					views[i].FullLength = len([]rune(h.Drawer.Content))
+
+					// Every OTHER place this memory matched, and the line its author
+					// wrote to say what it is.
+					//
+					// content above is one window, chosen by a score that saturates:
+					// once a window holds the query's terms every other window holding
+					// them ties, and ties go to the earliest position. On this corpus a
+					// memory opens with a header line carrying the date, project and
+					// subject, so the opening wins by construction and the body is never
+					// shown — measured across nine real queries, 7 of 9 chosen windows
+					// began within 130 runes of the start and 0 of 9 were beaten by a
+					// later one.
+					//
+					// content_truncated already said a memory was cut. It is true for
+					// 98% of hits, which is why it cannot be acted on: an agent cannot
+					// fetch five whole memories and nothing told it which one hid the
+					// answer. These fields are what let it choose.
+					regions := palace.SnippetRegions(h.Drawer.Content, query, snippetChars)
+					if len(regions) > 1 {
+						// One region is what content already is; repeating it would spend
+						// the page on a duplicate and teach a reader to skip the field.
+						for _, r := range regions {
+							views[i].Regions = append(views[i].Regions, regionView{
+								Text: r.Text, Terms: r.Score, Start: r.Start,
+							})
+						}
+					}
+					views[i].Identity = palace.MemoryIdentity(h.Drawer.Content)
+				}
+				// Coverage is set for EVERY hit, truncated or not.
+				//
+				// Setting it only when the snippet cut something left a hit that
+				// shows the WHOLE memory reporting 0 — which reads as "you see none
+				// of this", the exact opposite of the truth, and is worse than the
+				// uninformative flag it replaces. Found by a mutant that made
+				// coverage a constant and still passed, because the wrong zero on the
+				// untruncated hit supplied the variation the test was looking for.
+				if full := len([]rune(h.Drawer.Content)); full > 0 {
+					views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
+					if views[i].Coverage > 1 {
+						views[i].Coverage = 1 // the head join adds runes the memory does not have
+					}
 				}
 			}
 		}
@@ -477,6 +627,15 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 		out := map[string]any{"hits": views, "count": len(views)}
+		// A zero-hit page from a wing that holds nothing is not a miss, and the two
+		// were indistinguishable: same count, same empty list, same sub-second
+		// reply. Measured against real queries, that confusion produced every hard
+		// failure in the sample.
+		if len(views) == 0 {
+			if note, _ := emptyWingNote(ctx, drawers, t.TeamID, wing); note != "" {
+				out["note"] = note
+			}
+		}
 		if stale > 0 {
 			out["stale_hits"] = stale
 			out["warning"] = "some hits are marked STALE: the code they were written about has changed since. " +
@@ -533,17 +692,26 @@ func registerListWings(reg *registrar, drawers *palace.Service, usageSvc *usage.
 }
 
 // registerListRooms: per-room drawer counts, optionally within one wing.
-func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_rooms",
-		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing."),
-		mcp.WithString("wing", mcp.Description("Only rooms within this wing.")),
+		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only rooms within this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
 		}
-		rooms, err := drawers.Rooms(ctx, t.TeamID, req.GetString("wing", ""))
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's room names and drawer counts were disclosed to another. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		rooms, err := drawers.Rooms(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -583,14 +751,15 @@ func registerGetAAAKSpec(reg *registrar, _ *palace.Service, usageSvc *usage.Serv
 	})
 }
 
-// registerReconnect: a liveness probe over the tenant's vector namespace. In this
-// stateless server it has no cached client to drop (unlike the Python tool); it
-// re-readies the namespace and confirms the backend is reachable.
+// registerReconnect ensures the tenant's vector namespace exists and confirms
+// the backend is reachable. The server has no cached client to drop (unlike the
+// Python tool), but EnsureNamespace may create backend state, so reconnect stays
+// write-gated even though repeating it is idempotent.
 func registerReconnect(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("reconnect",
-		mcp.WithDescription("Re-ready the workspace's vector store and confirm the backend is reachable (a stateless liveness probe)."),
+		mcp.WithDescription("Ensure the workspace's vector namespace exists and confirm the backend is reachable. This idempotent operation is write-gated because it may create backend state."),
 	)
-	reg.add(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -598,6 +767,6 @@ func registerReconnect(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err := drawers.Reconnect(ctx, t.TeamID); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"ok": true, "note": "stateless server: namespace re-readied, backend reachable"}), nil
+		return jsonResult(map[string]any{"ok": true, "note": "vector namespace ready, backend reachable"}), nil
 	})
 }

@@ -3,7 +3,7 @@
 // embeds the slash-command files and the Stop hook, installs them into a Claude
 // config directory, registers the Stop hook and the agentsmemory MCP endpoint,
 // and can optionally pull in the recommended companion extensions
-// (codebase-memory MCP plus the eidos and codex plugins).
+// (the codebase-memory MCP plus the codex review plugin).
 //
 // It supports two installation modes:
 //
@@ -45,13 +45,27 @@ import "embed"
 // system, so that one extension both re-registers the remote agentsmemory tools
 // natively and fires the end-of-turn memory checkpoint.
 //
-//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh hooks/agentsmemory-session-end-hook.sh bootstrap.md extensions/agentsmemory.ts
+//go:embed commands/M.md commands/am.md commands/load-skill.md hooks/agentsmemory-stop-hook.sh hooks/agentsmemory-verify-hook.sh hooks/agentsmemory-session-end-hook.sh hooks/agentsmemory-subagent-start-hook.sh agents/*.md agents/*.toml bootstrap.md extensions/agentsmemory.ts
 var assets embed.FS
 
 // commandAssets are the slash-command files the kit installs, in the order they
 // are written and reported. Both the installer and `update-skill` iterate this
 // one list so a command added here reaches every install path at once.
 var commandAssets = []string{"M.md", "am.md", "load-skill.md"}
+
+// agentAssets are the subagent definitions the kit installs, as BASE NAMES: the
+// extension comes from the kit, because Claude reads markdown with a `tools:`
+// front-matter allowlist and codex reads TOML with `enabled_tools`. Every name
+// here must exist in every dialect an installing kit asks for, which
+// TestEveryShippedAgentDefinitionExistsInEveryDialect asserts.
+//
+// The list is explicit rather than a directory walk because assetSource is
+// ReadFile-only: `update-skill` fetches the same names over HTTP, where there is
+// nothing to walk. TestEveryShippedAgentDefinitionIsInstalled keeps it honest
+// against the directory, because "added the file, forgot the list" is the exact
+// shape that shipped agentsmemory-researcher.md embedded in the binary and
+// written to no disk anywhere.
+var agentAssets = []string{"agentsmemory-researcher"}
 
 // assetSource supplies installable assets by their embed-relative name, e.g.
 // "commands/M.md" or "bootstrap.md". embed.FS satisfies it already, so the

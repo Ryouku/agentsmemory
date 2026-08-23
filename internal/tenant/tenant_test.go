@@ -354,3 +354,126 @@ func TestListMembers(t *testing.T) {
 		}
 	}
 }
+
+// newRoleGapDB returns an in-memory SQLite with the three tables RoleGaps joins,
+// shaped to match the goose migrations.
+func newRoleGapDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE memberships (
+			id TEXT PRIMARY KEY, team_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			role TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE teams (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL,
+			kind TEXT NOT NULL, plan_id TEXT, created_at TEXT NOT NULL)`,
+		`CREATE TABLE api_keys (
+			id TEXT PRIMARY KEY, team_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			name TEXT NOT NULL, prefix TEXT NOT NULL, client_key TEXT NOT NULL,
+			token_hash TEXT NOT NULL, token_enc TEXT NOT NULL,
+			created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT)`,
+	} {
+		if err := db.Exec(ddl).Error; err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+	}
+	if err := db.Exec(`INSERT INTO teams VALUES ('team-a','A','acme','personal',NULL,'2026-06-28T00:00:00Z')`).Error; err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	return db
+}
+
+// seedKey inserts one API key directly, so the test exercises the real query
+// rather than the minting path that cannot produce these rows any more.
+func seedKey(t *testing.T, db *gorm.DB, id, teamID, userID string, revoked bool) {
+	t.Helper()
+	var revokedAt any
+	if revoked {
+		revokedAt = "2026-06-29T00:00:00Z"
+	}
+	if err := db.Exec(`INSERT INTO api_keys VALUES (?,?,?,'k','pfx','ck',?,'', '2026-06-28T00:00:00Z', NULL, ?)`,
+		id, teamID, userID, id+"-hash", revokedAt).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+}
+
+// TestRefusedWritesCountsEveryRoleTheGuardRefuses pins the population, and is a
+// regression test for a real miss: the first version of this counted only the
+// missing and empty roles, so a workspace whose teammates all hold the
+// dashboard's DEFAULT read-only role reported clean while every one of their
+// agents was about to stop filing memories.
+//
+// The three causes are counted apart because they need different answers, a key
+// backed by a writer role is not refused, and a REVOKED key is not either — it
+// cannot authenticate, so reporting it sends an operator hunting a problem with
+// no holder.
+func TestRefusedWritesCountsEveryRoleTheGuardRefuses(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-writer", "writer")
+	seed(t, db, "team-a", "u-admin", "admin")
+	seed(t, db, "team-a", "u-member", "member")
+	seed(t, db, "team-a", "u-empty", "")
+
+	seedKey(t, db, "k-writer", "team-a", "u-writer", false) // may write
+	seedKey(t, db, "k-admin", "team-a", "u-admin", false)   // may write
+	seedKey(t, db, "k-member", "team-a", "u-member", false) // refused, deliberately
+	seedKey(t, db, "k-empty", "team-a", "u-empty", false)   // refused, a fault
+	seedKey(t, db, "k-missing", "team-a", "u-nobody", false)
+	seedKey(t, db, "k-revoked", "team-a", "u-gone", true) // cannot authenticate
+
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
+	if err != nil {
+		t.Fatalf("refused writes: %v", err)
+	}
+	if len(refused) != 1 {
+		t.Fatalf("want one affected workspace, got %d: %+v", len(refused), refused)
+	}
+	got := refused[0]
+	if got.Slug != "acme" {
+		t.Errorf("report names %q, not the workspace slug an operator recognises", got.Slug)
+	}
+	if got.Member != 1 || got.Missing != 1 || got.Empty != 1 {
+		t.Errorf("want 1 member + 1 missing + 1 empty, got %+v", got)
+	}
+	if got.Total() != 3 || got.Faults() != 2 {
+		t.Errorf("Total=%d Faults=%d, want 3 and 2 (a chosen member role is not a fault)", got.Total(), got.Faults())
+	}
+}
+
+// TestRefusedWritesSeesADeliberateMemberAlone is the miss, isolated: a workspace
+// with no data faults at all still has agents that stop writing.
+func TestRefusedWritesSeesADeliberateMemberAlone(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-member", "member")
+	seedKey(t, db, "k-member", "team-a", "u-member", false)
+
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
+	if err != nil {
+		t.Fatalf("refused writes: %v", err)
+	}
+	if len(refused) != 1 || refused[0].Member != 1 {
+		t.Fatalf("a member-only workspace reported clean: %+v", refused)
+	}
+	if refused[0].Faults() != 0 {
+		t.Errorf("a chosen member role was counted as a data fault: %+v", refused[0])
+	}
+}
+
+// TestRefusedWritesIsSilentWhenEveryKeyMayWrite keeps the clean path honest: a
+// report that always finds something is a report nobody acts on.
+func TestRefusedWritesIsSilentWhenEveryKeyMayWrite(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-writer", "writer")
+	seedKey(t, db, "k-writer", "team-a", "u-writer", false)
+
+	refused, err := NewRepo(db).RefusedWrites(context.Background())
+	if err != nil {
+		t.Fatalf("refused writes: %v", err)
+	}
+	if len(refused) != 0 {
+		t.Errorf("a fully authorised palace reported %d workspace(s): %+v", len(refused), refused)
+	}
+}

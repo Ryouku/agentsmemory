@@ -24,9 +24,12 @@ type skillCaller struct{ t tenant.Tenant }
 
 func (c skillCaller) Team() string { return c.t.TeamID }
 func (c skillCaller) User() string { return c.t.UserID }
-func (c skillCaller) CanWrite() bool {
-	return c.t.Role == tenant.RoleWriter || c.t.Role == tenant.RoleAdmin
-}
+
+// CanWrite defers to the one definition the whole MCP surface uses, so the skill
+// service and the registration cannot come to different conclusions about the
+// same role. It was the only role check in this package for a long time — the
+// predicate was right and it had one consumer.
+func (c skillCaller) CanWrite() bool { return canWrite(c.t.Role) }
 
 // registerListSkills: list the team's centralised skills as metadata (no bodies),
 // so an agent can see what is available before loading one.
@@ -56,7 +59,7 @@ func registerUpdateSkill(reg *registrar, skills *skill.Service, usageSvc *usage.
 		mcp.WithString("content", mcp.Required(), mcp.Description("The new skill body.")),
 		mcp.WithString("description", mcp.Description("Optional short description of the skill.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

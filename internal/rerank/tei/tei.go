@@ -53,12 +53,17 @@ const maxBatch = 32
 type Client struct {
 	endpoint string
 	http     *http.Client
+	// budget bounds the COMPLETE Rerank call. http.Client.Timeout bounds each
+	// request, and a pool larger than maxBatch is several requests: at pool 100
+	// and a 10s timeout, four batches taking nine seconds each is 36 seconds
+	// without a single one timing out, while every caller has already given up.
+	budget time.Duration
 }
 
 // New constructs a Client for the given base URL (e.g. http://host:12434).
-// timeout bounds each batched call: cross-encoding a full pool is the slowest
-// step in search, and recall must degrade rather than hang when the box is
-// loaded.
+// timeout bounds the WHOLE call — every batch a pool is split into, not each one
+// — because cross-encoding a full pool is the slowest step in search and recall
+// must degrade rather than hang when the box is loaded.
 //
 // baseURL may name the server ("http://host:12434"), a version prefix
 // ("http://host:8080/v1"), or the full route ("http://host:8080/v1/rerank"):
@@ -76,6 +81,7 @@ func New(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		endpoint: endpoint,
 		http:     &http.Client{Timeout: timeout},
+		budget:   timeout,
 	}
 }
 
@@ -155,6 +161,15 @@ func decodeResults(data []byte) ([]rerankResult, error) {
 func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	// One deadline over every batch. Without it the timeout is per REQUEST and a
+	// pool of 100 is four of them, so the promised budget was silently multiplied
+	// by the number of batches — and the fail-open path, whose entire purpose is
+	// to give up before the caller does, could not be reached.
+	if c.budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.budget)
+		defer cancel()
 	}
 	scores := make([]float64, len(texts))
 	for start := 0; start < len(texts); start += maxBatch {

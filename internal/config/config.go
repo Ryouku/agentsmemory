@@ -191,30 +191,38 @@ type Config struct {
 	// of the query, not of the corpus.
 	BM25Weight string
 
-	// Fusion selects how vector and lexical evidence combine: "linear" (the
-	// default weighted blend, tuned by BM25Weight) or "rrf" (reciprocal-rank
-	// fusion, which bounds either signal's influence to a rank position).
+	// Fusion selects how vector and lexical evidence combine: "rrf" (the default
+	// reciprocal-rank fusion, which bounds either signal's influence to a rank
+	// position) or "linear" (the weighted blend tuned by BM25Weight).
 	//
 	// It matters most where lexical evidence is unreliable. On a large diverse
 	// palace the eval measured BM25 fusion BELOW vector alone, and because the
 	// cross-encoder's pool is taken off the fused head, the damage compounded:
-	// the reranker never saw what fusion buried. RRF was the best arm there.
-	// Run `agentsmemory eval` on your own corpus before switching — that is what
-	// the rrf arm in its table is for.
+	// the reranker never saw what fusion buried. RRF was the best arm there, which
+	// is why it ships. Run `agentsmemory eval` on your own corpus before changing it.
 	Fusion string
 
-	// ClosetBoost scales the closet curation prior in ranking: 1 (default)
-	// keeps the full boost, 0 disables it. On a curated palace the boost
+	// LexNorm selects how raw BM25 scores are normalised before fusion:
+	// "page-max" (the default and what production has always done), "ceiling", or
+	// "saturating". The anchored transforms measure a candidate's lexical score
+	// against what the QUERY could have attained rather than against whichever
+	// candidate happened to win the page, so the lexical channel stops shouting
+	// when nothing in the page is a good lexical match.
+	//
+	// DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than
+	// magnitudes, so there is no lexical magnitude to normalise.
+	LexNorm string
+
+	// ClosetBoost scales the closet curation prior in ranking: 0 (the default)
+	// disables it, while 1 restores the full boost. On a curated palace the boost
 	// promotes what a human chose to keep; on a mined-transcript corpus the
 	// eval measured it demoting correct answers, and the operator is the one
 	// who knows which corpus theirs is.
 	//
-	// NOTE: 0 is a MEANINGFUL value here, not "unset", so this field's zero value
-	// silently turns the prior off. Build a Config from Default() (as
-	// configFromCmd does) rather than as a bare literal. The alternative — reading
-	// 0 as "use the default" — is the footgun RerankWeight already carries, where
-	// the one value an operator would pick to disable a feature is the one value
-	// that re-enables it.
+	// NOTE: 0 is a MEANINGFUL value here, not "unset": opting in requires a
+	// positive value. This deliberately avoids the footgun RerankWeight carries,
+	// where the one value an operator would pick to disable a feature is treated
+	// as "use the default" and re-enables it.
 	ClosetBoost float64
 
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
@@ -274,7 +282,7 @@ type Config struct {
 	// in this set may edit the GLOBAL skillset (the am_skillset wakeup playbook)
 	// that every tenant shares. It is a deploy-time decision carried as process
 	// config (env SUPERADMIN_EMAILS, comma-separated), NOT a database row or a
-	// per-team role — mirroring how the sibling forumchat project gates its
+	// per-team role — mirroring how a sibling project on this stack gates its
 	// god-mode surface. Empty means no superadmin: the global skillset can be
 	// seeded on a fresh database but not edited from the dashboard.
 	SuperAdminEmails []string
@@ -308,11 +316,21 @@ func Default() Config {
 		OllamaEmbedModel: "bge-m3",
 		HTTPTimeout:      30 * time.Second,
 		BM25Weight:       "auto",
-		RerankPool:       50,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankPool:       10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
-		ClosetBoost:      1,
-		Fusion:           "linear",
-		RerankTimeout:    90 * time.Second,
-		Debug:            false,
+		ClosetBoost:      0,
+		Fusion:           "rrf",
+		// Spelled here rather than imported: config must not depend on the domain.
+		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the
+		// two spellings cannot drift into two different defaults.
+		LexNorm: "page-max",
+		// A rerank budget must be SHORTER than any client will wait, or the
+		// degradation path can never fire: the server sits inside its own budget
+		// while the caller times out and gets nothing, which is strictly worse than
+		// the fused order it would have returned. Measured 2026-08-21: a pool of 50
+		// costs ~22s on a CPU cross-encoder, an MCP client gave up 3 times out of 3,
+		// and the 90s budget meant the server never once fell back.
+		RerankTimeout: 10 * time.Second,
+		Debug:         false,
 	}
 }

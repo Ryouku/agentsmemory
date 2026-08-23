@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -279,4 +280,51 @@ func equalInt(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// TestRerankBudgetBoundsTheWholeCall: the timeout is a budget for the complete
+// rerank, not for each batch of it.
+//
+// http.Client.Timeout applies per REQUEST, and a pool larger than maxBatch is
+// several sequential requests. At pool 100 and a 10s timeout that is four
+// batches at up to ten seconds each — 40 seconds of "not timing out" while the
+// caller, and the agent behind it, gave up long ago. The fail-open path exists
+// precisely so the server surrenders before the client does, and this made it
+// unreachable for every documented pool above 32.
+func TestRerankBudgetBoundsTheWholeCall(t *testing.T) {
+	const perBatch = 150 * time.Millisecond
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(perBatch)
+		var req struct {
+			Texts []string `json:"texts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		out := make([]map[string]any, len(req.Texts))
+		for i := range out {
+			out[i] = map[string]any{"index": i, "score": 0.5}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+
+	// Four batches at 150ms each is 600ms of work under a 250ms budget.
+	c := New(srv.URL, 250*time.Millisecond)
+	texts := make([]string, maxBatch*4)
+	for i := range texts {
+		texts[i] = "a document"
+	}
+
+	started := time.Now()
+	_, err := c.Rerank(context.Background(), "q", texts)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatalf("four 150ms batches completed inside a 250ms budget — the budget is per batch, not per call")
+	}
+	if elapsed > 3*perBatch {
+		t.Errorf("the call took %s; a 250ms budget must not be multiplied by the %d batches it was split into",
+			elapsed.Round(time.Millisecond), atomic.LoadInt32(&calls))
+	}
 }

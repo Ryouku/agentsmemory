@@ -33,7 +33,17 @@ Make the calibration set honest: negatives that keep the identifiers a real near
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace cmd/server | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestPopulation|TestAbsentPrompt|TestVerifyAbsent|TestEvaluate" -count=1'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+  apk add --no-cache bash >/dev/null
+  if [ -n "$(gofmt -l internal/palace cmd/server)" ]; then echo "gofmt"; exit 1; fi
+  go vet ./... || exit 1
+  go test ./internal/palace/ ./cmd/server/ -run "TestPopulationLabelsSeparateUnreachable|TestAbsentPromptKeepsIdentifiers|TestAbsentCaseOutcomeDropsOnVerifierError|TestAbstentionCalibrationComesFromTheDefaultPage" -count=1 -v 2>&1 | tee /tmp/a1t1.out
+  grep -q -- "--- PASS: TestPopulationLabelsSeparateUnreachable" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbsentPromptKeepsIdentifiers" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbsentCaseOutcomeDropsOnVerifierError" /tmp/a1t1.out || exit 1
+  grep -q -- "--- PASS: TestAbstentionCalibrationComesFromTheDefaultPage" /tmp/a1t1.out || exit 1
+  if grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/a1t1.out; then echo "vacuous or failing"; exit 1; fi
+  go test ./... -count=1'
 ```
 
 ## Tests
@@ -42,7 +52,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 |-----------|------|----------|--------|
 | `TestPopulationLabelsSeparateUnreachable` | `internal/palace/eval_test.go` | a gold outside the retrieved pool is `unreachable`, not `reachable` | — |
 | `TestAbsentPromptKeepsIdentifiers` | `cmd/server/eval_test.go` | the absent prompt does not instruct identifier removal | — |
-| `TestVerifyAbsentDropsOnVerifierError` | `cmd/server/eval_test.go` | a verifier error drops the case; nothing labelled absent survives unverified | — |
+| `TestAbsentCaseOutcomeDropsOnVerifierError` | `cmd/server/eval_test.go` | a verifier error drops the case; nothing labelled absent survives unverified. Named for the extracted decision `absentCaseOutcome` rather than for `verifyAbsent`, because the bug was in the CALLER's handling of the error, not in the check — a test of `verifyAbsent` would have passed throughout | — |
+| `TestAbstentionCalibrationComesFromTheDefaultPage` | `internal/palace/proddepth_test.go` | pre-existing gate, strengthened here: it read only the FIRST `TopRerank:` in the file and this task adds a second, so it was inspecting the new line and no longer watching the one it protects. Now checks every occurrence, and pins the origin separately so "forwarded" is not a hole | — |
 
 ## Invariants
 
@@ -64,4 +75,102 @@ Stop and ask if the identifier-preserving generator yields negatives that anothe
 - The calibration report, the gate criterion and the refusal of unverified cases — that is T2's job.
 - Growing the absent corpus beyond what `--n` produces, and mining hard negatives from real queries instead of generating them (deferred: docs/adr/BACKLOG.md)
 
+## Stop Condition — measured 2026-08-21, and the threshold does not discriminate
+
+Run on the live 449-memory corpus, `--n 25`, depth 20, same checker model for both.
+
+| generator | rejected (another memory answers it) | verified-absent cases |
+|---|---|---|
+| `--style absent` (identifiers KEPT) | **8 of 25 (32%)** | 17 |
+| `--style absent-easy` (identifiers stripped) | 6 of 25 (24%) | 19 |
+
+**Against the Stop Condition as written**: 32% is marginally above the "~30%"
+line, and 17 survivors clears the "fewer than 15" floor. At n=25 the difference
+between 8 rejections and 7 is one case, so the trip is inside the resolution of
+the instrument.
+
+**But the control is the finding, and it falsified the prediction that motivated
+the change.** The expectation was that the easy generator — which strips the
+note's identifiers — would be rejected far less often, because its questions share
+no vocabulary with the corpus. It was rejected 6 times against 8. Two cases apart
+at n=25 is noise. **The identifier-preserving prompt did not measurably change how
+often another memory answers the question.**
+
+**Why the threshold was the wrong instrument.** The rejection rate measures whether
+the CORPUS happens to answer a question. It says nothing about whether the negative
+is harder to SEPARATE from an answerable one, which is the only property the
+calibration curve cares about. A question can keep every identifier, be genuinely
+unanswered, and still be trivially separable — and this measurement could not tell.
+
+**The separation measurement, taken against the same 25 answerable questions.**
+
+| negatives | answerable median | unanswerable median | gap |
+|---|---|---|---|
+| `absent-easy` (identifiers stripped) | 0.364 | 0.427 | **0.063** |
+| `absent` (identifiers KEPT) | 0.364 | 0.394 | **0.030** |
+
+The hard negatives sit HALF as far from answerable questions. That is the property
+the calibration curve depends on, and it is the one the rejection rate could not
+see. **The change is justified; the instrument that seemed to reject it was the
+wrong instrument.**
+
+**And the same run corrected the claim that motivated a sibling change.** Scored
+through the production reranker over 25 answerable and 17 unanswerable cases:
+
+| signal | kind | AUC |
+|---|---|---|
+| **`top_rerank`** | **absolute** | **0.81** |
+| `top_gap` | contrastive | 0.71 |
+| `score_spread` | contrastive | 0.70 |
+| `dist_gap` | contrastive | 0.69 |
+| `dist_spread` | contrastive | 0.61 |
+
+The ABSOLUTE cross-encoder score beats every contrastive shape. A separate
+measurement on wrong-WING detection had found the opposite — a contrastive margin
+at 0.985 against the reranker's 0.841 — and that was generalised here as "every
+strong signal is a difference, every weak one is a position". **That
+generalisation was wrong for this question, and T2's plan to calibrate on the
+production arm's top-1 stands as written.**
+
+The distinction is what the contrast is taken AGAINST. Across wings there is a
+meaningful alternative — is something better in another scope — so the margin
+dominates. Within a single page there is not: five uniformly wrong documents still
+produce a gap, because one of them is slightly less wrong, and the shape says
+nothing about whether any of them answer. The cross-encoder wins because it answers
+the question directly, which `printRerankSeparation`'s own comment said before any
+of this was measured: *"Cosine distance answers 'how similar', which is not the
+question… A cross-encoder score answers 'does this document answer this query',
+which IS the question."*
+
+The contrastive statistics stay, and stay beside the absolute one rather than
+replacing it — that was the point of adding them. What changed is which one the
+evidence now points at.
+
+**Not a reason to withdraw the change.** Keeping identifiers is right on the
+published evidence regardless of this corpus's rejection rate: abstention accuracy
+collapses from 98.0% to 1.1% when the irrelevant passage is merely on-topic, and
+the distractors models handle worst are the semantically related ones. The
+correction here is to the CLAIM, not to the code — and `--style absent-easy` exists
+precisely so the two regimes stay comparable rather than one silently replacing the
+other.
+
+## Mutation Log
+
+- 2026-08-22 · 1c9506a* · mutant killed · exit 1 · `internal/palace/eval.go` · a gold that never entered the pool would be labelled reachable, making a retrieval failure look like a ranking result the arms all got wrong
+
 ## Verification Log
+- 2026-08-21 · 9a88b51* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec	0.022s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.006s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	1.566s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.012s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.224s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.008s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.003s
+  FAIL
+  ```
+- 2026-08-21 · 9a88b51* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-22 · 1c9506a* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

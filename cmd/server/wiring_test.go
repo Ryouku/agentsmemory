@@ -7,9 +7,14 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 )
 
 // A setting is wired only when BOTH halves exist: something puts an operator's
@@ -22,6 +27,20 @@ import (
 // Every one of those compiled, and every one had tests that passed, because the
 // tests exercised the component instead of the wiring. These two check the wiring
 // itself.
+
+// operatorAssigns reports whether a Config field is populated from something an
+// operator controls — `c.String("x")`, `c.Duration("x")`, an env lookup — rather
+// than from `def.X`, which is the default it is supposed to override.
+func operatorAssigns(text, field string) bool {
+	for _, m := range regexp.MustCompile(`(?m)^\s*`+regexp.QuoteMeta(field)+`:\s*(.+?),?\s*$`).FindAllStringSubmatch(text, -1) {
+		v := strings.TrimSpace(m[1])
+		if strings.HasPrefix(v, "def.") || v == "" {
+			continue // the default assigning itself is not an operator setting it
+		}
+		return true
+	}
+	return false
+}
 
 // TestEveryConfigFieldIsPopulatedAndRead fails when a field of config.Config is
 // never assigned from the command line, or never read by anything outside the
@@ -38,7 +57,12 @@ func TestEveryConfigFieldIsPopulatedAndRead(t *testing.T) {
 		t.Fatal("found no exported Config fields — this check has stopped checking anything")
 	}
 
-	// Assignment: `Field:` appears in a composite literal in the command wiring.
+	// Assignment means an OPERATOR can set it — the field is populated from a flag
+	// accessor, not from the defaults. The check used to be `strings.Contains(text,
+	// f+":")`, which `HTTPTimeout: def.HTTPTimeout` satisfies, so a field nothing
+	// exposed passed while the failure message below promised "an operator has no
+	// way to set it". The message was right and the check was not.
+	//
 	// Reading: `.Field` appears anywhere outside the config package itself, where
 	// the declaration and the defaults naturally mention every name.
 	assigned := map[string]bool{}
@@ -54,7 +78,7 @@ func TestEveryConfigFieldIsPopulatedAndRead(t *testing.T) {
 		}
 		text := string(src)
 		for _, f := range fields {
-			if strings.Contains(text, f+":") {
+			if operatorAssigns(text, f) {
 				assigned[f] = true
 			}
 			if strings.Contains(text, "."+f) {
@@ -209,4 +233,114 @@ func configFields(t *testing.T, path string) []string {
 	})
 	sort.Strings(out)
 	return out
+}
+
+// TestLexNormDefaultsAgree: config spells the default normaliser as a literal
+// because internal/config must not import the domain, so the two spellings can
+// drift into two different defaults with nothing failing. This is the mechanical
+// check that stands in for the import.
+func TestLexNormDefaultsAgree(t *testing.T) {
+	if got, want := config.Default().LexNorm, palace.DefaultLexNorm; got != want {
+		t.Errorf("config.Default().LexNorm = %q but palace.DefaultLexNorm = %q — an operator who "+
+			"changes nothing would get a normaliser neither file claims", got, want)
+	}
+	names := palace.LexNormNames()
+	found := false
+	for _, n := range names {
+		if n == config.Default().LexNorm {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the default %q is not among the selectable names %v — the default is unreachable "+
+			"by anyone who states it explicitly", config.Default().LexNorm, names)
+	}
+}
+
+// TestRerankBudgetIsShorterThanAnyClientWaits: the rerank budget must be short
+// enough that the SERVER gives up first.
+//
+// applyRerank fails open — a cancelled or failed rerank returns the fused order —
+// so a slow cross-encoder should cost ranking quality and nothing else. That path
+// can only fire if the server's own budget expires before the caller's. With
+// RerankTimeout at 90 seconds it never did: measured 2026-08-21, a pool of 50 on a
+// CPU cross-encoder cost ~22 seconds, an independent MCP session's searches timed
+// out 3 times out of 3, and each one received NOTHING where a fused page was
+// available the whole time.
+//
+// Ten seconds is not a magic number; it is shorter than any MCP client's patience
+// observed so far and longer than the measured worst case at the default pool
+// (~4.3s). The property this pins is the ordering, not the value.
+func TestRerankBudgetIsShorterThanAnyClientWaits(t *testing.T) {
+	d := config.Default()
+	const clientPatience = 30 * time.Second
+	if d.RerankTimeout >= clientPatience {
+		t.Errorf("RerankTimeout is %s, at or beyond the %s a client is assumed to wait — the "+
+			"fail-open path in applyRerank can never fire, so a slow reranker returns nothing "+
+			"instead of the fused order it already has", d.RerankTimeout, clientPatience)
+	}
+	// And the budget must actually cover the default pool, or every search degrades.
+	worst := time.Duration(d.RerankPool) * 600 * time.Millisecond
+	if d.RerankTimeout < worst {
+		t.Errorf("RerankTimeout %s is below the measured worst case for a pool of %d (%s at "+
+			"600ms/doc) — reranking would be cut off on every search, which is a reranker "+
+			"configured and never used", d.RerankTimeout, d.RerankPool, worst)
+	}
+}
+
+// TestGatedArmMatchesTheShippedDefaults: internal/palace mirrors the shipped
+// fusion and closet defaults, because evalstats cannot import the config package.
+// A mirror with no check is exactly how supersessionGatedArm came to name a
+// pipeline nobody ran — the rule lived in a comment and the comment was not
+// executed.
+func TestGatedArmMatchesTheShippedDefaults(t *testing.T) {
+	d := config.Default()
+	rrf := strings.EqualFold(strings.TrimSpace(d.Fusion), "rrf")
+	closetOn := d.ClosetBoost > 0
+
+	// With a reranker configured, which is what the full stack ships.
+	want := palace.ArmRRFReranked
+	switch {
+	case rrf:
+		want = palace.ArmRRFReranked
+	case closetOn:
+		want = palace.ArmReranked
+	default:
+		want = palace.ArmHybridRerank
+	}
+	if got := palace.SupersessionGatedArm(); got != want {
+		t.Errorf("the supersession gate judges %q, but config.Default() (fusion=%q closet=%.2f) "+
+			"with a reranker is %q.\n"+
+			"  The gate would compare a pipeline nobody runs, and both arms are in the report so "+
+			"the lookup succeeds and says nothing.", got, d.Fusion, d.ClosetBoost, want)
+	}
+}
+
+// TestTheGateAsksTheServiceForItsArm is the check that was missing when
+// SupersessionGatedArmFor shipped with no production caller at all.
+//
+// The selector existed, was correct, and was tested — by a test that called it
+// directly. Every real call site read the package-level default instead, so a
+// deployment with no RERANK_URL was refused as "degraded" rather than judged on
+// ArmRRF, and a linear deployment with a working reranker was silently judged as
+// rrf+rerank: the "gate judges a pipeline nobody runs" defect, reintroduced by
+// the commit that fixed it.
+//
+// runEval needs a database, so the wiring cannot be driven from a unit test. It
+// is read off the source instead — crude, and it fails when the wire is cut,
+// which is the only property that matters here.
+func TestTheGateAsksTheServiceForItsArm(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "eval.go"))
+	if err != nil {
+		t.Fatalf("read eval.go: %v", err)
+	}
+	if !regexp.MustCompile(`printSupersessionGate\([^)]*SupersessionGatedArmFor\(\)`).Match(src) {
+		t.Error("cmd/server/eval.go does not pass the SERVICE's own arm to printSupersessionGate — " +
+			"the gate would judge the shipped default whatever this server is configured with")
+	}
+	if regexp.MustCompile(`palace\.SupersessionGatedArm\(\)`).Match(src) {
+		t.Error("cmd/server/eval.go reads palace.SupersessionGatedArm(), the SHIPPED default's arm. " +
+			"A running eval must gate on the ranking THIS server serves; the package-level value is the " +
+			"pre-registration, not the configuration.")
+	}
 }

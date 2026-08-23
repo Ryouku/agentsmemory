@@ -43,7 +43,7 @@ Bias toward correctness, small diffs, and verified changes.
 You are (re)starting a session. **First** load context from the sources below,
 **then** plan, **then** code. Do not skip the bootstrap even if the task looks
 trivial — the whole point is to ground the work in idiomatic code, polished
-UX/UI, spec intent, code reality, and prior decisions. **Quality and UX/UI are
+UX/UI, project intent, code reality, and prior decisions. **Quality and UX/UI are
 first-class citizens here, gated like correctness — never bolted on at the end.**
 
 ## Step 0 — Language idioms FIRST (hard gate, do not skip)
@@ -109,9 +109,9 @@ Resolve it in this order, first hit wins:
    was created for. It wins over everything below, because it is the wing the
    server itself uses for a write that names none — a derived wing that
    disagrees with it does not move where your memories land, it only makes your
-   report of them wrong. Two live sessions resolved `wing_db-cluster` and
-   `wing_ptx-monorepo` from their git remotes while the registration said
-   `wing_playtrix`, where 1,964 drawers already were and the six-drawer wings
+   report of them wrong. Two live sessions resolved `wing_orders-db` and
+   `wing_storefront` from their git remotes while the registration said
+   `wing_acme`, where 1,964 drawers already were and the six-drawer wings
    were not.
 1. `$AGENTSMEMORY_WING`, if the launcher exported one.
 2. `wing=` in the nearest `.aiagentmemory` / `.aiagentmemory.local`, walking up
@@ -186,9 +186,22 @@ The corollary of the rule above: the palace is a good place to PASS work between
 because it decouples noticing from doing. The finding travels; the execution happens in the
 repository that owns it, in a session that has loaded that repository's context.
 
-To hand something over, file a drawer into the **target project's** wing, room `inbox`:
+To hand something over, file a drawer into the receiving project's wing, room `inbox`.
 
-    am_add_drawer(wing: "wing_<target>", room: "inbox", content: "…")
+**Name that wing the way that project's own sessions name it** — the same rungs and the same
+normalisation as Step 0c, applied to the receiving repository. The wing is named for the PROJECT,
+never for the direction of travel. This is not a hypothetical: two sessions read a `wing_<target>`
+placeholder here and wrote `wing_to-<project>`, and six drawers of real findings went into wings no
+session will ever resolve to. Nobody noticed, because the write succeeded.
+
+So for a repository whose remote is `git@…/acme-billing.git`, the wing is `wing_acme-billing`:
+
+    am_add_drawer(wing: "wing_acme-billing", room: "inbox", content: "…")
+
+The server now refuses an inbox item filed into a wing that holds nothing, since that is what the
+mistake looks like from the outside, and it suggests the name minus the direction. If the project
+genuinely has no memories yet, pass `confirm_new_wing: true` and it files as sent. Read the refusal
+as "check this name", not "you may not do this".
 
 Write it as a finding, not an order, and make it self-contained — the session that reads it will not
 have your conversation. Say what was observed, where, how it was noticed, and what is uncertain. If
@@ -197,10 +210,15 @@ project's context, say that too; the reader is better placed to judge than you a
 
 Then weave a tunnel from the source, so the item keeps its provenance instead of arriving anonymous:
 
-    am_create_tunnel(source_wing: "wing_<yours>", source_room: "…",
-                     target_wing: "wing_<target>", target_room: "inbox", label: "…")
+    am_create_tunnel(source_wing: "wing_<the one you are in>", source_room: "…",
+                     target_wing: "wing_acme-billing", target_room: "inbox", label: "…")
 
-**Reading your own inbox is part of waking up.** Step 1c's recall should include it: an item filed
+**Reading your own inbox is part of waking up.** `am_status` names what is waiting in your wing and
+its hint changes when there is something there — a count of zero and a session that cannot tell are
+reported differently, so an unknown never reads as an all-clear. That count is taken at wake-up:
+an item filed while you are running will not appear, because nothing pushes it — call `am_status`
+again if you want a fresher answer.
+Step 1c's recall should include it: an item filed
 there is a lead to evaluate with the code in front of you, not a queue to work through. Act on it if
 it holds up, close it out by filing what you found, and say plainly when it does not apply any more
 — a stale inbox item that nobody contradicts gets rediscovered every month.
@@ -219,23 +237,31 @@ A wing that does not exist yet is not an error: it is created by the first write
 to it. On a fresh install every wing is missing, which is exactly when a "wrong
 palace" alarm would be wrong.
 
-## Step 1 — Load memory (specs, code, why) — hard gate, do not skip
+## Step 1 — Load memory (intent, code, why) — hard gate, do not skip
 
 All three sources are **MUST**, not "run if convenient." Fire the independent
 calls in parallel where you can; each answers a different question.
 
-- **1a. Specs (intent) — `eidos:spec`.** Invoke the `eidos:spec` skill to load the
-  project's source-of-truth specs (`eidos/*.md`): what the system is *supposed* to
-  do. If the project has no specs, say so and move on. Emit `specs loaded ✓`.
-- **1b. Code graph (reality) — codebase-memory.** Reindex first, then search —
-  never search a stale graph:
-  1. `index_repository(repo_path=<cwd>)` — refresh the code graph (it re-indexes
-     incrementally; `index_status` / `detect_changes` show what moved).
-  2. `search_code(pattern=<task>, project=<repo>)` — locate the symbols, files,
-     and routes the task touches. Reach for `get_architecture` or `trace_path`
-     when you need structure or call paths.
+- **1a. Project intent — use the repository's own sources.** Discover and read
+  what this project actually treats as authoritative before planning. Start with
+  repository instructions and documented conventions, then load the sources
+  relevant to the task: for example `docs/specs/`, an ADR corpus, architecture
+  docs, OpenAPI or schema contracts, product/business rules, or task acceptance
+  criteria. Do not assume a directory shape or a third-party skill. Name the
+  exact sources you found; if none exists, say `no explicit intent source found`
+  and carry that uncertainty into the plan. Emit `intent loaded ✓`.
+- **1b. Code reality — prefer codebase-memory when available.** When the
+  codebase-memory MCP is registered, reindex before searching: first call
+  `index_repository(repo_path=<cwd>)`, then `search_code(pattern=<task>,
+  project=<repo>)`. Reach for `get_architecture` or `trace_path` when structure
+  or call paths matter. Both graph calls are mandatory when that capability
+  exists; a stale graph is worse than no graph because it still answers.
 
-  Both calls are mandatory. Emit `code graph indexed + searched ✓`.
+  When codebase-memory is absent, say so and use targeted source search and
+  reading over the paths, symbols, architecture docs, and tests the task names.
+  Do not treat an optional integration's absence as a blocked gate. Name what
+  you inspected and the limitations of the fallback. After either route, emit
+  `code reality searched ✓`.
 - **1c. Team memory (who + why) — `am_*` MCP.** Four calls, in order:
   - **Read the playbook first** — call `am_skillset`. This is the server's own
     wake-up document: the standing instructions for *this* memory server (which
@@ -272,7 +298,7 @@ calls in parallel where you can; each answers a different question.
     if the idiom skill was not in your local list, it is very likely here. Emit
     `team skills loaded ✓` (or say plainly that the catalogue is empty).
 
-Reconcile the three sources. If the spec (1a), the code (1b), and past decisions
+Reconcile the three sources. If project intent (1a), the code (1b), and past decisions
 (1c) disagree, **surface the conflict** — that's a human decision, not one to
 make silently.
 
@@ -313,9 +339,10 @@ whenever the answer would change what you do next:
 
 ## Step 2 — Plan
 
-Invoke **`eidos:plan`** to turn the loaded context into a structured, multi-step
-plan grounded in the specs (1a) and the code graph (1b). Cite concrete
-`file:line`. Surface unresolved conflicts as decision points, not silent choices.
+Build the structured, multi-step plan directly from the loaded context, using
+the harness's native plan/todo tool. Ground it in project intent (1a) and the
+code reality (1b). Cite concrete `file:line`. Surface unresolved conflicts as
+decision points, not silent choices.
 For user-facing work, carry explicit UX/UI steps (interaction, loading/empty/error
 states, responsiveness, accessibility) as first-class items.
 

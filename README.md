@@ -156,7 +156,7 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | `am_check_duplicate` | ✅ | Is content near-identical to an existing drawer? |
 | `am_list_wings` / `am_list_rooms` / `am_get_taxonomy` | ✅ | Indexed wing/room aggregations of a team's memory |
 | `am_get_aaak_spec` | ✅ | The AAAK compressed-memory dialect reference |
-| `am_reconnect` | ✅ | Re-ready the workspace's vector store (stateless liveness probe) |
+| `am_reconnect` | ✅ | Ensure the workspace's vector namespace exists; write-gated because this may create backend state |
 | `am_diary_write` / `am_diary_read` | ✅ | Append to / read an agent's append-only journal (timestamped, newest-first) |
 | `am_mine` | ✅ | Mine a text payload into chunked drawers (entities + content date) + the closet index; idempotent by source |
 | `am_list_hallways` / `am_delete_hallway` | ✅ | Within-wing entity co-occurrence links (derived from mined entities) |
@@ -438,8 +438,8 @@ A socket has no URL, so agents reach it through `mcp-stdio` — a bridge shipped
 the same binary that speaks MCP on stdin/stdout and forwards to the server:
 
 ```bash
-claude mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
-codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock
+claude mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock --wing wing_acme
+codex  mcp add agentsmemory -- /path/to/agentsmemory mcp-stdio --socket /tmp/agentsmemory.sock --wing wing_acme
 ```
 
 The server prints both lines on startup with its own absolute path filled in, so
@@ -464,21 +464,63 @@ Worth knowing:
 - **One server, many agents.** Each agent spawns its own bridge process, but they
   all share the one server — and therefore one SQLite writer and one embedding
   queue, rather than each opening the database itself.
-- **It works over HTTP too.** `mcp-stdio --url http://host:8080/mcp` (with
-  `--token` for a multi-tenant server) bridges any endpoint, which is the escape
-  hatch for a client that only supports stdio transport.
+- **It works over HTTP too.** `mcp-stdio --url http://host:8080/mcp --wing
+  wing_acme` (with `--token` for a multi-tenant server) bridges any endpoint,
+  which is the escape hatch for a client that only supports stdio transport.
+- **The registration can be project-scoped.** `--wing` becomes
+  `X-Agentsmemory-Wing` on every forwarded request, over HTTP or a socket. A tool
+  call can still pass `wing: "*"` when it deliberately needs every project.
 - **`AGENTSMEMORY_SOCKET` configures both halves** — the server's listen path and
   the bridge's dial path — so the pair cannot drift apart.
+- **`AGENTSMEMORY_WING` configures the bridge's `--wing` value** when a process
+  manager supplies registration scope through the environment:
+
+  ```bash
+  AGENTSMEMORY_WING=wing_acme
+  ```
 - **Socket paths are short.** The kernel caps them near 104 bytes (macOS) or 108
   (Linux); a deeply nested path fails to bind with a bare `invalid argument`.
+
+### The compose files, and which one you want
+
+Five files, composed rather than copied: every stack is the base plus zero or
+more overlays, so there is no variant to keep in sync with another.
+
+| File | What it is | When |
+|------|-----------|------|
+| `docker-compose.yml` | the base — **one** container, embedded chromem index, one volume | one person, one machine. The default, and it stays the default |
+| `docker-compose.full.yml` | overlay: Qdrant + a cross-encoder | recall precision matters more than dependency count, or several machines share an index. **This is what we run** |
+| `docker-compose.ollama.yml` | overlay: the embedder in the stack, *and* points the server at it | you have no Ollama on the host. A profile could start the container but not repoint the server, which is why it is a file |
+| `docker-compose.host.yml` | overlay: host networking — **Linux only** | Ollama on `127.0.0.1:11434` with no `OLLAMA_HOST=0.0.0.0` and no `host.docker.internal`. Does nothing on macOS/Windows, where containers live in a VM |
+| `docker-compose.prod.yml` | hosted multi-workspace mode: dashboard, OAuth, billing | you are running the SaaS shape rather than a personal palace |
+
+Overlays stack. `-f docker-compose.yml -f docker-compose.full.yml -f
+docker-compose.ollama.yml` is a legitimate combination and means all three.
+
+**Every `-f` flag, every time.** An overlay alone is not a complete stack, and
+leaving one off does not fail — it starts a valid *different* stack. Either repeat
+the flags, or fix them once per shell with
+`export COMPOSE_FILE=docker-compose.yml:docker-compose.full.yml`, or put that same
+line in a `.env` beside the compose files to make it this directory's default.
+
+The image every one of them builds comes from the `Dockerfile` at the repo root.
 
 ### Docker Compose (one container)
 
 ```bash
 cp .env.docker.example .env.docker   # point OLLAMA_URL at your Ollama
 docker compose up -d
-claude mcp add --transport http agentsmemory http://localhost:8080/mcp
+
+# then point your agents at it — the kit does the whole wiring, not just the MCP
+aiagentmemory install --local --agent all     # or: claude | codex | cursor | pi
 ```
+
+`--local` is what tells the kit the server is yours: it registers
+`http://localhost:8080/mcp`, prompts for no token, and installs globally unless
+`--sandbox`/`--config-dir` says otherwise. Registering the MCP by hand
+(`claude mcp add --transport http agentsmemory http://localhost:8080/mcp`) still
+works and gives you the tools — but not the protocol, the hooks or the subagent
+definition, which is [the difference between a server and a habit](#the-server-is-inert-without-the-protocol).
 
 Brings up `--local` with the embedded chromem index, so the whole stack is **one
 container and one volume** — `/data/agentsmemory.db` (truth) and
@@ -497,6 +539,52 @@ process binds `:8080` (a published port cannot reach a loopback-bound process),
 so it logs the non-loopback warning on boot; there, the published interface is
 the boundary, and the warning is expected.
 
+### The stack this project runs on
+
+Everything above is a menu. This is the setup the maintainers actually run, and
+the one every measurement in `docs/adr/` was taken against — the base file plus
+the full-quality overlay, with Ollama on the host:
+
+```bash
+# 0. once: an embedder on the host, and the model pulled (see Preparing Ollama)
+ollama pull bge-m3
+
+# 1. the stack
+cp .env.docker.example .env.docker      # point OLLAMA_URL at your Ollama
+docker compose -f docker-compose.yml -f docker-compose.full.yml up -d
+
+# 2. your agents — all four, or name one
+aiagentmemory install --local --agent all
+```
+
+Three containers: the server, Qdrant, and the cross-encoder. First boot pulls the
+reranker model into a volume, so give it a few minutes and watch
+`docker compose ... logs -f reranker` if you are impatient.
+
+**Verify it, rather than assume it.** The server prints what it actually resolved,
+which is the only thing that says the overlay applied:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.full.yml logs agentsmemory | grep 'ranking:'
+# ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50)
+```
+
+`rerank=on(...)` is the line to look for. If it says `rerank=off`, the overlay did
+not apply — you almost certainly dropped one of the two `-f` flags, which starts
+a *valid* base stack rather than failing.
+
+**Redeploying after a change**, including proving the running binary carries it:
+
+```bash
+scripts/redeploy.sh
+```
+
+It refuses to report success on a build it cannot verify: it runs the suite before
+building, greps the binary *inside the running container* for strings the change
+introduced, compares its digest against the image just built, runs one real search
+through `/mcp`, and checks the installed client kit against the checkout. A build's
+success is a claim about the build; this reads the artifact that is serving.
+
 ### Docker Compose (the full-quality stack)
 
 When recall quality matters more than dependency count, a second overlay swaps
@@ -512,11 +600,18 @@ docker compose -f docker-compose.yml -f docker-compose.full.yml run --rm agentsm
 
 That is three services: the server, **Qdrant** as the search index, and a
 **cross-encoder** (`bge-reranker-v2-m3`, served by llama.cpp) that rescores the
-top 50 candidates of every search before the page is cut. The embedder scores a
+top `RERANK_POOL` candidates of every search before the page is cut — **10** in
+this overlay, not the flag's own default of 50. Cost is linear: the cross-encoder
+scores every pair in a full forward pass, measured on this stack at ~435ms per
+document, so 50 candidates is ~22s and MCP clients give up long before the
+server's budget does. (This sentence said 50 while the overlay shipped 10, which
+is the drift `TestDocumentedEnvVarsAreRead` exists to catch one layer down.) The embedder scores a
 drawer against a query it never saw; the cross-encoder reads the pair together,
 which is the sharper judgement — and it only runs over what hybrid ranking
 already surfaced, so the cost is bounded per search rather than per palace. If it
 is down, search falls back to the fused vector+BM25 order instead of failing.
+
+#### No Ollama on the host (`docker-compose.ollama.yml`)
 
 If you have no Ollama at all, a third file adds it — and, unlike a profile,
 points the server at it:
@@ -701,7 +796,7 @@ first one for free:
 |---|---|---|
 | `am_skillset` | Server-side wakeup playbook — which tool, in what order — returned over MCP itself | **Automatic.** Seeded on first boot, including `--local` |
 | `CLAUDE.md` / `AGENTS.md` | The always-on protocol: recall at session start, persist before stopping | `aiagentmemory install` writes `agentsmemory-bootstrap.md` and merges an import into your memory file |
-| `/M`, `/am`, `/load-skill` + the Stop hook | Task-scoped grounding and the end-of-turn checkpoint that stops memory being lost | Same installer |
+| `/M`, `/am`, `/load-skill` + Claude's five hooks | Task-scoped grounding, the end-of-turn checkpoint that stops memory being lost, and the two that make a Claude SUBAGENT a session: `SubagentStart` puts the recall instruction next to its task, `SubagentStop` asks it for what it found. Codex currently installs only the proven `Stop` hook. | Same installer |
 
 So after `docker compose up`, run the kit as well — `--local` wires it to your
 own server:
@@ -727,20 +822,75 @@ anyway instead of reporting "memory tools are off".
 
 ---
 
-## Connect Claude Code, Codex or pi (the `aiagentmemory` kit)
+## Connect Claude Code, Codex, Cursor or pi (the `aiagentmemory` kit)
 
 The `aiagentmemory` binary wires [Claude Code](https://claude.com/claude-code),
-[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
-workspace: it installs the memory-grounded slash commands (`/M`, `/am`,
-`/load-skill`) and the Stop hook, registers the agentsmemory MCP, and can wrap the
-agent CLI so each project runs against its own isolated configuration. It replaces
-the old shell installer; everything ships in one downloadable binary.
+[Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com) or
+[pi](https://pi.dev) into your workspace: it registers the agentsmemory MCP,
+installs the always-on memory protocol, and adds whatever else that agent can
+take — slash commands, lifecycle hooks, a subagent definition whose tool
+allowlist names the `am_*` tools. It replaces the old shell installer; everything
+ships in one downloadable binary.
 
-Claude is the default. `--agent codex` installs the same kit into codex's layout
-(`~/.codex`, `prompts/`, `AGENTS.md`, `hooks.json`) and `--agent pi` into pi's
-(`~/.pi/agent`, `prompts/`, `AGENTS.md`, a bridge extension). `--agent both` is
-Claude + codex; `--agent all` is all three — see [Codex](#codex-agent-codex) and
-[pi](#pi-agent-pi).
+```bash
+aiagentmemory install                          # claude, the default
+aiagentmemory install --agent claude           # the same, said out loud
+aiagentmemory install --agent codex
+aiagentmemory install --agent cursor
+aiagentmemory install --agent claude-desktop
+aiagentmemory install --agent pi
+aiagentmemory install --agent both             # claude + codex
+aiagentmemory install --agent all              # all five
+```
+
+`--agent claude-desktop` needs the **server binary on this machine** — it registers
+a `mcp-stdio` bridge, and a Docker-only install produces no host binary. The
+install refuses rather than writing a command that is not there:
+
+```bash
+go build -o ~/.local/bin/aiagentmemory-server ./cmd/server
+```
+
+### What each agent actually gets
+
+The agents do not offer the same surfaces, and the kit installs what each one has
+rather than pretending. Everything below is measured against a real install, not
+inferred from documentation.
+
+| | **claude** | **codex** | **cursor** | **claude-desktop** | **pi** |
+|---|---|---|---|---|---|
+| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/Library/Application Support/Claude` | `~/.pi/agent` |
+| MCP registration | `claude mcp add` | `codex mcp add` | **writes `mcp.json`** — Cursor ships no `mcp add` | **writes `claude_desktop_config.json`**, spawning `mcp-stdio` | bridge extension |
+| memory protocol | `CLAUDE.md` + `@import` | inlined in `AGENTS.md` | `rules/agentsmemory.mdc`, `alwaysApply: true` | **the MCP handshake** — it can hold no file | inlined in `AGENTS.md` |
+| slash commands | `/M`, `/am`, `/load-skill` | `/prompts:M`, … | **none** — no commands dir | **none** | `/M`, … |
+| Stop checkpoint | ✅ | ✅ — native TOML in `config.toml` | ❌ hook shape not established | ❌ | in the extension |
+| `SessionStart` / `SessionEnd` | ✅ | ❌ not registered; not part of the Codex subagent audit | ❌ | ❌ | ❌ |
+| `SubagentStart` / `SubagentStop` | ✅ | ❌ events exist; [payload, feedback, and retry contracts remain to measure](docs/adr/BACKLOG.md) | ❌ | ❌ | ❌ |
+| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | ❌ | ❌ no subagent system |
+| `--wing` registration scope | ✅ header | ✅ URL query | ✅ header | ✅ `mcp-stdio --wing` | ✅ bridge env |
+| `--sandbox` isolation | ✅ | ✅ | **refused** — no config-dir variable | **refused** — same reason | ✅ |
+| needs a host server binary | ❌ | ❌ | ❌ | **✅ — the stdio bridge** | ❌ |
+
+Two things worth reading twice:
+
+- **Cursor needs one manual step the installer deliberately does not take.**
+  Cursor gates every MCP server behind an approval that is stored outside
+  `mcp.json`, so a registered-but-unapproved server looks identical on disk to a
+  working one. Run `cursor-agent mcp enable agentsmemory` once. The install prints
+  this line every time, because a re-install cannot tell whether you have done it.
+- **Claude and Codex get the write half.** The Stop checkpoint and the subagent hooks
+  are what ask an agent to persist what it learned. Codex gets the Stop checkpoint
+  as a native `config.toml` hook; Cursor and Claude Desktop get none. Those agents
+  recall memory and are never prompted to write it — see
+  [ADR-017](docs/adr/ADR-017-a-subagent-is-a-session.md) for why the advisory half
+  of a loop does not happen on its own.
+- **Every client is told the rules on connection**, whether or not a kit could
+  install a protocol file for it. The server returns `instructions` in the MCP
+  `initialize` response — recall before acting, check `am_status` once, inherit a
+  named `default_wing`, and use `wing: "*"` only for a deliberate cross-project
+  search. That rule is there because a client without it invented an empty
+  namespace and proposed searching every project on every recall
+  ([ADR-021](docs/adr/ADR-021-the-handshake-carries-the-protocol.md)).
 
 Full reference: [`clients/claude-code/README.md`](clients/claude-code/README.md).
 
@@ -766,15 +916,51 @@ dashboard and copy or **Reveal** its key), then registers the agentsmemory MCP i
 one shot. Supply it non-interactively with `--token <key>` or the
 `AGENTSMEMORY_TOKEN` environment variable. Add `--recommended` to also install the
 companion tools: the [codebase-memory](https://github.com/DeusData/codebase-memory-mcp)
-MCP and the eidos and codex plugins. Preview any run with `--dry-run` — it prints
+MCP and the codex review plugin. Preview any run with `--dry-run` — it prints
 every file write and command without touching anything.
 
 ### Two ways to install
 
 | Mode | Command | What it does |
 |------|---------|--------------|
-| **Global** | `aiagentmemory install` | Wires the MCP, commands, and Stop hook into the global `~/.claude`. Wraps the Claude you already run. |
+| **Global** | `aiagentmemory install` | Wires the MCP, commands, all five hooks and the shipped subagent definition into the global `~/.claude`. Wraps the Claude you already run. |
 | **Sandboxed** | `aiagentmemory install --sandbox <name>` | Installs a self-contained config under `~/.sandboxes/<name>`, isolated from every other project and from the global `~/.claude`. |
+
+Sandboxing works by pinning the agent's own config-dir variable
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`) at launch. **Cursor
+exposes no such variable**, so `--agent cursor --sandbox x` is refused rather than
+writing a complete kit into a directory Cursor will never open.
+
+### Command options
+
+Every flag `install` takes. `aiagentmemory install --help` is the authority — this
+table is checked against it.
+
+| Flag | What it does |
+|------|--------------|
+| `--agent <name>` | `claude` (default) · `codex` · `cursor` · `claude-desktop` · `pi` · `both` (claude+codex) · `all` |
+| `--global` | install into the agent's global config dir without the mode prompt |
+| `--sandbox <name>` | install into an isolated config at `~/.sandboxes/<name>` |
+| `--config-dir <dir>` | install into an explicit directory instead |
+| `--local` | wire up a self-hosted `agentsmemory --local` server (`http://localhost:8080/mcp`); no token is prompted for |
+| `--token <key>` | bearer token to present — hosted workspace key, or the one `--local` was started with. `$AGENTSMEMORY_TOKEN`, `$AGENTSMEMORY_LOCAL_TOKEN` |
+| `--mcp-url <url>` | the MCP endpoint (default the hosted service) |
+| `--socket <path>` | register over stdio against a `--local` server on a Unix socket; requires `--local` |
+| `--server-bin <path>` | server binary the `--socket` stdio bridge spawns |
+| `--wing <name>` | scope this registration to one project on every MCP call. The installer uses each client's supported channel: HTTP header (Claude/Cursor), URL query (Codex), bridge flag (Desktop/socket), or pi environment. `wing: "*"` remains an explicit per-call cross-project opt-in |
+| `--scope <scope>` | Claude MCP/plugin scope: `user` (default) · `local` · `project` |
+| `--recommended` | also install codebase-memory MCP and the codex review plugin |
+| `--copy` | seed a sandbox from the agent's global config (logins, MCP servers, plugins, settings). Needs `--sandbox`/`--config-dir` |
+| `--shared-auth` | link the sandbox's credential files to the global config, so one login serves every sandbox |
+| `--claude-bin` / `--codex-bin` / `--pi-bin` | override the agent CLI to drive |
+| `--dry-run` | print every file write and command without touching anything |
+| `--yes`, `-y` | never prompt |
+
+Other subcommands: `verify` (check memories still match the code they describe),
+`mine-claude`, `update` (the binary), `update-skill` (the protocol and commands),
+`init` / `load` (record and launch a project's agent), `run` / `wrap` (drive an
+agent against a sandbox or the global config), `mcp` (call a read-only memory tool
+from the shell).
 
 ### Sandboxed installation (per-project isolation)
 
@@ -786,7 +972,7 @@ credentials. Set one up once, with or without the recommended tools:
 
 ```bash
 aiagentmemory install --sandbox acme               # core: commands, hook, our MCP
-aiagentmemory install --sandbox acme --recommended # + codebase-memory, eidos, codex
+aiagentmemory install --sandbox acme --recommended # + codebase-memory, codex review
 ```
 
 The installer writes into `~/.sandboxes/acme/` and runs every `claude`
@@ -852,12 +1038,17 @@ aiagentmemory run --agent codex acme                 # launch codex with CODEX_H
 | Config dir | `~/.claude` (`CLAUDE_CONFIG_DIR`) | `~/.codex` (`CODEX_HOME`) |
 | Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
 | Always-on memory | `CLAUDE.md` + managed `@import` | `AGENTS.md` with the protocol inlined — codex has no `@import` |
-| Stop hook | `settings.json` | `hooks.json` (same shape and `Stop` semantics) |
+| Stop hook | `settings.json` | native TOML in `config.toml`; an install retires its old `hooks.json` entry |
 | MCP auth | `Authorization: Bearer <token>` header | `bearer_token_env_var = "AGENTSMEMORY_TOKEN"` |
 
-Two things codex needs that Claude does not, both printed by the installer:
-**trust the hook** (codex skips non-managed hooks until reviewed in `/hooks`), and
-**have the token in the environment** — it is written to
+On upgrade, the installer first lands the native TOML hook, then removes only
+agentsmemory's entry from its previous `hooks.json` representation. Codex
+supports both files but merges them and warns when one config layer uses both,
+so the installer keeps a single representation for its own hook. It deletes the
+JSON file when nothing else remains; foreign hooks are preserved with a warning,
+so migration never erases configuration it does not own.
+
+One thing codex needs that Claude does not is **the token in the environment** — it is written to
 `<CODEX_HOME>/agentsmemory.env` (`0600`) and exported for you by
 `aiagentmemory run --agent codex …`; for plain `codex`, source it from your shell
 rc. A codex sandbox is a whole `CODEX_HOME`, so it also needs its own login:
@@ -911,14 +1102,14 @@ aiagentmemory run --agent pi acme                  # launch pi with PI_CODING_AG
 |---|---|---|
 | Config dir | `~/.codex` (`CODEX_HOME`) | `~/.pi/agent` (`PI_CODING_AGENT_DIR`) |
 | Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` |
-| Stop hook | `hooks.json` | none — the checkpoint ships in the extension |
+| Stop hook | `config.toml` | none — the checkpoint ships in the extension |
 | MCP | native, `--bearer-token-env-var` | bridged by the extension |
 
 The token and endpoint are written to `<config dir>/agentsmemory.env` (`0600`)
 and exported by `aiagentmemory run --agent pi …`. A pi sandbox is the whole agent
 dir including `auth.json`, so it starts with no provider credentials.
 `--recommended` adds nothing for pi: codebase-memory is a stdio MCP and the
-eidos/codex plugins are Claude marketplaces.
+codex review plugin is a Claude marketplace.
 
 ---
 
@@ -1069,8 +1260,8 @@ destination is named on the way **in**:
 
 ```bash
 # Self-hosted: straight against the database, no server and no token needed.
-agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_forumchat --out forumchat.ndjson
-agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file forumchat.ndjson --as wing_abc
+agentsmemory wing export --db ~/.agentsmemory/db.sqlite --wing wing_acme --out acme.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file acme.ndjson --as wing_abc
 ```
 
 `--as` is **required**. A bundle names no wing, so importing without a
@@ -1082,7 +1273,7 @@ On a multi-workspace database add `--project <slug>` (it defaults to the single
 
 ```bash
 # Agents / scripts: the same endpoint the mempalace migration uses, plus ?as=
-curl -X POST -H "Authorization: Bearer $KEY" --data-binary @forumchat.ndjson \
+curl -X POST -H "Authorization: Bearer $KEY" --data-binary @acme.ndjson \
   "https://your-host/import?as=wing_abc&recompute=1"
 
 # Browser: project page → "Move a wing" (download a wing, upload a bundle).
@@ -1207,5 +1398,5 @@ is the upstream source this project is derived from. The domain model
 (wings/rooms/drawers/closets/hallways/tunnels/KG/AAAK dialect), the 37-tool MCP
 contract, the hybrid ranking, and idempotent mining are ported; Chroma, local
 ONNX embeddings, and the HNSW repair tooling are dropped in favour of Qdrant +
-Ollama from the start. Reference Go stack patterns follow the sibling
-`forumchat` project (chi · templ · datastar · Ollama · Qdrant · MCP · RRF).
+Ollama from the start. Reference Go stack patterns follow a sibling
+project on the same stack (chi · templ · datastar · Ollama · Qdrant · MCP · RRF).

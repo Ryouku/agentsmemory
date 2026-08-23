@@ -159,7 +159,7 @@ func TestSeedFromGlobalRejectsSelfCopy(t *testing.T) {
 // fire the checkpoint twice. Ours is kept, theirs retired, a user's own hook
 // never matched.
 func TestForeignHookPredicate(t *testing.T) {
-	mine := "bash /Users/x/.sandboxes/acme/" + hookFile
+	mine := bashHookCommand("/Users/x/.sandboxes/acme/" + hookFile)
 	obsolete := foreignHookPredicate(mine)
 
 	if obsolete(mine) {
@@ -175,5 +175,8 @@ func TestForeignHookPredicate(t *testing.T) {
 	}
 	if obsolete("bash /Users/x/.claude/my-own-hook.sh") {
 		t.Error("a hook the user wrote must never be dropped")
+	}
+	if obsolete("run-user-check && bash /Users/x/.claude/" + hookFile) {
+		t.Error("a composite user command containing our filename must never be dropped")
 	}
 }

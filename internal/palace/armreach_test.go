@@ -34,7 +34,13 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 	declared := map[string]token.Pos{}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
+		// VAR as well as CONST. An arm whose name carries a number cannot be a
+		// constant — the name is built with fmt.Sprintf so it can never claim a
+		// value the code does not use — and scanning only constants let exactly
+		// such an arm be declared, documented and never registered while this
+		// check stayed green. That is the very defect this test exists for,
+		// walking straight past it because of how the name was spelled.
+		if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
 			continue
 		}
 		for _, spec := range gen.Specs {
@@ -42,8 +48,22 @@ func TestEveryDeclaredArmIsRegistered(t *testing.T) {
 			if !ok {
 				continue
 			}
-			// Only constants whose declared type is EvalArm.
-			if id, ok := vs.Type.(*ast.Ident); !ok || id.Name != "EvalArm" {
+			// Typed as EvalArm, or — for a var with an inferred type — assigned
+			// from an EvalArm(...) conversion.
+			typed := false
+			if id, ok := vs.Type.(*ast.Ident); ok && id.Name == "EvalArm" {
+				typed = true
+			}
+			for _, v := range vs.Values {
+				call, ok := v.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "EvalArm" {
+					typed = true
+				}
+			}
+			if !typed {
 				continue
 			}
 			for _, n := range vs.Names {

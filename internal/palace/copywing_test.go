@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
@@ -102,4 +103,36 @@ func TestCopyWingValidation(t *testing.T) {
 	if _, err := svc.CopyWing(ctx, "a", "b", ""); err == nil {
 		t.Error("empty wing: want error")
 	}
+}
+
+// TestCopyWingRefusesASearchIndex: a copy reuses stored VECTORS so it need not
+// re-embed, and only a source of truth promises to return them.
+//
+// The capability check used to be "does this store have PointsByIDs". That was
+// the right question until PointsByIDs was promoted onto every VectorStore —
+// after which a bare search index satisfied it, was allowed by the seam to return
+// points with no vector, and the copy silently counted every drawer as skipped
+// while reporting success.
+func TestCopyWingRefusesASearchIndex(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const from, to = "team-copy-from", "team-copy-to"
+	mustAddOne(t, svc, from, AddInput{Wing: "wing_acme", Room: "decisions", Content: "a memory to copy"})
+
+	svc.vectors = indexOnlyStore{svc.vectors}
+
+	_, err := svc.CopyWing(ctx, from, to, "wing_acme")
+	if err == nil {
+		t.Fatal("a copy backed by a search index reported success — it cannot read the vectors, so " +
+			"every drawer is skipped and nothing says so")
+	}
+	if !strings.Contains(err.Error(), "search index") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+}
+
+// indexOnlyStore is a VectorStore that is NOT a SourceOfTruth: it satisfies the
+// seam, including the by-id read, and makes no promise about vectors.
+type indexOnlyStore struct {
+	store.VectorStore
 }

@@ -238,12 +238,28 @@ func (c *Client) SamplePayloadCoverage(ctx context.Context, teamID string, keys 
 	return withKeys, len(resp.Result.Points), nil
 }
 
-// SetPayload attaches payload to existing points WITHOUT touching their vectors,
-// so a palace can be repaired for the cost of a few HTTP calls rather than a full
-// re-embedding. ids are the caller's own ids, mapped to their derived UUIDs.
-func (c *Client) SetPayload(ctx context.Context, namespace string, ids []string, payload map[string]any) error {
-	if len(ids) == 0 {
+// SetPayload merges patch into existing points' payloads WITHOUT touching their
+// vectors, so a palace can be repaired for the cost of a few HTTP calls rather
+// than a full re-embedding. ids are the caller's own ids, mapped to their derived
+// UUIDs. Qdrant's set-payload endpoint merges rather than replaces, which is the
+// contract the seam promises.
+//
+// The values are strings because that is what a payload filter compares — see
+// store.Filter — and this widened from map[string]any when the method was
+// promoted onto store.VectorStore so every backend could be repaired the same
+// way, not only the one this driver talks to.
+func (c *Client) SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error {
+	if len(ids) == 0 || len(patch) == 0 {
 		return nil
+	}
+	payload := make(map[string]any, len(patch))
+	for k, v := range patch {
+		if k == payloadIDKey {
+			// The reserved key maps a point back to the caller's id. Overwriting
+			// it would make the point unfindable under the id it was written with.
+			return fmt.Errorf("qdrant: %q is reserved and cannot be patched", payloadIDKey)
+		}
+		payload[k] = v
 	}
 	pts := make([]string, len(ids))
 	for i, id := range ids {

@@ -27,6 +27,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 
 	"github.com/urfave/cli/v3"
@@ -58,6 +59,12 @@ const jsonRPCInternalError = -32603
 // the other end owns all the state — which is what lets several agents share one
 // server (and one SQLite writer) instead of each opening their own.
 func stdioCommand(def config.Config) *cli.Command {
+	return stdioCommandWithIO(def, os.Stdin, os.Stdout)
+}
+
+// stdioCommandWithIO builds the bridge around explicit streams so the real CLI
+// flag-to-request wiring can be exercised without replacing process globals.
+func stdioCommandWithIO(def config.Config, stdin io.Reader, stdout io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "mcp-stdio",
 		Usage: "Bridge stdio MCP to a running server, so 'claude mcp add' / 'codex mcp add' can spawn it",
@@ -72,13 +79,14 @@ func stdioCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Usage: "Unix socket the server is listening on (takes precedence over --url)"},
 			&cli.StringFlag{Name: "url", Sources: cli.EnvVars("AGENTSMEMORY_URL"), Value: defaultProxyURL, Usage: "MCP endpoint URL when not using a socket"},
 			&cli.StringFlag{Name: "token", Sources: cli.EnvVars("AGENTSMEMORY_TOKEN"), Usage: "API key forwarded as a Bearer token (multi-tenant servers; --local needs none)"},
+			&cli.StringFlag{Name: "wing", Sources: cli.EnvVars("AGENTSMEMORY_WING"), Usage: "registration wing forwarded on every request (omit for workspace scope; use a tool argument of \"*\" for deliberate cross-wing calls)"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
-			up, err := newUpstream(c.String("socket"), c.String("url"), c.String("token"))
+			up, err := newUpstream(c.String("socket"), c.String("url"), c.String("token"), c.String("wing"))
 			if err != nil {
 				return err
 			}
-			return runStdioProxy(ctx, up, os.Stdin, os.Stdout)
+			return runStdioProxy(ctx, up, stdin, stdout)
 		},
 	}
 }
@@ -89,13 +97,14 @@ type upstream struct {
 	client   *http.Client
 	endpoint string
 	token    string
+	wing     string
 }
 
-// newUpstream builds the upstream from the socket/url/token flags. A socket path
-// wins over a URL: it is the more specific instruction, and the two cannot both
-// be honoured.
-func newUpstream(socketPath, rawURL, token string) (*upstream, error) {
-	up := &upstream{endpoint: rawURL, token: token}
+// newUpstream builds the upstream from the socket/url/token/wing flags. A socket
+// path wins over a URL: it is the more specific instruction, and the two cannot
+// both be honoured.
+func newUpstream(socketPath, rawURL, token, wing string) (*upstream, error) {
+	up := &upstream{endpoint: rawURL, token: token, wing: wing}
 
 	if socketPath == "" {
 		if rawURL == "" {
@@ -137,6 +146,9 @@ func (u *upstream) post(ctx context.Context, payload []byte) (*http.Response, er
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if u.token != "" {
 		req.Header.Set("Authorization", "Bearer "+u.token)
+	}
+	if u.wing != "" {
+		req.Header.Set(auth.WingHeader, u.wing)
 	}
 	return u.client.Do(req)
 }

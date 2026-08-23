@@ -68,6 +68,13 @@ func (c *Client) upsertChunk(ctx context.Context, namespace string, points []sto
 		Points []qpoint `json:"points"`
 	}{Points: make([]qpoint, 0, len(points))}
 	for _, p := range points {
+		if _, taken := p.Payload[payloadIDKey]; taken {
+			// The reserved key is how a point maps back to the caller's id. A
+			// payload carrying it would be silently overwritten here and silently
+			// stripped on read — the seam promises the payload round-trips
+			// verbatim, and this is the one key for which that cannot be true.
+			return fmt.Errorf("qdrant: payload key %q is reserved by this driver and cannot be stored", payloadIDKey)
+		}
 		// Copy the caller's payload and add the reserved id key; never mutate
 		// the caller's map.
 		payload := make(map[string]any, len(p.Payload)+1)
@@ -137,6 +144,52 @@ func matchFilter(filter store.Filter) map[string]any {
 		must = append(must, map[string]any{"key": k, "match": map[string]any{"value": filter[k]}})
 	}
 	return map[string]any{"must": must}
+}
+
+// PointsByIDs retrieves points by their derived UUIDs and maps them back onto the
+// caller's own IDs, exactly as Search does.
+//
+// It does not ask for vectors: this is the search index, it stores them only to
+// search with, and a payload audit has no use for a thousand floats per point.
+func (c *Client) PointsByIDs(ctx context.Context, namespace string, ids []string) ([]store.Point, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	uuids := make([]string, len(ids))
+	byUUID := make(map[string]string, len(ids))
+	for i, id := range ids {
+		u := pointID(namespace, id)
+		uuids[i] = u
+		byUUID[u] = id
+	}
+	body := map[string]any{"ids": uuids, "with_payload": true, "with_vector": false}
+	var resp struct {
+		Result []struct {
+			ID      string         `json:"id"`
+			Payload map[string]any `json:"payload"`
+		} `json:"result"`
+	}
+	path := "/collections/" + CollectionName(namespace) + "/points"
+	if err := c.do(ctx, http.MethodPost, path, body, &resp); err != nil {
+		return nil, err
+	}
+	// Qdrant omits ids it does not hold, which is the contract this method
+	// promises, so there is nothing to filter here.
+	out := make([]store.Point, 0, len(resp.Result))
+	for _, r := range resp.Result {
+		// Resolve the caller's id from the POINT ID we asked for, not from the
+		// payload. The payload copy is mutable — a stray SetPayload could rewrite
+		// it — and trusting it would let a request for one id answer with another.
+		id, known := byUUID[r.ID]
+		if !known {
+			// A point nobody asked for. Returning it would let a driver bug
+			// manufacture a drawer the caller never named.
+			continue
+		}
+		delete(r.Payload, payloadIDKey)
+		out = append(out, store.Point{ID: id, Payload: r.Payload})
+	}
+	return out, nil
 }
 
 // Delete removes points by their derived UUIDs, waiting for the deletion to

@@ -34,6 +34,7 @@ func newSocketInstaller(t *testing.T, kit agentKit, socket, serverBin string) (*
 // parse --socket as one of its own flags.
 func TestRegisterSocketMCPClaude(t *testing.T) {
 	inst, rr := newSocketInstaller(t, claudeKit, "/tmp/am.sock", "/opt/bin/agentsmemory")
+	inst.wing = "wing_acme"
 
 	if err := inst.registerSocketMCP(); err != nil {
 		t.Fatalf("registerSocketMCP: %v", err)
@@ -41,7 +42,7 @@ func TestRegisterSocketMCPClaude(t *testing.T) {
 
 	want := []string{
 		"mcp remove --scope user agentsmemory",
-		"mcp add --transport stdio --scope user agentsmemory -- /opt/bin/agentsmemory mcp-stdio --socket /tmp/am.sock",
+		"mcp add --transport stdio --scope user agentsmemory -- /opt/bin/agentsmemory mcp-stdio --socket /tmp/am.sock --wing wing_acme",
 	}
 	if got := renderAll(rr.calls); !equalStrings(got, want) {
 		t.Errorf("command sequence mismatch\n got: %v\nwant: %v", got, want)
@@ -52,6 +53,7 @@ func TestRegisterSocketMCPClaude(t *testing.T) {
 // trailing command and takes no --scope.
 func TestRegisterSocketMCPCodex(t *testing.T) {
 	inst, rr := newSocketInstaller(t, codexKit, "/tmp/am.sock", "/opt/bin/agentsmemory")
+	inst.wing = "wing_acme"
 
 	if err := inst.registerSocketMCP(); err != nil {
 		t.Fatalf("registerSocketMCP: %v", err)
@@ -59,7 +61,7 @@ func TestRegisterSocketMCPCodex(t *testing.T) {
 
 	want := []string{
 		"mcp remove agentsmemory",
-		"mcp add agentsmemory -- /opt/bin/agentsmemory mcp-stdio --socket /tmp/am.sock",
+		"mcp add agentsmemory -- /opt/bin/agentsmemory mcp-stdio --socket /tmp/am.sock --wing wing_acme",
 	}
 	if got := renderAll(rr.calls); !equalStrings(got, want) {
 		t.Errorf("command sequence mismatch\n got: %v\nwant: %v", got, want)

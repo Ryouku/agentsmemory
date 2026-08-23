@@ -2,8 +2,11 @@ package palace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -69,6 +72,38 @@ const (
 	// back to hybrid while the eval's own arms looked fine.
 	ArmProduction EvalArm = "production (Search)"
 )
+
+// productionDeepLimit is the second page size the production path is measured at.
+//
+// ArmProduction asks for DefaultSearchLimit, which is what a caller that passes no
+// limit gets. That is one page size out of the range agents actually use, and it
+// is the small end: an agent that wants more context asks for ten. Whether the
+// answer is THERE at ten is a production question the table could not answer,
+// because every production number in it was a page of five.
+//
+// It is deliberately a second arm rather than a change to the first. The two
+// measure different things and both are real, and the abstention gate calibrates
+// on the default page — moving that would recalibrate the gate as a side effect
+// of adding a row.
+const productionDeepLimit = 10
+
+// ArmProductionDeep is Service.Search at productionDeepLimit. The name carries the
+// number so a row can never claim a depth it did not request.
+var ArmProductionDeep = EvalArm(fmt.Sprintf("production (Search) limit=%d", productionDeepLimit))
+
+// productionLimit is the page size an arm asks Search for.
+//
+// It is a function rather than a literal at each call site because that is the
+// whole content of the difference between these two arms: an arm named limit=10
+// that asks for five is a duplicate row wearing a misleading name, and nothing
+// about the table would look wrong. TestProductionArmsAskForDifferentDepths
+// drives this directly.
+func productionLimit(arm EvalArm) int {
+	if arm == ArmProductionDeep {
+		return productionDeepLimit
+	}
+	return DefaultSearchLimit
+}
 
 // rerankSweep are the blend weights the eval tries alongside production, so how
 // much the cross-encoder should decide is answered by measurement rather than by
@@ -155,6 +190,43 @@ const (
 	CatAbsent = "absent"
 )
 
+// CaseSetOrigin values: whether a run replayed questions somebody saved, or
+// wrote its own that nobody else will ever see.
+const (
+	CaseSetGenerated = "generated"
+	CaseSetReplayed  = "replayed"
+)
+
+// CaseSetID is the identity of a set of questions.
+//
+// It is derived from the CONTENT of the cases and from nothing else — not the
+// file they came from, not its path, not the order they happen to sit in.
+// Reordering one set must not change it, or replaying a saved file produces a
+// different id from the run that wrote it, and an id that changes on a cosmetic
+// difference trains people to ignore it.
+//
+// It is a one-way hash, which is why it is admissible in the committed run
+// record where the queries themselves are not: it identifies a case set to
+// anyone who already holds it, and discloses nothing to anyone who does not.
+func CaseSetID(cases []EvalCase) string {
+	lines := make([]string, 0, len(cases))
+	for _, c := range cases {
+		// A copy, sorted: two orderings of one case's accepted answers are one
+		// case. nil and an empty slice must canonicalise identically, because
+		// ExpectAny is `json:",omitempty"` — an empty slice is written as absent
+		// and read back nil, so any other treatment makes every replay disagree
+		// with the run that saved it.
+		alts := append([]string(nil), c.ExpectAny...)
+		sort.Strings(alts)
+		lines = append(lines, strings.Join([]string{
+			c.Query, c.Expect, strings.Join(alts, "|"), c.Wing, c.category(), c.Distractor,
+		}, "\x1f"))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\x1e")))
+	return "cs-" + hex.EncodeToString(sum[:6])
+}
+
 // EvalCase is one labelled question: the query, the drawer that should come back
 // for it, and what kind of question it is.
 type EvalCase struct {
@@ -167,10 +239,32 @@ type EvalCase struct {
 	ExpectAny []string `json:",omitempty"`
 	Wing      string   // optional scope, mirroring how the query would really be run
 	Category  string   // one of the Cat* values; empty is treated as CatSingle
+	// AbsentVerification records that this case's absence was CHECKED, and how.
+	// Nil means it was not — which is a different fact from "checked and nothing
+	// answered it", and the two are indistinguishable once written to a file
+	// unless the provenance travels with the case.
+	//
+	// It matters because a case file merges: two runs at different depths, or one
+	// before the check existed and one after, land in the same file and are then
+	// read as one population. A threshold fitted across that mixture is fitted to
+	// cases some of which may be answerable by a memory nobody looked for.
+	AbsentVerification *AbsentVerification `json:",omitempty"`
 	// Distractor is the drawer id of the version this case's gold SUPERSEDES —
 	// the older, now-wrong memory that a temporal question must not surface
 	// above the correction. Empty when the case has no superseded version.
 	Distractor string `json:",omitempty"`
+}
+
+// AbsentVerification is the provenance of one absence check: which model
+// answered, how deep it looked, and when.
+//
+// The DEPTH is the load-bearing field. "Nothing answers this" is only as strong
+// as the search that failed to find an answer, and a case checked at depth 3 and
+// one checked at depth 20 are different claims wearing the same label.
+type AbsentVerification struct {
+	Checker string `json:"checker"`
+	Depth   int    `json:"depth"`
+	At      string `json:"at"`
 }
 
 // category returns the case's category, defaulting to single-hop.
@@ -234,6 +328,13 @@ type EvalReport struct {
 	Arms    []EvalMetrics
 	Details []EvalCaseResult
 
+	// CaseSetID and CaseSetOrigin identify the questions this report scores.
+	// Without them a BEST label is a claim about one sample that reads as a claim
+	// about the system: four runs were compared across four different question
+	// sets before these existed, and nothing in any of the four tables said so.
+	CaseSetID     string
+	CaseSetOrigin string
+
 	// Warnings are conditions that changed what was measured — a degraded
 	// reranker, a skipped arm. They are part of the result, because a table whose
 	// caveats live only in scrollback gets quoted without them.
@@ -291,6 +392,55 @@ type EvalCaseResult struct {
 	// reading each arm's own 0 as "outside the pool" is the mistake that makes a
 	// vacuous case look like a success for every arm at once.
 	DistractorPoolRank int
+	// Population is which of the three calibration populations this case belongs
+	// to: PopReachable, PopUnreachable or PopAbsent.
+	//
+	// It exists because PoolRank == 0 is TWO opposite facts wearing one zero. A
+	// gold outside the pool is a retrieval failure no ranking arm could have
+	// fixed; counting it beside cases whose gold was retrievable makes a
+	// retrieval fact look like a ranking result, and a paired statistic over the
+	// mixture reports a zero delta that means "nobody could have won here"
+	// rather than "the arms agree".
+	Population string
+	// TopGap and ScoreSpread are the CONTRASTIVE shape of the served page, and
+	// they exist because an absolute score is the weak family. Measured on this
+	// palace: an absolute rerank score separates a wrong page from a right one at
+	// 0.841 AUC and an absolute centroid distance at 0.728, while a contrastive
+	// margin reaches 0.985. A similarity score has no anchored zero and its scale
+	// moves with the query, which is why the query-performance-prediction family
+	// is defined as gaps and spreads rather than levels.
+	//
+	// TopGap is the WIG shape: the top document's score minus the mean of the
+	// rest of the page. ScoreSpread is the NQC shape: the spread of the page's
+	// scores. Both are 0 when the page is too short to have a shape, or when no
+	// reranker scored it — RerankScored says which.
+	//
+	// Added BESIDE TopRerank, never replacing it, so a calibration curve can be
+	// fitted on each and the better one chosen by measurement.
+	TopGap      float64
+	ScoreSpread float64
+	// DistGap and DistSpread are the same shape read from cosine DISTANCES, which
+	// exist on every page. TopGap and ScoreSpread need a cross-encoder and are
+	// therefore zero in the default configuration, where a report built only on
+	// them prints nothing — and "prints nothing" is indistinguishable from "there
+	// is no signal here".
+	//
+	// Named separately rather than folded into TopGap because a gap over
+	// cross-encoder logits and a gap over cosine distances are different
+	// quantities on different scales. One name for two facts is the defect this
+	// file has already carried twice.
+	//
+	// Polarity is normalised: distance is lower-is-better, so a decisive page
+	// yields a POSITIVE gap, the same direction as TopGap — the two never disagree
+	// about what "good" means while sharing a report.
+	DistGap    float64
+	DistSpread float64
+	// TopRerank is the production arm's cross-encoder score for the top document,
+	// and RerankScored says whether a reranker actually produced it. Carried per
+	// case rather than into the two flat GoldRerank/AbsentRerank arrays, which
+	// lose the label the calibration curve has to group by.
+	TopRerank    float64
+	RerankScored bool
 	// PoolRank is where the gold sat in the pool ordered by vector distance, or
 	// 0 when the dense channel never surfaced it. It duplicates what
 	// EvalReport.PoolRanks carries and it has to: PoolRanks skips absent cases
@@ -299,6 +449,79 @@ type EvalCaseResult struct {
 	// a zero delta there is a retrieval fact wearing a ranking result's clothes —
 	// and that exclusion is only expressible per case.
 	PoolRank int
+}
+
+// The three calibration populations. A curve fitted across them without the
+// label is fitted across three different questions at once.
+const (
+	// PopReachable: an answerable case whose gold entered the retrieved pool, so
+	// every arm had the chance to rank it. These are the only cases a ranking
+	// comparison may be drawn from.
+	PopReachable = "reachable"
+	// PopUnreachable: an answerable case whose gold never entered the pool. No
+	// arm could have surfaced it; its zero is a retrieval fact, not a ranking one.
+	PopUnreachable = "unreachable"
+	// PopAbsent: the palace holds no answer and any hit is a false positive.
+	PopAbsent = "absent"
+)
+
+// pageShape reduces a served page's scores to the two reference-free statistics
+// a calibration curve can be fitted on without knowing the right answer.
+//
+// gap is the top score minus the mean of the REST of the page (the WIG shape):
+// how far the winner stands above the field. spread is the population standard
+// deviation of the whole page (the NQC shape): whether the page discriminates at
+// all or the scores are flat.
+//
+// Both are differences rather than levels, which is the point. A page of five
+// mediocre-but-similar scores and a page with one clear winner can share a top
+// score, and only the shape tells them apart.
+//
+// A page shorter than two has no shape and returns zeros — reported honestly
+// rather than as a small number, because a fabricated gap would be a confident
+// value on no evidence.
+func pageShape(scores []float64) (gap, spread float64) {
+	if len(scores) < 2 {
+		return 0, 0
+	}
+	var restSum float64
+	for _, v := range scores[1:] {
+		restSum += v
+	}
+	gap = scores[0] - restSum/float64(len(scores)-1)
+
+	var sum float64
+	for _, v := range scores {
+		sum += v
+	}
+	mean := sum / float64(len(scores))
+	var sq float64
+	for _, v := range scores {
+		d := v - mean
+		sq += d * d
+	}
+	return gap, math.Sqrt(sq / float64(len(scores)))
+}
+
+// populationOf labels a case with the calibration population it belongs to.
+//
+// The decision lives in a function rather than inline so a test can drive it,
+// and it is deliberately total: every case gets exactly one label, because a
+// case with no label silently drops out of whichever group a later grouping
+// forgets to handle.
+//
+// An absent case has no gold, so its zero PoolRank says nothing about retrieval
+// and the category alone decides. For an answerable case the zero is the whole
+// question: gold in the pool means every arm had its chance, gold outside means
+// none of them did.
+func populationOf(cat string, poolRank int) string {
+	if cat == CatAbsent {
+		return PopAbsent
+	}
+	if poolRank <= 0 {
+		return PopUnreachable
+	}
+	return PopReachable
 }
 
 // Progress reports how far a run has got. An eval that prints nothing for
@@ -317,6 +540,10 @@ type EvalOptions struct {
 	// this eval has already once produced a full table of "reranked" numbers that
 	// were silently the hybrid order, and a loud stop is the only reliable cure.
 	AllowDegraded bool
+	// CaseSetOrigin says whether the caller replayed saved questions or generated
+	// its own. Only the caller knows; the report carries it so the table and the
+	// run record cannot disagree about it.
+	CaseSetOrigin string
 }
 
 // Evaluate scores every arm over the cases. poolSize is how many neighbours the
@@ -331,7 +558,7 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	if poolSize <= 0 {
 		poolSize = 50
 	}
-	report := EvalReport{}
+	report := EvalReport{CaseSetID: CaseSetID(cases), CaseSetOrigin: opts.CaseSetOrigin}
 
 	// Preflight the reranker with ONE probe before scoring hundreds of cases
 	// against it. A dead reranker degrades every reranked arm to the hybrid order
@@ -379,8 +606,14 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 		if progress != nil {
 			progress(i+1, len(cases), c.Query, time.Since(started))
 		}
-		report.Details = append(report.Details, EvalCaseResult{Query: c.Query, Category: c.category(), Ranks: ranks, PoolRank: poolRank})
 		cat := c.category()
+		report.Details = append(report.Details, EvalCaseResult{
+			Query: c.Query, Category: cat, Ranks: ranks, PoolRank: poolRank,
+			Population: populationOf(cat, poolRank),
+			TopRerank:  topRerank, RerankScored: scored,
+			TopGap: oc.TopGap, ScoreSpread: oc.ScoreSpread,
+			DistGap: oc.DistGap, DistSpread: oc.DistSpread,
+		})
 		s.accumulate(byArm, &report, EvalCaseResult{Category: cat, Ranks: ranks}, arms)
 		if cat != CatAbsent {
 			report.PoolRanks = append(report.PoolRanks, poolRank)
@@ -544,7 +777,7 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
 	// missing once already — built, documented, and never appended — which an
 	// adversarial review caught and no table did.
-	arms = append(arms, ArmProduction)
+	arms = append(arms, ArmProduction, ArmProductionDeep)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -596,19 +829,60 @@ const (
 	ScopeOwnIndex SupersessionScope = "own-index"
 )
 
-// supersessionScope classifies an arm. It is exhaustive by construction: a new
-// arm with no scope fails TestSupersessionRanksScopePerArm rather than having
-// its number printed beside arms measuring something else.
-func supersessionScope(arm EvalArm) SupersessionScope {
+// ArmScope classifies an arm by the population its ranks — and therefore its
+// NotFound count — are taken over. An arm this switch does not name returns the
+// EMPTY scope, which TestSupersessionRanksScopePerArm rejects.
+//
+// That default is the whole point and it used to be `ScopePool`. The doc comment
+// then claimed the function was "exhaustive by construction: a new arm with no
+// scope fails TestSupersessionRanksScopePerArm" — and the test's check is
+// `if ArmScope(arm) == ""`, which the default made unreachable for every possible
+// input. A new arm silently inherited ScopePool, so a page-scoped one would have
+// had its NotFound count summed with pool-scoped arms: exactly the
+// across-populations aggregation ADR-007 exists to stop. The claim was false, the
+// gate behind it had never been able to fail, and a different-lineage reviewer
+// found it by reading the default rather than the promise.
+//
+// Every arm is named explicitly below for the same reason — a reader can see the
+// classification without inferring it from what is missing.
+//
+// Exported because the scope is not only a supersession concern. Any reader that
+// aggregates NotFound across arms is summing different populations unless it
+// filters on this: a gold at pool rank 12 is a miss for a ScopePage arm and a hit
+// for every ScopePool one, and calling that a retrieval failure sends the reader
+// after the embedding when nothing was ever missing from the pool.
+func ArmScope(arm EvalArm) SupersessionScope {
 	switch arm {
-	case ArmProduction:
+	case ArmProduction, ArmProductionDeep:
 		return ScopePage
 	case ArmContextual:
 		return ScopeOwnIndex
-	default:
+	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
+		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF:
 		return ScopePool
 	}
+	// The swept families are minted at run time — bm25Arm, rerankArm and
+	// recencyArm build their names with fmt.Sprintf — so a case list cannot name
+	// them. They all re-rank the SHARED pool, which is what the scope is about.
+	//
+	// This branch is why the empty default matters. While the fallback was
+	// ScopePool these arms were never classified at all; they merely landed on the
+	// right answer, and so would a page-scoped arm added tomorrow.
+	for _, family := range sweptArmPrefixes {
+		if strings.HasPrefix(string(arm), family) {
+			return ScopePool
+		}
+	}
+	// Unclassified. Not a scope — the absence of one, so it is visible rather than
+	// absorbed into whichever value happened to be the fallback.
+	return ""
 }
+
+// sweptArmPrefixes are the run-time-generated arm families, each pinned to the
+// function that mints it so a renamed format string is caught by
+// TestSweptArmPrefixesMatchWhatMintsThem rather than silently unclassifying a
+// whole family.
+var sweptArmPrefixes = []string{"fusion bm25=", "rerank blend w=", "fusion+recency band="}
 
 // caseOutcome is everything one case produced. It is a struct because evalCase
 // returned seven values including two bools and this task needed two more; a
@@ -619,6 +893,10 @@ type caseOutcome struct {
 	DistractorRanks    map[EvalArm]int
 	TopDistance        float64
 	TopRerank          float64
+	TopGap             float64
+	ScoreSpread        float64
+	DistGap            float64
+	DistSpread         float64
 	RerankScored       bool
 	PoolRank           int
 	DistractorPoolRank int
@@ -666,23 +944,24 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// The gold has always gone through this; the distractor must too, or every
 	// multi-chunk distractor looks unreachable, Vacuous inflates, and every
 	// stale-above rate comes out better than it is — with nothing failing.
-	memoryOf := func(id string) (string, bool) {
+	// Resolves an id to the memory it belongs to. The FOLDING itself lives in
+	// memoryOf (palace.go) — it was written out by hand in four places in this
+	// file and nowhere in the pipeline, which is how the eval came to score
+	// memories while Search returned chunks.
+	memoryOfID := func(id string) (string, bool) {
 		if id == "" {
 			return "", false
 		}
 		switch d, err := s.repo.Get(ctx, teamID, id); {
 		case err == nil:
-			if d.ParentID != "" {
-				return d.ParentID, true
-			}
-			return d.ID, true
+			return memoryOf(d), true
 		default:
 			return "", false
 		}
 	}
 
 	distractorSet := map[string]bool{}
-	if m, ok := memoryOf(c.Distractor); ok {
+	if m, ok := memoryOfID(c.Distractor); ok {
 		distractorSet[m] = true
 	}
 
@@ -693,11 +972,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		}
 		switch gold, err := s.repo.Get(ctx, teamID, id); {
 		case err == nil:
-			if gold.ParentID != "" {
-				goldSet[gold.ParentID] = true
-			} else {
-				goldSet[gold.ID] = true
-			}
+			goldSet[memoryOf(gold)] = true
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			// A saved case can outlive its drawer: re-mining a source purges the
 			// old ids and mints new ones. Swallowing that scored the dead case as
@@ -728,10 +1003,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		if !ok {
 			continue
 		}
-		memory := d.ID
-		if d.ParentID != "" {
-			memory = d.ParentID
-		}
+		memory := memoryOf(d)
 		pool = append(pool, candidate{id: d.ID, memory: memory, content: d.Content, distance: distanceFromScore(h.Score), source: d.SourceFile, date: d.ContentDate})
 	}
 
@@ -811,7 +1083,21 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	var distractorPoolRank int
 	// The abstention gate's calibration data, taken from the production arm and
 	// nowhere else.
-	prodRerank, prodScored := 0.0, false
+	// Keyed by arm, deliberately, rather than a pair of variables the loop
+	// overwrites. Two arms now run Service.Search at different page sizes, and
+	// with last-write-wins the abstention gate would calibrate on whichever ran
+	// last — a value that changes if someone reorders the arms list, with nothing
+	// to notice. Keying it means the deeper arm CANNOT overwrite the default
+	// page's number: there is no guard to forget, because there is no shared slot.
+	type prodTop struct {
+		rerank     float64
+		gap        float64
+		spread     float64
+		distGap    float64
+		distSpread float64
+		scored     bool
+	}
+	prodTops := map[EvalArm]prodTop{}
 
 	// Where the gold sits in the RETRIEVAL channel's own ordering, before any
 	// arm re-orders it. This is the ceiling every arm plays under.
@@ -884,7 +1170,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			}
 			sort.SliceStable(idx, func(a, b int) bool { return pool[idx[a]].distance < pool[idx[b]].distance })
 			ordered = idx
-		case ArmProduction:
+		case ArmProduction, ArmProductionDeep:
 			// The real path, telemetry suppressed so an eval does not pollute the
 			// palace's own recall statistics.
 			page, err := s.Search(ctx, teamID, SearchQuery{
@@ -896,7 +1182,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				// two different architectures, and the arm that exists to catch
 				// "the eval looks fine while production is broken" was measuring
 				// the one nobody runs.
-				Query: c.Query, Wing: c.Wing, Limit: DefaultSearchLimit,
+				Query: c.Query, Wing: c.Wing, Limit: productionLimit(arm),
 				// Production callers pass the default distance gate; omitting it
 				// here would measure a search nobody actually runs.
 				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
@@ -910,15 +1196,24 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			// arm always blends at a fixed weight — and a threshold calibrated on
 			// one and applied to the other is calibrated on nothing.
 			if len(page) > 0 {
-				prodRerank, prodScored = page[0].RerankScore, page[0].Reranked
+				scores := make([]float64, len(page))
+				for i, h := range page {
+					scores[i] = h.RerankScore
+				}
+				dists := make([]float64, len(page))
+				for i, h := range page {
+					// negated so lower-is-better becomes higher-is-better: one
+					// pageShape then serves both, with equal polarity
+					dists[i] = -h.Distance
+				}
+				gap, spread := pageShape(scores)
+				dGap, dSpread := pageShape(dists)
+				prodTops[arm] = prodTop{page[0].RerankScore, gap, spread, dGap, dSpread, page[0].Reranked}
 			}
 			pageIDs := make([]string, len(page))
 			pageOrder := make([]int, len(page))
 			for i, h := range page {
-				memory := h.Drawer.ID
-				if h.Drawer.ParentID != "" {
-					memory = h.Drawer.ParentID
-				}
+				memory := memoryOf(h.Drawer)
 				pageIDs[i] = memory
 				pageOrder[i] = i
 			}
@@ -953,10 +1248,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				if !ok {
 					continue
 				}
-				memory := d.ID
-				if d.ParentID != "" {
-					memory = d.ParentID
-				}
+				memory := memoryOf(d)
 				ctxDocs = append(ctxDocs, d.Content)
 				ctxDists = append(ctxDists, distanceFromScore(h.Score))
 				ctxOrderIDs = append(ctxOrderIDs, memory)
@@ -1017,7 +1309,14 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	// production returned no scored hit contributes nothing, which is honest.
 	return caseOutcome{
 		Ranks: out, DistractorRanks: distractorOut,
-		TopDistance: topDistance, TopRerank: prodRerank, RerankScored: prodScored,
+		// The DEFAULT page is what the abstention gate will run on in production,
+		// so it is what the gate's calibration data has to come from. The deeper
+		// arm sees a wider candidate pool and its top-1 can be a document the
+		// default page never had.
+		TopDistance: topDistance,
+		TopRerank:   prodTops[ArmProduction].rerank, RerankScored: prodTops[ArmProduction].scored,
+		TopGap: prodTops[ArmProduction].gap, ScoreSpread: prodTops[ArmProduction].spread,
+		DistGap: prodTops[ArmProduction].distGap, DistSpread: prodTops[ArmProduction].distSpread,
 		PoolRank: poolRank, DistractorPoolRank: distractorPoolRank, Degraded: rerankFailed,
 	}, nil
 }
@@ -1029,17 +1328,32 @@ func rankOf(ids []string, ordered []int, expect map[string]bool) int {
 	if len(expect) == 0 {
 		return 0
 	}
-	for rank, idx := range ordered {
+	// ids are MEMORY ids, so several candidates can carry the same one (sibling
+	// chunks). The rank that matters is the position the agent SEES the answer at,
+	// and since ADR-013 the served page collapses sibling chunks — so a memory
+	// occupies one slot however many of its chunks matched.
+	//
+	// Counting raw positions therefore overstated the rank of everything below a
+	// chunked memory: two chunks of an irrelevant memory above the gold pushed the
+	// gold to "rank 3" while the page put it in slot 2. The eval folded onto
+	// memories BEFORE ranking and then counted chunk positions, which is the same
+	// unit mismatch one level down from the one ADR-013 removed. Found by a
+	// different-lineage reviewer reading the two folds against each other.
+	seen := make(map[string]bool, len(ordered))
+	rank := 0
+	for _, idx := range ordered {
 		if idx < 0 || idx >= len(ids) {
 			continue
 		}
-		// ids are MEMORY ids here, so several candidates can carry the same one
-		// (sibling chunks). The first position ANY relevant memory reaches is the
-		// rank that matters: that is where the agent sees an answer. Generated
-		// cases carry a single-member set; judged real-query cases carry every
-		// memory the judge accepted.
+		if seen[ids[idx]] {
+			continue // a sibling chunk of a memory already counted: one slot, not two
+		}
+		seen[ids[idx]] = true
+		rank++
+		// Generated cases carry a single-member set; judged real-query cases carry
+		// every memory the judge accepted.
 		if expect[ids[idx]] {
-			return rank + 1
+			return rank
 		}
 	}
 	return 0

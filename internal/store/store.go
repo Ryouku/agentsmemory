@@ -79,6 +79,41 @@ type VectorStore interface {
 	// Delete removes points by ID. IDs that are not present are ignored; an
 	// empty slice is a no-op.
 	Delete(ctx context.Context, namespace string, ids []string) error
+
+	// PointsByIDs returns the stored points for the given ids within a namespace,
+	// payloads included. Absent ids are simply omitted, matching Delete, so a
+	// caller need not check existence first; an empty id list returns nothing.
+	// Pass a bounded id list — the caller pages — so a SQL-backed driver stays
+	// within its parameter limit.
+	//
+	// It sits on VectorStore rather than only on SourceOfTruth because a store
+	// that can be written and searched but not READ cannot be audited. A payload
+	// copy of the wing is what a scoped search actually filters on, so a payload
+	// that stops agreeing with the drawer row makes a memory unreachable from the
+	// wing it is filed in — measured 2026-08-21 on a live palace, 13 of 359
+	// points had drifted exactly that way after wing merges, in BOTH stores.
+	// Reading only the source of truth would have reported clean.
+	//
+	// Whether Vector is populated is the driver's choice: a search index need not
+	// return vectors it stores only to search with, and a caller that needs the
+	// vector asks a SourceOfTruth. Copying memory between tenants without
+	// re-embedding relies on that, which is why this began on SourceOfTruth.
+	PointsByIDs(ctx context.Context, namespace string, ids []string) ([]Point, error)
+
+	// SetPayload merges patch into the payload of each named point, leaving the
+	// VECTOR untouched. Fields not named in patch are unchanged; ids the store
+	// does not hold are ignored; an empty id list or an empty patch is a no-op.
+	//
+	// It merges rather than replaces because its caller patches one field. A wing
+	// merge corrects `wing` and nothing else, and a driver that replaced the
+	// payload would erase `room` on every point it fixed — turning a repair of
+	// one filter into a break of another.
+	//
+	// It exists so that correcting a LABEL is not a re-embed. The vector of a
+	// relabelled memory is already right, because the text did not change; the
+	// alternative is a model call per drawer to fix a string, unbounded in the
+	// size of the merged wing.
+	SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error
 }
 
 // SourceOfTruth is a durable VectorStore that can additionally enumerate
@@ -96,9 +131,8 @@ type SourceOfTruth interface {
 	// the set a full sync replays into the search index. Order is unspecified.
 	Namespaces(ctx context.Context) ([]string, error)
 
-	// PointsByIDs returns the stored points for the given ids within a namespace,
-	// vectors included — the read half of copying memory between tenants without
-	// re-embedding. Absent ids are simply omitted; pass a bounded id list (the
-	// caller pages) so the underlying query stays within SQL parameter limits.
-	PointsByIDs(ctx context.Context, namespace string, ids []string) ([]Point, error)
+	// A SourceOfTruth additionally guarantees PointsByIDs returns the VECTOR as
+	// well as the payload — the read half of copying memory between tenants
+	// without re-embedding. The interface method is declared on VectorStore; this
+	// is the stronger promise the durable store makes about it.
 }

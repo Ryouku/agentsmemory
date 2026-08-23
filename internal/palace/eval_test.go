@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -498,13 +499,14 @@ func TestEvalArmNamesAreUnique(t *testing.T) {
 // own case. A new arm that is neither fails here.
 func TestEveryRegisteredArmIsScorable(t *testing.T) {
 	notFusion := map[EvalArm]string{
-		ArmVector:       "nearest-neighbour order, no fusion at all",
-		ArmRRF:          "reciprocal rank fusion, its own case",
-		ArmRRFReranked:  "RRF then the cross-encoder, its own case and its own scores",
-		ArmContextual:   "scores a different candidate set, not a different ranker",
-		ArmProduction:   "goes through Search, which is the point of it",
-		ArmHybridRerank: "fusion then the cross-encoder, scored in the rerank branch",
-		ArmReranked:     "fusion then the cross-encoder, scored in the rerank branch",
+		ArmVector:         "nearest-neighbour order, no fusion at all",
+		ArmRRF:            "reciprocal rank fusion, its own case",
+		ArmRRFReranked:    "RRF then the cross-encoder, its own case and its own scores",
+		ArmContextual:     "scores a different candidate set, not a different ranker",
+		ArmProduction:     "goes through Search, which is the point of it",
+		ArmProductionDeep: "the same Search at a deeper page, which is the point of it",
+		ArmHybridRerank:   "fusion then the cross-encoder, scored in the rerank branch",
+		ArmReranked:       "fusion then the cross-encoder, scored in the rerank branch",
 	}
 	for _, w := range rerankSweep {
 		notFusion[rerankArm(w)] = "a rerank blend weight, scored in the rerank branch"
@@ -786,12 +788,12 @@ func TestSupersessionRanksScopePerArm(t *testing.T) {
 		ArmProduction:   ScopePage,
 		ArmContextual:   ScopeOwnIndex,
 	} {
-		if got := supersessionScope(arm); got != want {
-			t.Errorf("supersessionScope(%s) = %q, want %q", arm, got, want)
+		if got := ArmScope(arm); got != want {
+			t.Errorf("ArmScope(%s) = %q, want %q", arm, got, want)
 		}
 	}
 	for _, arm := range evalArms(EvalOptions{Contextual: true}, true) {
-		if supersessionScope(arm) == "" {
+		if ArmScope(arm) == "" {
 			t.Errorf("%s has no supersession scope — its number would be printed beside arms "+
 				"measuring a different population", arm)
 		}
@@ -1165,5 +1167,328 @@ func TestSupersessionTableSaysWhyItIsEmpty(t *testing.T) {
 			t.Errorf("the empty-table line never mentions %q, so a reader cannot tell an empty run "+
 				"from a broken one:\n%s", want, got)
 		}
+	}
+}
+
+// TestProductionArmsAskForDifferentDepths pins the entire content of the
+// difference between the two production arms.
+//
+// ArmProductionDeep exists to answer one question the table could not: an agent
+// that wants more context asks for ten results, and every production number in
+// the table was a page of five. If the arm asks for five anyway, it produces a
+// row identical to ArmProduction under a name claiming otherwise — and nothing
+// about the table looks wrong. That is the shape this file already guards for
+// the anchored arms ("a row identical to its counterpart, which reads as 'the
+// normaliser makes no difference' rather than as a bug"), and it applies here
+// for exactly the same reason.
+func TestProductionArmsAskForDifferentDepths(t *testing.T) {
+	if got := productionLimit(ArmProduction); got != DefaultSearchLimit {
+		t.Errorf("ArmProduction asks for %d, want DefaultSearchLimit (%d) — it exists to measure "+
+			"what a caller passing no limit gets", got, DefaultSearchLimit)
+	}
+	if got := productionLimit(ArmProductionDeep); got != productionDeepLimit {
+		t.Errorf("ArmProductionDeep asks for %d, want %d", got, productionDeepLimit)
+	}
+	if productionLimit(ArmProduction) == productionLimit(ArmProductionDeep) {
+		t.Fatal("both production arms ask for the same depth, so the second is a duplicate row " +
+			"under a name that claims a depth it never requested")
+	}
+
+	// The name must carry the number it actually requests, or a reader compares
+	// rows by a label that is not what ran.
+	if want := "limit=" + strconv.Itoa(productionDeepLimit); !strings.Contains(string(ArmProductionDeep), want) {
+		t.Errorf("%q does not name the depth it asks for (%s)", ArmProductionDeep, want)
+	}
+
+	// Deeper, not shallower: a page smaller than the default would answer a
+	// question nobody asked and quietly lower every recall number in the row.
+	if productionDeepLimit <= DefaultSearchLimit {
+		t.Errorf("productionDeepLimit (%d) is not deeper than DefaultSearchLimit (%d)",
+			productionDeepLimit, DefaultSearchLimit)
+	}
+}
+
+// TestBothProductionArmsArePageScoped: their NotFound counts are page misses, not
+// pool misses. printPoolDiagnosis filters on ArmScope, so an unclassified
+// production arm would be summed into the retrieval-failure count and reported as
+// a pool miss — the exact bug that made a run print "8 of 30 outside the pool"
+// under a ceiling saying 93% were in it.
+func TestBothProductionArmsArePageScoped(t *testing.T) {
+	for _, arm := range []EvalArm{ArmProduction, ArmProductionDeep} {
+		if got := ArmScope(arm); got != ScopePage {
+			t.Errorf("ArmScope(%s) = %s, want %s — a page-scoped arm summed into the pool "+
+				"diagnosis reports ranking misses as retrieval failures", arm, got, ScopePage)
+		}
+	}
+}
+
+// TestSweptArmPrefixesMatchWhatMintsThem: ArmScope classifies the run-time arm
+// families by name prefix, so the prefixes must be the ones the minting functions
+// actually produce. A renamed format string would unclassify a whole family in
+// silence — every swept arm would return the empty scope and be dropped from a
+// comparison rather than compared wrongly, which is safer but just as invisible.
+//
+// It asks the minters rather than the source text: bm25Arm, rerankArm and
+// recencyArm are called for a value and their output must start with the prefix
+// that claims them.
+func TestSweptArmPrefixesMatchWhatMintsThem(t *testing.T) {
+	minted := []EvalArm{bm25Arm(0.4), rerankArm(0.5), recencyArm(0.02)}
+	if len(minted) != len(sweptArmPrefixes) {
+		t.Fatalf("%d minters against %d prefixes — one family is unrepresented on one side, "+
+			"and this check only covers the pairs it can see", len(minted), len(sweptArmPrefixes))
+	}
+	for _, arm := range minted {
+		matched := false
+		for _, p := range sweptArmPrefixes {
+			if strings.HasPrefix(string(arm), p) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("%q is minted by a swept family but matches no prefix in sweptArmPrefixes — "+
+				"ArmScope returns the empty scope for it, so it silently leaves every comparison",
+				arm)
+		}
+		if ArmScope(arm) != ScopePool {
+			t.Errorf("ArmScope(%q) = %q, want %q", arm, ArmScope(arm), ScopePool)
+		}
+	}
+	// And a prefix that matches nothing minted is a stale claim.
+	for _, p := range sweptArmPrefixes {
+		used := false
+		for _, arm := range minted {
+			if strings.HasPrefix(string(arm), p) {
+				used = true
+			}
+		}
+		if !used {
+			t.Errorf("prefix %q matches no arm any minter produces — it classifies nothing", p)
+		}
+	}
+}
+
+// TestArmScopeRefusesToGuess pins the fallback itself. Without this, restoring
+// `default: return ScopePool` passes every other test in the package — because
+// every arm that exists today IS pool-scoped, so the wrong fallback lands on the
+// right answer for all of them and the mistake only surfaces when someone adds a
+// page-scoped arm months later.
+//
+// That is exactly how it survived: the doc comment claimed a new arm with no
+// scope would fail TestSupersessionRanksScopePerArm, and that test's check is
+// `ArmScope(arm) == ""`, which the fallback made unreachable for every possible
+// input. A gate is not proven by the inputs that exist; it is proven by the input
+// it was written to reject.
+func TestArmScopeRefusesToGuess(t *testing.T) {
+	if got := ArmScope(EvalArm("an arm nobody has classified")); got != "" {
+		t.Errorf("ArmScope of an unknown arm = %q, want the empty scope.\n"+
+			"  A fallback that names a real population classifies every future arm as whatever "+
+			"today's arms happen to be, and a page-scoped arm added later has its NotFound count "+
+			"summed with pool-scoped ones — the across-populations aggregation ADR-007 exists to "+
+			"stop.", got)
+	}
+}
+
+// TestEvaluateStampsTheCaseSetItScored is the reachability half of the case-set
+// id: the function existing and being correct proves nothing if the production
+// path never calls it.
+//
+// Deleting the stamp from EvaluateWith left every test in cmd/server green,
+// because each of those passes a report it built by hand. This one takes the
+// report the evaluator actually produced.
+func TestEvaluateStampsTheCaseSetItScored(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-caseset"
+
+	gold := mustAddOne(t, svc, team, AddInput{Wing: "wing_acme", Room: "decisions",
+		Content: "the rerank pool ships at ten because the cross encoder is linear in pool size"})
+	cases := []EvalCase{{Query: "how big is the rerank pool", Expect: gold.ID, Wing: "wing_acme"}}
+
+	report, err := svc.EvaluateWith(ctx, team, cases, 10, EvalOptions{CaseSetOrigin: CaseSetGenerated}, nil)
+	if err != nil {
+		t.Fatalf("EvaluateWith: %v", err)
+	}
+	if want := CaseSetID(cases); report.CaseSetID != want {
+		t.Errorf("the evaluator scored a case set and stamped %q; the cases it was handed hash to %q", report.CaseSetID, want)
+	}
+	if report.CaseSetOrigin != CaseSetGenerated {
+		t.Errorf("the report says origin %q, but the caller declared %q", report.CaseSetOrigin, CaseSetGenerated)
+	}
+}
+
+// TestPopulationLabelsSeparateUnreachable pins the distinction the calibration
+// curve depends on: a case whose gold never entered the retrieved pool is
+// UNREACHABLE, not a reachable case that ranked badly.
+//
+// The two are opposite facts wearing the same zero. A gold outside the pool is a
+// retrieval failure that no ranking arm could have fixed, so counting it as a
+// reachable case that every arm got wrong makes a retrieval fact look like a
+// ranking result — and a paired statistic over those cases reports a zero delta
+// that means "nobody could have won here", not "the arms agree".
+//
+// Driven through Evaluate rather than a helper, because the label is only worth
+// anything if the assembly actually carries it onto the result the report holds.
+func TestPopulationLabelsSeparateUnreachable(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	// The fake embedder is a character histogram, so shared characters mean a
+	// near vector. "aaa…" and "zzz…" sit far apart by construction.
+	near, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "pop",
+		Content: "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa"})
+	if err != nil {
+		t.Fatalf("add near: %v", err)
+	}
+	far, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "pop",
+		Content: "zzzz zzzz zzzz zzzz zzzz zzzz zzzz zzzz"})
+	if err != nil {
+		t.Fatalf("add far: %v", err)
+	}
+
+	query := "aaaa aaaa aaaa aaaa"
+	cases := []EvalCase{
+		// pool of 1 holds only the near memory, so this gold IS in the pool
+		{Query: query, Expect: near.Drawers[0].ID, Category: CatSingle},
+		// same pool, and this gold is not in it — reachable is the wrong label
+		{Query: query, Expect: far.Drawers[0].ID, Category: CatSingle},
+		{Query: query, Category: CatAbsent},
+	}
+
+	report, err := svc.Evaluate(ctx, team, cases, 1, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(report.Details) != 3 {
+		t.Fatalf("want 3 details, got %d", len(report.Details))
+	}
+	want := []string{PopReachable, PopUnreachable, PopAbsent}
+	for i, w := range want {
+		if got := report.Details[i].Population; got != w {
+			t.Errorf("case %d: population %q, want %q (poolRank=%d)", i, got, w, report.Details[i].PoolRank)
+		}
+	}
+}
+
+// TestAbstentionStatsAreContrastiveNotAbsolute pins the two reference-free
+// statistics the calibration curve should be fitted on, and that they reach the
+// report.
+//
+// The gate this ADR builds decides "does this page contain an answer at all", and
+// the plan was to calibrate it on the top document's ABSOLUTE cross-encoder score.
+// Measured on this palace, that family is the weak one: an absolute rerank score
+// separates a wrong page from a right one at 0.841 AUC and an absolute centroid
+// distance at 0.728, while a contrastive margin reaches 0.985. Every strong signal
+// measured was a difference; every weak one was a position.
+//
+// The published reason is that a similarity score has no anchored zero — its scale
+// moves with the query — which is exactly why the query-performance-prediction
+// family (WIG, NQC) are defined as gaps and spreads over the retrieved set rather
+// than as levels. TopGap is the WIG shape, ScoreSpread the NQC shape.
+//
+// Both are ADDED beside TopRerank rather than replacing it, so the curve can be
+// fitted on each and the better one chosen by measurement instead of by this
+// comment.
+func TestAbstentionStatsAreContrastiveNotAbsolute(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t).WithReranker(&fakeReranker{}, DefaultRerankPool)
+	const team = "team-1"
+
+	// fakeReranker scores a document by how many query words it contains, so a
+	// page with one dominant hit and two weak ones has a real gap; a page whose
+	// hits all contain the terms equally has none.
+	for _, c := range []string{
+		"alpha beta gamma delta alpha beta gamma delta",
+		"alpha zzzz yyyy xxxx",
+		"alpha wwww vvvv uuuu",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "gap", Content: c}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	report, err := svc.Evaluate(ctx, team, []EvalCase{
+		{Query: "alpha beta gamma delta", Category: CatAbsent},
+	}, 10, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(report.Details) != 1 {
+		t.Fatalf("want 1 detail, got %d", len(report.Details))
+	}
+	d := report.Details[0]
+	if !d.RerankScored {
+		t.Fatalf("the fixture did not rerank, so neither statistic can be measured: %+v", d)
+	}
+	if d.TopGap <= 0 {
+		t.Errorf("TopGap is %v on a page whose top hit contains every query term and whose "+
+			"others contain one — a gap of zero here means the statistic is not measuring the "+
+			"page's shape", d.TopGap)
+	}
+	if d.ScoreSpread <= 0 {
+		t.Errorf("ScoreSpread is %v on a page with clearly unequal scores", d.ScoreSpread)
+	}
+	// The contrastive statistics must not be a relabelling of the absolute one.
+	if d.TopGap == d.TopRerank {
+		t.Errorf("TopGap equals TopRerank (%v) — the gap is not contrastive, it is the level "+
+			"under a new name", d.TopGap)
+	}
+}
+
+// TestDistanceShapeIsAvailableWithoutAReranker pins that the page's shape is
+// measurable in the configuration the eval actually runs in by default.
+//
+// TopGap and ScoreSpread are computed from cross-encoder scores, so they are zero
+// whenever no reranker is configured — which is the DEFAULT. A statistic that
+// exists only under a non-default configuration is a statistic the report will
+// print nothing about, and "prints nothing" is indistinguishable from "there is no
+// signal here".
+//
+// Distances always exist, so the same shape is available from them. They are given
+// their OWN names rather than folded into TopGap: a gap over cross-encoder logits
+// and a gap over cosine distances are different quantities on different scales,
+// and one name for two facts is the defect this file has already fixed twice.
+//
+// Polarity is the thing to get right. Distance is lower-is-better, so a decisive
+// page — top document much closer than the rest — must produce a POSITIVE gap, the
+// same direction as the rerank gap, or the two signals would disagree about what
+// "good" means while sharing a report.
+func TestDistanceShapeIsAvailableWithoutAReranker(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t) // deliberately NO reranker: the default configuration
+	const team = "team-1"
+
+	for _, c := range []string{
+		"alpha beta gamma delta alpha beta gamma delta",
+		"zzzz yyyy xxxx wwww",
+		"qqqq pppp oooo nnnn",
+	} {
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "shape", Content: c}); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+
+	report, err := svc.Evaluate(ctx, team, []EvalCase{
+		{Query: "alpha beta gamma delta", Category: CatAbsent},
+	}, 10, nil)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	d := report.Details[0]
+
+	if d.RerankScored {
+		t.Fatal("fixture unexpectedly reranked — this test exists for the un-reranked path")
+	}
+	if d.TopGap != 0 {
+		t.Errorf("TopGap is %v without a reranker; a cross-encoder gap with no cross-encoder "+
+			"is a number invented from nothing", d.TopGap)
+	}
+	if d.DistGap <= 0 {
+		t.Errorf("DistGap is %v on a page whose top document shares every query term and whose "+
+			"others share none — either the shape is not computed without a reranker, or its "+
+			"polarity is inverted so a decisive page reads as an indecisive one", d.DistGap)
+	}
+	if d.DistSpread <= 0 {
+		t.Errorf("DistSpread is %v on a page with clearly unequal distances", d.DistSpread)
 	}
 }

@@ -268,6 +268,22 @@ func (r *Repo) Update(ctx context.Context, teamID, id string, patch DrawerPatch)
 	updates := map[string]any{}
 	if patch.Content != nil {
 		updates["content"] = *patch.Content
+		// Entities are DERIVED from content, so they are refreshed in the same
+		// statement that replaces it. Written here rather than by the caller so
+		// the two columns cannot diverge: a future call site that forgets is not
+		// a path this function has.
+		//
+		// Before this, Update replaced the content and left the previous
+		// content's entities on the row, and the derived graph went on asserting
+		// an edge the text no longer supported. That is worse than the missing
+		// entities ADR-016 fixed on the Add and WriteDiary paths: an empty graph
+		// sends an agent to go and look, a wrong one tells it not to.
+		//
+		// Per-chunk is per-memory here. Service.Update refuses a content change
+		// on any memory of more than one chunk, so the row being written holds
+		// the whole content and extracting from it matches what Add stores per
+		// chunk.
+		updates["entities"] = strings.Join(extractEntities(*patch.Content), ";")
 	}
 	if patch.Wing != nil {
 		updates["wing"] = *patch.Wing
@@ -594,4 +610,109 @@ func (r *Repo) MemoryChunks(ctx context.Context, teamID, id string) ([]Drawer, e
 		out[i] = fromRow(row)
 	}
 	return out, nil
+}
+
+// WingIsEmpty reports whether a wing holds no drawers at all — the question
+// behind "am I creating this wing right now?".
+//
+// It exists separately from Wings() because the caller is on the write path and
+// needs one boolean, not the whole taxonomy: LIMIT 1 on the same
+// idx_drawers_team_wing index stops at the first row rather than counting every
+// drawer in a wing that may hold thousands.
+func (r *Repo) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, error) {
+	var id string
+	err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Select("id").
+		Where("team_id = ? AND wing = ?", teamID, wing).
+		Limit(1).
+		Scan(&id).Error
+	if err != nil {
+		return false, err
+	}
+	return id == "", nil
+}
+
+// DrawerWings maps every EMBEDDED drawer id to the wing it is filed in, and
+// separately lists the ids still awaiting a first embedding.
+//
+// Two columns of every row, which is the whole point: the drift check compares
+// this against what each vector store believes, and loading whole drawers to do
+// it would pull every memory's text into memory to read one field.
+func (r *Repo) DrawerWings(ctx context.Context, teamID string) (embedded map[string]string, pending []string, err error) {
+	var rows []struct {
+		ID         string
+		Wing       string
+		EmbeddedAt *string
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Select("id", "wing", "embedded_at").
+		Where("team_id = ?", teamID).
+		Scan(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+	embedded = make(map[string]string, len(rows))
+	for _, row := range rows {
+		// A drawer awaiting its first embedding has no point yet, and that is a
+		// queue rather than a fault. Separating them here is what lets the drift
+		// check treat a MISSING point as a defect without a busy palace looking
+		// broken.
+		if row.EmbeddedAt == nil {
+			pending = append(pending, row.ID)
+			continue
+		}
+		embedded[row.ID] = row.Wing
+	}
+	return embedded, pending, nil
+}
+
+// ClosetWings maps every closet id to the wing it is filed in — the closet half
+// of DrawerWings, and for the same reason: closets keep a second copy of the wing
+// in their stored payload, and nothing compared them.
+func (r *Repo) ClosetWings(ctx context.Context, teamID string) (map[string]string, error) {
+	var rows []struct {
+		ID   string
+		Wing string
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&closetRow{}).
+		Select("id", "wing").
+		Where("team_id = ?", teamID).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.ID] = row.Wing
+	}
+	return out, nil
+}
+
+// WingNames lists the wings a team has written to, for an error message that
+// has to show the caller what exists. Wings() carries counts nobody needs here.
+func (r *Repo) WingNames(ctx context.Context, teamID string) ([]string, error) {
+	var names []string
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Distinct("wing").
+		Where("team_id = ?", teamID).
+		Order("wing").
+		Pluck("wing", &names).Error; err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// InboxCount counts a wing's inbox drawers — findings handed over by another
+// project's session, which are only read if something makes the reader look.
+func (r *Repo) InboxCount(ctx context.Context, teamID, wing, room string) (int, error) {
+	var n int64
+	if err := r.db.WithContext(ctx).
+		Model(&drawerRow{}).
+		Where("team_id = ? AND wing = ? AND room = ?", teamID, wing, room).
+		Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }

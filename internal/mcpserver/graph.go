@@ -13,13 +13,13 @@ import (
 // registerGraph wires the navigable-graph tools: tunnels (cross-wing links),
 // hallways (within-wing entity co-occurrence), the passive graph views (traverse,
 // find_tunnels, graph_stats), and recompute_graph. All are tenant-scoped via admit.
-func registerGraph(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerGraph(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	registerCreateTunnel(reg, drawers, usageSvc)
 	registerDeleteTunnel(reg, drawers, usageSvc)
-	registerListTunnels(reg, drawers, usageSvc)
+	registerListTunnels(reg, drawers, usageSvc, scopeSearchToWing)
 	registerFindTunnels(reg, drawers, usageSvc)
 	registerFollowTunnels(reg, drawers, usageSvc)
-	registerListHallways(reg, drawers, usageSvc)
+	registerListHallways(reg, drawers, usageSvc, scopeSearchToWing)
 	registerDeleteHallway(reg, drawers, usageSvc)
 	registerTraverse(reg, drawers, usageSvc)
 	registerGraphStats(reg, drawers, usageSvc)
@@ -84,6 +84,15 @@ func toHallwayView(h palace.Hallway) hallwayView {
 	}
 }
 
+// graphStatsView is graph_stats on the wire: every metric at the top level, plus
+// the note explaining an empty derived graph. It embeds palace.GraphStats rather
+// than re-listing its fields so the shape an agent already parses cannot drift
+// from the one the palace computes.
+type graphStatsView struct {
+	palace.GraphStats
+	Note string `json:"note,omitempty"`
+}
+
 func registerCreateTunnel(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("create_tunnel",
 		mcp.WithDescription("Create or update an explicit cross-wing tunnel between two existing wing/room locations. Tunnels are symmetric — creating the reverse direction updates the same tunnel."),
@@ -95,7 +104,7 @@ func registerCreateTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithString("source_drawer_id", mcp.Description("Optional drawer to pin the source endpoint to.")),
 		mcp.WithString("target_drawer_id", mcp.Description("Optional drawer to pin the target endpoint to.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -134,7 +143,7 @@ func registerDeleteTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 		mcp.WithDescription("Delete a tunnel by id."),
 		mcp.WithString("tunnel_id", mcp.Required(), mcp.Description("The tunnel id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -151,17 +160,26 @@ func registerDeleteTunnel(reg *registrar, drawers *palace.Service, usageSvc *usa
 	})
 }
 
-func registerListTunnels(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListTunnels(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_tunnels",
-		mcp.WithDescription("List explicit and derived tunnels, optionally filtered to those touching a wing."),
-		mcp.WithString("wing", mcp.Description("Only tunnels with this wing as source or target.")),
+		mcp.WithDescription("List explicit and derived tunnels, optionally filtered to those touching a wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only tunnels with this wing as source or target. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
 		}
-		tunnels, err := drawers.ListTunnels(ctx, t.TeamID, req.GetString("wing", ""))
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's tunnel labels — free text written by another project's session — were disclosed. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		tunnels, err := drawers.ListTunnels(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -219,17 +237,21 @@ func registerFollowTunnels(reg *registrar, drawers *palace.Service, usageSvc *us
 	})
 }
 
-func registerListHallways(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerListHallways(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_hallways",
-		mcp.WithDescription("List within-wing hallways (entity-to-entity co-occurrence links), optionally filtered by wing."),
-		mcp.WithString("wing", mcp.Description("Only hallways in this wing.")),
+		mcp.WithDescription("List within-wing hallways (entity-to-entity co-occurrence links), optionally filtered by wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithString("wing", mcp.Description("Only hallways in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
 		}
-		halls, err := drawers.ListHallways(ctx, t.TeamID, req.GetString("wing", ""))
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		halls, err := drawers.ListHallways(ctx, t.TeamID, wing)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -237,7 +259,17 @@ func registerListHallways(reg *registrar, drawers *palace.Service, usageSvc *usa
 		for i, h := range halls {
 			views[i] = toHallwayView(h)
 		}
-		return jsonResult(map[string]any{"hallways": views, "count": len(views)}), nil
+		out := map[string]any{"hallways": views, "count": len(views)}
+		// An empty hallway list is byte-identical to a graph that can never hold
+		// one — which is the state of every palace populated through am_add_drawer.
+		// The lookup is skipped when there ARE hallways so the note never costs a
+		// second read of a list this handler already has.
+		if len(views) == 0 {
+			if note := emptyGraphNote(ctx, drawers, t.TeamID, wing); note != "" {
+				out["note"] = note
+			}
+		}
+		return jsonResult(out), nil
 	})
 }
 
@@ -246,7 +278,7 @@ func registerDeleteHallway(reg *registrar, drawers *palace.Service, usageSvc *us
 		mcp.WithDescription("Delete a hallway by id (it will return on the next am_recompute_graph if the co-occurrence still holds)."),
 		mcp.WithString("hallway_id", mcp.Required(), mcp.Description("The hallway id to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -282,7 +314,14 @@ func registerTraverse(reg *registrar, drawers *palace.Service, usageSvc *usage.S
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"nodes": nodes, "count": len(nodes)}), nil
+		out := map[string]any{"nodes": nodes, "count": len(nodes)}
+		// A walk that crosses rooms but no entity still describes a palace whose
+		// derived graph does not exist, and the walk alone does not say so. The
+		// note names no wing: this tool answers for the whole palace.
+		if note := emptyGraphNote(ctx, drawers, t.TeamID, ""); note != "" {
+			out["note"] = note
+		}
+		return jsonResult(out), nil
 	})
 }
 
@@ -299,7 +338,12 @@ func registerGraphStats(reg *registrar, drawers *palace.Service, usageSvc *usage
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(stats), nil
+		// total_edges:0 reads as "nothing is connected" whether the graph is
+		// young or structurally unreachable; the note separates the two.
+		return jsonResult(graphStatsView{
+			GraphStats: stats,
+			Note:       emptyGraphNote(ctx, drawers, t.TeamID, ""),
+		}), nil
 	})
 }
 
@@ -309,7 +353,7 @@ func registerRecomputeGraph(reg *registrar, drawers *palace.Service, usageSvc *u
 		mcp.WithString("wing", mcp.Description("Only rebuild this wing (default: all wings).")),
 		mcp.WithBoolean("prune_orphans", mcp.Description("Drop hallways for wings that no longer have drawers (default true).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

@@ -35,6 +35,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/rerank/tei"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
 )
@@ -62,6 +63,13 @@ func evalCommand(def config.Config) *cli.Command {
 			projectFlag(),
 			&cli.StringFlag{Name: "wing", Usage: "sample drawers from this wing only"},
 			&cli.IntFlag{Name: "n", Value: 30, Usage: "how many drawers to sample when generating cases"},
+			&cli.BoolFlag{Name: "calibrate", Usage: "derive the abstention thresholds from this run and write a calibration file. Requires a set holding BOTH answerable and verified-absent cases — the separation cannot be computed from one alone"},
+			&cli.StringFlag{Name: "calibration-out", Value: "calibration.json", Usage: "where --calibrate writes the calibration file. The tool writes a FILE, never configuration: an operator still has to point the server at it, so a bad calibration cannot become production behaviour by itself"},
+			&cli.BoolFlag{Name: "gate", Usage: "exit non-zero unless the 90% Wilson LOWER BOUND on the correct-refusal rate clears --refusal-bar. The bound, not the point estimate: at these sample sizes the estimate carries about +/-0.11 at one standard error, so a gate on it passes on noise"},
+			&cli.FloatFlag{Name: "answer-recall", Value: 0.95, Usage: "answer-recall target the higher threshold must hold over REACHABLE-answerable cases"},
+			&cli.IntFlag{Name: "refuse-allowance", Value: 1, Usage: "how many reachable-answerable cases may fall below the lower threshold. A COUNT, not a rate: at these sample sizes the achievable recall grid is coarse enough that two rate targets pick the same threshold and the band collapses"},
+			&cli.FloatFlag{Name: "refusal-bar", Value: 0.30, Usage: "the correct-refusal rate --gate compares its lower bound against"},
+			&cli.StringFlag{Name: "rerank-model", Usage: "operator-declared label for the reranker in force, recorded in the calibration. Not detected: Reranker.Rerank returns floats and does not report what produced them"},
 			&cli.StringFlag{Name: "cases", Usage: "read cases from this JSONL file if it exists, otherwise write the generated ones there. Several comma-separated files are merged, which is how answerable and unanswerable questions get scored in one run — the only way the distance separation can be computed"},
 			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions (must be GENERATIVE — an embedder like bge-m3 cannot answer /api/generate)"},
 			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
@@ -70,9 +78,10 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "supersession-gate", Usage: "decide whether the supersession failure is common enough to justify a mechanism against it, from this run's temporal cases. Refuses rather than answering when the evidence is too thin, unhardened, or missing the pre-registered arm"},
 			&cli.Float64Flag{Name: "pair-max-distance", Value: 0.55, Usage: "how close a temporal pair must be before it is offered to the judge (cosine distance; 0 disables the ceiling). Without it, 'nearest older neighbour' is a claim about how sparse the wing is rather than about the two memories"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
+			&cli.BoolFlag{Name: "allow-degraded", Usage: "run without the reranked arms when the configured reranker fails its preflight, instead of refusing the run. The arms are DROPPED and a warning is recorded — they are never silently scored as plain hybrid, which is what produced one wrong table already"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
 			&cli.BoolFlag{Name: "drop-contextual", Usage: "delete the contextual experiment's vectors and exit"},
-			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), temporal (asks for the current state of a fact an older memory still contradicts), absent (questions the palace should NOT answer), or real (replay recorded searches, gold judged by the generator model)"},
+			&cli.StringFlag{Name: "style", Value: "paraphrase", Usage: "question style: paraphrase (no shared vocabulary), literal (keeps identifiers, like a real developer search), crosslingual (asks in the other language), temporal (asks for the current state of a fact an older memory still contradicts), absent (HARD negatives: questions the palace should NOT answer, keeping the note's identifiers so the negative is a real near-miss), absent-easy (the pre-2026-08-21 generator, which strips identifiers — kept so old case files replay), or real (replay recorded searches, gold judged by the generator model)"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runEval(ctx, c, def, os.Stdout)
@@ -100,16 +109,18 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 		return err
 	}
 
-	cases, from, runMeta, err := loadOrGenerateCases(ctx, c, svc, team, out)
+	src, err := loadOrGenerateCases(ctx, c, svc, team, out)
 	if err != nil {
 		return err
 	}
+	cases, runMeta := src.Cases, src.Meta
 	if len(cases) == 0 {
 		return fmt.Errorf("no eval cases: the wing has no drawers, or the generator produced nothing usable")
 	}
 
-	fmt.Fprintf(out, "\n%d case(s) %s, style %s, pool %d, corpus %s\n\n",
-		len(cases), from, c.String("style"), c.Int("pool"), corpusLabel(c.String("wing")))
+	fmt.Fprintf(out, "\n%d case(s) %s, style %s, pool %d, corpus %s, case set %s (%s)\n\n",
+		len(cases), src.Label, c.String("style"), c.Int("pool"), corpusLabel(c.String("wing")),
+		palace.CaseSetID(cases), src.Origin)
 	// Every arm runs per case, and a reranked arm is real inference, so a case can
 	// take seconds. Report each one as it lands: silence for minutes reads as a
 	// hang, and the first version of this command was exactly that.
@@ -137,7 +148,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	}
 
 	report, err := svc.drawers.EvaluateWith(ctx, team.ID, cases, c.Int("pool"),
-		palace.EvalOptions{Contextual: c.Bool("contextual")},
+		palace.EvalOptions{Contextual: c.Bool("contextual"), AllowDegraded: c.Bool("allow-degraded"), CaseSetOrigin: src.Origin},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
 		})
@@ -148,10 +159,15 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	printClosetBlock(out, report)
 	palace.PrintSupersessionTable(out, report)
 	if c.Bool("supersession-gate") {
-		if err := printSupersessionGate(out, report, runMeta); err != nil {
+		if err := printSupersessionGate(out, report, runMeta, svc.drawers.SupersessionGatedArmFor()); err != nil {
 			fmt.Fprintf(out, "\nsupersession gate: REFUSED — %v\n", err)
 		}
 	}
+
+	// Deliberately AFTER the tables and BEFORE the results file: the curve reads
+	// the same rows the tables were printed from, and a failing --gate must still
+	// leave the numbers on screen that explain why it failed.
+	calErr := runCalibration(ctx, c, cfg, report, cases, src.Styles, out)
 
 	// The full result goes to disk: per-case ranks per arm, warnings, config.
 	// The printed table is a VIEW of this file, not the record — a run that only
@@ -173,6 +189,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 			Pool: c.Int("pool"), Cases: len(cases),
 			ClosetScale: cfg.ClosetBoost, BM25Weight: cfg.BM25Weight,
 			RerankConfigured: cfg.RerankURL != "", RerankWeight: cfg.RerankWeight, RerankPool: cfg.RerankPool,
+			Ranking: svc.drawers.RankingProfile(),
 		}
 		if err := writeCells(cPath, report, runMeta, rec); err != nil {
 			fmt.Fprintf(out, "  (could not save the run record: %v)\n", err)
@@ -180,7 +197,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 			fmt.Fprintf(out, "run record (commit, ranking config, closet cells; no case text): %s\n", cPath)
 		}
 	}
-	return nil
+	return calErr
 }
 
 // resultsPath derives where the results artifact lands: beside the first case
@@ -473,11 +490,32 @@ func verifyPair(ctx context.Context, newer, older palace.Drawer, gen *questionGe
 	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(reply)), "YES"), nil
 }
 
+// absentVerifyDepth is how deep the absence check looks before concluding that
+// nothing in the palace answers a question.
+//
+// Chosen from the retrieval ceiling of THIS corpus, re-measured 2026-08-21 on the
+// 449-memory palace with n=40 paraphrase questions: gold in top-1 67.5%, top-5
+// 82.5%, top-10 92.5%, top-20 95.0%, top-50 97.5%, and none never retrieved. At
+// depth 20 the check covers 38 of 40; depth 50 covers 39. At n=40 those differ by
+// ONE case, so the extra 30 searches per candidate buy noise.
+//
+// The previous value was 3, while the ADR claimed a corpus-wide check. The
+// justification written for it cited top-20 98% on a ~5,020-drawer mined corpus
+// that was reset on 2026-08-19 — figures describing a palace that no longer
+// exists. This constant now cites the corpus it is actually chosen for, with its
+// date and its n.
+//
+// It is NOT a corpus-wide proof and must not be read as one: 5% of answerable
+// golds sit below depth 20 here. A memory the dense channel never surfaces is one
+// recall could not have returned either, so the check matches what the system can
+// actually do rather than what the store contains.
+const absentVerifyDepth = 20
+
 func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question string, gen *questionGen) (string, error) {
 	// No distance gate: absence must be checked broadly. A hit the production
 	// gate would drop can still prove the knowledge exists in the palace.
 	hits, err := svc.drawers.Search(ctx, teamID, palace.SearchQuery{
-		Query: question, Wing: wing, Limit: 3, SkipTelemetry: true,
+		Query: question, Wing: wing, Limit: absentVerifyDepth, SkipTelemetry: true,
 	})
 	if err != nil {
 		return "", err
@@ -502,21 +540,61 @@ func verifyAbsent(ctx context.Context, svc *services, teamID, wing, question str
 	return "", nil
 }
 
+// absentCaseOutcome decides what to do with one generated negative, given what
+// the absence check concluded.
+func absentCaseOutcome(answeredBy string, verr error) (keep bool, reason string) {
+	if verr != nil {
+		// Unknown is not confirmed. Keeping it writes a row indistinguishable
+		// from a verified one, and every downstream number then treats an
+		// unchecked assumption as a measurement. The temporal path already
+		// enforces this; this one only documented it.
+		return false, fmt.Sprintf("dropped: absence check failed, so absence is unverified (%v)", verr)
+	}
+	if answeredBy != "" {
+		return false, fmt.Sprintf("rejected: memory %s answers it, so it is not absent", answeredBy)
+	}
+	return true, ""
+}
+
+// caseSource is where a run's questions came from: the cases themselves, a label
+// for the header line, the provenance of the file when one was replayed, and
+// whether the run replayed saved questions or wrote its own.
+//
+// Origin is grouped with the rest rather than derived by the caller because only
+// this function knows it — the "--cases names a file that does not exist yet"
+// branch is a generate-then-save run, and from the outside it is indistinguishable
+// from a replay.
+type caseSource struct {
+	Cases []palace.EvalCase
+	Label string
+	// Styles is every style seen across the files that were merged. Meta keeps
+	// only ONE block — the last file with a generator wins — so a check reading
+	// Meta.Style is order-dependent, and an easy-negative file merged first would
+	// report its neighbour's style.
+	Styles []string
+	Meta   caseFileMeta
+	Origin string
+}
+
 // loadOrGenerateCases returns the cases, a label saying where they came from,
 // and the provenance of the case file when one was replayed. The provenance
 // travels because a replayed file's questions were written by whatever generator
 // made it, which need not be the one this machine is configured with.
-func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, caseFileMeta, error) {
+func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) (caseSource, error) {
 	var replayMeta caseFileMeta
 	path := c.String("cases")
 	if path != "" {
 		var merged []palace.EvalCase
+		var seenStyles []string
 		files := strings.Split(path, ",")
 		for _, f := range files {
 			f = strings.TrimSpace(f)
 			cases, meta, err := readCasesWithMeta(f)
 			if meta.Generator != "" {
 				replayMeta = meta
+			}
+			if st := strings.TrimSpace(meta.Style); st != "" {
+				seenStyles = append(seenStyles, st)
 			}
 			switch {
 			case err == nil:
@@ -528,7 +606,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 				// A CORRUPT file, or a missing one among several, silently shrank
 				// the case set once; the label still said "from N files" and no
 				// run was comparable with any other.
-				return nil, "", replayMeta, fmt.Errorf("cases file %s: %w", f, err)
+				return caseSource{}, fmt.Errorf("cases file %s: %w", f, err)
 			}
 		}
 		if len(merged) > 0 {
@@ -536,20 +614,20 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			if len(files) > 1 {
 				label = fmt.Sprintf("from %d files", len(files))
 			}
-			return merged, label, replayMeta, nil
+			return caseSource{Cases: merged, Label: label, Styles: seenStyles, Meta: replayMeta, Origin: palace.CaseSetReplayed}, nil
 		}
 	}
 
 	if c.String("style") == "real" {
 		cases, from, err := generateRealCases(ctx, c, svc, team, out)
-		return cases, from, generatedMeta(c), err
+		return caseSource{Cases: cases, Label: from, Meta: generatedMeta(c), Origin: palace.CaseSetGenerated}, err
 	}
 	// Temporal cases are shaped differently — a pair is discovered before a
 	// question is written — so the style gets its own generation loop instead of
 	// growing this one a second set of skip reasons.
 	if c.String("style") == "temporal" {
 		cases, from, err := generateTemporalCases(ctx, c, svc, team, out)
-		return cases, from, generatedMeta(c), err
+		return caseSource{Cases: cases, Label: from, Meta: generatedMeta(c), Origin: palace.CaseSetGenerated}, err
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -560,14 +638,14 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// questions are what a re-run must hold constant, and they are on disk.
 	drawers, err := svc.drawers.SampleDrawers(ctx, team.ID, c.String("wing"), c.Int("n"))
 	if err != nil {
-		return nil, "", replayMeta, fmt.Errorf("sample drawers: %w", err)
+		return caseSource{}, fmt.Errorf("sample drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		// Named distinctly rather than folded into runEval's "no eval cases": an
 		// empty corpus and a broken generator are different faults with different
 		// fixes, and reporting them with one sentence sent the reader to inspect a
 		// wing that was never the problem.
-		return nil, "", replayMeta, fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
+		return caseSource{}, fmt.Errorf("no drawers to sample in %s of workspace %q — file some memories first, or widen --wing",
 			corpusLabel(c.String("wing")), team.Slug)
 	}
 
@@ -580,6 +658,11 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		prompt, category = evalPromptCrossLingual, palace.CatCrossLingual
 	case "absent":
 		prompt, category = evalPromptAbsent, palace.CatAbsent
+	case "absent-easy":
+		// The pre-2026-08-21 negative generator. Kept selectable so case files
+		// made with it stay reproducible, and so the hard and easy regimes can be
+		// run against each other instead of one silently replacing the other.
+		prompt, category = evalPromptAbsentEasy, palace.CatAbsent
 	}
 	gen := &questionGen{
 		url:     genURL(c),
@@ -595,7 +678,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// times is thirty lines that say one thing — while the run still takes as long
 	// as a working one.
 	if _, err := gen.ask(ctx, drawers[0].Content); err != nil {
-		return nil, "", replayMeta, fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
+		return caseSource{}, fmt.Errorf("the question generator is not usable: %w\n\n%s", err, gen.hint(ctx))
 	}
 	fmt.Fprintf(out, "generating %s questions with %s (%d drawers)…\n", style, gen.model, len(drawers))
 	genStart := time.Now()
@@ -613,7 +696,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			// Later failures still skip, because by then the generator has proven it
 			// works and the fault is that drawer's.
 			if i == 0 {
-				return nil, "", replayMeta, fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
+				return caseSource{}, fmt.Errorf("question generator failed on the first drawer, so it is misconfigured rather than unlucky: %w\n"+
 					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
 					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
 			}
@@ -626,20 +709,35 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 		}
 		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62))
 		expect := d.ID
+		var verification *palace.AbsentVerification
 		if category == palace.CatAbsent {
 			// There is no gold for a question the palace should not answer; what
 			// gets measured is whether it returns something confident anyway.
 			expect = ""
 			// The seed note not answering it is not enough — verify the rest of
 			// the corpus cannot either, or drop the case.
-			if answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen); verr != nil {
-				fmt.Fprintf(out, "  [%2d/%2d] kept UNVERIFIED (absence check failed: %v)\n", i+1, len(drawers), verr)
-			} else if answeredBy != "" {
-				fmt.Fprintf(out, "  [%2d/%2d] rejected: memory %s answers it, so it is not absent\n", i+1, len(drawers), answeredBy)
+			answeredBy, verr := verifyAbsent(ctx, svc, team.ID, c.String("wing"), q, gen)
+			keep, reason := absentCaseOutcome(answeredBy, verr)
+			if reason != "" {
+				fmt.Fprintf(out, "  [%2d/%2d] %s\n", i+1, len(drawers), reason)
+			}
+			if !keep {
 				continue
 			}
+			// Stamped only on the path where the check actually PASSED, so the
+			// field's presence means what it says. A case file merges runs, and a
+			// case from before this existed must stay distinguishable from one
+			// checked at depth 20 rather than inheriting its credibility.
+			verification = &palace.AbsentVerification{
+				Checker: gen.model,
+				Depth:   absentVerifyDepth,
+				At:      time.Now().UTC().Format(time.RFC3339),
+			}
 		}
-		cases = append(cases, palace.EvalCase{Query: q, Expect: expect, Wing: c.String("wing"), Category: category})
+		cases = append(cases, palace.EvalCase{
+			Query: q, Expect: expect, Wing: c.String("wing"), Category: category,
+			AbsentVerification: verification,
+		})
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
 	if path != "" && len(cases) > 0 {
@@ -653,7 +751,7 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 			fmt.Fprintf(out, "saved %d case(s) to %s — pass --cases %s to re-run these exact questions\n", len(cases), path, path)
 		}
 	}
-	return cases, "generated", replayMeta, nil
+	return caseSource{Cases: cases, Label: "generated", Styles: []string{style}, Meta: replayMeta, Origin: palace.CaseSetGenerated}, nil
 }
 
 // genURL is where the question generator runs. It defaults to the embedder's
@@ -774,7 +872,29 @@ QUESTION:`
 // evalPromptAbsent generates questions the palace should NOT answer. Recall has
 // only ever been measured on questions with an answer, which means the gate that
 // decides "we do not know this" has never been measured at all.
-const evalPromptAbsent = `You are writing a NEGATIVE evaluation question for a memory search system.
+const evalPromptAbsent = `You are writing a HARD NEGATIVE evaluation question for a memory search system.
+
+Below is a note an engineer wrote. Write ONE question about a NEIGHBOURING topic
+that this note does NOT answer and could not answer.
+
+Rules:
+- KEEP the note's distinctive identifiers, file names, flags and error strings.
+  The question must look like it belongs to this note's world.
+- Ask about something genuinely NOT covered: a different stage, a different
+  component, or the same subject in another project's codebase.
+- Plausible for this team to ask, and genuinely unanswered by the note.
+- One line, under 20 words, no quotes, no preamble.
+
+NOTE:
+%s
+
+QUESTION:`
+
+// evalPromptAbsentEasy is the previous negative generator, kept so existing case
+// files stay reproducible under --style absent-easy and so the two regimes can be
+// compared rather than swapped silently. It strips the identifiers, which makes
+// its negatives separable on surface vocabulary alone.
+const evalPromptAbsentEasy = `You are writing a NEGATIVE evaluation question for a memory search system.
 
 Below is a note an engineer wrote. Write ONE question about the same general area
 of work that this note does NOT answer and could not answer — a neighbouring
@@ -961,6 +1081,18 @@ func writeCases(path string, cases []palace.EvalCase, meta caseFileMeta) error {
 	return nil
 }
 
+// caseSetLabel names the questions a verdict was computed over. A run with no
+// stamped id predates the stamp; saying so is the correct reading of it.
+func caseSetLabel(report palace.EvalReport) string {
+	if report.CaseSetID == "" {
+		return "an unidentified case set"
+	}
+	if report.CaseSetOrigin == "" {
+		return "case set " + report.CaseSetID
+	}
+	return fmt.Sprintf("case set %s (%s)", report.CaseSetID, report.CaseSetOrigin)
+}
+
 // printEvalTable renders the arms and the cases every arm missed.
 func printEvalTable(out io.Writer, report palace.EvalReport) {
 	for _, w := range report.Warnings {
@@ -988,7 +1120,11 @@ func printEvalTable(out io.Writer, report palace.EvalReport) {
 		case len(m.Ranks) == 0:
 			verdict = "no scoreable cases"
 		case i == best:
-			verdict = "BEST"
+			// The case set is named ON this line and not only in the header. Four
+			// runs labelled a BEST arm over four different question sets, the label
+			// moved between configurations, and the tables were read as agreeing —
+			// the caveat has to sit where the quoted line is.
+			verdict = "BEST over " + caseSetLabel(report)
 		case len(m.Ranks) == len(report.Arms[best].Ranks):
 			if delta := palace.PairedDelta(m.Ranks, report.Arms[best].Ranks); delta.Contains(0) {
 				verdict = "inconclusive vs best (CI spans zero)"
@@ -1092,33 +1228,49 @@ func printRetrievalCeiling(out io.Writer, report palace.EvalReport) {
 // a large corpus the second becomes the common one while the score alone still
 // just says "worse".
 func printPoolDiagnosis(out io.Writer, report palace.EvalReport) {
-	worst, contextualExtra := 0, 0
+	// Only ScopePool arms re-order the shared candidate set, so only their misses
+	// mean "the gold was never on the table". The other scopes count something
+	// else entirely and are reported on their own terms below — ArmContextual
+	// retrieves from its own capped index, and ArmProduction is scored over the
+	// PAGE Search returns, which is far shorter than the pool.
+	//
+	// This filters on the classification rather than naming arms, because naming
+	// them is how production got folded in: the contextual case was excluded by
+	// name when it was found, and the next arm with a non-pool scope inherited
+	// the bug. A new arm now has to declare a scope (ArmScope is exhaustive by
+	// construction) before it can appear here at all.
+	worst, cases := 0, 0
+	extra := map[palace.SupersessionScope]int{}
 	for _, m := range report.Arms {
-		// The contextual arm retrieves from its own CAPPED index, so its misses
-		// mean "outside the experiment's sample", not "outside the shared pool" —
-		// folding them in once steered an operator toward raising --pool when the
-		// binding knob was --contextual-limit.
-		if m.Arm == palace.ArmContextual {
-			contextualExtra = m.NotFound
+		if palace.ArmScope(m.Arm) != palace.ScopePool {
+			if m.NotFound > extra[palace.ArmScope(m.Arm)] {
+				extra[palace.ArmScope(m.Arm)] = m.NotFound
+			}
 			continue
 		}
 		if m.NotFound > worst {
 			worst = m.NotFound
 		}
+		if m.Cases > cases {
+			cases = m.Cases
+		}
 	}
-	if contextualExtra > worst {
-		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", contextualExtra-worst)
+
+	if worst > 0 {
+		fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
+		fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
+		fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
 	}
-	if worst == 0 {
-		return
+
+	// Each non-pool scope gets its own sentence naming ITS knob. A count printed
+	// without the knob that moves it is worse than no count: the reader reaches
+	// for the one knob the text mentions, which is the wrong one.
+	if n := extra[palace.ScopeOwnIndex] - worst; n > 0 {
+		fmt.Fprintf(out, "\nthe contextual arm missed %d question(s) beyond the shared pool's misses — those golds fall outside its capped sample; the knob is --contextual-limit, not --pool.\n", n)
 	}
-	cases := 0
-	if len(report.Arms) > 0 {
-		cases = report.Arms[0].Cases
+	if n := extra[palace.ScopePage] - worst; n > 0 {
+		fmt.Fprintf(out, "\nproduction missed %d question(s) beyond the pool's misses — it is scored over the PAGE Search returns, not the pool, so those golds were retrieved and ranked below the page cut. Raising --pool does not move them: the knobs are the search limit and RERANK_POOL (which widens the fetch when a reranker is configured).\n", n)
 	}
-	fmt.Fprintf(out, "\n%d of %d question(s) had their answer OUTSIDE the candidate pool — a retrieval failure, not a ranking one.\n", worst, cases)
-	fmt.Fprintf(out, "  No reranker can recover those. Raise --pool and re-run: if they come back, the ranking is fine and the pool was too small;\n")
-	fmt.Fprintf(out, "  if they stay missing, the embedding is not placing those memories near their question.\n")
 }
 
 // printCategories breaks the leading arm out by question kind. An average over
@@ -1190,6 +1342,9 @@ func printSeparation(out io.Writer, report palace.EvalReport) {
 	}
 	fmt.Fprintf(out, "  distributions OVERLAP — no max_distance separates them; a confidence gate needs a different signal\n")
 	printRerankSeparation(out, report)
+	// ...and this says WHICH different signal, instead of leaving the sentence
+	// above as advice nobody can act on.
+	printContrastiveSeparation(out, report)
 }
 
 // printRerankSeparation asks the same question of the cross-encoder's score.
@@ -1216,6 +1371,125 @@ func printRerankSeparation(out io.Writer, report palace.EvalReport) {
 	}
 	fmt.Fprintf(out, "  overlapping too — but compare the medians: %.3f against %.3f is the size of the signal available\n",
 		median(gold), median(absent))
+}
+
+// printContrastiveSeparation ranks every available signal by how well it actually
+// separates answerable from unanswerable, and names the winner.
+//
+// The distance report above ends by saying the distributions overlap and "a
+// confidence gate needs a different signal" — and then does not say which. The
+// answer is measurable from the same run, so it is measured here rather than left
+// to the reader's eye on two medians.
+//
+// The signals are of two KINDS. A level (top_rerank) is where the best document
+// scored; a shape (the gaps and spreads) is how that score stood relative to the
+// rest of the page. A similarity score has no anchored zero and its scale moves
+// with the query, which is why the query-performance-prediction family is built
+// from shapes. Which kind wins HERE is what this prints, because that is a
+// property of the corpus and not of the argument.
+//
+// AUC rather than a median gap, because it is threshold-free: two signals can show
+// the same median difference while one orders the cases far better, and a gate's
+// question is about ordering.
+//
+// Reached only when the distance distributions OVERLAP, which is deliberate: a run
+// where distance already separates cleanly has nothing to choose between, and the
+// caller has already said so.
+func printContrastiveSeparation(out io.Writer, report palace.EvalReport) {
+	type signal struct {
+		name string
+		pick func(palace.EvalCaseResult) float64
+		// higher reports whether a LARGER value means "answerable". Stated per
+		// signal rather than assumed, because getting it wrong silently inverts
+		// the AUC into a confident backwards answer.
+		higher bool
+	}
+	// Distance shapes exist on every page. Cross-encoder shapes exist only when a
+	// reranker ran, and listing them as flat zeros would put dead signals in the
+	// ranking at a meaningless AUC 0.50 — so they are offered only when something
+	// actually scored them.
+	signals := []signal{
+		{"dist_gap", func(d palace.EvalCaseResult) float64 { return d.DistGap }, true},
+		{"dist_spread", func(d palace.EvalCaseResult) float64 { return d.DistSpread }, true},
+	}
+	reranked := false
+	for _, d := range report.Details {
+		if d.RerankScored {
+			reranked = true
+			break
+		}
+	}
+	if reranked {
+		signals = append(signals,
+			signal{"top_rerank", func(d palace.EvalCaseResult) float64 { return d.TopRerank }, true},
+			signal{"top_gap", func(d palace.EvalCaseResult) float64 { return d.TopGap }, true},
+			signal{"score_spread", func(d palace.EvalCaseResult) float64 { return d.ScoreSpread }, true},
+		)
+	}
+
+	var answerable, unanswerable []palace.EvalCaseResult
+	for _, d := range report.Details {
+		if d.Population == palace.PopAbsent {
+			unanswerable = append(unanswerable, d)
+		} else {
+			answerable = append(answerable, d)
+		}
+	}
+	// An AUC over one class is undefined, not weak. Say nothing.
+	if len(answerable) == 0 || len(unanswerable) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "\nseparation by signal (n=%d answerable, %d unanswerable):\n",
+		len(answerable), len(unanswerable))
+	best, bestAUC := "", -1.0
+	for _, sg := range signals {
+		a := make([]float64, 0, len(answerable))
+		for _, d := range answerable {
+			a = append(a, sg.pick(d))
+		}
+		u := make([]float64, 0, len(unanswerable))
+		for _, d := range unanswerable {
+			u = append(u, sg.pick(d))
+		}
+		auc := separationAUC(a, u, sg.higher)
+		fmt.Fprintf(out, "  %-13s AUC %.2f\n", sg.name, auc)
+		if auc > bestAUC {
+			best, bestAUC = sg.name, auc
+		}
+	}
+	fmt.Fprintf(out, "  best separating signal: %s (AUC %.2f)", best, bestAUC)
+	switch {
+	case bestAUC >= 0.9:
+		fmt.Fprintf(out, " — strong enough to build the gate on\n")
+	case bestAUC >= 0.7:
+		fmt.Fprintf(out, " — usable, but calibrate the threshold on more cases than this\n")
+	default:
+		fmt.Fprintf(out, " — NO signal here separates; a gate built on any of them would be noise\n")
+	}
+}
+
+// separationAUC is the probability that a randomly chosen answerable case scores
+// above a randomly chosen unanswerable one, ties counted as half.
+//
+// Written out rather than pulled in: it is six lines, and the alternative is a
+// dependency for a statistic whose definition is the thing that has to be right.
+func separationAUC(answerable, unanswerable []float64, higher bool) float64 {
+	if len(answerable) == 0 || len(unanswerable) == 0 {
+		return 0
+	}
+	var wins, ties float64
+	for _, a := range answerable {
+		for _, u := range unanswerable {
+			switch {
+			case a == u:
+				ties++
+			case (a > u) == higher:
+				wins++
+			}
+		}
+	}
+	return (wins + 0.5*ties) / float64(len(answerable)*len(unanswerable))
 }
 
 // median of a sorted slice.
@@ -1307,6 +1581,15 @@ type cellsConfig struct {
 	RerankConfigured bool
 	RerankWeight     float64
 	RerankPool       int
+	// Ranking is the RESOLVED profile the service ranked with — fusion, lexical
+	// weight and normaliser, closet scale, reranker. The record carried the
+	// closet scale and the BM25 weight and named neither the fusion nor the
+	// normaliser, so two runs at the same commit, one on rrf and one on linear,
+	// produced different numbers and identical records. Resolved rather than
+	// requested, because a reranker that was configured and did not come up is
+	// exactly the case where the two differ and only the resolved one describes
+	// what ranked.
+	Ranking string
 }
 
 // buildStamp reports the commit the running binary was built from, and whether
@@ -1341,6 +1624,10 @@ func buildStamp() (commit string, dirty bool) {
 // carry nothing that came out of the palace: this file is committed to a public
 // repository, the palace it measures is private, and the case files and results
 // that DO hold queries and drawer ids stay untracked beside it.
+//
+// The case-set id is the one entry derived from palace content, and it is
+// admissible because it is a one-way hash: it identifies a question set to
+// anyone who already holds it and discloses nothing to anyone who does not.
 func writeCells(path string, report palace.EvalReport, meta caseFileMeta, cfg cellsConfig) error {
 	commit, dirty := buildStamp()
 
@@ -1369,6 +1656,9 @@ func writeCells(path string, report palace.EvalReport, meta caseFileMeta, cfg ce
 		"rerank_configured": cfg.RerankConfigured,
 		"rerank_weight":     cfg.RerankWeight,
 		"rerank_pool":       cfg.RerankPool,
+		"ranking":           cfg.Ranking,
+		"case_set_id":       report.CaseSetID,
+		"case_set_origin":   report.CaseSetOrigin,
 		"warnings":          report.Warnings,
 		"cells":             cells,
 	}
@@ -1456,8 +1746,14 @@ func supersessionGateReady(cell palace.SupersessionCell, meta caseFileMeta) erro
 // Never the nearest available arm: a degraded run drops the reranked arms, and
 // gating whatever is left answers a different question under the same name. That
 // substitution is the selection this gate exists to remove.
-func gatedArmCell(report palace.EvalReport) (palace.SupersessionCell, error) {
-	want := palace.SupersessionGatedArm()
+func gatedArmCell(report palace.EvalReport, want palace.EvalArm) (palace.SupersessionCell, error) {
+	if want == "" {
+		return palace.SupersessionCell{}, fmt.Errorf(
+			"this server's ranking is not reconstructed by any eval arm, so there is no faithful number to " +
+				"gate on — the arms are fixed pipelines and naming the nearest one is how the gate came to " +
+				"judge a configuration nobody ran. Run the gate on a served configuration an arm reproduces, " +
+				"or add the arm")
+	}
 	var reranked bool
 	for _, m := range report.Arms {
 		if m.Arm == want {
@@ -1490,8 +1786,8 @@ const defaultEvalPool = 50
 // floor the interval straddles almost any bar, and a gate that answers anyway
 // teaches people to ignore it. Each refusal names its own cause so an operator
 // can tell a thin corpus from an unhardened case file from a degraded run.
-func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta) error {
-	cell, err := gatedArmCell(report)
+func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta, want palace.EvalArm) error {
+	cell, err := gatedArmCell(report, want)
 	if err != nil {
 		return err
 	}
@@ -1515,7 +1811,7 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 		if !ok {
 			continue
 		}
-		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report))
+		delta := palace.PairedDelta(m.Ranks, gatedArmRanks(report, want))
 		v := palace.ApplyRecencyVeto(verdict, band, delta, palace.RecencyBandCount())
 		if v.Status != verdict.Status {
 			verdict = v
@@ -1527,8 +1823,8 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 	}
 
 	fmt.Fprintf(out, "\nsupersession gate — %s\n", strings.ToUpper(verdict.Status))
-	fmt.Fprintf(out, "  arm %s (pre-registered, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
-		palace.SupersessionGatedArm(), cell.Cases, defaultEvalPool)
+	fmt.Fprintf(out, "  arm %s (pre-registered from the SERVED ranking, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
+		want, cell.Cases, defaultEvalPool)
 	fmt.Fprintf(out, "  stale-above %.1f%% %s against a bar of %.2f; excluding unreachable corrections: %.1f%%\n",
 		100*verdict.Rate, verdict.Interval, palace.SupersessionBar(), 100*verdict.RateReachable)
 	if verdict.Reason != "" {
@@ -1543,11 +1839,304 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 // gatedArmRanks returns the pre-registered arm's per-case ranks, for the
 // non-inferiority comparison. Empty when the arm is absent, which the caller has
 // already refused on.
-func gatedArmRanks(report palace.EvalReport) []int {
+func gatedArmRanks(report palace.EvalReport, want palace.EvalArm) []int {
 	for _, m := range report.Arms {
-		if m.Arm == palace.SupersessionGatedArm() {
+		if m.Arm == want {
 			return m.Ranks
 		}
 	}
 	return nil
+}
+
+// runCalibration turns this run's labelled rows into thresholds, a verdict and a
+// file — or explains why it will not.
+//
+// Nothing here fires unless the operator asked for it. An eval that silently wrote
+// a calibration would make every ordinary measurement a candidate operating point,
+// and the whole reason this is a file rather than configuration is that a human
+// decides when one becomes real.
+func runCalibration(ctx context.Context, c *cli.Command, cfg config.Config, report palace.EvalReport, cases []palace.EvalCase, styles []string, out io.Writer) error {
+	if !c.Bool("calibrate") && !c.Bool("gate") {
+		return nil
+	}
+
+	rows := make([]palace.CalibrationRow, 0, len(report.Details))
+	for _, d := range report.Details {
+		rows = append(rows, palace.CalibrationRow{
+			Population: d.Population,
+			// The score the SERVED gate will compare. Measured on this corpus the
+			// absolute cross-encoder score separates answerable from unanswerable
+			// at 0.81 AUC against 0.61-0.71 for every page-shape statistic, so the
+			// level is what the curve is fitted over and the shapes are reported
+			// beside it rather than used.
+			Score:  d.TopRerank,
+			Scored: d.RerankScored,
+		})
+	}
+	th := palace.RecommendThresholds(rows, c.Float("answer-recall"), c.Int("refuse-allowance"))
+
+	fmt.Fprintf(out, "\ncalibration — %d reachable-answerable, %d verified-absent, %d unreachable (excluded)\n",
+		th.Reachable, th.Absent, th.Unreachable)
+	if th.Reachable == 0 || th.Absent == 0 {
+		// The Stop Condition, as an outcome rather than a crash: a curve needs
+		// both populations, and one of them alone is not a weak measurement, it is
+		// no measurement.
+		//
+		// Two very different causes reach here and they need different advice. If
+		// NOTHING was scored, the run had no reranker and the case set is
+		// irrelevant — telling the reader to merge more files is a remedy that
+		// cannot work, which is worse than no advice because they will try it.
+		scored := 0
+		for _, r := range rows {
+			if r.Scored {
+				scored++
+			}
+		}
+		switch {
+		case scored == 0:
+			fmt.Fprintf(out, "  no curve: nothing in this run carries a cross-encoder score, so there is\n"+
+				"  no quantity to threshold. The gate reads the served page's top-1 rerank score;\n"+
+				"  pass --rerank-url to score it. Merging more case files will not help.\n")
+		default:
+			fmt.Fprintf(out, "  no curve: a threshold needs BOTH answerable and verified-absent cases in one\n"+
+				"  run, and this one has %d and %d. Merge two case files with\n"+
+				"  --cases answerable.jsonl,absent.jsonl.\n", th.Reachable, th.Absent)
+		}
+		if c.Bool("gate") {
+			return fmt.Errorf("gate requested but the run holds no separation to gate on")
+		}
+		return nil
+	}
+	fmt.Fprintf(out, "  answer_at    %s (target recall %.2f, achieved %.3f)\n",
+		fmtThreshold(th.AnswerAt), c.Float("answer-recall"), th.AchievedRecall)
+	fmt.Fprintf(out, "  refuse_below %s (allowance %d)\n", fmtThreshold(th.RefuseBelow), c.Int("refuse-allowance"))
+	if th.BandEmpty {
+		fmt.Fprintf(out, "  the band is EMPTY: both rules chose the same threshold, so this corpus supports\n"+
+			"  three verdicts and not four — there is no score range where the honest answer is\n"+
+			"  'I am not sure'.\n")
+	}
+
+	// The curve BEFORE the verdict, because a FAIL is only actionable once the
+	// reader can see whether any threshold would have passed.
+	curve := palace.RiskCoverageCurve(rows)
+	printCurve(out, curve, c.Float("answer-recall"), c.Float("refusal-bar"))
+
+	refused := 0
+	if th.AnswerAt != nil {
+		for _, r := range rows {
+			if r.Scored && r.Population == palace.PopAbsent && r.Score < *th.AnswerAt {
+				refused++
+			}
+		}
+	}
+	// T2 step 4: how many verified-absent cases fall below the LOWER boundary, not
+	// the upper one. The lower boundary sits just under the answerable tail by
+	// construction, so this count can be zero — and when it is, the fourth verdict
+	// can never fire on evidence like this. That has to be said in as many words,
+	// because a design documented as four verdicts and delivering three is a
+	// difference nobody notices until they look for the missing one.
+	belowRefuse := 0
+	if th.RefuseBelow != nil {
+		for _, r := range rows {
+			if r.Scored && r.Population == palace.PopAbsent && r.Score < *th.RefuseBelow {
+				belowRefuse++
+			}
+		}
+	}
+	fmt.Fprintf(out, "  verified-absent below refuse_below: %d of %d\n", belowRefuse, th.Absent)
+	if belowRefuse == 0 {
+		fmt.Fprintf(out, "    zero — the 'no answer' verdict can NEVER fire on evidence like this sample.\n"+
+			"    This corpus supports THREE verdicts, not four.\n")
+	}
+
+	pass, rate, lower, n := palace.RefusalGate(th.Absent, refused, c.Float("refusal-bar"))
+	fmt.Fprintf(out, "  correct refusal at answer_at: %d/%d = %.3f, 90%% lower bound %.3f, bar %.2f — %s\n",
+		refused, n, rate, lower, c.Float("refusal-bar"), gateWord(pass))
+
+	if ok, why := calibrationEligible(cases, styles...); !ok {
+		fmt.Fprintf(out, "  NO calibration file: %s.\n"+
+			"  The curve above still stands — it is what T3 compares regimes with — but nothing\n"+
+			"  here may become an operating point.\n", why)
+		if c.Bool("gate") && !pass {
+			return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+				lower, c.Float("refusal-bar"), n)
+		}
+		return fmt.Errorf("refusing to write a calibration: %s", why)
+	}
+
+	if !c.Bool("calibrate") {
+		if c.Bool("gate") && !pass {
+			return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+				lower, c.Float("refusal-bar"), n)
+		}
+		return nil
+	}
+
+	// The fingerprint identifies the instrument. Without a reranker there is
+	// nothing to fingerprint, and a calibration that cannot be checked against the
+	// thing that produced it is a number with no provenance.
+	// palace.Service deliberately exposes no accessor to its own reranker, so the
+	// probe is built from the SAME configuration the service was built from. It
+	// identifies the endpoint and model — which is what the fingerprint is for —
+	// rather than the particular client object.
+	if strings.TrimSpace(cfg.RerankURL) == "" {
+		return fmt.Errorf("no --rerank-url configured, so there is nothing to fingerprint; a " +
+			"calibration that cannot be checked against the instrument that produced it is a " +
+			"number with no provenance")
+	}
+	canary, err := palace.ScoreCanary(ctx, tei.New(cfg.RerankURL, cfg.RerankTimeout))
+	if err != nil {
+		return fmt.Errorf("cannot fingerprint the reranker, so no calibration is written: %w", err)
+	}
+	cal := palace.Calibration{
+		AnswerAt: th.AnswerAt, RefuseBelow: th.RefuseBelow,
+		AnswerRecallTarget: c.Float("answer-recall"), RefuseAllowance: c.Int("refuse-allowance"),
+		AchievedRecall: th.AchievedRecall,
+		Reachable:      th.Reachable, Absent: th.Absent, Unreachable: th.Unreachable,
+		GatePassed: pass, RefusalRate: rate, RefusalLower: lower, RefusalBar: c.Float("refusal-bar"),
+		RerankModel:   strings.TrimSpace(c.String("rerank-model")),
+		Profile:       rankingProfileLabel(c),
+		Canary:        canary,
+		ScoresBounded: palace.ScoresLookBounded(canary),
+	}
+	path := c.String("calibration-out")
+	if err := cal.Save(path); err != nil {
+		return fmt.Errorf("write calibration: %w", err)
+	}
+	fmt.Fprintf(out, "  wrote %s (id %s, fingerprint over %d canary pairs, tolerance %.4f)\n",
+		path, cal.ID, len(canary), widestTolerance(canary))
+	fmt.Fprintf(out, "  the server does NOT read this by itself — point it at the file to make it real.\n")
+
+	if c.Bool("gate") && !pass {
+		return fmt.Errorf("abstention gate FAILED: refusal lower bound %.3f is below the %.2f bar over %d verified-absent cases",
+			lower, c.Float("refusal-bar"), n)
+	}
+	return nil
+}
+
+// fmtThreshold prints a threshold that may be ABSENT, without letting absent read
+// as the number zero — which on an unbounded cross-encoder scale is an ordinary
+// score sitting in the middle of the distribution.
+func fmtThreshold(v *float64) string {
+	if v == nil {
+		return "(none derivable)"
+	}
+	return fmt.Sprintf("%.4f", *v)
+}
+
+// gateWord names the go/no-go. Distinct from doctor.go's verdictWord, which
+// answers a different question with a different sentence.
+func gateWord(pass bool) string {
+	if pass {
+		return "PASS"
+	}
+	return "FAIL"
+}
+
+// widestTolerance is the largest spread any canary pair showed, which is what a
+// startup check has to allow for across all of them.
+func widestTolerance(pairs []palace.CanaryPair) float64 {
+	worst := 0.0
+	for _, p := range pairs {
+		if p.MaxDeviation > worst {
+			worst = p.MaxDeviation
+		}
+	}
+	return worst
+}
+
+// rankingProfileLabel records the ranking configuration the thresholds were
+// derived under. A threshold calibrated with one fusion mode and applied under
+// another is calibrated on nothing.
+func rankingProfileLabel(c *cli.Command) string {
+	return fmt.Sprintf("fusion=%s bm25=%s closet=%.2f rerank-pool=%d rerank-weight=%s",
+		c.String("fusion"), c.String("bm25-weight"), c.Float("closet-boost"),
+		c.Int("rerank-pool"), c.String("rerank-weight"))
+}
+
+// printCurve shows the exchange rate between answering and refusing, and then
+// answers the question a bare verdict cannot: is there any threshold at all that
+// clears both declared bars.
+//
+// Without that last line a FAIL is ambiguous. "Retune the threshold" and "this
+// corpus cannot support the design" look identical from a single failing operating
+// point, and they send the reader to completely different work.
+func printCurve(out io.Writer, curve []palace.CurvePoint, answerRecall, refusalBar float64) {
+	if len(curve) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n  risk-coverage — what each threshold costs:\n")
+	fmt.Fprintf(out, "    %-12s %-16s %s\n", "threshold", "answer recall", "correct refusal")
+	// A handful of rows rather than every observed score: the shape is the point,
+	// and forty near-identical lines bury it.
+	step := 1
+	if len(curve) > 12 {
+		step = len(curve) / 10
+	}
+	for i := 0; i < len(curve); i += step {
+		p := curve[i]
+		fmt.Fprintf(out, "    %-12.4f %5.3f (%2d)      %5.3f (%2d)\n",
+			p.Threshold, p.AnswerRecall, p.Answered, p.CorrectRefusal, p.Refused)
+	}
+	if last := curve[len(curve)-1]; (len(curve)-1)%step != 0 {
+		fmt.Fprintf(out, "    %-12.4f %5.3f (%2d)      %5.3f (%2d)\n",
+			last.Threshold, last.AnswerRecall, last.Answered, last.CorrectRefusal, last.Refused)
+	}
+	if p := palace.ViablePoint(curve, answerRecall, refusalBar); p != nil {
+		fmt.Fprintf(out, "    a threshold at %.4f clears BOTH bars (recall %.3f >= %.2f, refusal %.3f >= %.2f)\n",
+			p.Threshold, p.AnswerRecall, answerRecall, p.CorrectRefusal, refusalBar)
+	} else {
+		fmt.Fprintf(out, "    NO threshold on this corpus clears both bars (recall >= %.2f AND refusal >= %.2f).\n"+
+			"    That is a finding about the SIGNAL, not about the tuning: retuning cannot reach a\n"+
+			"    point that does not exist. Change the score the gate reads, the corpus it is\n"+
+			"    calibrated on, or the targets themselves.\n", answerRecall, refusalBar)
+	}
+}
+
+// calibrationEligible reports whether this case set may produce a shipped
+// threshold, and why not when it may not.
+//
+// Two disqualifications, both about whether the negatives mean what they claim.
+// An absent case with no verification provenance was never confirmed absent, so
+// some other memory may answer it perfectly and calibrating on it tunes the gate
+// to refuse questions the palace can answer. A set generated with
+// --style absent-easy was confirmed, but against negatives whose identifiers were
+// stripped — measured on this corpus those sit twice as far from answerable
+// questions as the hard ones, so a threshold fitted to them is fitted to a gap
+// production will not have.
+//
+// This gates the FILE, never the report. T3 has to compare the two regimes side by
+// side, so the curve still prints; what is withheld is the artefact an operator
+// could point a server at.
+func calibrationEligible(cases []palace.EvalCase, styles ...string) (bool, string) {
+	// EVERY style present, not the one the merged metadata happened to keep. A
+	// merged set carries one metadata block and the last file with a generator
+	// wins, so reading a single style makes the check order-dependent — and an
+	// easy-negative file merged first would report its neighbour's style.
+	for _, style := range styles {
+		if strings.TrimSpace(style) != "absent-easy" {
+			continue
+		}
+		return false, "one of the case files was generated with --style absent-easy, whose negatives " +
+			"drop the note's identifiers and are separable on vocabulary alone; a threshold fitted " +
+			"to them is fitted to a gap production will not have"
+	}
+	absent, unverified := 0, 0
+	for _, c := range cases {
+		if c.Category != palace.CatAbsent {
+			continue
+		}
+		absent++
+		if c.AbsentVerification == nil {
+			unverified++
+		}
+	}
+	if absent == 0 {
+		return false, "the case set holds no absent cases, so there is no separation to fit a threshold to"
+	}
+	if unverified > 0 {
+		return false, fmt.Sprintf("%d of %d absent case(s) carry no verification provenance — their absence "+
+			"was never checked, so a memory may answer them that nobody looked for", unverified, absent)
+	}
+	return true, ""
 }

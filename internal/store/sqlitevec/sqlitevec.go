@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 
@@ -133,6 +134,45 @@ func payloadMatches(payload map[string]any, filter store.Filter) bool {
 		}
 	}
 	return true
+}
+
+// SetPayload merges patch into each named point's payload, leaving the vector
+// bytes untouched.
+//
+// Read-modify-write rather than a SQL json_set: the payload is an opaque blob to
+// this driver, the seam promises a MERGE, and doing it in Go keeps the merge
+// rule in one place across every backend instead of once per SQL dialect. The
+// only writer is a wing merge, which is already serialized.
+func (s *Store) SetPayload(ctx context.Context, namespace string, ids []string, patch map[string]string) error {
+	if len(ids) == 0 || len(patch) == 0 {
+		return nil
+	}
+	var rows []vectorRow
+	if err := s.db.WithContext(ctx).
+		Where("namespace = ? AND id IN ?", namespace, ids).
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, r := range rows {
+		payload := decodePayload(r.Payload)
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		for k, v := range patch {
+			payload[k] = v
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode payload of %q: %w", r.ID, err)
+		}
+		if err := s.db.WithContext(ctx).
+			Model(&vectorRow{}).
+			Where("namespace = ? AND id = ?", namespace, r.ID).
+			Update("payload", encoded).Error; err != nil {
+			return fmt.Errorf("patch payload of %q: %w", r.ID, err)
+		}
+	}
+	return nil
 }
 
 // Delete removes the given IDs within the namespace; absent IDs are ignored.

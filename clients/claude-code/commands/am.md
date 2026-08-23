@@ -1,43 +1,41 @@
 ---
-description: agentsmemory session bootstrap — load specs (eidos:spec), code reality (codebase-memory), and team memory (am_* MCP), then plan, work, and persist what you learned
+description: agentsmemory session bootstrap — load project intent, code reality (codebase-memory), and team memory (am_* MCP), then plan, work, and persist what you learned
 argument-hint: [your question or task]
 ---
 
-You are (re)starting a session. Ground yourself before acting: load the **specs**
-(what the system should be), the **code reality** (what it is), and the **team
+You are (re)starting a session. Ground yourself before acting: load the **project
+intent** (what the system should be), the **code reality** (what it is), and the **team
 memory** (who did what, and why). Then plan, work, and — before you stop — write
 back what you learned so the next session starts ahead of where this one did.
 
-This command is **generic**: it wires up three sources — the **agentsmemory MCP**
-(`am_*` tools), the **codebase-memory** code graph, and — when registered — the
-**eidos:spec** skill —
-and assumes no particular language, framework, or UI stack.
+This command is **generic**: it combines the repository's own intent sources,
+the **agentsmemory MCP** (`am_*` tools), and code-reality discovery using
+codebase-memory when available. It assumes no particular documentation shape,
+language, framework, or UI stack.
 
 ## Task
 
 $ARGUMENTS
 
-## Step 1 — Load context (specs, code, memory)
+## Step 1 — Load context (intent, code, memory)
 
 Fire these in parallel where you can; each answers a different question.
 
-- **1a. Specs — the intent layer, however this project keeps it.** If an
-  `eidos:spec` skill is registered, invoke it to load `eidos/*.md`. It often is
-  not: most repositories have no spec layer of that shape, and naming a skill
-  that does not exist has sent sessions looking for a directory that was never
-  there. When it is absent, say so in one line and name what actually carries
-  intent here — an OpenAPI document, an ADR corpus, `docs/`, a business-rules
-  file, `CLAUDE.md`. Report the substitute rather than reporting nothing; "no
-  specs" and "the specs are 84 ADRs and an OpenAPI contract" are different
-  situations and only one of them means you are working blind.
+- **1a. Project intent — use the repository's own sources.** Discover and read
+  what this project actually treats as authoritative: repository instructions,
+  `docs/specs/`, ADRs, architecture docs, OpenAPI or schema contracts,
+  product/business rules, or task acceptance criteria. Load only what bears on
+  the task, name the exact sources, and do not assume a directory shape or a
+  third-party skill. If none exists, say `no explicit intent source found` and
+  carry that uncertainty into the plan.
 
-- **1b. Code reality — codebase-memory.** Reindex first, then search — never
-  search a stale graph:
-  1. `index_repository(repo_path=<cwd>)` — refresh the code graph (it re-indexes
-     incrementally; `index_status` / `detect_changes` show what moved).
-  2. `mcp__codebase-memory-mcp__search_code(pattern=<task>, project=<repo>)` —
-     locate the symbols, files, and routes the task touches. Reach for
-     `get_architecture` or `trace_path` when you need structure or call paths.
+- **1b. Code reality — prefer codebase-memory when available.** When it is
+  registered, reindex before searching: first call
+  `index_repository(repo_path=<cwd>)`, then search with the task to locate the
+  symbols, files, and routes it touches. Reach for `get_architecture` or
+  `trace_path` when structure or call paths matter. When it is absent, say so
+  and use targeted source search over the paths, symbols, architecture docs, and
+  tests the task names; do not block on an optional integration.
 
 - **1c. Team memory — `am_*` MCP.** Three calls, in order:
   1. `am_skillset` — the wake-up playbook: how to drive the `am_*` tools, in what
@@ -52,7 +50,7 @@ Fire these in parallel where you can; each answers a different question.
      would otherwise infer. Check here before concluding a skill doesn't exist:
      a skill missing from your local list is usually centralised here instead.
 
-Reconcile the three. If the spec (1a), the code (1b), and past decisions (1c)
+Reconcile the three. If project intent (1a), the code (1b), and past decisions (1c)
 disagree, **surface the conflict** — that's a human decision, not one to make
 silently.
 
@@ -69,10 +67,10 @@ the next session recalls it.
 
 ## Step 2 — Plan
 
-Turn the loaded context into a structured, multi-step plan grounded in the specs
-(1a) and the code graph (1b) — via the **`eidos:plan`** skill when it is
-registered, and directly when it is not. Cite concrete `file:line`. Surface
-unresolved conflicts as decision points, not silent choices.
+Build a structured, multi-step plan directly from the loaded context using the
+harness's native plan/todo tool. Ground it in project intent (1a) and code
+reality (1b). Cite concrete `file:line`. Surface unresolved conflicts as decision
+points, not silent choices.
 
 ## Step 2b — Todo list
 
@@ -104,5 +102,5 @@ A verified change that isn't written back is memory lost. Skip only when the
 session produced nothing worth recalling — and say so.
 
 If `$ARGUMENTS` is empty, stop after Step 1 and give a short **briefing** instead:
-what the specs cover, the current code shape, and the most relevant recalled
+what the intent sources establish, the current code shape, and the most relevant recalled
 memories — no plan, no code.

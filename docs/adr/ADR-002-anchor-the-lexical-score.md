@@ -5,6 +5,7 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/rank.go` (`rankFused`, `bm25Scores`, `adaptiveBM25Weight`, `LexicalCoverageIDF`), `internal/palace/eval.go` (arm registry, `evalCase`), `internal/palace/evalstats.go` (paired bootstrap), `internal/palace/armreach_test.go` (arm reachability), `internal/palace/service_test.go` (`TestLexicalIDFChangesWhatSearchReturns`, the behavioural-reachability pattern), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-003-retire-the-closet-prior.md` (it decides whether the prior this ADR must rank alongside survives at all)
+**Served-path change:** The lexical normaliser is an operator-selectable choice — `--lex-norm` / `LEX_NORM` / `Service.WithLexNorm`, landed 2026-08-21 — so `Search` can now run `ceiling` and `saturating`, which were previously reachable from an eval table and from nothing an operator runs. The DEFAULT is unchanged and stays `page-max`: which normaliser should win is T3's evidence question, and shipping the choice first means the answer is a changed default rather than a build.
 
 ## Context
 
@@ -237,3 +238,4 @@ Outcome (i)'s deletions are the exception and are not env-revertable; undoing th
 ## Follow-ups
 
 - [ ] Selection-aware paired bootstrap: recompute the best-of-family argmax **inside** each bootstrap replicate, so a single-corpus contrast between selected arms gets a valid interval. This ADR uses cross-corpus transfer instead because it needs no new statistics code; the bootstrap version would let a future ADR read the trigger on one corpus.
+- [ ] Received from ADR-007 T1: the `vs best` baseline's selection bias. ADR-007 defers it here because the open Follow-up above — the selection-aware paired bootstrap — is the same work: the `vs best` column's baseline is the table's own best arm, so the contrast is between a selected arm and a selected baseline. Whoever closes the bootstrap Follow-up closes ADR-007's punt with it.

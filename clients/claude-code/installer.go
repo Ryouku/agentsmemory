@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,15 @@ const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
 // sessionEndHookAsset is the embedded SessionEnd hook: the closing recall report.
 const sessionEndHookAsset = "hooks/agentsmemory-session-end-hook.sh"
 
+// subagentHookAsset is the embedded SubagentStart hook: it puts the recall
+// instruction NEXT TO the subagent's task.
+//
+// It exists because ADR-017 T1 measured 5/5 subagents recalling with it and 0/5
+// without — on a control arm that already carried the whole protocol, the
+// bootstrap and this repo's hard gate, verbatim. Placement, not instruction, was
+// the gap, and a mechanism that decisive should not need hand-registration.
+const subagentHookAsset = "hooks/agentsmemory-subagent-start-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -35,6 +45,9 @@ const (
 	// and for the same reason: flat in the config dir, so the registered command
 	// is a stable path a user can read in settings.json.
 	verifyHookFile = "agentsmemory-verify-hook.sh"
+
+	// subagentHookFile is where the SubagentStart hook lands, beside the others.
+	subagentHookFile = "agentsmemory-subagent-start-hook.sh"
 
 	// sessionEndHookFile is where the SessionEnd hook lands.
 	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
@@ -197,7 +210,7 @@ type Installer struct {
 	resolvedToken string
 	copyGlobal    bool          // seed the target from the agent's global config dir
 	sharedAuth    bool          // link credentials back to the global config dir
-	recommended   bool          // also install codebase-memory + eidos + codex
+	recommended   bool          // also install codebase-memory + codex review
 	yes           bool          // non-interactive: never prompt
 	dryRun        bool          // print instead of doing
 	out           io.Writer     // progress + banners
@@ -236,10 +249,10 @@ func (i *Installer) source() assetSource {
 // rejected rather than silently resolved. home is passed in (not read here) so the
 // helper is pure and testable.
 //
-// A sandbox holds both agents' configs in one directory: Claude and codex never
-// share a filename (settings.json vs hooks.json, commands/ vs prompts/, CLAUDE.md
-// vs AGENTS.md), so `install --agent both --sandbox x` yields one dir that
-// CLAUDE_CONFIG_DIR and CODEX_HOME can each point at.
+// A sandbox holds both agents' configs in one directory. The two kits share
+// config.toml only with Codex itself; Claude writes settings.json, commands/ and
+// CLAUDE.md while Codex writes prompts/ and AGENTS.md, so `install --agent both
+// --sandbox x` yields one dir that CLAUDE_CONFIG_DIR and CODEX_HOME can each use.
 // --local implies the global target too, but as a DEFAULT rather than an
 // assertion: someone self-hosting is setting up their own machine, so stopping to
 // ask global-vs-sandbox is a prompt with an obvious answer. It therefore behaves
@@ -251,6 +264,16 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 	if global && (sandbox != "" || configDir != "") {
 		return "", "", false, fmt.Errorf("--global cannot be combined with --sandbox or --config-dir")
 	}
+	// An isolated install works by pinning the agent's config-dir variable at
+	// launch. An agent that exposes none cannot be pointed anywhere, so the kit
+	// would be written complete and correct into a directory it will never open —
+	// and the install would print the same green output as one that worked.
+	// Refuse: an install that cannot be honoured must not report success.
+	if kit.configEnv == "" && (sandbox != "" || configDir != "") {
+		return "", "", false, fmt.Errorf("--agent %s cannot use --sandbox or --config-dir: %s "+
+			"exposes no variable that relocates its config dir, so the kit would be installed "+
+			"where it will never be read. Install globally instead", kit.name, kit.name)
+	}
 	switch {
 	case sandbox != "":
 		if err := validSandboxName(sandbox); err != nil {
@@ -258,7 +281,11 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 		}
 		return sandboxDir(sandbox), sandbox, true, nil
 	case configDir != "":
-		return configDir, "", true, nil
+		absolute, err := filepath.Abs(configDir)
+		if err != nil {
+			return "", "", false, fmt.Errorf("resolve --config-dir %q: %w", configDir, err)
+		}
+		return absolute, "", true, nil
 	case global, local:
 		return kit.globalConfigDir(home), "", true, nil
 	default:
@@ -271,6 +298,14 @@ func resolveInstallTarget(kit agentKit, global, local bool, sandbox, configDir, 
 // asset's own name first, then the shorter name the README's download snippet
 // saves it as.
 var serverBinCandidates = []string{"aiagentmemory-server", "agentsmemory"}
+
+// kitNeedsServerBin reports whether this kit registers by spawning the stdio
+// bridge rather than by driving an agent CLI or handing over a URL. Claude
+// Desktop is the case: its config file starts local processes, so the entry names
+// our binary and the install has to find one.
+func kitNeedsServerBin(kit agentKit) bool {
+	return kit.bin == "" && kit.mcpConfigFile != ""
+}
 
 // resolveServerBin finds the server binary the stdio bridge will be spawned from
 // and returns an ABSOLUTE path.
@@ -343,6 +378,15 @@ func newInstaller(kit agentKit, c *cli.Command, out io.Writer, in io.Reader) (*I
 		if serverBin, err = resolveServerBin(c.String("server-bin"), dryRun); err != nil {
 			return nil, err
 		}
+	}
+	// A kit with no CLI registers by SPAWNING the bridge, so it needs the server
+	// binary for the same reason --socket does. Resolving it only for --socket
+	// left Claude Desktop refusing an install on a machine where the binary was
+	// sitting on PATH the whole time — the refusal was right, the lookup never ran.
+	// Tolerated when missing: registerClaudeDesktopMCP produces the actionable
+	// error, and failing here would take the whole install down over one agent.
+	if serverBin == "" && kitNeedsServerBin(kit) {
+		serverBin, _ = resolveServerBin(c.String("server-bin"), true)
 	}
 
 	// We always register our MCP, which needs the agent's own CLI, so resolve it
@@ -426,9 +470,9 @@ func (i *Installer) run() error {
 	switch {
 	case i.kit.name == agentPi:
 		// Both companions need something pi does not have: codebase-memory is a
-		// stdio MCP server and eidos/codex are Claude plugin marketplaces. Say so
+		// stdio MCP server and codex review is a Claude plugin marketplace. Say so
 		// instead of running an installer whose output nothing would consume.
-		fmt.Fprintln(i.out, "  none for pi: codebase-memory is a stdio MCP and eidos/codex are Claude plugins — pi supports neither")
+		fmt.Fprintln(i.out, "  none for pi: codebase-memory is a stdio MCP and codex review is a Claude plugin — pi supports neither")
 	case i.recommended:
 		i.installRecommended()
 	default:
@@ -515,11 +559,27 @@ func (i *Installer) writeAssets() error {
 		return err
 	}
 
+	// Subagent definitions are independent of hooks and must be written BEFORE the
+	// hookless early return below. They were not, and Cursor — the first agent
+	// with an agents/ directory and no hook system — silently got none: rung 1 of
+	// the reachability ladder with no rung 2, in the commit that made definitions
+	// kit-driven. Found by reading the installed config dir after a real install,
+	// not by a test; TestAgentWithoutACommandsDirWritesNoCommands ALLOWED the
+	// agents directory without requiring it, which is a check on what must not
+	// happen with nothing asserting what must.
+	if err := i.writeAgentDefinitions(); err != nil {
+		return err
+	}
+
 	// An agent with no hook system gets no hook script: pi retired hooks/ in
 	// favour of extensions, so its end-of-turn checkpoint ships inside the bridge
 	// extension (see registerPiMCP) and a stray .sh here would only confuse.
+	// Cursor is hookless for a different reason — its hook shape was never
+	// established — and gets no legacy note, which is pi's alone.
 	if i.kit.hooksFile == "" {
-		i.notePiLegacyHook()
+		if i.kit.name == agentPi {
+			i.notePiLegacyHook()
+		}
 		return nil
 	}
 
@@ -532,9 +592,11 @@ func (i *Installer) writeAssets() error {
 	}
 	i.ok("hook %s", filepath.Base(i.hookPath()))
 
-	// The SessionStart companion. Claude runs SessionStart hooks; codex does not,
-	// so it ships only where it can run — writing a script the agent will never
-	// call would just be litter in someone's config dir.
+	// The companion hooks remain Claude-only. Codex 0.144.5 exposes the two
+	// SUBAGENT event names, but event availability is not the execution contract:
+	// its input fields, stdout feedback envelope, and exit-2 retry behaviour have
+	// not been captured. Ship no script until a live Codex dispatch proves those
+	// details; this audit made no claim about the other session events.
 	if i.kit.name == "claude" {
 		verifyHook, err := i.source().ReadFile(verifyHookAsset)
 		if err != nil {
@@ -545,6 +607,15 @@ func (i *Installer) writeAssets() error {
 		}
 		i.ok("hook %s", filepath.Base(i.verifyHookPath()))
 
+		subHook, err := i.source().ReadFile(subagentHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.subagentHookPath(), subHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.subagentHookPath()))
+
 		endHook, err := i.source().ReadFile(sessionEndHookAsset)
 		if err != nil {
 			return err
@@ -553,10 +624,68 @@ func (i *Installer) writeAssets() error {
 			return err
 		}
 		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
+
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
 	i.clearLegacyHook()
+	return nil
+}
+
+// mcpURLPlaceholder is what a shipped agent definition carries where the MCP
+// endpoint goes. codex names the server inside the definition rather than
+// inheriting the global registration, and that URL is not a constant: a
+// self-hosted install points at localhost, a hosted one at the service. Left
+// unsubstituted it produces an agent whose memory tools point nowhere, silently.
+const mcpURLPlaceholder = "__AGENTSMEMORY_MCP_URL__"
+
+// agentDefinitionPath is where a shipped subagent definition is installed, in the
+// dialect this agent reads.
+func (i *Installer) agentDefinitionPath(name string) string {
+	return filepath.Join(i.targetDir, i.kit.agentsDir, name+i.kit.agentAssetExt)
+}
+
+// writeAgentDefinitions installs the shipped subagent definitions.
+//
+// This is ADR-017's mechanism 1, and the ADR calls it "the one unambiguous
+// structural fix… the only one of the three that cannot fail for compliance
+// reasons, because it changes what is POSSIBLE rather than what is asked". An
+// agent whose definition declares a `tools:` allowlist can call only what the
+// list names, so a subagent defined without the am_* tools cannot recall however
+// it is instructed — the injection arrives and there is no tool to obey it.
+//
+// It exists as a separate function because T2 shipped the definition into the
+// binary's embed and wrote it nowhere: rung 1 of the reachability ladder with no
+// rung 2, in the very commit whose purpose was to add it. The test that was
+// supposed to cover it globbed the REPOSITORY's agents/ directory, so it passed
+// against a file no install ever produced — the "exercises the component rather
+// than the selection" shape this repository has now shipped five times.
+func (i *Installer) writeAgentDefinitions() error {
+	if i.kit.agentsDir == "" {
+		return nil // pi has no subagent system to define agents for
+	}
+	endpoint := i.mcpURL
+	if i.kit.name == agentCodex {
+		var err error
+		endpoint, err = mcpURLWithWing(i.mcpURL, i.wing)
+		if err != nil {
+			return err
+		}
+	}
+	for _, name := range agentAssets {
+		asset := i.kit.agentsDir + "/" + name + i.kit.agentAssetExt
+		data, err := i.source().ReadFile(asset)
+		if err != nil {
+			return err
+		}
+		// The endpoint the definition names must be the one this install just
+		// registered, not the one that happened to be in the checked-in file.
+		data = []byte(strings.ReplaceAll(string(data), mcpURLPlaceholder, endpoint))
+		if err := i.writeFile(i.agentDefinitionPath(name), data, 0o644); err != nil {
+			return err
+		}
+		i.ok("agent %s", filepath.Base(i.agentDefinitionPath(name)))
+	}
 	return nil
 }
 
@@ -569,6 +698,14 @@ func (i *Installer) writeAssets() error {
 // and `$ARGUMENTS` expansion Claude uses for commands/, so only the directory
 // name (and the invocation prefix) differs.
 func (i *Installer) writeCommands() error {
+	// Empty means the agent HAS no commands directory, the way an empty hooksFile
+	// means it has no hook system. Without this, filepath.Join(dir, "", "M.md") is
+	// dir/M.md and all three commands land loose in the config root — files the
+	// agent never reads, in a directory it shares with products we did not write.
+	if i.kit.commandsDir == "" {
+		i.ok("%s has no slash-command directory — the protocol loads itself", i.kit.name)
+		return nil
+	}
 	for _, name := range commandAssets {
 		data, err := i.source().ReadFile("commands/" + name)
 		if err != nil {
@@ -601,6 +738,11 @@ func (i *Installer) hookPath() string { return filepath.Join(i.targetDir, hookFi
 
 // verifyHookPath is where the SessionStart hook is installed.
 func (i *Installer) verifyHookPath() string { return filepath.Join(i.targetDir, verifyHookFile) }
+
+// subagentHookPath is where the SubagentStart hook is installed.
+func (i *Installer) subagentHookPath() string {
+	return filepath.Join(i.targetDir, subagentHookFile)
+}
 
 // sessionEndHookPath is where the SessionEnd hook is installed.
 func (i *Installer) sessionEndHookPath() string {
@@ -651,75 +793,195 @@ func (i *Installer) writeFile(path string, data []byte, perm os.FileMode) error 
 	return os.WriteFile(path, data, perm)
 }
 
-// registerStopHook adds the Stop hook to the agent's hook JSON, idempotently —
-// settings.json for Claude, hooks.json for codex. Both take the same shape
-// ({"hooks":{"Stop":[{"hooks":[{"type":"command","command":…}]}]}}) and both hand
-// the hook a Stop event carrying stop_hook_active, which is what our script uses
-// for loop prevention, so one script and one merge serve both.
-//
-// Codex additionally gates non-managed hooks behind a trust review: the hook is
-// listed but skipped until it is trusted in `/hooks`. summary() says so.
+// registerStopHook adds the Stop hook idempotently: Claude's JSON registration
+// is merged into settings.json, while Codex's native TOML registration is one
+// marked block in config.toml. Both hand the script a Stop event carrying
+// stop_hook_active, which is what it uses for loop prevention.
 func (i *Installer) registerStopHook() error {
 	if i.kit.hooksFile == "" {
-		// pi has no hook system at all; the checkpoint rides in the extension.
-		i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
+		// Two different reasons, and saying the wrong one is worse than saying
+		// nothing. pi retired hooks in favour of extensions, so its checkpoint
+		// ships inside the bridge we install. Cursor has a hooks directory whose
+		// events and payloads were never established, so we register nothing there
+		// on purpose — and the operator should know the write half is missing
+		// rather than assume it landed.
+		if i.kit.name == agentPi {
+			i.ok("%s has no hooks — the memory checkpoint ships in the bridge extension", i.kit.name)
+		} else {
+			i.warn("%s gets no memory checkpoint: its hook shape is not established, so nothing "+
+				"will prompt you to persist a session", i.kit.name)
+		}
 		return nil
 	}
-	hookCmd := "bash " + i.hookPath()
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
-	if i.dryRun {
-		fmt.Fprintf(i.out, "  would register Stop hook in %s: %q\n", hooksFile, hookCmd)
-		return nil
-	}
-	changed, err := ensureHook(hooksFile, "Stop", hookCmd, foreignHookPredicate(hookCmd))
-	if err != nil {
-		return err
-	}
-	if changed {
-		i.ok("registered Stop hook in %s", i.kit.hooksFile)
-	} else {
-		i.ok("Stop hook already registered")
-	}
-	return i.registerVerifyHook()
-}
+	plans := i.hookPlans()
 
-// registerVerifyHook adds the SessionStart hook that verifies this project's code
-// anchors. Claude only: it is the agent with a SessionStart event.
-//
-// It is registered even though it does nothing until a memory carries an anchor —
-// the alternative is asking people to install a second thing later, at the exact
-// moment they are least likely to.
-func (i *Installer) registerVerifyHook() error {
-	if i.kit.name != "claude" || i.kit.hooksFile == "" {
-		return nil
-	}
-	hookCmd := "bash " + i.verifyHookPath()
-	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	if i.dryRun {
-		fmt.Fprintf(i.out, "  would register SessionStart hook in %s: %q\n", hooksFile, hookCmd)
+		for _, p := range plans {
+			fmt.Fprintf(i.out, "  would register %s hook in %s: %q\n", p.event, hooksFile, p.cmd)
+		}
+		if i.kit.name == agentCodex {
+			fmt.Fprintf(i.out, "  would retire the agentsmemory Stop hook from %s if present\n",
+				filepath.Join(i.targetDir, "hooks.json"))
+		}
 		return nil
 	}
-	changed, err := ensureHook(hooksFile, "SessionStart", hookCmd, foreignHookPredicate(hookCmd))
-	if err != nil {
-		return err
-	}
-	if changed {
-		i.ok("registered SessionStart hook (verifies memories against your code)")
-	} else {
-		i.ok("SessionStart hook already registered")
+	if i.kit.name == agentCodex {
+		// Codex 0.144.5 reads TOML hooks from config.toml and warns whenever the
+		// second hooks.json representation also exists. Land the TOML registration
+		// FIRST: cleanup must never leave the user with no checkpoint if writing
+		// config.toml fails.
+		p := plans[0]
+		changed, err := ensureCodexStopHook(hooksFile, p.cmd)
+		if err != nil {
+			return err
+		}
+		if changed {
+			i.ok("%s", p.note)
+		} else {
+			i.ok("%s hook already registered", p.event)
+		}
+
+		legacy := filepath.Join(i.targetDir, "hooks.json")
+		retired, remains, err := retireLegacyCodexHook(legacy)
+		if err != nil {
+			return fmt.Errorf("retire previous Codex hook registration: %w", err)
+		}
+		if retired && !remains {
+			i.ok("migrated agentsmemory hook and removed its previous hooks.json representation")
+		}
+		if remains {
+			i.warn("preserved non-agentsmemory content in %s; Codex may continue warning about two hook representations", legacy)
+		}
+		return nil
 	}
 
-	endCmd := "bash " + i.sessionEndHookPath()
-	endChanged, err := ensureHook(hooksFile, "SessionEnd", endCmd, foreignHookPredicate(endCmd))
+	regs := make([]hookReg, len(plans))
+	for n, p := range plans {
+		regs[n] = hookReg{event: p.event, cmd: p.cmd, obsolete: foreignHookPredicate(p.cmd)}
+	}
+	changed, err := ensureHooks(hooksFile, regs)
 	if err != nil {
 		return err
 	}
-	if endChanged {
-		i.ok("registered SessionEnd hook (reports what recall did this session)")
-	} else {
-		i.ok("SessionEnd hook already registered")
+	for _, p := range plans {
+		if changed[p.event] {
+			i.ok("%s", p.note)
+		} else {
+			i.ok("%s hook already registered", p.event)
+		}
 	}
 	return nil
+}
+
+// hookPlan is one hook registration plus the line the operator is told when it
+// lands. The note travels WITH the registration rather than beside it, because
+// the previous shape — one hand-written if/else per event — is how SubagentStart
+// shipped registered and silently, its result assigned to `_`.
+type hookPlan struct {
+	event string
+	cmd   string
+	note  string
+}
+
+// hookPlans is every hook this kit registers, in the order they are reported.
+//
+// This list is the single answer to "what does an install put in my settings
+// file", and three things read it: the registration itself, the --dry-run
+// preview (which previously previewed two of five), and
+// TestReadmeNamesEveryHookEventTheInstallerRegisters, which fails when a README
+// stops naming one of them.
+//
+// Claude-only past the Stop hook. Codex supports SubagentStart and SubagentStop,
+// but their payload fields, output injection, and retry contract have not been
+// measured there; registering scripts proven only against Claude would create a
+// reachable branch with an unverified protocol. pi never reaches here — it has
+// no hooks file, and its checkpoint ships inside the bridge extension.
+func (i *Installer) hookPlans() []hookPlan {
+	plans := []hookPlan{
+		{event: "Stop", cmd: bashHookCommand(i.hookPath()), note: "registered Stop hook in " + i.kit.hooksFile},
+	}
+	if i.kit.name != agentClaude {
+		return plans
+	}
+	return append(plans,
+		hookPlan{
+			event: "SessionStart",
+			cmd:   bashHookCommand(i.verifyHookPath()),
+			note:  "registered SessionStart hook (verifies memories against your code)",
+		},
+		hookPlan{
+			event: "SubagentStart",
+			cmd:   bashHookCommand(i.subagentHookPath()),
+			note:  "registered SubagentStart hook (a subagent wakes knowing memory exists)",
+		},
+		// The WRITE half (ADR-017 T3), and deliberately the SAME script as Stop:
+		// it branches on hook_event_name, so the two nudges differ in text and not
+		// in machinery. A second script would be a second thing to keep in step.
+		hookPlan{
+			event: "SubagentStop",
+			cmd:   bashHookCommand(i.hookPath()),
+			note:  "registered SubagentStop hook (a subagent offers back what it found)",
+		},
+		hookPlan{
+			event: "SessionEnd",
+			cmd:   bashHookCommand(i.sessionEndHookPath()),
+			note:  "registered SessionEnd hook (reports what recall did this session)",
+		},
+	)
+}
+
+// shellQuote renders one literal POSIX-shell argument. Hook commands are stored
+// as shell strings and execute long after installation, so config directories
+// containing spaces, quotes, or metacharacters must remain one inert argument.
+func shellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
+}
+
+// bashHookCommand renders the exact shell command stored in an agent's hook
+// configuration. `--` keeps a path beginning with a dash from becoming a bash
+// option; shellQuote keeps the path data rather than executable shell syntax.
+func bashHookCommand(path string) string {
+	return "bash -- " + shellQuote(path)
+}
+
+// installerHookPath parses only the two command shapes this installer has
+// emitted: today's quoted `bash -- <path>` and the old unquoted `bash <path>`.
+// The old arm accepts one shell field; paths with spaces are matched separately
+// against the exact target path because they cannot be distinguished safely
+// from arbitrary multi-argument shell commands in the general case.
+func installerHookPath(cmd string) (string, bool) {
+	const quotedPrefix = "bash -- "
+	if strings.HasPrefix(cmd, quotedPrefix) {
+		encoded := strings.TrimPrefix(cmd, quotedPrefix)
+		if len(encoded) < 2 || encoded[0] != '\'' || encoded[len(encoded)-1] != '\'' {
+			return "", false
+		}
+		decoded := strings.ReplaceAll(encoded[1:len(encoded)-1], `'"'"'`, "'")
+		if shellQuote(decoded) != encoded {
+			return "", false
+		}
+		return decoded, true
+	}
+
+	fields := strings.Fields(cmd)
+	if len(fields) != 2 || fields[0] != "bash" {
+		return "", false
+	}
+	return fields[1], true
+}
+
+// installerHookCommandMatches recognizes one installer-owned script without
+// claiming a user wrapper that merely mentions the same filename. Exact path
+// matching also retires the old broken unquoted form from config directories
+// containing spaces; the general parser stays strict for commands from another
+// directory where an unquoted multi-field string would be ambiguous.
+func installerHookCommandMatches(cmd, expectedPath string) bool {
+	if cmd == "bash "+expectedPath || cmd == bashHookCommand(expectedPath) {
+		return true
+	}
+	path, ok := installerHookPath(cmd)
+	return ok && filepath.Base(path) == filepath.Base(expectedPath)
 }
 
 // foreignHookPredicate matches any Stop registration of our hook script that is
@@ -729,8 +991,19 @@ func (i *Installer) registerVerifyHook() error {
 // checkpoint would fire twice every stop). Both are ours to retire; a hook the
 // user wrote never matches, because the match is on our own filename.
 func foreignHookPredicate(keep string) func(string) bool {
+	keepPath, ok := installerHookPath(keep)
+	if !ok {
+		return func(string) bool { return false }
+	}
 	return func(cmd string) bool {
-		return cmd != keep && strings.Contains(cmd, hookFile)
+		if cmd == keep {
+			return false
+		}
+		if installerHookCommandMatches(cmd, keepPath) {
+			return true
+		}
+		return filepath.Base(keepPath) == hookFile &&
+			installerHookCommandMatches(cmd, filepath.Join(filepath.Dir(keepPath), legacyHookRel))
 	}
 }
 
@@ -755,19 +1028,6 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 	// A socket has no URL, so the agent cannot speak HTTP to it: it spawns the
 	// server's own mcp-stdio bridge instead. This is checked before the per-agent
 	// split because the stdio registration is identical for Claude and codex.
-	// --wing is a promise about the CONNECTION: every call carries the header, so
-	// writes land in the right project even when the agent forgets to pass one.
-	// Two registrations cannot keep it — codex has no static-header flag, and a
-	// stdio bridge has no headers at all — and a promise silently unkept is worse
-	// than one refused, because the memories still land, just in the wrong wing.
-	if i.wing != "" && (i.socket != "" || i.kit.name == agentCodex) {
-		how := "codex has no static-header flag for MCP servers"
-		if i.socket != "" {
-			how = "a stdio bridge carries no HTTP headers"
-		}
-		i.warn("--wing %q cannot ride this connection (%s): calls arrive UNSCOPED, and each write lands in whatever wing the agent names", i.wing, how)
-		i.warn("  keep the wing by naming it in the agent's own protocol (the memory bootstrap resolves one per project), or register over HTTP with an agent whose client sends headers")
-	}
 	if i.socket != "" {
 		return i.registerSocketMCP()
 	}
@@ -777,6 +1037,10 @@ func (i *Installer) registerAgentsMemoryMCP() error {
 		return i.registerCodexMCP(token)
 	case agentPi:
 		return i.registerPiMCP(token)
+	case agentCursor:
+		return i.registerCursorMCP(token)
+	case agentClaudeDesktop:
+		return i.registerClaudeDesktopMCP(token)
 	default:
 		return i.registerClaudeMCP(token)
 	}
@@ -798,6 +1062,9 @@ func (i *Installer) registerSocketMCP() error {
 	}
 
 	argv := []string{"mcp-stdio", "--socket", i.socket}
+	if i.wing != "" {
+		argv = append(argv, "--wing", i.wing)
+	}
 	if err := i.addStdioMCP(mcpName, i.serverBin, argv...); err != nil {
 		return err
 	}
@@ -843,7 +1110,11 @@ func (i *Installer) registerClaudeMCP(token string) error {
 // also carries their plugins, hook trust hashes and shell policy, and passing it
 // on argv would leak it to `ps`.
 func (i *Installer) registerCodexMCP(token string) error {
-	args := []string{"mcp", "add", mcpName, "--url", i.mcpURL}
+	endpoint, err := mcpURLWithWing(i.mcpURL, i.wing)
+	if err != nil {
+		return err
+	}
+	args := []string{"mcp", "add", mcpName, "--url", endpoint}
 	// With no token there is nothing to persist and no variable for codex to read,
 	// so the token file is not written at all — an empty AGENTSMEMORY_TOKEN file
 	// would only mislead the next reader (and summary() would tell them to source
@@ -863,11 +1134,28 @@ func (i *Installer) registerCodexMCP(token string) error {
 		return err
 	}
 	if token == "" {
-		i.ok("registered MCP %q → %s (no token: self-hosted server)", mcpName, i.mcpURL)
+		i.ok("registered MCP %q → %s (no token: self-hosted server)", mcpName, endpoint)
 		return nil
 	}
-	i.ok("registered MCP %q → %s (token via $%s)", mcpName, i.mcpURL, tokenEnvVar)
+	i.ok("registered MCP %q → %s (token via $%s)", mcpName, endpoint, tokenEnvVar)
 	return nil
+}
+
+// mcpURLWithWing scopes clients that cannot attach arbitrary HTTP headers. The
+// server treats this registration query exactly like X-Agentsmemory-Wing, while
+// an explicit wing argument on a tool call still wins (including "*" opt-in).
+func mcpURLWithWing(rawURL, wing string) (string, error) {
+	if wing == "" {
+		return rawURL, nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse MCP URL %q: %w", rawURL, err)
+	}
+	query := parsed.Query()
+	query.Set("wing", wing)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 // registerPiMCP wires the remote MCP into pi. pi ships no MCP client — it
@@ -933,24 +1221,146 @@ func resolveAgentCLI(kit agentKit, c *cli.Command) (string, error) {
 	}
 }
 
+// registerCursorMCP registers the agentsmemory MCP server by writing Cursor's own
+// config file, because Cursor ships no command that would do it.
+//
+// The entry shape is copied from Cursor's existing HTTP entries rather than
+// invented: {"type":"http","url":…}, plus a headers object when a token is
+// resolved. A self-hosted --local server usually has none, and an empty
+// Authorization header is worse than no header at all.
+//
+// The approval step is printed rather than performed. Cursor gates every server
+// behind an explicit approval, a registered-but-unapproved server is
+// byte-identical on disk to a working one, and an installer that approves its own
+// server on the user's behalf defeats the point of the gate.
+func (i *Installer) registerCursorMCP(token string) error {
+	path := filepath.Join(i.targetDir, i.kit.mcpConfigFile)
+	entry := map[string]any{"type": "http", "url": i.mcpURL}
+	headers := map[string]any{}
+	if token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
+	// Cursor's entries carry arbitrary headers, so --wing rides the connection
+	// here as it does for Claude.
+	if i.wing != "" {
+		headers[wingHeader] = i.wing
+	}
+	if len(headers) > 0 {
+		entry["headers"] = headers
+	}
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register the agentsmemory MCP in %s → %s\n", path, i.mcpURL)
+		return nil
+	}
+	changed, err := ensureMCPServer(path, mcpName, entry)
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered MCP %q in %s → %s", mcpName, i.kit.mcpConfigFile, i.mcpURL)
+	} else {
+		i.ok("MCP %q already registered in %s", mcpName, i.kit.mcpConfigFile)
+	}
+	// Say this every time, not only when the file changed: the approval is stored
+	// outside mcp.json, so a re-install cannot tell whether it has happened.
+	i.ok("approve it once so Cursor loads it:  cursor-agent mcp enable %s", mcpName)
+	return nil
+}
+
+// registerClaudeDesktopMCP registers the server in Claude Desktop's own config
+// file, as a STDIO entry spawning the bridge this product already ships.
+//
+// Desktop's config file speaks to local processes. The project's own
+// windows-guide offers two remote routes — the Custom-connector UI, which is not
+// on every plan, and `npx mcp-remote`, which needs Node.js — and both are aimed
+// at the hosted service. For a self-hosted server there is a third and better
+// one: `mcp-stdio --url` is a bridge in the server binary that opens no database
+// and needs nothing else installed.
+//
+// It REFUSES rather than writing a command it cannot find. A Docker-only install
+// produces no host binary at all — measured on the reference machine, where both
+// candidate names resolved to nothing — and an entry naming a binary that is not
+// there fails at spawn inside Claude Desktop, where the error reads as ours.
+func (i *Installer) registerClaudeDesktopMCP(token string) error {
+	if i.serverBin == "" {
+		return fmt.Errorf("%s registers an mcp-stdio bridge, which needs the agentsmemory server "+
+			"binary on this machine, and none was found. Build one "+
+			"(go build -o ~/.local/bin/aiagentmemory-server ./cmd/server) or pass --server-bin "+
+			"<path>. A Docker-only install produces no host binary", i.kit.name)
+	}
+	path := filepath.Join(i.targetDir, i.kit.mcpConfigFile)
+	args := []any{"mcp-stdio", "--url", i.mcpURL}
+	if i.wing != "" {
+		args = append(args, "--wing", i.wing)
+	}
+	if token != "" {
+		args = append(args, "--token", token)
+	}
+	entry := map[string]any{"command": i.serverBin, "args": args}
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would register the agentsmemory MCP in %s → %s mcp-stdio --url %s\n",
+			path, i.serverBin, i.mcpURL)
+		return nil
+	}
+	changed, err := ensureMCPServer(path, mcpName, entry)
+	if err != nil {
+		return err
+	}
+	if changed {
+		i.ok("registered MCP %q in %s → %s mcp-stdio", mcpName, i.kit.mcpConfigFile, i.serverBin)
+	} else {
+		i.ok("MCP %q already registered in %s", mcpName, i.kit.mcpConfigFile)
+	}
+	i.ok("restart Claude Desktop to pick it up — it reads this file only at launch")
+	return nil
+}
+
 // tokenPath is where the workspace token is persisted inside CODEX_HOME.
 func (i *Installer) tokenPath() string { return filepath.Join(i.targetDir, tokenFile) }
 
 // mcpAddHint is the command a user runs to add the MCP later, when they skipped
-// the token prompt. It mirrors exactly what the installer would have run.
+// the token prompt. Re-running this installer is deliberate: it works for the
+// clients with no `mcp add` command and preserves the endpoint, target, bridge,
+// and registration wing instead of silently falling back to a broad connection.
 func (i *Installer) mcpAddHint() string {
-	switch i.kit.name {
-	case agentCodex:
-		return fmt.Sprintf("%s=<token> %s mcp add %s --url %s --bearer-token-env-var %s",
-			tokenEnvVar, i.agentBin, mcpName, i.mcpURL, tokenEnvVar)
-	case agentPi:
-		// pi has no `mcp add`; the bridge is our own extension plus its env file,
-		// so the way to add it later is to re-run this installer with a token.
-		return fmt.Sprintf("aiagentmemory install --agent pi --config-dir %s --token <token>", i.targetDir)
+	parts := []string{"aiagentmemory", "install", "--agent", shellQuote(i.kit.name)}
+	switch {
+	case i.sandboxName != "":
+		parts = append(parts, "--sandbox", shellQuote(i.sandboxName))
+	case i.kit.configEnv != "":
+		parts = append(parts, "--config-dir", shellQuote(i.targetDir))
 	default:
-		return fmt.Sprintf("%s mcp add --transport http %s %s --header \"Authorization: Bearer <token>\"",
-			i.agentBin, mcpName, i.mcpURL)
+		// Cursor and Claude Desktop expose no relocatable config directory; their
+		// installer already refuses --config-dir, so the recovery command must not
+		// recommend a flag those clients cannot honor.
+		parts = append(parts, "--global")
 	}
+	parts = append(parts, "--mcp-url", shellQuote(i.mcpURL))
+	if i.wing != "" {
+		parts = append(parts, "--wing", shellQuote(i.wing))
+	}
+	if i.kit.name == agentClaude && i.scope != "" {
+		parts = append(parts, "--scope", shellQuote(i.scope))
+	}
+	if i.agentBin != "" && i.agentBin != i.kit.bin {
+		var flag string
+		switch i.kit.name {
+		case agentClaude:
+			flag = "--claude-bin"
+		case agentCodex:
+			flag = "--codex-bin"
+		case agentPi:
+			flag = "--pi-bin"
+		}
+		if flag != "" {
+			parts = append(parts, flag, shellQuote(i.agentBin))
+		}
+	}
+	if i.kit.name == agentClaudeDesktop && i.serverBin != "" {
+		parts = append(parts, "--server-bin", shellQuote(i.serverBin))
+	}
+	parts = append(parts, "--token", "'<token>'", "--yes")
+	return strings.Join(parts, " ")
 }
 
 // registerMemoryBootstrap installs the always-on operating protocol so the
@@ -967,6 +1377,17 @@ func (i *Installer) mcpAddHint() string {
 // is inlined there instead; the sibling copy is still written, as the file the
 // block is regenerated from on the next install.
 func (i *Installer) registerMemoryBootstrap() error {
+	// Some agents can hold no protocol at all: Claude Desktop has no memory file,
+	// no rules directory and no commands directory. Writing the bootstrap into its
+	// config dir would be litter nothing reads, so the protocol reaches it through
+	// the MCP handshake instead (internal/mcpserver.serverInstructions, ADR-021
+	// T1) — which is the ONLY channel that reaches a client like this, and the
+	// reason that task exists.
+	if i.kit.memoryFile == "" && i.kit.rulesFile == "" {
+		i.ok("%s holds no protocol file — the server sends it on the MCP handshake instead",
+			i.kit.name)
+		return nil
+	}
 	data, err := i.source().ReadFile(bootstrapAsset)
 	if err != nil {
 		return err
@@ -976,6 +1397,14 @@ func (i *Installer) registerMemoryBootstrap() error {
 		return err
 	}
 	i.ok("memory protocol %s", bootstrapFile)
+
+	// An agent with no memory file takes the protocol another way. Cursor loads
+	// every rules/*.mdc marked `alwaysApply: true`, which is a whole file we own
+	// rather than a managed block merged into the user's — so there is nothing to
+	// merge and nothing of theirs to preserve.
+	if i.kit.memoryFile == "" {
+		return i.writeProtocolRule(data)
+	}
 
 	body := memoryImportLine
 	if !i.kit.supportsImport {
@@ -1002,10 +1431,36 @@ func (i *Installer) registerMemoryBootstrap() error {
 	return nil
 }
 
+// writeProtocolRule delivers the always-on protocol to an agent that has no
+// memory file, as a rule file it loads every session.
+//
+// Cursor is the case. The front matter is what makes it always-on: without
+// `alwaysApply: true` the rule is loaded on demand, which is the difference
+// between a protocol and a document nobody opens. Both keys are copied from a
+// rule already loading on the reference machine, not invented.
+func (i *Installer) writeProtocolRule(protocol []byte) error {
+	if i.kit.rulesFile == "" {
+		return fmt.Errorf("%s has no memory file and no rules file: the protocol would reach it "+
+			"by no route at all", i.kit.name)
+	}
+	path := filepath.Join(i.targetDir, i.kit.rulesFile)
+	if i.dryRun {
+		fmt.Fprintf(i.out, "  would write the memory protocol to %s\n", path)
+		return nil
+	}
+	front := "---\ndescription: agentsmemory operating protocol — recall team memory before acting, " +
+		"persist before stopping\nalwaysApply: true\n---\n\n"
+	if err := i.writeFile(path, append([]byte(front), protocol...), 0o644); err != nil {
+		return err
+	}
+	i.ok("memory protocol %s (always applied)", i.kit.rulesFile)
+	return nil
+}
+
 // installRecommended installs the companion ecosystem. Both agents get the
 // codebase-memory MCP (its own installer + a stdio registration); Claude
-// additionally gets the eidos and codex plugins, which live in Claude plugin
-// marketplaces and have no codex equivalent. Each step is best-effort — one
+// additionally gets the codex review plugin, which has no codex equivalent.
+// Each step is best-effort — one
 // already-installed plugin or a network hiccup should not abort the whole install
 // — so failures are reported, not fatal.
 func (i *Installer) installRecommended() {
@@ -1030,25 +1485,20 @@ func (i *Installer) installRecommended() {
 	}
 
 	if i.kit.name == agentCodex {
-		// eidos and codex are Claude plugin marketplaces; codex has its own
-		// (openai-bundled) and carries no equivalent, so say what is not happening
-		// rather than silently installing less than the flag promises.
-		fmt.Fprintln(i.out, "  note: the eidos and codex plugins are Claude-only — nothing to install for codex")
+		// The codex review plugin is for Claude; codex has its own bundled review
+		// capabilities, so say what is not happening rather than silently
+		// installing less than the flag promises.
+		fmt.Fprintln(i.out, "  note: the codex review plugin is Claude-only — nothing to install for codex")
 		return
 	}
 
 	// Marketplace add is effectively idempotent; ignore its error and let the
 	// install surface any real problem.
-	for _, p := range []struct{ marketplace, plugin string }{
-		{"agenticnotetaking/eidos", "eidos@eidos"},
-		{"openai/codex-plugin-cc", "codex@openai-codex"},
-	} {
-		i.agent(true, "plugin", "marketplace", "add", p.marketplace)
-		if err := i.agent(false, "plugin", "install", p.plugin); err != nil {
-			i.warn("install plugin %s failed: %v", p.plugin, err)
-		} else {
-			i.ok("installed plugin %s", p.plugin)
-		}
+	i.agent(true, "plugin", "marketplace", "add", "openai/codex-plugin-cc")
+	if err := i.agent(false, "plugin", "install", "codex@openai-codex"); err != nil {
+		i.warn("install plugin codex@openai-codex failed: %v", err)
+	} else {
+		i.ok("installed plugin codex@openai-codex")
 	}
 }
 
@@ -1232,13 +1682,13 @@ func (i *Installer) extensionsLabel() string {
 }
 
 // extensionsList names the companion extensions --recommended installs for the
-// kit. The eidos and codex plugins live in Claude plugin marketplaces, so a codex
+// kit. The codex review plugin lives in a Claude plugin marketplace, so a codex
 // install gets the codebase-memory MCP only.
 func extensionsList(kit agentKit) string {
 	if kit.name == agentCodex {
 		return "codebase-memory"
 	}
-	return "codebase-memory, eidos, codex"
+	return "codebase-memory, codex"
 }
 
 func (i *Installer) step(title string)       { fmt.Fprintf(i.out, "\n> %s\n", title) }
@@ -1246,21 +1696,36 @@ func (i *Installer) ok(f string, a ...any)   { fmt.Fprintf(i.out, "  [ok] "+f+"\
 func (i *Installer) warn(f string, a ...any) { fmt.Fprintf(i.out, "  [!!] "+f+"\n", a...) }
 
 // summary prints the closing next-steps block, tailored to the agent and the
-// install mode. The codex lines carry two things Claude does not need: the hook
-// trust review codex requires before a non-managed hook runs, and the token env
-// var, which codex reads from its environment rather than from its config.
+// install mode. The codex lines carry the token env var, which codex reads from
+// its environment rather than from its config.
 func (i *Installer) summary() {
 	fmt.Fprintln(i.out)
 	fmt.Fprintln(i.out, "Next steps:")
 	if i.sandboxName != "" {
 		fmt.Fprintf(i.out, "  - launch it in this sandbox:  aiagentmemory run --agent %s %s\n", i.kit.name, i.sandboxName)
 	} else {
-		fmt.Fprintf(i.out, "  - restart %s to pick up the new commands + hook\n", i.kit.name)
+		what := "the new commands + hook"
+		if i.kit.commandsDir == "" && i.kit.hooksFile == "" {
+			what = "the memory tools"
+		}
+		fmt.Fprintf(i.out, "  - restart %s to pick up %s\n", i.kit.name, what)
 	}
-	fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session via %s — no need to type %s\n",
-		i.kit.memoryFile, i.commandLabel("am.md"))
-	fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
-		i.commandLabel("M.md"), i.commandLabel("am.md"))
+	// Both of these assume the agent HAS a memory file and slash commands. Claude
+	// Desktop has neither, and interpolating its commandHint into them printed
+	// "auto-loads every session via  — no need to type Claude Desktop has no slash
+	// commands…". A summary that garbles itself is how an install stops being read.
+	if i.kit.memoryFile != "" {
+		fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session via %s — no need to type %s\n",
+			i.kit.memoryFile, i.commandLabel("am.md"))
+	} else if i.kit.rulesFile != "" {
+		fmt.Fprintf(i.out, "  - the memory protocol auto-loads every session from %s\n", i.kit.rulesFile)
+	} else {
+		fmt.Fprintf(i.out, "  - %s holds no protocol file; the server sends its instructions on the MCP handshake\n", i.kit.name)
+	}
+	if i.kit.commandsDir != "" {
+		fmt.Fprintf(i.out, "  - run %s or %s with a task to run the full grounding sequence on demand\n",
+			i.commandLabel("M.md"), i.commandLabel("am.md"))
+	}
 
 	if i.wing != "" {
 		fmt.Fprintf(i.out, "  - memories from this project file into %s on their own — no wing argument needed\n", i.wing)
@@ -1311,7 +1776,6 @@ func (i *Installer) summary() {
 	if i.kit.name != agentCodex {
 		return
 	}
-	fmt.Fprintln(i.out, "  - codex skips untrusted hooks: open /hooks in codex and trust the agentsmemory Stop hook")
 	if i.sandboxName != "" {
 		// A sandbox is a whole CODEX_HOME, and codex keeps auth.json there — so an
 		// isolated config starts logged out and every request 401s until you say so.

@@ -294,7 +294,7 @@ func fillSupersession(report *EvalReport) {
 	for i := range report.Arms {
 		arm := report.Arms[i].Arm
 		cell := StaleAboveRate(report.Details, arm)
-		cell.Scope = supersessionScope(arm)
+		cell.Scope = ArmScope(arm)
 		report.Arms[i].Supersession = cell
 	}
 }
@@ -404,18 +404,30 @@ const (
 	// in this ADR and should be re-derived once the non-temporal case set can
 	// resolve less than it.
 	supersessionNonInferiority = 0.05
+
+	// The shipped ranking shape, mirrored here because evalstats cannot import the
+	// config package. TestGatedArmMatchesTheShippedDefaults keeps both honest.
+	defaultFusionIsRRF = true
+	defaultClosetIsOn  = false
 )
 
-// supersessionGatedArm is the arm the gate judges: the pool-scoped
-// reconstruction of what production ranks with.
-//
-// Chosen by IDENTITY and never by score. Scanning the table for the lowest
-// stale-above rate is the winner's curse the MRR table already warns about — the
-// arm that looks best on this corpus is the one most likely to be lucky on it.
-// This must change in the same commit that changes production ranking, and if
-// ADR-003 flips the closet prior off then production is ArmHybridRerank and this
-// constant moves with it.
-const supersessionGatedArm = ArmReranked
+// defaultShapeService is a Service configured exactly as the SHIPPED defaults
+// configure one, so the gate's pre-registered arm is read off the same mapping a
+// running service is. The mirrors it reads are kept honest by
+// TestGatedArmMatchesTheShippedDefaults in cmd/server, which compares them
+// against config.Default().
+func defaultShapeService() *Service {
+	s := NewService(nil, nil, nil, 0)
+	if defaultFusionIsRRF {
+		s = s.WithFusion("rrf")
+	}
+	if !defaultClosetIsOn {
+		s = s.WithClosetBoost(0)
+	}
+	return s
+}
+
+var supersessionGatedArm = defaultShapeService().gatedArm(true)
 
 // The three outcomes a supersession verdict can take.
 const (
@@ -548,6 +560,111 @@ func wilsonAt(successes, n int, alpha float64) Interval {
 // SupersessionGatedArm is the arm the gate is pre-registered against. Exported
 // so the command can refuse a report that does not contain it, by name.
 func SupersessionGatedArm() EvalArm { return supersessionGatedArm }
+
+// SupersessionGatedArmFor reports the arm that reconstructs THIS service's
+// ranking exactly, or "" when no arm does.
+//
+// "" is the honest answer more often than it looks. An eval arm is a FIXED
+// pipeline: ArmHybrid is the 0.4 weight at the page-max normaliser, and the RRF
+// arms carry no closet prior because armBoosts hands boosts only to arms whose
+// NAME says closet — while Service.Search passes its boosts into whichever
+// ranker it chose. A configuration no arm reproduces has no faithful number in
+// the table, and naming the nearest one is exactly how "the gate judged a
+// pipeline nobody runs" happened in the first place. ADR-007's rule governs this
+// as much as any other printed number: a measurement whose mechanism was not the
+// served one reports that it was not measured.
+//
+// TestGatedArmReconstructsTheServedRanking is what keeps this honest — it
+// compares the ORDER production produces against the order the named arm
+// produces, so a mapping that drifts fails on the ranking rather than on a name.
+func (s *Service) SupersessionGatedArmFor() EvalArm { return s.gatedArm(s.rerank != nil) }
+
+// gatedArm is SupersessionGatedArmFor with the reranker half passed in, so the
+// SHIPPED default's arm — which is computed before any service exists — comes
+// out of this same mapping rather than a second one beside it. Two mappings is
+// how the constant it replaced went stale.
+func (s *Service) gatedArm(reranked bool) EvalArm {
+	closetOn := s.closetBoostScale > 0
+
+	if s.fusionRRF {
+		switch {
+		case closetOn:
+			return "" // no RRF arm carries the closet prior production applies
+		case reranked:
+			return ArmRRFReranked
+		default:
+			return ArmRRF
+		}
+	}
+
+	// Linear fusion. Every closet-bearing arm and every reranked arm is built on
+	// rankHybrid — rankHybridWeightedNorm at the FIXED hybridBM25Weight and the
+	// page-max normaliser — so those arms are faithful to that exact shape only.
+	plain := !s.bm25Auto && s.bm25Base == hybridBM25Weight && s.lexNormName == DefaultLexNorm
+	switch {
+	case closetOn && reranked:
+		if plain {
+			return ArmReranked
+		}
+		return ""
+	case closetOn:
+		if plain {
+			return ArmHybridCloset
+		}
+		return ""
+	case reranked:
+		if plain {
+			return ArmHybridRerank
+		}
+		return ""
+	}
+
+	// Closet off and no reranker: the swept fusion arms cover more shapes. Each
+	// is named through the same helper the sweep registers it under, so an arm
+	// that stops being swept stops being nameable here in the same edit.
+	norm := s.lexNormName
+	anchored := false
+	for _, n := range anchoredNorms {
+		if n.name == norm {
+			anchored = true
+		}
+	}
+	switch {
+	case s.bm25Auto && s.bm25IDF:
+		if norm == DefaultLexNorm {
+			return ArmAdaptiveIDF
+		}
+		if anchored {
+			return anchoredArm(ArmAdaptiveIDF, norm)
+		}
+		return ""
+	case s.bm25Auto:
+		if norm == DefaultLexNorm {
+			return ArmAdaptive
+		}
+		if anchored {
+			return anchoredArm(ArmAdaptive, norm)
+		}
+		return ""
+	}
+	for _, w := range bm25Sweep {
+		if w != s.bm25Base {
+			continue
+		}
+		if norm == DefaultLexNorm {
+			if w == hybridBM25Weight {
+				return ArmHybrid
+			}
+			return bm25Arm(w)
+		}
+		// The anchored sweep skips weight zero — the lexical term is multiplied
+		// away, so the divisor cannot matter and no such arm is registered.
+		if w != 0 && anchored {
+			return anchoredArm(bm25Arm(w), norm)
+		}
+	}
+	return ""
+}
 
 // SupersessionMinCases is the floor on verified, non-vacuous pairs. Exported for
 // the command's refusal message.

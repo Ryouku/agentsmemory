@@ -78,8 +78,7 @@ Stop and ask if `κ = 0.5` in the saturating transform turns out to need per-cor
 
 - Registering the anchored arms in the eval — that is T2's job.
 - Any config key or default change — that is T4's job.
-- Making `raw` or `C` independent of the candidate set, which needs corpus-wide term statistics (deferred: docs/adr/BACKLOG.md)
-
+- Making `raw` or `C` independent of the candidate set, which needs corpus-wide term statistics (deferred: docs/adr/ADR-002-anchor-the-lexical-score.md)
 ## Verification Log
 - 2026-08-20 · a2483fc* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ -run "TestLexNorm|TestRankHybrid|TestRankRRF|TestBM25Scores|TestLexicalCoverage|TestAdaptiveWeight" -count=1'`
 - 2026-08-20 · 9195d7c · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'gofmt -l internal/palace | grep -q . && exit 1; go vet ./... && go test ./internal/palace/ -run "TestLexNorm|TestRankHybrid|TestRankRRF|TestBM25Scores|TestLexicalCoverage|TestAdaptiveWeight" -count=1'`

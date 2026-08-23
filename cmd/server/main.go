@@ -66,8 +66,18 @@ func main() {
 	// in a local file during development; real env vars still take precedence.
 	_ = godotenv.Load()
 
-	def := config.Default()
+	if err := rootCommand(config.Default()).Run(context.Background(), os.Args); err != nil {
+		log.Fatal(err)
+	}
+}
 
+// rootCommand builds the whole CLI.
+//
+// Extracted from main so that WHICH subcommands exist is a question a test can
+// ask. A command that is written, correct and never added to this list is this
+// repository's characteristic defect, and until now the list lived inside a
+// function nothing could call.
+func rootCommand(def config.Config) *cli.Command {
 	// serveAction boots the HTTP server. It backs both the root command (so a
 	// bare `agentsmemory`, and the Docker image, keep serving) and the explicit
 	// `serve` subcommand — one behaviour, two entry points.
@@ -101,12 +111,11 @@ func main() {
 			setPlanCommand(def),
 			projectsCommand(def),
 			inspectCommand(def),
+			doctorCommand(def),
 		},
 	}
 
-	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		log.Fatal(err)
-	}
+	return cmd
 }
 
 // configFromCmd reads the storage/embed flags off a (sub)command into a Config.
@@ -130,9 +139,10 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		EmbedURL:         strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:      c.Float("closet-boost"),
 		Fusion:           strings.TrimSpace(c.String("fusion")),
+		LexNorm:          strings.TrimSpace(c.String("lex-norm")),
 		RerankWeight:     c.Float("rerank-weight"),
 		RerankTimeout:    c.Duration("rerank-timeout"),
-		HTTPTimeout:      def.HTTPTimeout,
+		HTTPTimeout:      c.Duration("http-timeout"),
 		Debug:            c.Bool("debug"),
 		Local:            c.Bool("local"),
 		// Trimmed because the presented credential is: auth.bearerToken strips the
@@ -178,12 +188,14 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "ollama-model", Sources: cli.EnvVars("OLLAMA_EMBED_MODEL"), Value: def.OllamaEmbedModel, Usage: "Ollama embedding model"},
 		&cli.StringFlag{Name: "rerank-url", Sources: cli.EnvVars("RERANK_URL"), Value: def.RerankURL, Usage: "cross-encoder base URL for re-ranking search results (TEI, or llama.cpp's server; empty disables re-ranking)"},
 		&cli.IntFlag{Name: "rerank-pool", Sources: cli.EnvVars("RERANK_POOL"), Value: def.RerankPool, Usage: "how many candidates to cross-encode per search (ignored without --rerank-url)"},
-		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1"},
+		&cli.StringFlag{Name: "bm25-weight", Sources: cli.EnvVars("BM25_WEIGHT"), Value: def.BM25Weight, Usage: "lexical fusion weight: 'auto' scales per query by measured lexical signal (default), 'auto-idf' weights each query term by how much it discriminates (ahead on every table measured so far), or a fixed 0..1. DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no weight to apply"},
 		&cli.StringFlag{Name: "embed-backend", Sources: cli.EnvVars("EMBED_BACKEND"), Value: def.EmbedBackend, Usage: "what embeds text: ollama (default) or tei (text-embeddings-inference — the only path to bge-m3's sparse and multi-vector output)"},
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
-		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 1 full boost (default), 0 off — measured to hurt on mined-transcript corpora and help on curated ones"},
-		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: linear (default, weighted by --bm25-weight) or rrf (rank fusion — measured better where BM25 scores below vector alone)"},
+		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 0 off (default), 1 full boost — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
+		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
+		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -771,11 +783,140 @@ type services struct {
 	merges    *mergejob.Service // background wing-merge queue (GUI enqueue/list/detect)
 }
 
+// configureRanking applies the search-ranking settings to svc and returns the
+// lines describing what it resolved.
+//
+// It is a function rather than a block inside buildServices so a test can drive
+// flag values through to behaviour without standing a server up: ADR-006 T2
+// sweeps these knobs to discover which are inert under which mode, and a block
+// reachable only from the composition root cannot be swept. newReranker is the
+// cross-encoder factory — tei.New in production — so the wiring is exercisable
+// with no network.
+//
+// The returned lines are the ONLY observable of this wiring; each setter emits
+// one. That is what lets an extraction be checked as a move rather than trusted
+// as one.
+// defaultFusion and defaultClosetBoost mirror config.Default() so the startup
+// lines report a DEPARTURE from what ships rather than from a literal that
+// stopped being the default — which is what `cfg.ClosetBoost != 1` had become.
+//
+// Mirroring is a duplication, so it is gated: TestConfiguredDefaultsMatchConfig
+// fails when either drifts from config.Default(). An earlier version of this
+// comment cited that test before it existed, which is the same defect the tests
+// around it exist to catch.
+const (
+	defaultFusion      = "rrf"
+	defaultClosetBoost = 0.0
+)
+
+func configureRanking(svc *palace.Service, cfg config.Config,
+	newReranker func(url string, timeout time.Duration) palace.Reranker) (*palace.Service, []string) {
+
+	var lines []string
+	say := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	drawers := svc
+
+	// Applied unconditionally: the service's own zero value is the FULL prior, so
+	// a config default of 0 that was only applied "when it differs from 1" would
+	// have shipped the prior it is meant to retire. The announcement is the delta —
+	// silence means the shipped default, which the resolved-profile line at the end
+	// states in full either way.
+	drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
+	if cfg.ClosetBoost != defaultClosetBoost {
+		say("closet boost: scaled to %.2f (%.2f is the shipped default; 1.00 is the full curation prior)",
+			cfg.ClosetBoost, defaultClosetBoost)
+	}
+	// An unrecognized value is reported rather than silently ignored, the same way
+	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
+	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
+	// served the linear blend instead, they would read the eval's rrf column and
+	// their production ordering as the same configuration when they are not.
+	rrf := false
+	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
+		if strings.EqualFold(f, "rrf") {
+			drawers = drawers.WithFusion("rrf")
+			rrf = true
+			// Announced even when rrf is the SHIPPED default. Every other line here
+			// reports a departure, and this one deliberately does not: an operator
+			// who sets --bm25-weight or --lex-norm under rrf gets no behaviour and
+			// no error, and staying quiet because "that is just the default" is how
+			// they would find out from a table instead of from their own logs.
+			say("fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)")
+		} else {
+			say("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
+		}
+	}
+	// Under rrf the weight is inert and the line above has just said so; reporting
+	// one anyway leaves two adjacent lines disagreeing, and a reader believes
+	// whichever they read second. The sweep discovers this pair by running it, so
+	// the startup output and the measurement now agree.
+	//
+	// This guards the BM25 block ONLY. The first version returned here instead,
+	// which silently took the reranker with it: rrf and reranking COMPOSE — Search
+	// fuses first and reranks the fused order, and rrf+rerank is an eval arm an
+	// operator reads before choosing it. Suppressing a contradictory line is worth
+	// one condition, never an early exit past wiring that is still wanted.
+	if !rrf {
+		// The anchored normalisers were built, tested and compared in the eval and
+		// production could select none of them until this line existed.
+		if n := strings.TrimSpace(cfg.LexNorm); n != "" && n != palace.DefaultLexNorm {
+			before := drawers.LexNormName()
+			drawers = drawers.WithLexNorm(n)
+			if drawers.LexNormName() == before {
+				say("lex norm: %q is not one of %v; keeping %s", n, palace.LexNormNames(), before)
+			} else {
+				say("lex norm: %s (default is %s)", drawers.LexNormName(), palace.DefaultLexNorm)
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
+			drawers = drawers.WithLexicalIDF(true)
+			say("bm25 weight: auto (IDF-weighted coverage)")
+		} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
+			if fixed, err := strconv.ParseFloat(w, 64); err == nil {
+				drawers = drawers.WithBM25Weight(false, fixed)
+				say("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
+			} else {
+				say("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
+			}
+		}
+	}
+	if cfg.RerankURL != "" {
+		// A rerank call does real inference, unlike the millisecond calls
+		// HTTPTimeout was sized for, so it gets its own budget.
+		timeout := cfg.RerankTimeout
+		if timeout <= 0 {
+			timeout = cfg.HTTPTimeout
+		}
+		drawers = drawers.
+			WithReranker(newReranker(cfg.RerankURL, timeout), cfg.RerankPool).
+			WithRerankWeight(cfg.RerankWeight)
+		say("reranker: %s (pool %d, weight %.2f, timeout %s)",
+			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
+	}
+
+	// The resolved profile is announced ALWAYS, not as a delta. Everything above
+	// reports what changed; this reports what will act. A server whose startup said
+	// nothing was indistinguishable from one whose operator had set every value to
+	// its default, and neither could be matched against a row in an eval table.
+	lines = append(lines, "ranking: "+drawers.RankingProfile())
+
+	return drawers, lines
+}
+
 // buildServices opens and migrates the database, then wires the bounded-context
 // services against it. It deliberately does NOT seed (the serve path seeds; a
 // read-only CLI invocation must not create data) and starts no transport, so it
 // is safe to call from both entry points.
-func buildServices(cfg config.Config) (*services, error) {
+func buildServices(cfg config.Config) (*services, error) { return buildServicesWith(cfg, true) }
+
+// buildServicesWith is buildServices with the index reconciliation made optional.
+//
+// A CHECKER must not repair the evidence before judging it. Reconciliation
+// replays the source of truth into the chromem index at construction, so an
+// index that had lost points was silently rebuilt and then reported clean — the
+// check could not fail on the fault it exists to find. Every serving path still
+// reconciles; only the read-only inspection does not.
+func buildServicesWith(cfg config.Config, reconcile bool) (*services, error) {
 	gdb, err := openDB(cfg.DBPath, cfg.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -797,7 +938,7 @@ func buildServices(cfg config.Config) (*services, error) {
 
 	// Vector storage: SQLite is always the source of truth; cfg.VectorBackend
 	// selects whether it also serves search or Qdrant indexes it.
-	vectors, err := buildVectorStore(cfg, gdb)
+	vectors, err := buildVectorStoreWith(cfg, gdb, reconcile)
 	if err != nil {
 		return nil, fmt.Errorf("vector store: %w", err)
 	}
@@ -814,46 +955,11 @@ func buildServices(cfg config.Config) (*services, error) {
 	// vector+BM25 fusion it has always been. Building it here keeps the
 	// composition root the only place that knows which rerank server is deployed.
 	drawers := palace.NewService(palace.NewRepo(gdb), embedder, vectors, defaultVectorDim)
-	if cfg.ClosetBoost != 1 {
-		drawers = drawers.WithClosetBoost(cfg.ClosetBoost)
-		log.Printf("closet boost: scaled to %.2f (1.00 is the full curation prior)", cfg.ClosetBoost)
-	}
-	// An unrecognized value is reported rather than silently ignored, the same way
-	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the
-	// eval and decided rrf wins on their corpus; if a typo (FUSION=rff) quietly
-	// served the linear blend instead, they would read the eval's rrf column and
-	// their production ordering as the same configuration when they are not.
-	if f := strings.TrimSpace(cfg.Fusion); f != "" && !strings.EqualFold(f, "linear") {
-		if strings.EqualFold(f, "rrf") {
-			drawers = drawers.WithFusion("rrf")
-			log.Printf("fusion: reciprocal-rank (bm25 weight does not apply)")
-		} else {
-			log.Printf("fusion: %q is not 'linear' or 'rrf'; keeping linear", f)
-		}
-	}
-	if strings.EqualFold(strings.TrimSpace(cfg.BM25Weight), "auto-idf") {
-		drawers = drawers.WithLexicalIDF(true)
-		log.Printf("bm25 weight: auto (IDF-weighted coverage)")
-	} else if w := cfg.BM25Weight; w != "" && !strings.EqualFold(w, "auto") {
-		if fixed, err := strconv.ParseFloat(w, 64); err == nil {
-			drawers = drawers.WithBM25Weight(false, fixed)
-			log.Printf("bm25 weight: fixed %.2f (auto is the measured default)", fixed)
-		} else {
-			log.Printf("bm25 weight: %q is not 'auto', 'auto-idf' or a number; keeping auto", w)
-		}
-	}
-	if cfg.RerankURL != "" {
-		// A rerank call does real inference, unlike the millisecond calls
-		// HTTPTimeout was sized for, so it gets its own budget.
-		timeout := cfg.RerankTimeout
-		if timeout <= 0 {
-			timeout = cfg.HTTPTimeout
-		}
-		drawers = drawers.
-			WithReranker(tei.New(cfg.RerankURL, timeout), cfg.RerankPool).
-			WithRerankWeight(cfg.RerankWeight)
-		log.Printf("reranker: %s (pool %d, weight %.2f, timeout %s)",
-			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
+	drawers, rankingLines := configureRanking(drawers, cfg, func(url string, timeout time.Duration) palace.Reranker {
+		return tei.New(url, timeout)
+	})
+	for _, line := range rankingLines {
+		log.Printf("%s", line)
 	}
 
 	// The wing-share handshake bridges the two contexts it sits over: tenant
@@ -906,6 +1012,12 @@ func buildEmbedder(cfg config.Config) (palace.Embedder, error) {
 }
 
 func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error) {
+	return buildVectorStoreWith(cfg, gdb, true)
+}
+
+// buildVectorStoreWith is buildVectorStore with reconciliation made optional, for
+// the read-only checker. See buildServicesWith.
+func buildVectorStoreWith(cfg config.Config, gdb *gorm.DB, reconcile bool) (store.VectorStore, error) {
 	sot := sqlitevec.New(gdb)
 	switch cfg.VectorBackend {
 	case config.VectorBackendSQLite:
@@ -917,8 +1029,10 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 			return nil, err
 		}
 		hybrid := store.NewHybrid(sot, index)
-		if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
-			return nil, err
+		if reconcile {
+			if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
+				return nil, err
+			}
 		}
 		log.Printf("chromem index: %s", dir)
 		return hybrid, nil
@@ -995,7 +1109,7 @@ func recallStatsHandler(drawers *palace.Service, teamID string) http.Handler {
 				window = time.Duration(n) * time.Minute
 			}
 		}
-		stats, err := drawers.RecallStats(r.Context(), teamID, window, 5)
+		stats, err := drawers.RecallStats(r.Context(), teamID, "", window, 5)
 		if err != nil {
 			http.Error(w, "recall stats: "+err.Error(), http.StatusInternalServerError)
 			return

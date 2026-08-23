@@ -84,7 +84,7 @@ func installCommand() *cli.Command {
 			"Every agent:        aiagentmemory install --agent all\n\n" +
 			"The default install wires up our slash commands, the Stop hook, and the\n" +
 			"agentsmemory MCP. --recommended additionally installs the codebase-memory\n" +
-			"MCP and (Claude only) the eidos and codex plugins. pi has no MCP client and\n" +
+			"MCP and (Claude only) the codex review plugin. pi has no MCP client and\n" +
 			"no hooks, so it gets a bridge extension that provides both.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -110,8 +110,8 @@ func installCommand() *cli.Command {
 				Name: "wing",
 				Usage: "file this project's memories into this wing. It rides as a header on every MCP call, so writes " +
 					"land in the right project even when the agent passes no wing — pair it with --scope project to keep " +
-					"the registration in this repo. Carried by claude and pi; codex has no static-header flag and a " +
-					"--socket bridge has no headers, so install warns there instead of dropping it silently",
+					"the registration in this repo. The installer uses each client's supported registration channel " +
+					"(header, URL query, bridge flag, or pi environment) rather than dropping the scope",
 			},
 			&cli.StringFlag{
 				Name: "claude-dir",
@@ -132,7 +132,7 @@ func installCommand() *cli.Command {
 			},
 			&cli.BoolFlag{
 				Name:  "recommended",
-				Usage: "also install the recommended extensions: codebase-memory MCP, eidos + codex plugins",
+				Usage: "also install the recommended extensions: codebase-memory MCP + codex review plugin",
 			},
 			&cli.StringFlag{
 				Name: "token",

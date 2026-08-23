@@ -1,16 +1,56 @@
 # agentsmemory — agent kit (`aiagentmemory`)
 
 A single binary that wires [Claude Code](https://claude.com/claude-code),
-[Codex](https://developers.openai.com/codex) or [pi](https://pi.dev) into your
+[Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com) or
+[pi](https://pi.dev) into your
 **agentsmemory** workspace: it installs the memory-grounded slash commands and the
 Stop hook, registers the agentsmemory MCP, and can optionally pull in the
 recommended companion tools. It also wraps the agent CLI so each project can run
 against its own isolated configuration.
 
-Claude is the default; `--agent codex` and `--agent pi` install the same kit into
-those CLIs' own layouts, `--agent both` does Claude + codex (what it always meant)
-and `--agent all` does all three. Everything below describes Claude unless a
-per-agent column or the [Codex](#codex) / [pi](#pi) section says otherwise.
+`--agent claude` is the default; `--agent codex`, `--agent cursor`,
+`--agent claude-desktop` and `--agent pi` install into those tools' own layouts,
+`--agent both` does Claude + codex (what it always meant) and `--agent all` does
+all five.
+Everything below describes Claude unless a per-agent column or the
+[Codex](#codex) / [pi](#pi) section says otherwise.
+
+**The agents do not offer the same surfaces**, and the kit installs what each one
+has rather than pretending:
+
+| | claude | codex | cursor | claude-desktop | pi |
+|---|---|---|---|---|---|
+| config dir | `~/.claude` | `~/.codex` | `~/.cursor` | `~/Library/Application Support/Claude` | `~/.pi/agent` |
+| MCP registered by | `claude mcp add` | `codex mcp add` | writing `mcp.json` — no `mcp add` | writing `claude_desktop_config.json` | bridge extension |
+| protocol lands in | `CLAUDE.md` + `@import` | `AGENTS.md` (inlined) | `rules/agentsmemory.mdc` (`alwaysApply: true`) | the MCP handshake — it holds no file | `AGENTS.md` (inlined) |
+| slash commands | `commands/` | `prompts/` | none — no commands dir | none | `prompts/` |
+| lifecycle hooks | all five | `Stop` — native TOML in `config.toml` | none — hook shape not established | none | in the extension |
+| subagent definition | `agents/*.md` | `agents/*.toml` | `agents/*.md` | none | none |
+| `--wing` registration scope | header | URL query | header | `mcp-stdio --wing` | bridge environment |
+| `--sandbox` | ✅ | ✅ | refused — no config-dir variable | refused — same reason | ✅ |
+| needs a host server binary | — | — | — | ✅ the `mcp-stdio` bridge | — |
+
+**`--agent claude-desktop` is the thinnest kit**: an MCP registration and nothing
+else, because Desktop has nowhere to put anything else. Its entry spawns the
+bridge the server binary already ships:
+
+```json
+"agentsmemory": {
+  "command": "~/.local/bin/aiagentmemory-server",
+  "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp", "--wing", "wing_acme"]
+}
+```
+
+So it needs that binary on the host — `go build -o ~/.local/bin/aiagentmemory-server
+./cmd/server` — and the install REFUSES rather than writing a command that is not
+there, because a Docker-only deployment produces none. Restart Claude Desktop
+afterwards; it reads the file only at launch.
+
+Cursor needs one manual step afterwards, and the install prints it every time:
+`cursor-agent mcp enable agentsmemory`. Cursor gates every MCP server behind an
+approval stored outside `mcp.json`, so a registered-but-unapproved server is
+byte-identical on disk to a working one — and an installer that approved its own
+server would defeat the gate.
 
 It replaces the old `install.sh` shell installer — everything now ships inside
 one downloadable binary, `aiagentmemory`.
@@ -53,22 +93,50 @@ Add `--recommended` to either mode to also install the ecosystem tools (see
 below), and `--agent codex` / `--agent both` to install for codex as well (see
 [Codex](#codex)).
 
+Isolation works by pinning the agent's own config-dir variable at launch —
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`. **Cursor exposes none**,
+so `--agent cursor` with `--sandbox` or `--config-dir` is refused rather than
+writing a complete, correct kit into a directory Cursor will never open and
+reporting success.
+
 ## What gets installed
 
 **Core (always):**
 
-- `commands/M.md` → the **`/M`** bootstrap command (mempalace + codebase-memory
-  + eidos flavour).
+- `commands/M.md` → the **`/M`** expanded bootstrap command (language/UI idioms,
+  codebase-memory, and memory-palace grounding).
 - `commands/am.md` → the **`/am`** bootstrap command (agentsmemory-native `am_*`
   tools).
-- `agentsmemory-stop-hook.sh` → the Stop hook, registered in `settings.json`
-  (idempotent, with a timestamped backup; no `jq` needed). It sits flat in the
-  config dir, not under `hooks/`: a sandbox can be shared with pi, which halts
-  its launch on any `hooks/` directory it finds.
+- `agentsmemory-stop-hook.sh` → registered in `settings.json` for **two** events
+  (idempotent, with a timestamped backup; no `jq` needed). On `Stop` it is the
+  end-of-turn checkpoint; on `SubagentStop` it asks a finishing subagent for what
+  it FOUND — a drawer and a fact, not a session summary. One script, branching on
+  the event, because the two nudges differ in text and not in machinery. It sits
+  flat in the config dir, not under `hooks/`: a sandbox can be shared with pi,
+  which halts its launch on any `hooks/` directory it finds.
+- `agentsmemory-verify-hook.sh` → the `SessionStart` hook: before a session acts
+  on anything, it checks that memories carrying code anchors still match the code.
+  Detection that arrives after the wrong decision is not detection.
+- `agentsmemory-session-end-hook.sh` → the `SessionEnd` hook: what recall actually
+  did across the whole session. It is the only one of the hooks that can report
+  that, because at `Stop` the session has barely begun.
 - `agentsmemory-bootstrap.md` → the always-on operating protocol, pulled into
   the config dir's `CLAUDE.md` via a managed `@agentsmemory-bootstrap.md` import.
   Claude Code loads `$CLAUDE_CONFIG_DIR/CLAUDE.md` as user memory, so the
   memory-first workflow applies **every session** — you never have to type `/am`.
+  Subagents too: a `SubagentStart` hook puts the recall instruction next to the
+  dispatched task. That is not redundant with the protocol above it — measured on
+  a 449-memory palace, subagents receiving the full protocol and nothing else
+  recalled in **0 of 5** dispatches, and **5 of 5** with the injection.
+  A `SubagentStop` hook closes the other half: a subagent is asked for what it
+  FOUND — a drawer, a fact — not for a session summary, which its dispatcher
+  writes. Set `AGENTSMEMORY_SUBAGENT_STOP_HOOK=off` to keep the session
+  checkpoint and drop the subagent one; a wide fan-out pays one extra turn per
+  branch.
+- `agents/agentsmemory-researcher.md` → a read-only research subagent whose
+  `tools:` allowlist names the `am_*` tools. An agent definition that restricts
+  tools can call only what it lists, so one defined without them cannot recall
+  however it is instructed.
   The import is merged idempotently: an existing `CLAUDE.md` is preserved and
   backed up, and only the one managed block is added or updated.
 - The **agentsmemory MCP** — the remote Streamable-HTTP server at
@@ -82,7 +150,6 @@ below), and `--agent codex` / `--agent both` to install for codex as well (see
 | Tool | How it is installed |
 |------|---------------------|
 | [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) | Upstream `curl \| bash` installer, then registered as the `codebasememory` stdio MCP. |
-| [eidos](https://github.com/agenticnotetaking/eidos) plugin | `plugin marketplace add agenticnotetaking/eidos` + `plugin install eidos@eidos`. |
 | [codex](https://github.com/openai/codex-plugin-cc) plugin | `plugin marketplace add openai/codex-plugin-cc` + `plugin install codex@openai-codex`. |
 
 Recommended steps are best-effort: a plugin that is already installed or a
@@ -133,9 +200,10 @@ the sandbox name is forwarded to the agent untouched.
 | `--sandbox <name>` | — | Install into `~/.sandboxes/<name>` (isolated mode). |
 | `--copy` | off | Seed the target from the agent's global config — logins, MCP servers, plugins, skills, settings. Needs `--sandbox`/`--config-dir`. |
 | `--shared-auth` | off | Link the target's credential files to the global config, so one login serves every sandbox. |
-| `--recommended` | off | Also install codebase-memory, eidos, codex (eidos + codex are Claude-only). |
+| `--recommended` | off | Also install codebase-memory and the Claude-only codex review plugin. |
 | `--token <key>` | `$AGENTSMEMORY_TOKEN` | agentsmemory workspace token. |
 | `--mcp-url <url>` | `https://aiagentmemory.dev/mcp` | agentsmemory MCP endpoint. |
+| `--wing <name>` | — | Scope every MCP call from this registration to one project; a tool call can still pass `wing: "*"` for deliberate cross-project recall. |
 | `--scope <scope>` | `user` | Claude MCP/plugin scope: `user`, `local`, `project` (Claude only — codex has no scopes). |
 | `--claude-bin <bin>` | `$AIAGENTMEMORY_CLAUDE_BIN` → `claude` | Claude CLI to drive. |
 | `--codex-bin <bin>` | `$AIAGENTMEMORY_CODEX_BIN` → `codex` | codex CLI to drive. |
@@ -203,15 +271,25 @@ same content in different places:
 | Config dir | `~/.claude`, relocated by `CLAUDE_CONFIG_DIR` | `~/.codex`, relocated by `CODEX_HOME` |
 | Slash commands | `commands/*.md` → `/M`, `/am` | `prompts/*.md` → `/prompts:M`, `/prompts:am` |
 | Always-on memory | `CLAUDE.md` + a managed `@agentsmemory-bootstrap.md` import | `AGENTS.md` with the protocol **inlined** in the managed block — codex has no `@import` |
-| Stop hook | `settings.json` | `hooks.json` (same JSON shape, same `Stop` event, same `stop_hook_active` loop guard) |
-| MCP auth | `--header "Authorization: Bearer <token>"` | `--bearer-token-env-var AGENTSMEMORY_TOKEN` — codex stores the variable *name* and reads the value from its environment |
-| Recommended | codebase-memory + eidos + codex plugins | codebase-memory only (the other two are Claude plugin marketplaces) |
+| Stop hook | `settings.json` | native TOML in `config.toml` (same `Stop` event and `stop_hook_active` loop guard) |
+| MCP auth/scope | `--header "Authorization: Bearer <token>"` plus `X-Agentsmemory-Wing` | `--bearer-token-env-var AGENTSMEMORY_TOKEN`; `--wing` is encoded in the registered URL because Codex has no arbitrary-header flag |
+| Recommended | codebase-memory + codex review plugin | codebase-memory only (the review plugin is for Claude) |
 
-Two codex-specific steps the installer prints and cannot do for you:
+On upgrade, the installer writes the native TOML registration first and then
+removes only agentsmemory's command from its previous `hooks.json`
+representation. Codex supports and merges both forms, but warns when the same
+config layer uses both. If another hook still lives in JSON, the installer
+preserves the file and warns that Codex may keep reporting two representations.
 
-1. **Trust the hook.** Codex lists non-managed hooks but skips them until you
-   review them — open `/hooks` in codex and trust the agentsmemory Stop hook.
-2. **Have the token in the environment.** The install writes it to
+Codex 0.144.5 also exposes `SubagentStart` and `SubagentStop`, but the installer
+does not register those yet. Event names alone do not prove the contract our
+Claude scripts depend on: a live Codex dispatch still has to capture the input
+fields, stdout feedback envelope, and exit-2 single-retry behaviour. See
+[ADR-017's amended deferral](../../docs/adr/ADR-017-a-subagent-is-a-session.md).
+
+One codex-specific step remains for launches outside the wrapper:
+
+1. **Have the token in the environment.** The install writes it to
    `<CODEX_HOME>/agentsmemory.env` (mode `0600`) and
    `aiagentmemory run --agent codex …` / `wrap --agent codex …` export it for
    you. To launch plain `codex`, source it from your shell rc:
@@ -246,7 +324,7 @@ built-in MCP", pi's own docs). So the kit brings its own.
 | Config dir | `~/.codex`, relocated by `CODEX_HOME` | `~/.pi/agent`, relocated by `PI_CODING_AGENT_DIR` |
 | Slash commands | `prompts/*.md` → `/prompts:M` | `prompts/*.md` → `/M` (no namespace) |
 | Always-on memory | `AGENTS.md`, protocol inlined | `AGENTS.md`, protocol inlined (pi has no `@import` either) |
-| Stop hook | `hooks.json` | **none** — pi renamed `hooks/` to extensions |
+| Stop hook | `config.toml` | **none** — pi renamed `hooks/` to extensions |
 | Our MCP | `codex mcp add --bearer-token-env-var` | **bridged** by `extensions/agentsmemory.ts` |
 
 The bridge extension is written to `<config dir>/extensions/agentsmemory.ts`,
@@ -268,7 +346,7 @@ Two pi-specific notes:
    ```
 
 2. **`--recommended` adds nothing.** codebase-memory is a stdio MCP server and
-   eidos/codex are Claude plugin marketplaces; pi takes neither. The installer
+   the codex review plugin is a Claude marketplace; pi takes neither. The installer
    says so rather than pretending.
 
 pi also **halts its launch on any `hooks/` directory** in the config dir — it

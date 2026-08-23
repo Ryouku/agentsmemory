@@ -29,9 +29,21 @@ type MergeWingResult struct {
 // MergeWing folds one or more source wings into a target, relabeling the `wing` of
 // every drawer and closet in place (ids unchanged), the frozen merge_wing. The
 // derived graph (hallways/tunnels) is NOT rebuilt here — call recompute_graph
-// afterwards, as the frozen tool instructs. Vectors are not re-written: their
-// payload wing is advisory (search filters on the drawer row's wing), so a merge
-// needs no re-embedding. Idempotent: merging an already-merged wing is a no-op.
+// afterwards, as the frozen tool instructs. Idempotent: merging an already-merged
+// wing is a no-op.
+//
+// It also corrects the wing stored in every affected point's PAYLOAD. That is not
+// housekeeping. This comment used to say the payload wing was "advisory (search
+// filters on the drawer row's wing)", and that was false: Service.Search passes
+// the wing to the vector index as a filter, and the drawer-row comparison after it
+// can only remove candidates, never add one back. So a payload left behind by a
+// merge makes the memory retrievable from the wing it no longer lives in and
+// UNREACHABLE from the one it does — measured 2026-08-21 on a live palace, 13 of
+// 359 memories, answering only an unscoped search while scoped recall is the
+// default.
+//
+// The correction is a payload patch, not a re-embedding: the text did not change,
+// so the vector is already right.
 func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string, target string) (MergeWingResult, error) {
 	tgt, err := SanitizeName(target, "target")
 	if err != nil {
@@ -51,13 +63,69 @@ func (s *Service) MergeWing(ctx context.Context, teamID string, sources []string
 		return MergeWingResult{Sources: clean, Target: tgt}, nil
 	}
 
-	drawers, err := s.repo.RelabelDrawerWing(ctx, teamID, clean, tgt)
+	// Collecting the ids and relabelling them happen in ONE transaction, and the
+	// ids come back from the same statement that moves them.
+	//
+	// Reading them first and relabelling after left a window a concurrent write
+	// walks straight through, three ways: a drawer added to the source in between
+	// is moved by the UPDATE and never patched, because its id was not in the
+	// snapshot; a drawer moved elsewhere in between is skipped by the UPDATE and
+	// patched anyway, ending with its row in one wing and its payload in another;
+	// and the pending-embedding worker can write a captured old-wing payload after
+	// the merge has finished. All three end in exactly the drift this ADR exists
+	// to remove, produced by the code that removes it.
+	moved, drawers, err := s.repo.RelabelDrawerWingReturningIDs(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel drawers: %w", err)
 	}
-	closets, err := s.repo.RelabelClosetWing(ctx, teamID, clean, tgt)
+
+	// Correct the stored payloads, in batches bounded like every other id list
+	// here. A failure FAILS THE MERGE: rows relabelled over a stale index is a
+	// half-done state nobody can see from the outside, and reporting success over
+	// it is how the memories this fixes went missing in the first place.
+	//
+	// The recovery is NOT to re-run the merge, and an earlier version of this
+	// comment said it was. By the time a patch can fail the rows are already in
+	// the target, so a retry finds an empty source and does nothing, and naming
+	// the target as a source is dropped as a no-op — the drawers would stay
+	// unreachable from both wings while the tool reported success. The recovery is
+	// `agentsmemory sync --repair-payload`, which rebuilds payloads from the
+	// DRAWER ROWS, is indifferent to how they got that way, and writes both
+	// stores. The error below names it, because a half-done state whose repair
+	// nobody can name is the same as no repair.
+	for start := 0; start < len(moved); start += deleteBatch {
+		end := start + deleteBatch
+		if end > len(moved) {
+			end = len(moved)
+		}
+		if err := s.vectors.SetPayload(ctx, teamID, moved[start:end], map[string]string{"wing": tgt}); err != nil {
+			return MergeWingResult{}, fmt.Errorf(
+				"the drawers were relabelled to %q but their stored payloads were not, so they are "+
+					"unreachable from %q. Re-running the merge will NOT fix it — the rows have already "+
+					"moved, so it finds nothing to do. Run `agentsmemory doctor --index` to see the "+
+					"damage and `agentsmemory sync --repair-payload` to rebuild the payloads from the "+
+					"rows: %w", tgt, tgt, err)
+		}
+	}
+	// Closets carry a wing in their stored payload too (upsertClosetVectors), and
+	// relabelling their rows without it leaves the same split this function exists
+	// to prevent. Closet search passes no filter TODAY, so nothing ranks wrongly
+	// yet — which is exactly why it would have gone unnoticed until the day
+	// somebody scopes it, and then look like a search bug rather than a merge one.
+	movedClosets, closets, err := s.repo.RelabelClosetWingReturningIDs(ctx, teamID, clean, tgt)
 	if err != nil {
 		return MergeWingResult{}, fmt.Errorf("relabel closets: %w", err)
+	}
+	for start := 0; start < len(movedClosets); start += deleteBatch {
+		end := start + deleteBatch
+		if end > len(movedClosets) {
+			end = len(movedClosets)
+		}
+		if err := s.vectors.SetPayload(ctx, closetNamespace(teamID), movedClosets[start:end], map[string]string{"wing": tgt}); err != nil {
+			return MergeWingResult{}, fmt.Errorf(
+				"the closets were relabelled to %q but their stored payloads were not; "+
+					"`agentsmemory doctor --index` shows the split: %w", tgt, err)
+		}
 	}
 	return MergeWingResult{Sources: clean, Target: tgt, Drawers: drawers, Closets: closets}, nil
 }
@@ -206,6 +274,38 @@ func (s *Service) MemoriesFiledAway(ctx context.Context, teamID string) (FiledAw
 
 // RelabelDrawerWing moves every drawer in any of the source wings to the target
 // wing for a team, returning how many rows changed. Ids are unchanged.
+// RelabelDrawerWingReturningIDs moves every drawer in any source wing to the
+// target and returns the ids it moved, in ONE transaction.
+//
+// The ids and the move must come from the same transaction or they describe
+// different sets. Reading the ids first and updating after leaves a window a
+// concurrent write walks through: a drawer added to a source in between is moved
+// and never reported, and a drawer moved elsewhere in between is reported and not
+// moved. The caller patches stored payloads for exactly these ids, so either way
+// it ends with a row in one wing and a payload in another — the drift the caller
+// exists to prevent.
+//
+// SQLite has no UPDATE … RETURNING through this driver's model API, so the SELECT
+// and the UPDATE are issued inside one transaction instead. The transaction is
+// what makes them one set; the syntax is not the point.
+func (r *Repo) RelabelDrawerWingReturningIDs(ctx context.Context, teamID string, sources []string, target string) ([]string, int64, error) {
+	var ids []string
+	var moved int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&drawerRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&drawerRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Update("wing", target)
+		moved = res.RowsAffected
+		return res.Error
+	})
+	return ids, moved, err
+}
+
 func (r *Repo) RelabelDrawerWing(ctx context.Context, teamID string, sources []string, target string) (int64, error) {
 	res := r.db.WithContext(ctx).Model(&drawerRow{}).
 		Where("team_id = ? AND wing IN ?", teamID, sources).
@@ -219,6 +319,27 @@ func (r *Repo) RelabelClosetWing(ctx context.Context, teamID string, sources []s
 		Where("team_id = ? AND wing IN ?", teamID, sources).
 		Update("wing", target)
 	return res.RowsAffected, res.Error
+}
+
+// RelabelClosetWingReturningIDs is RelabelClosetWing with the moved ids, in one
+// transaction, for the same reason RelabelDrawerWingReturningIDs is: the ids the
+// caller patches must be the ids that moved.
+func (r *Repo) RelabelClosetWingReturningIDs(ctx context.Context, teamID string, sources []string, target string) ([]string, int64, error) {
+	var ids []string
+	var moved int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&closetRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&closetRow{}).
+			Where("team_id = ? AND wing IN ?", teamID, sources).
+			Update("wing", target)
+		moved = res.RowsAffected
+		return res.Error
+	})
+	return ids, moved, err
 }
 
 // CountWing reports what a wing holds: the same four numbers a delete returns, so

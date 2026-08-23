@@ -17,10 +17,10 @@ import (
 // memories about — it runs in a container, the repository is on someone's laptop.
 // Whoever CAN read the working tree (the `aiagentmemory verify` command) does the
 // checking; the server only keeps score.
-func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	list := newTool("list_anchors",
 		mcp.WithDescription("List code anchors — the (file, snippet) pairs memories are pinned to — so a client that can read the working tree can verify them. Filter by wing, repo label, or status (unchecked|verified|drifted|missing)."),
-		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing.")),
+		mcp.WithString("wing", mcp.Description("Only anchors on drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithString("repo", mcp.Description("Only anchors carrying this repo label.")),
 		mcp.WithString("status", mcp.Description("Only anchors in this state.")),
 		mcp.WithNumber("limit", mcp.Description("Max anchors to return (default 500).")),
@@ -30,8 +30,17 @@ func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		if !ok {
 			return errResult, nil
 		}
+		// Resolved through searchWingFor, not taken raw. Audited 2026-08-20 by
+		// RUNNING it against two projects in one workspace: naming no wing
+		// enumerated every wing, so one project's anchors — and the verbatim source lines they carry — were handed to another. am_search and
+		// am_list_drawers resolve identically, and an enumeration that does not is
+		// a hole in the scope those two enforce.
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		anchors, err := drawers.ListAnchors(ctx, t.TeamID, palace.AnchorFilter{
-			Wing:   req.GetString("wing", ""),
+			Wing:   wing,
 			Repo:   req.GetString("repo", ""),
 			Status: req.GetString("status", ""),
 			Limit:  req.GetInt("limit", 0),
@@ -49,11 +58,18 @@ func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		return jsonResult(map[string]any{"anchors": out, "count": len(out)}), nil
 	})
 
+	registerMarkAnchors(reg, drawers, usageSvc)
+}
+
+// registerMarkAnchors: take back the verification verdicts list_anchors handed
+// out. Split from registerAnchors because it WRITES and its sibling reads, and a
+// registration that builds both cannot carry one classification honestly.
+func registerMarkAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	mark := newTool("mark_anchors",
 		mcp.WithDescription("Record verification verdicts for code anchors: [{\"id\":\"<anchor id>\",\"status\":\"verified|drifted|missing\",\"line\":123}]. Writes only the verdict, never the memory, so stamping never re-embeds anything."),
 		mcp.WithArray("verdicts", mcp.Required(), mcp.Description("The results, one object per anchor checked.")),
 	)
-	reg.add(mark, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(mark, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -90,9 +106,10 @@ func registerAnchors(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 // registerRecallStats adds recall_stats: is the memory being used, and does it
 // answer? Drawer counts say how much is remembered; this says whether remembering
 // is working, which is the only question an operator can act on.
-func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("recall_stats",
 		mcp.WithDescription("How well memory is working, per wing: searches run, how many came back with something, drawers held, and the recent queries that found NOTHING (the memories the team looked for and does not have). Use it to see whether recall is earning its keep rather than guessing."),
+		mcp.WithString("wing", mcp.Description("Only report this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
 		mcp.WithNumber("hours", mcp.Description("Window to report on, in hours (default 24).")),
 		mcp.WithNumber("unanswered", mcp.Description("How many unanswered queries to list (default 10).")),
 	)
@@ -105,7 +122,11 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if hours <= 0 {
 			hours = 24
 		}
-		stats, err := drawers.RecallStats(ctx, t.TeamID, time.Duration(hours)*time.Hour, req.GetInt("unanswered", 10))
+		wing, err := searchWingFor(ctx, req.GetString("wing", ""), scopeSearchToWing)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		stats, err := drawers.RecallStats(ctx, t.TeamID, wing, time.Duration(hours)*time.Hour, req.GetInt("unanswered", 10))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -165,7 +186,7 @@ func registerDeleteWing(reg *registrar, drawers *palace.Service, usageSvc *usage
 		mcp.WithString("wing", mcp.Required(), mcp.Description("The wing to delete.")),
 		mcp.WithString("confirm", mcp.Required(), mcp.Description("Repeat the wing name exactly. This is a deliberate second spelling, so do not derive it from the wing argument — take it from what the user actually asked you to delete.")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -200,7 +221,7 @@ func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		),
 		mcp.WithString("target", mcp.Required(), mcp.Description("The wing to merge the sources into (created if new).")),
 	)
-	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil

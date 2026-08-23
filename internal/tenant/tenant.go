@@ -313,6 +313,70 @@ func (r *Repo) tenantFromKey(ctx context.Context, key APIKey) Tenant {
 	return Tenant{TeamID: key.TeamID, UserID: key.UserID, Role: role}
 }
 
+// ReadOnlyKeys counts, for one workspace, the active API keys the write guard
+// will refuse — split by WHY, because the three causes need different answers.
+type ReadOnlyKeys struct {
+	TeamID string
+	Slug   string
+	// Member holds a deliberately assigned read-only role. This is the dashboard's
+	// DEFAULT for an invited teammate, so it is usually the largest of the three
+	// and the least alarming — but their agents wrote normally until the guard was
+	// armed, so it is also the number an upgrade is most likely to be surprised by.
+	Member int
+	// Missing has no membership row for the key's (team, user) at all; Empty has
+	// one whose role is the empty string. Both are data faults rather than
+	// decisions: no current code path produces either.
+	Missing int
+	Empty   int
+}
+
+// Total reports how many of this workspace's keys are refused every write tool.
+func (k ReadOnlyKeys) Total() int { return k.Member + k.Missing + k.Empty }
+
+// Faults reports the subset that nothing chose — a missing or empty role.
+func (k ReadOnlyKeys) Faults() int { return k.Missing + k.Empty }
+
+// RefusedWrites reports every workspace holding active API keys that the write
+// guard refuses, and why.
+//
+// It exists because arming the guard changes what an existing key can do. A
+// member-role key wrote normally before it and is refused after it, per call, at
+// write time — which is the worst place to discover it. Counting the three causes
+// apart is the point: promoting a deliberate member is a decision someone makes,
+// while a missing or empty role is a fault to repair.
+//
+// Read-only, and deliberately across every workspace: tenancy is per workspace
+// but an upgrade is a property of the deployment. Revoked keys are excluded —
+// they cannot authenticate, so reporting them sends an operator hunting a
+// problem with no holder.
+func (r *Repo) RefusedWrites(ctx context.Context) ([]ReadOnlyKeys, error) {
+	var rows []ReadOnlyKeys
+	if err := r.db.WithContext(ctx).
+		Table("api_keys AS k").
+		Select("k.team_id AS team_id, t.slug AS slug, "+
+			"SUM(CASE WHEN m.role = ? THEN 1 ELSE 0 END) AS member, "+
+			"SUM(CASE WHEN m.user_id IS NULL THEN 1 ELSE 0 END) AS missing, "+
+			"SUM(CASE WHEN m.user_id IS NOT NULL AND m.role = '' THEN 1 ELSE 0 END) AS empty",
+			string(RoleMember)).
+		Joins("LEFT JOIN memberships m ON m.team_id = k.team_id AND m.user_id = k.user_id").
+		Joins("LEFT JOIN teams t ON t.id = k.team_id").
+		Where("k.revoked_at IS NULL").
+		Group("k.team_id, t.slug").
+		Order("k.team_id").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("count refused writes: %w", err)
+	}
+	// Filtering here rather than in HAVING keeps the aggregate expressions in one
+	// place and the query portable across the backends this runs on.
+	refused := make([]ReadOnlyKeys, 0, len(rows))
+	for _, row := range rows {
+		if row.Total() > 0 {
+			refused = append(refused, row)
+		}
+	}
+	return refused, nil
+}
+
 // MembershipRole returns the signed-in user's role in a team, or ErrNotMember if
 // no membership row ties them to it. The dashboard calls this to authorize every
 // project-scoped action: the team id arrives from the URL (untrusted), so access
@@ -737,23 +801,6 @@ func (r *Repo) EnsureLocalWorkspace(ctx context.Context) (Tenant, error) {
 		return Tenant{}, err
 	}
 	return Tenant{TeamID: team.ID, UserID: user.ID, Role: RoleAdmin}, nil
-}
-
-// CreateAPIKey mints an additional credential for a user within a workspace they
-// belong to. A user may hold many keys per workspace — e.g. one per agent or CI
-// job — each independently revocable.
-func (r *Repo) CreateAPIKey(ctx context.Context, teamID, userID, name string) (Credential, error) {
-	key, cred, err := newAPIKey(teamID, userID, name, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		return Credential{}, err
-	}
-	if key.TokenEnc, err = r.sealToken(cred.Secret); err != nil {
-		return Credential{}, err
-	}
-	if err := r.db.WithContext(ctx).Create(&key).Error; err != nil {
-		return Credential{}, err
-	}
-	return cred, nil
 }
 
 // RotateKey revokes the caller's OWN active API keys for a team and mints a fresh

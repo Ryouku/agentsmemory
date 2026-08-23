@@ -41,7 +41,13 @@ const (
 	// document the vector pass ranked 40th can never reach the page no matter how
 	// well it answers the query. 50 is wide enough to change the answer and small
 	// enough to cross-encode within a search's latency budget.
-	DefaultRerankPool = 50
+	// Lowered from 50 on 2026-08-21. The cost is linear and measured — ~435ms per
+	// document on a CPU cross-encoder, so 50 candidates cost ~22 seconds and made
+	// am_search unusable: an independent session's searches timed out 3 times out
+	// of 3 while am_status answered instantly. What a larger pool BUYS is still
+	// unmeasured at any size, so this is a cost-driven choice and not a quality
+	// one; an operator on faster hardware should raise it, and --rerank-pool is how.
+	DefaultRerankPool = 10
 
 	// DefaultRerankWeight is how much of the final ordering the cross-encoder
 	// decides, with the rest left to the hybrid score it refines.
@@ -161,6 +167,22 @@ type Service struct {
 	// eval says it should be.
 	fusionRRF bool
 
+	// lexNorm is how the raw BM25 scores are normalised before fusion, and
+	// lexNormName is the operator-facing spelling of it.
+	//
+	// Three transforms were built, tested and compared in the eval — page-max,
+	// ceiling and saturating — and for a long time production could select none of
+	// them: Search called the page-max wrappers and there was no config key, no
+	// flag and no setter. They were reachable from a table and from nothing an
+	// operator runs, so an eval could report the best arm and leave no way to
+	// deploy it.
+	//
+	// The DEFAULT is unchanged. Which normaliser should win is an evidence
+	// question (ADR-002 T3); being able to choose one is not, and shipping the
+	// choice first means the answer is a changed default rather than a build.
+	lexNorm     lexNorm
+	lexNormName string
+
 	// closetBoostScale scales every closet rank boost: 1 is the full curation
 	// prior, 0 turns closets into a pure ranking no-op. It exists because the
 	// prior's worth depends on what the palace holds: on a curated palace the
@@ -194,6 +216,7 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// would silently make fusion vector-only, which is a measured regression
 		// on identifier queries.
 		bm25Auto: true, bm25Base: hybridBM25Weight,
+		lexNorm: lexNormPageMax, lexNormName: DefaultLexNorm,
 		// Pointers, not values: the eval's degraded path shallow-copies the
 		// service to drop the reranker, and a copied sync.Map is a vet error and
 		// a real hazard — the copy must SHARE these locks, it guards the same
@@ -232,6 +255,24 @@ func (s *Service) WithFusion(mode string) *Service {
 	return s
 }
 
+// Clone returns a shallow copy, so a caller can configure one Service several
+// ways without the configurations bleeding into each other.
+//
+// It exists because every With* setter MUTATES and returns the same pointer.
+// That is convenient for a composition root, which configures once, and a trap
+// for anything that configures repeatedly: a sweep that reused one Service would
+// carry each cell's settings into the next, and every knob after the first would
+// look inert — the exact conclusion such a sweep exists to draw, reached for the
+// wrong reason.
+//
+// Shallow is correct here. The fields it copies are scalars and interface
+// handles; the repo, embedder and vector store are shared on purpose, since a
+// sweep varies ranking rather than storage.
+func (s *Service) Clone() *Service {
+	c := *s
+	return &c
+}
+
 // WithClosetBoost scales the closet curation prior (1 = full, 0 = off). Same
 // post-construction-setter contract as WithReranker: call before the service is
 // shared across goroutines.
@@ -263,6 +304,79 @@ func (s *Service) WithLexicalIDF(on bool) *Service {
 	s.bm25IDF = on
 	return s
 }
+
+// WithLexNorm selects the lexical normaliser by its operator-facing name. An
+// unrecognised name keeps the default rather than ranking differently in silence
+// — the same choice --fusion makes for an unrecognised value.
+func (s *Service) WithLexNorm(name string) *Service {
+	if n, ok := lexNormByName(name); ok {
+		s.lexNorm, s.lexNormName = n, name
+	}
+	return s
+}
+
+// fusionRanker is the ranking function this service fuses candidates with.
+//
+// Named rather than inlined in Search so that "which ranker does production
+// run?" is a question with one answer a test can call. The eval names an arm for
+// a served configuration, and the only honest way to check that mapping is to
+// run BOTH rankers on the same input and compare the order — a check on the arm
+// NAME passes happily while the two functions differ.
+func (s *Service) fusionRanker() func(query string, docs []string, dists, boosts []float64) []HybridScore {
+	switch {
+	case s.fusionRRF:
+		// Rank fusion ignores bm25Base entirely — the weight question does not
+		// arise when neither signal contributes a magnitude, only a position.
+		return rankRRF
+	case s.bm25Auto && s.bm25IDF:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptiveIDFNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	case s.bm25Auto:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridAdaptiveNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	default:
+		return func(query string, docs []string, dists, boosts []float64) []HybridScore {
+			return rankHybridWeightedNorm(query, docs, dists, boosts, s.bm25Base, s.lexNorm)
+		}
+	}
+}
+
+// RankingProfile is the fully resolved ranking configuration in one line: every
+// decision that will act on the next query, whether an operator set it or it came
+// from a default.
+//
+// It exists because a deployment could not previously say what it ranks with.
+// Startup announced DELTAS — a default configuration printed nothing at all — so
+// "no lines" meant both "everything is default" and "the operator set values that
+// happen to equal the defaults", and neither an operator reading logs nor an agent
+// reading am_status could tell which arm of an eval table their server
+// corresponds to. A measurement that cannot be tied to a configuration is a
+// number about nothing.
+func (s *Service) RankingProfile() string {
+	fusion := "linear"
+	if s.fusionRRF {
+		fusion = "rrf"
+	}
+	lex := fmt.Sprintf("%.2f", s.bm25Base)
+	switch {
+	case s.bm25Auto && s.bm25IDF:
+		lex = "auto-idf"
+	case s.bm25Auto:
+		lex = "auto"
+	}
+	rerank := "off"
+	if s.rerank != nil {
+		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
+	}
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s",
+		fusion, lex, s.lexNormName, s.closetBoostScale, rerank)
+}
+
+// LexNormName reports the normaliser in force, so startup and am_status can state
+// what is actually ranking rather than what was requested.
+func (s *Service) LexNormName() string { return s.lexNormName }
 
 // WithRerankWeight sets how much the cross-encoder's opinion counts against the
 // hybrid score it refines: 1 hands it the whole decision, 0 ignores it. Values
@@ -324,6 +438,17 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 		if i > 0 {
 			parentID = drawers[0].ID
 		}
+		// Entities is the field this path was missing (ADR-016). Without it the
+		// derived graph — hallways, entity tunnels, the entity half of traverse —
+		// is not empty-for-now on a palace agents write to, it is structurally
+		// unreachable: RecomputeGraph reads drawers.entities, nothing on this
+		// path ever wrote it, and so a recompute reports success and derives
+		// nothing however often it runs.
+		//
+		// Extraction is per CHUNK, exactly as Mine does it, so co-occurrence
+		// stays local: a long memory must name two things in the SAME chunk for
+		// them to become a hallway, rather than every chunk inheriting the whole
+		// memory's entities and manufacturing connections the text never made.
 		drawers[i] = Drawer{
 			ID:          DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
 			TeamID:      teamID,
@@ -332,6 +457,7 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResul
 			SourceFile:  in.SourceFile,
 			ChunkIndex:  c.Index,
 			Content:     c.Content,
+			Entities:    extractEntities(c.Content),
 			FiledAt:     filedAt,
 			ContentDate: strings.TrimSpace(in.ContentDate),
 			ParentID:    parentID,
@@ -471,6 +597,27 @@ func (s *Service) Get(ctx context.Context, teamID, id string) (Drawer, error) {
 		return Drawer{}, ErrNotFound
 	}
 	return d, err
+}
+
+// GetMemory returns every chunk of the memory the given drawer belongs to, in
+// chunk order — the parent and its children, or just the drawer itself when it
+// was never split.
+//
+// It exists because collapsing a search page to one hit per memory is only safe
+// if the rest of the memory can be fetched, and until now it could not:
+// repo.MemoryChunks was written and tested, and called by Update and Delete
+// alone. Both are write paths. No read path could reach a whole chunked memory,
+// so am_get_drawer handed back one chunk of a long note and there was no second
+// call that would complete it.
+//
+// The id may be ANY chunk's, not only the first: a caller holding a search hit
+// holds whichever chunk matched.
+func (s *Service) GetMemory(ctx context.Context, teamID, id string) ([]Drawer, error) {
+	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	return chunks, err
 }
 
 // Update edits an existing drawer's content/wing/room in place (its id is
@@ -707,13 +854,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
-	candidateK := limit * hybridCandidateMultiplier
-	// A cross-encoder can only promote what retrieval surfaced, so widening the
-	// pool it sees is where the accuracy actually comes from — not from the
-	// scoring alone. Pull at least a full rerank pool when one is configured.
-	if s.rerank != nil && candidateK < s.rerankPool {
-		candidateK = s.rerankPool
-	}
+	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
 	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
@@ -768,19 +909,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
-	var ranked []HybridScore
-	switch {
-	case s.fusionRRF:
-		// Rank fusion ignores bm25Base entirely — the weight question does not
-		// arise when neither signal contributes a magnitude, only a position.
-		ranked = rankRRF(query, docs, dists, boosts)
-	case s.bm25Auto && s.bm25IDF:
-		ranked = rankHybridAdaptiveIDF(query, docs, dists, boosts, s.bm25Base)
-	case s.bm25Auto:
-		ranked = rankHybridAdaptive(query, docs, dists, boosts, s.bm25Base)
-	default:
-		ranked = rankHybridWeighted(query, docs, dists, boosts, s.bm25Base)
-	}
+	ranked := s.fusionRanker()(query, docs, dists, boosts)
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
@@ -788,18 +917,40 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked = s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
 
+	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
+	// query, so without this they cluster and crowd each other out: measured on a
+	// live palace at limit 10, one query spent 2 slots on a single memory and
+	// another spent 4 slots on two, the duplicates landing adjacent.
+	//
+	// The BEST-ranked chunk survives, not chunk 0, because the surviving chunk is
+	// the one that matched and its snippet is the passage the caller asked for.
+	// Ranking happens first for the same reason: collapsing earlier would score
+	// whichever chunk happened to be picked, so a memory's rank would depend on
+	// the order it was fetched in.
+	//
+	// A short page is the honest answer when the pool holds fewer than `limit`
+	// distinct memories. Padding it with a second chunk of a memory already shown
+	// is exactly what this removes.
 	results := make([]SearchHit, 0, limit)
+	slotOf := make(map[string]int, limit)
 	for _, r := range ranked {
-		if len(results) >= limit {
-			break
-		}
 		hit := survivors[r.Index]
+		mem := memoryOf(hit.Drawer)
+		if i, seen := slotOf[mem]; seen {
+			results[i].ChunksMatched++
+			continue
+		}
+		if len(results) >= limit {
+			continue // keep counting chunks of memories already on the page
+		}
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
 		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
+		hit.ChunksMatched = 1
+		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
 
@@ -810,7 +961,12 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	ev := searchEventRow{
 		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
-		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(s.rerank != nil),
+		// Whether reranking HAPPENED, not whether a reranker exists. The previous
+		// value was boolToInt(s.rerank != nil), so at weight 0 — where
+		// applyRerankWith returns before scoring anything — every event claimed a
+		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
+		// threshold from these rows.
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
@@ -818,6 +974,25 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	s.repo.recordSearch(ctx, ev)
 
 	return results, nil
+}
+
+// candidateKFor is how many vector neighbours a search fetches.
+//
+// A cross-encoder can only promote what retrieval surfaced, so widening the pool
+// it sees is where the accuracy comes from — not from the scoring alone. But it
+// widens only when the cross-encoder will actually RUN: at weight 0,
+// applyRerankWith returns before scoring anything, so a configured reranker
+// bought a wider fetch and a bigger GetMany join on every search and cross-
+// encoded none of it.
+//
+// It is a function rather than a branch inline so the rule can be driven by a
+// test; the inline version was correct and unfalsifiable.
+func candidateKFor(limit int, rerankConfigured bool, rerankPool int, rerankWeight float64) int {
+	k := limit * hybridCandidateMultiplier
+	if rerankConfigured && rerankWeight > 0 && k < rerankPool {
+		k = rerankPool
+	}
+	return k
 }
 
 // boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
@@ -839,7 +1014,7 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) []HybridScore {
+func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
 	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
 }
 
@@ -850,9 +1025,9 @@ func (s *Service) applyRerank(ctx context.Context, query string, survivors []Sea
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) []HybridScore {
+func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
-		return ranked
+		return ranked, false
 	}
 	pool := min(s.rerankPool, len(ranked))
 	docs := make([]string, pool)
@@ -862,14 +1037,17 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 
 	scores, err := s.rerank.Rerank(ctx, query, docs)
 	if err != nil {
+		// A degraded reranker returns FALSE, deliberately. It failed open and the
+		// page is the fused order, so a telemetry row claiming a cross-encoder pass
+		// would be exactly as wrong as the weight-0 case this fix is about.
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
-		return ranked
+		return ranked, false
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
-		return ranked
+		return ranked, false
 	}
-	return BlendRerank(ranked, scores, weight)
+	return BlendRerank(ranked, scores, weight), true
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
@@ -1171,12 +1349,17 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 			parentID = drawers[0].ID
 		}
 		drawers[i] = Drawer{
-			ID:          diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
-			TeamID:      teamID,
-			Wing:        wing,
-			Room:        DiaryRoom,
-			ChunkIndex:  c.Index,
-			Content:     c.Content,
+			ID:         diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
+			TeamID:     teamID,
+			Wing:       wing,
+			Room:       DiaryRoom,
+			ChunkIndex: c.Index,
+			Content:    c.Content,
+			// Per CHUNK, and the same extractor Add and Mine use. A diary entry is
+			// the richest source the derived graph has — a session summary names
+			// the systems that MET, which is exactly what a hallway is made of —
+			// and it was the last write path filing memories the graph never saw.
+			Entities:    extractEntities(c.Content),
 			FiledAt:     filedAt,
 			ContentDate: date,
 			ParentID:    parentID,
@@ -1314,4 +1497,19 @@ func short12(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// WingIsEmpty reports whether a wing holds no drawers yet.
+func (s *Service) WingIsEmpty(ctx context.Context, teamID, wing string) (bool, error) {
+	return s.repo.WingIsEmpty(ctx, teamID, wing)
+}
+
+// WingNames lists the wings a team has written to.
+func (s *Service) WingNames(ctx context.Context, teamID string) ([]string, error) {
+	return s.repo.WingNames(ctx, teamID)
+}
+
+// InboxCount counts the drawers in one wing's room.
+func (s *Service) InboxCount(ctx context.Context, teamID, wing, room string) (int, error) {
+	return s.repo.InboxCount(ctx, teamID, wing, room)
 }
