@@ -313,6 +313,62 @@ func (r *Repo) tenantFromKey(ctx context.Context, key APIKey) Tenant {
 	return Tenant{TeamID: key.TeamID, UserID: key.UserID, Role: role}
 }
 
+// RoleGap counts the active API keys on one team that authenticate correctly but
+// resolve to the least-privileged role because nothing records what they may do.
+type RoleGap struct {
+	TeamID string
+	Slug   string
+	// Missing has no membership row for the key's (team, user) at all; Empty has
+	// one whose role is the empty string. They are counted apart because they
+	// come from different accidents and a reader will want to know which.
+	Missing int
+	Empty   int
+}
+
+// Total reports how many of this team's keys are affected.
+func (g RoleGap) Total() int { return g.Missing + g.Empty }
+
+// RoleGaps reports every team holding active API keys that tenantFromKey would
+// resolve to RoleMember for want of a membership row, or one with an empty role.
+//
+// It exists because the write guard turns that resolution into a refusal. Before
+// the guard such a key wrote normally and am_status merely reported its role as
+// "member"; after it, every write tool refuses — per call, at write time, which
+// is the worst place to discover it. No CURRENT code path creates the condition:
+// ValidRole rejects the empty role, all three key-minting paths create the
+// membership in the same transaction or are gated on one, and RemoveMember
+// revokes a member's keys before deleting their row. So a non-zero count here is
+// historical data, and an operator with the database is the only one who can see
+// it.
+//
+// Read-only, and deliberately across every team: tenancy is per workspace but
+// this fault is a property of the deployment.
+func (r *Repo) RoleGaps(ctx context.Context) ([]RoleGap, error) {
+	var rows []RoleGap
+	if err := r.db.WithContext(ctx).
+		Table("api_keys AS k").
+		Select("k.team_id AS team_id, t.slug AS slug, " +
+			"SUM(CASE WHEN m.user_id IS NULL THEN 1 ELSE 0 END) AS missing, " +
+			"SUM(CASE WHEN m.user_id IS NOT NULL AND m.role = '' THEN 1 ELSE 0 END) AS empty").
+		Joins("LEFT JOIN memberships m ON m.team_id = k.team_id AND m.user_id = k.user_id").
+		Joins("LEFT JOIN teams t ON t.id = k.team_id").
+		Where("k.revoked_at IS NULL").
+		Group("k.team_id, t.slug").
+		Order("k.team_id").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("count role gaps: %w", err)
+	}
+	// Filtering here rather than in HAVING keeps the aggregate expressions in one
+	// place and the query portable across the backends this runs on.
+	gaps := make([]RoleGap, 0, len(rows))
+	for _, row := range rows {
+		if row.Total() > 0 {
+			gaps = append(gaps, row)
+		}
+	}
+	return gaps, nil
+}
+
 // MembershipRole returns the signed-in user's role in a team, or ErrNotMember if
 // no membership row ties them to it. The dashboard calls this to authorize every
 // project-scoped action: the team id arrives from the URL (untrusted), so access

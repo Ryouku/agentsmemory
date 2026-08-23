@@ -9,6 +9,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
 )
 
@@ -35,12 +36,13 @@ func doctorCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
+			&cli.BoolFlag{Name: "roles", Usage: "count active API keys that resolve to the read-only role because no membership row records what they may do"},
 			&cli.StringFlag{Name: "windows", Usage: "report every candidate snippet window for this QUERY against --drawer, and which one search returns (read-only)"},
 			&cli.StringFlag{Name: "drawer", Usage: "the memory id --windows reports on"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
-			if !c.Bool("index") && !c.Bool("graph") && c.String("windows") == "" {
-				return fmt.Errorf("nothing to check: pass --index, --graph or --windows")
+			if !c.Bool("index") && !c.Bool("graph") && !c.Bool("roles") && c.String("windows") == "" {
+				return fmt.Errorf("nothing to check: pass --index, --graph, --roles or --windows")
 			}
 			cfg := configFromCmd(c, def)
 			if q := c.String("windows"); q != "" {
@@ -50,6 +52,11 @@ func doctorCommand(def config.Config) *cli.Command {
 			}
 			if c.Bool("graph") {
 				if err := doctorGraph(ctx, cfg, c.String("project"), os.Stdout); err != nil {
+					return err
+				}
+			}
+			if c.Bool("roles") {
+				if err := doctorRoles(ctx, cfg, os.Stdout); err != nil {
 					return err
 				}
 			}
@@ -241,4 +248,64 @@ func doctorWindows(ctx context.Context, cfg config.Config, slug, query, drawerID
 	fmt.Fprintln(out, "query is in one of them, showing more of the memory fixes it. If it is in none of")
 	fmt.Fprintln(out, "them, the answer is not in this memory and more windows would buy nothing.")
 	return nil
+}
+
+// doctorRoles reports API keys that authenticate but may not write.
+//
+// The write guard refuses the least-privileged role, and tenantFromKey resolves
+// to it whenever a key's membership row is absent or carries an empty role. That
+// resolution predates the guard and was harmless under it: such a key wrote
+// normally and am_status merely called it a member. Arming the guard turns it
+// into a refusal at write time, per call, which is the worst place to find out.
+//
+// No current code path produces the condition, so this reports historical rows —
+// and only an operator holding the database can see them. It takes no --project
+// because the fault belongs to the deployment rather than to one workspace.
+func doctorRoles(ctx context.Context, cfg config.Config, out io.Writer) error {
+	if err := requireExistingDB(cfg.DBPath); err != nil {
+		return err
+	}
+	svc, err := buildServicesWith(cfg, false)
+	if err != nil {
+		return err
+	}
+	gaps, err := svc.tenants.RoleGaps(ctx)
+	if err != nil {
+		return err
+	}
+	return reportRoleGaps(out, gaps)
+}
+
+// reportRoleGaps renders the role report and returns the verdict as an error so
+// the exit code carries it. Split from the lookup for the same reason reportDrift
+// is: the rendering is what an operator reads, and a report that needs a database
+// to exercise is a report that quietly stops saying anything.
+//
+// It prints team slugs and counts, never key material and never a token prefix:
+// a doctor report is pasted into an issue.
+func reportRoleGaps(out io.Writer, gaps []tenant.RoleGap) error {
+	if len(gaps) == 0 {
+		fmt.Fprintln(out, "roles: every active API key has a membership row naming what it may do")
+		return nil
+	}
+
+	total := 0
+	for _, g := range gaps {
+		total += g.Total()
+	}
+	fmt.Fprintf(out, "roles: %d active key(s) across %d workspace(s) resolve to the read-only role\n\n", total, len(gaps))
+	fmt.Fprintf(out, "  %-28s %9s %9s\n", "workspace", "no row", "empty role")
+	fmt.Fprintf(out, "  %s\n", strings.Repeat("-", 48))
+	for _, g := range gaps {
+		slug := g.Slug
+		if slug == "" {
+			slug = g.TeamID // a key whose team row is gone still counts
+		}
+		fmt.Fprintf(out, "  %-28s %9d %9d\n", slug, g.Missing, g.Empty)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Each of these authenticates, reads normally, and is REFUSED on every write tool —")
+	fmt.Fprintln(out, "per call, at write time. Give each one the role it should have had (writer for an")
+	fmt.Fprintln(out, "agent that files memories) before this reaches the people holding them.")
+	return fmt.Errorf("%d active key(s) resolve to the read-only role for want of a membership row", total)
 }

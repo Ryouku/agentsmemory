@@ -12,6 +12,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
 )
 
@@ -203,4 +204,66 @@ func readRepoFile(t *testing.T, parts ...string) string {
 		t.Fatalf("read %v: %v", parts, err)
 	}
 	return string(b)
+}
+
+// TestDoctorRolesIsSelectable: the role check is reachable from the command
+// line. A check with no flag to select it is the exact shape this repository has
+// shipped repeatedly — finished, tested, and selected by nothing — so this reads
+// the command's own flag list rather than the source.
+func TestDoctorRolesIsSelectable(t *testing.T) {
+	var names []string
+	for _, f := range doctorCommand(config.Default()).Flags {
+		names = append(names, f.Names()...)
+	}
+	found := false
+	for _, n := range names {
+		if n == "roles" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("doctor offers %v and not \"roles\" — the check exists and cannot be run", names)
+	}
+}
+
+// TestDoctorRolesRunsWhenSelected: declaring the flag is half of it. A flag the
+// Action never consults leaves `doctor --roles` exiting 0 on a database it never
+// opened, which reads as a clean palace.
+func TestDoctorRolesRunsWhenSelected(t *testing.T) {
+	cmd := doctorCommand(config.Default())
+	err := cmd.Run(context.Background(), []string{"doctor", "--roles", "--db", filepath.Join(t.TempDir(), "absent.db")})
+	if err == nil {
+		t.Fatal("doctor --roles exited 0 against a database that does not exist")
+	}
+	if !strings.Contains(err.Error(), "no database at") {
+		t.Errorf("--roles did not reach the check: %v", err)
+	}
+}
+
+// TestDoctorRolesExitsNonZeroOnGaps pins that the VERDICT is the exit code, and
+// that a clean report is not an error. Prose is not a gate.
+func TestDoctorRolesExitsNonZeroOnGaps(t *testing.T) {
+	if err := reportRoleGaps(io.Discard, nil); err != nil {
+		t.Errorf("a palace with no role gaps reported an error: %v", err)
+	}
+	gaps := []tenant.RoleGap{{TeamID: "team-a", Slug: "acme", Missing: 2, Empty: 1}}
+	if err := reportRoleGaps(io.Discard, gaps); err == nil {
+		t.Error("role gaps printed a warning and exited 0, which sits green in every pipeline")
+	}
+}
+
+// TestDoctorRolesNamesTheWorkspaceNotTheKey: a doctor report is pasted into an
+// issue, so it carries slugs and counts and never key material.
+func TestDoctorRolesNamesTheWorkspaceNotTheKey(t *testing.T) {
+	out := &bytes.Buffer{}
+	_ = reportRoleGaps(out, []tenant.RoleGap{{TeamID: "team-a", Slug: "acme", Missing: 2, Empty: 1}})
+	got := out.String()
+	for _, want := range []string{"acme", "3 active key(s)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report is missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "team-a") {
+		t.Errorf("report leaks the internal team id where a slug would do:\n%s", got)
+	}
 }

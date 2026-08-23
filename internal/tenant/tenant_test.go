@@ -354,3 +354,96 @@ func TestListMembers(t *testing.T) {
 		}
 	}
 }
+
+// newRoleGapDB returns an in-memory SQLite with the three tables RoleGaps joins,
+// shaped to match the goose migrations.
+func newRoleGapDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE memberships (
+			id TEXT PRIMARY KEY, team_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			role TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE teams (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL,
+			kind TEXT NOT NULL, plan_id TEXT, created_at TEXT NOT NULL)`,
+		`CREATE TABLE api_keys (
+			id TEXT PRIMARY KEY, team_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			name TEXT NOT NULL, prefix TEXT NOT NULL, client_key TEXT NOT NULL,
+			token_hash TEXT NOT NULL, token_enc TEXT NOT NULL,
+			created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT)`,
+	} {
+		if err := db.Exec(ddl).Error; err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+	}
+	if err := db.Exec(`INSERT INTO teams VALUES ('team-a','A','acme','personal',NULL,'2026-06-28T00:00:00Z')`).Error; err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	return db
+}
+
+// seedKey inserts one API key directly, so the test exercises the real query
+// rather than the minting path that cannot produce these rows any more.
+func seedKey(t *testing.T, db *gorm.DB, id, teamID, userID string, revoked bool) {
+	t.Helper()
+	var revokedAt any
+	if revoked {
+		revokedAt = "2026-06-29T00:00:00Z"
+	}
+	if err := db.Exec(`INSERT INTO api_keys VALUES (?,?,?,'k','pfx','ck',?,'', '2026-06-28T00:00:00Z', NULL, ?)`,
+		id, teamID, userID, id+"-hash", revokedAt).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+}
+
+// TestRoleGapsFindsOnlyKeysNothingAuthorises pins what the doctor check counts.
+//
+// The two faults are counted apart because they come from different accidents,
+// a key backed by a real role is not a gap, and a REVOKED key is not one either
+// — it cannot authenticate, so reporting it would send an operator looking for
+// a problem that no longer has a holder.
+func TestRoleGapsFindsOnlyKeysNothingAuthorises(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-writer", "writer")
+	seed(t, db, "team-a", "u-empty", "")
+
+	seedKey(t, db, "k-writer", "team-a", "u-writer", false) // authorised
+	seedKey(t, db, "k-missing", "team-a", "u-nobody", false)
+	seedKey(t, db, "k-empty", "team-a", "u-empty", false)
+	seedKey(t, db, "k-revoked", "team-a", "u-gone", true) // cannot authenticate
+
+	gaps, err := NewRepo(db).RoleGaps(context.Background())
+	if err != nil {
+		t.Fatalf("role gaps: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("want one affected workspace, got %d: %+v", len(gaps), gaps)
+	}
+	got := gaps[0]
+	if got.Slug != "acme" {
+		t.Errorf("report names %q, not the workspace slug an operator recognises", got.Slug)
+	}
+	if got.Missing != 1 || got.Empty != 1 || got.Total() != 2 {
+		t.Errorf("want 1 missing + 1 empty (revoked and authorised keys excluded), got %+v", got)
+	}
+}
+
+// TestRoleGapsIsSilentWhenEveryKeyIsBacked keeps the clean path honest: a report
+// that always finds something is a report nobody acts on.
+func TestRoleGapsIsSilentWhenEveryKeyIsBacked(t *testing.T) {
+	db := newRoleGapDB(t)
+	seed(t, db, "team-a", "u-writer", "writer")
+	seedKey(t, db, "k-writer", "team-a", "u-writer", false)
+
+	gaps, err := NewRepo(db).RoleGaps(context.Background())
+	if err != nil {
+		t.Fatalf("role gaps: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Errorf("a fully authorised palace reported %d gap(s): %+v", len(gaps), gaps)
+	}
+}
