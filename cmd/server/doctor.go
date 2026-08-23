@@ -37,12 +37,13 @@ func doctorCommand(def config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
 			&cli.BoolFlag{Name: "roles", Usage: "count active API keys that resolve to the read-only role because no membership row records what they may do"},
+			&cli.BoolFlag{Name: "schema", Usage: "check that every table the migrations declare actually exists — catches a goose version recorded without its effect"},
 			&cli.StringFlag{Name: "windows", Usage: "report every candidate snippet window for this QUERY against --drawer, and which one search returns (read-only)"},
 			&cli.StringFlag{Name: "drawer", Usage: "the memory id --windows reports on"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
-			if !c.Bool("index") && !c.Bool("graph") && !c.Bool("roles") && c.String("windows") == "" {
-				return fmt.Errorf("nothing to check: pass --index, --graph, --roles or --windows")
+			if !c.Bool("index") && !c.Bool("graph") && !c.Bool("roles") && !c.Bool("schema") && c.String("windows") == "" {
+				return fmt.Errorf("nothing to check: pass --index, --graph, --roles, --schema or --windows")
 			}
 			cfg := configFromCmd(c, def)
 			if q := c.String("windows"); q != "" {
@@ -57,6 +58,11 @@ func doctorCommand(def config.Config) *cli.Command {
 			}
 			if c.Bool("roles") {
 				if err := doctorRoles(ctx, cfg, os.Stdout); err != nil {
+					return err
+				}
+			}
+			if c.Bool("schema") {
+				if err := doctorSchema(ctx, cfg, os.Stdout); err != nil {
 					return err
 				}
 			}
