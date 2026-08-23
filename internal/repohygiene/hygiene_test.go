@@ -270,8 +270,9 @@ var exampleWings = map[string]bool{
 	"wing_shared": true, "wing_shared_name": true, "wing_solo": true,
 	"wing_stats": true, "wing_storefront": true, "wing_sweep": true,
 	"wing_that_never_existed": true, "wing_to": true, "wing_to-": true,
-	"wing_to-beta": true, "wing_to-someproject": true, "wing_to-x": true,
-	"wing_two": true, "wing_typo": true, "wing_unused": true, "wing_verdict": true,
+	"wing_to-beta": true, "wing_to-billing": true, "wing_to-someproject": true,
+	"wing_to-x": true,
+	"wing_two":  true, "wing_typo": true, "wing_unused": true, "wing_verdict": true,
 	"wing_very-old-project": true, "wing_wake": true, "wing_written": true,
 	"wing_x": true, "wing_zzzzzz": true,
 }
