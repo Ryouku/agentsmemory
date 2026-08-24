@@ -46,6 +46,14 @@ go build ./...
 
 T2–T5 additionally run their axis report and require no unacknowledged residual. T6 does not authorise edits in another repository; each pilot runs in the repository that owns it, with that project’s intent and memory loaded.
 
+T2's MCP axis has one explicit clean-tree command. It derives its universe from
+the hosted `tools/list` response, joins the live `am_skillset` catalogue, and
+runs its nonce-attested selector mutants in disposable worktrees:
+
+```bash
+go test -tags=contractaxis ./internal/mcptest -run '^TestMCPContractAxis$' -count=1 -v
+```
+
 The shared fence is necessary but not sufficient: it is trusted only after T1's runner self-contract and nonce-attested wire-cut mutants pass. A green package test that bypasses the production selector is still a residual, not evidence of reachability.
 
 ## Decision points that block behaviour, not the harness
