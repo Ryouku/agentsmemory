@@ -41,11 +41,10 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
-  go test ./cmd/server/ ./internal/palace/ -run "TestRerankedRecordsWhatHappened|TestRerankedIsTrueWhenItActuallyRan|TestDegradedRerankIsNotRecordedAsAPass|TestRerankPoolDoesNotWidenTheFetchForNothing|TestCLIWingDefaultsLikeARegistration|TestEveryConfigFieldIsPopulatedAndRead" -count=1 -v 2>&1 | tee /tmp/t4.out
+  go test ./cmd/server/ ./internal/palace/ -run "TestRerankedRecordsWhatHappened|TestRerankedIsTrueWhenItActuallyRan|TestDegradedRerankIsNotRecordedAsAPass|TestRerankPoolDoesNotWidenTheFetchForNothing|TestEveryConfigFieldIsPopulatedAndRead" -count=1 -v 2>&1 | tee /tmp/t4.out
   grep -q -- "--- PASS: TestRerankedRecordsWhatHappened" /tmp/t4.out
   grep -q -- "--- PASS: TestRerankPoolDoesNotWidenTheFetchForNothing" /tmp/t4.out
   grep -q -- "--- PASS: TestDegradedRerankIsNotRecordedAsAPass" /tmp/t4.out
-  grep -q -- "--- PASS: TestCLIWingDefaultsLikeARegistration" /tmp/t4.out
   grep -q -- "--- PASS: TestEveryConfigFieldIsPopulatedAndRead" /tmp/t4.out
   ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/t4.out
   go test ./... -count=1'
@@ -59,14 +58,11 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 | `TestRerankedIsTrueWhenItActuallyRan` | `internal/palace/telemetry_test.go` | the true case, so the field cannot be hardcoded false | — |
 | `TestDegradedRerankIsNotRecordedAsAPass` | `internal/palace/telemetry_test.go` | a failed rerank records false, on the path that fires when something is wrong | — |
 | `TestRerankPoolDoesNotWidenTheFetchForNothing` | `internal/palace/telemetry_test.go` | a configured-but-disabled reranker stops paying for a wider fetch | — |
-| `TestCLIWingDefaultsLikeARegistration` | `cmd/server/mcp_test.go` | the CLI path scopes to the registration wing by default | — |
 | `TestEveryConfigFieldIsPopulatedAndRead` | `cmd/server/wiring_test.go` | a field assigned only from `def.X` fails, as the message has always claimed | — |
 
-<Two names here were the PLAN's names and survived into the finished task: the CLI fix landed as a
-wing default rather than as a `SEARCH_SCOPE` read, and the config check was folded into the existing
-`TestEveryConfigFieldIsPopulatedAndRead` rather than added beside it. Both tests exist and both do
-what this table claims; only the names were stale. Nothing caught it for a day because the lint's
-done-check could not read this README's table shape.>
+<The config check was folded into the existing `TestEveryConfigFieldIsPopulatedAndRead` rather than
+added beside it. The test exists and does what this table claims; only the planned name was stale.
+Nothing caught it for a day because the lint's done-check could not read this README's table shape.>
 
 ## Mutants
 

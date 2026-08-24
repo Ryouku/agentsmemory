@@ -199,6 +199,10 @@ func TestDirectCLIWingSemanticsUseProductionResolver(t *testing.T) {
 		got := wings(t, cfg, "list_drawers", "--team", teamID, "--wing", "wing_alpha", "-a", "wing=*")
 		assertWings(t, got, "wing_alpha", "wing_beta")
 	})
+	t.Run("star registration default is cross-wing", func(t *testing.T) {
+		got := wings(t, cfg, "list_drawers", "--team", teamID, "--wing", "*")
+		assertWings(t, got, "wing_alpha", "wing_beta")
+	})
 	t.Run("workspace scope can widen an omitted argument", func(t *testing.T) {
 		workspace := cfg
 		workspace.SearchScope = "workspace"

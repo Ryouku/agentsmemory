@@ -282,18 +282,21 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 // with no wing is a legitimate request to look everywhere. The two questions
 // only look alike.
 func searchWingFor(ctx context.Context, passed string, scoped bool) (string, error) {
+	if allWings(passed) {
+		return "", nil
+	}
 	if w := strings.TrimSpace(passed); w != "" {
 		// "*" asks for every wing the caller can see. Scoping made the empty
 		// argument mean "my project", which silently removed the only way to ask
 		// a cross-project question — and those are real: an infrastructure
 		// decision explains a deploy failure in the application it hosts. A
 		// default is only defensible when it can be overridden per call.
-		if w == "*" {
-			return "", nil
-		}
 		return palace.SanitizeName(w, "wing")
 	}
 	if !scoped {
+		return "", nil
+	}
+	if allWings(auth.DefaultWingFrom(ctx)) {
 		return "", nil
 	}
 	if def := auth.DefaultWingFrom(ctx); def != "" {
@@ -302,6 +305,10 @@ func searchWingFor(ctx context.Context, passed string, scoped bool) (string, err
 	// Registered without a wing: there is nothing to narrow to, and refusing
 	// would break every caller that never had one.
 	return "", nil
+}
+
+func allWings(wing string) bool {
+	return strings.TrimSpace(wing) == "*"
 }
 
 type unmeteredLocalOperatorKey struct{}
