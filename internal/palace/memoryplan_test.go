@@ -30,8 +30,8 @@ func TestMemoryChunkLookupSeeksRatherThanScansTheTenant(t *testing.T) {
 
 	// A real memory long enough to be stored as several chunks, so the plan is
 	// resolved against a table that actually holds roots and children.
-	added, err := svc.Add(ctx, "team-plan", AddInput{
-		Wing: "wing_plan", Room: "decisions",
+	added, err := svc.Add(ctx, "team-alpha", AddInput{
+		Wing: "wing_alpha", Room: "decisions",
 		Content: strings.Repeat("a memory long enough to be chunked into siblings ", 80),
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestMemoryChunkLookupSeeksRatherThanScansTheTenant(t *testing.T) {
 	root := added.Drawers[0].ID
 
 	for _, columns := range []string{"*", "id, parent_id, chunk_index"} {
-		plan := memoryChunkQueryPlan(t, svc, ctx, "team-plan", []string{root}, columns)
+		plan := memoryChunkQueryPlan(t, svc, ctx, "team-alpha", []string{root}, columns)
 		if strings.Contains(strings.ToUpper(plan), "SCAN DRAWERS") {
 			t.Fatalf("memory chunk lookup (columns %q) scans the tenant's drawers instead of seeking:\n%s", columns, plan)
 		}
@@ -75,8 +75,8 @@ func TestAnchorChunkLookupDoesNotLoadContent(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
 
-	added, err := svc.Add(ctx, "team-proj", AddInput{
-		Wing: "wing_proj", Room: "decisions",
+	added, err := svc.Add(ctx, "team-beta", AddInput{
+		Wing: "wing_beta", Room: "decisions",
 		Content: strings.Repeat("a memory long enough to be chunked into siblings ", 80),
 	})
 	if err != nil {
@@ -86,11 +86,11 @@ func TestAnchorChunkLookupDoesNotLoadContent(t *testing.T) {
 
 	// Same ids as the whole-memory load: the projection must not change WHICH
 	// chunks belong to the memory, only how much of each is read.
-	ids, err := svc.repo.MemoryChunkIDsByRoots(ctx, "team-proj", []string{root})
+	ids, err := svc.repo.MemoryChunkIDsByRoots(ctx, "team-beta", []string{root})
 	if err != nil {
 		t.Fatalf("MemoryChunkIDsByRoots: %v", err)
 	}
-	full, err := svc.repo.MemoryChunksByRoots(ctx, "team-proj", []string{root})
+	full, err := svc.repo.MemoryChunksByRoots(ctx, "team-beta", []string{root})
 	if err != nil {
 		t.Fatalf("MemoryChunksByRoots: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestAnchorChunkLookupDoesNotLoadContent(t *testing.T) {
 	// anchor path selects it — that is the "component tested, selection not
 	// tested" gap this repo keeps shipping. So the statements are recorded off
 	// the real call.
-	if _, err := svc.AddAnchors(ctx, "team-proj", root, []AnchorInput{
+	if _, err := svc.AddAnchors(ctx, "team-beta", root, []AnchorInput{
 		{Path: "internal/palace/repo.go", Snippet: "memoryChunkQuery"},
 	}); err != nil {
 		t.Fatalf("add anchor: %v", err)
@@ -119,7 +119,7 @@ func TestAnchorChunkLookupDoesNotLoadContent(t *testing.T) {
 	rec := &sqlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
 	svc.repo.db = svc.repo.db.Session(&gorm.Session{Logger: rec})
 
-	anchors, err := svc.AnchorsForMemories(ctx, "team-proj", []string{root})
+	anchors, err := svc.AnchorsForMemories(ctx, "team-beta", []string{root})
 	if err != nil {
 		t.Fatalf("AnchorsForMemories: %v", err)
 	}
