@@ -20,6 +20,32 @@ const (
 	ChunkSize    = 1600 // target characters per chunk (~400 bge-m3 tokens)
 	ChunkOverlap = 320  // characters shared between adjacent chunks for context continuity (20%)
 	ChunkMin     = 50   // a trailing remnant shorter than this is merged back, never emitted alone
+
+	// MaxEmbedRunes bounds a single string handed to the embedder as ONE vector.
+	// Set to 4000 by M, 2026-08-25.
+	//
+	// It exists because ChunkText bounds the ADD path and nothing bounds the
+	// UPDATE path: Update re-embeds its whole content with EmbedOne, never
+	// re-chunking (deliberately — see Service.Update), so a memory created small
+	// and grown in place is the one input that can exceed the model's window. The
+	// TEI client asks for truncation so an over-long input cannot fail a whole
+	// batch, which means the server answers 200 with a vector for the PREFIX: the
+	// tail stays stored, still comes back from am_get_drawer, and is simply
+	// unfindable. Silent, and only on this path.
+	//
+	// ⚠THE BOUND IS THE SMALLEST BACKEND, NOT THE BIGGEST. bge-m3 behind TEI holds
+	// 8192 tokens, and reasoning from that number alone is how this constant was
+	// first set four times too high: agentsmemory also embeds through OLLAMA
+	// (internal/embed/ollama), whose embedding models commonly run a far smaller
+	// context, and an operator picks the backend at deploy time. A limit that only
+	// the roomiest backend satisfies is not a limit — it just moves the silent
+	// truncation to whoever configured the other one.
+	//
+	// Characters rather than tokens because the palace cannot ask the tokenizer,
+	// and the ratio is script-dependent (~4 chars/token for English, far worse for
+	// CJK), so any character bound is an approximation and must therefore err low.
+	// Live documents run ~2k runes today, leaving room to grow without meeting it.
+	MaxEmbedRunes = 4000
 )
 
 // Chunk is one slice of a larger text: the verbatim window plus its ordinal

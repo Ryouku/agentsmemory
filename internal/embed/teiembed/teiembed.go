@@ -71,9 +71,21 @@ func New(baseURL string, timeout time.Duration) *Embedder {
 
 // embedRequest is TEI's embed payload. Truncate is set so an input longer than
 // the model's context yields a (shortened) vector instead of a 413 that would
-// fail a whole batch: chunking already bounds our inputs well below bge-m3's
-// 8192 tokens, so truncation should never actually trigger, and asking for it
-// costs nothing on a server whose auto_truncate is already on.
+// fail a whole batch.
+//
+// ⚠It is a LAST resort, not a reason to relax about input size, and this comment
+// used to say otherwise. It claimed truncation "should never actually trigger"
+// because chunking bounds our inputs below bge-m3's 8192 tokens — true of the add
+// path, which chunks at 1600 characters, and false of the update path, which
+// re-embeds a whole memory with EmbedOne and never chunks it. Nothing on that path
+// was bounded, so an oversized update got a prefix vector and a 200, and the tail
+// of the memory became unfindable while still reading back whole. The caller is
+// what fixes this: palace.MaxEmbedRunes refuses before the request is built, and
+// it is deliberately set from the SMALLEST backend agentsmemory can be pointed at
+// rather than from bge-m3 — an operator may be running ollama instead, and a
+// limit only this client satisfies would just move the silent truncation there.
+// Truncation here remains the batch's protection against the one input nobody
+// bounded, and if it ever fires, something upstream stopped checking.
 type embedRequest struct {
 	Inputs   []string `json:"inputs"`
 	Truncate bool     `json:"truncate"`
