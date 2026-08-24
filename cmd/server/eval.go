@@ -334,7 +334,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 		// bad pair, and this line is the only place it is visible.
 		fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s  (%s supersedes %s)\n",
 			i+1, len(drawers), time.Since(started).Seconds(), firstLineOf(q, 62), d.ContentDate, older.ContentDate)
-		cases = append(cases, palace.EvalCase{Query: q, Expect: d.ID, Wing: wing, Category: palace.CatTemporal})
+		cases = append(cases, temporalCase(q, wing, d, older))
 	}
 	if len(cases) == 0 {
 		// Distinct from the generic "no eval cases": every sampled drawer was
@@ -1025,6 +1025,30 @@ func cleanQuestion(s string) string {
 	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), `"`))
 	s = strings.TrimPrefix(s, "QUESTION:")
 	return strings.TrimSpace(s)
+}
+
+// temporalCase builds the eval case for a verified supersession pair.
+//
+// The DISTRACTOR is the point of a temporal case: the metric scores where the
+// SUPERSEDED version landed, not only where the gold did, and every consumer —
+// SupersessionCell, StaleAboveRate, the gate's vacuity rule — reads it. The call
+// site used to build this literal inline and omit it, and because
+// EvalCase.Distractor is `json:",omitempty"` the field vanished from the case
+// file without a word: files recorded verified_pairs above zero while carrying
+// no pair at all, so the stale-above rate was structurally always empty and the
+// gate could only ever refuse.
+//
+// It lives in its own function so that omission is a test away rather than a
+// review away — a literal spread across a long generator loop is exactly where
+// a missing field hides.
+func temporalCase(query, wing string, newer, older palace.Drawer) palace.EvalCase {
+	return palace.EvalCase{
+		Query:      query,
+		Expect:     newer.ID,
+		Distractor: older.ID,
+		Wing:       wing,
+		Category:   palace.CatTemporal,
+	}
 }
 
 // generatedMeta is the provenance of cases this run generated itself: whatever
