@@ -107,6 +107,49 @@ So the arguments are derived by walking `kgTripleRow` rather than imagined, and 
 
 Derived rather than hand-listed, deliberately: this repository already learned that a hand-maintained mirror is one migration away from the hole it closed, and the existing `TestEveryConfigFieldIsPopulatedAndRead` and `TestEveryFlagIsRead` are the same shape. A hand-written list of columns would need updating by exactly the person who forgot to.
 
+### 0b. A filter may be an ENTRY POINT only where an index supports it
+
+An argument list derived from the columns (§0) is only half the design. The other half is that **a filter over an unindexed column is a scan wearing a filter's clothes**, and the schema decides which is which. Measured with `EXPLAIN QUERY PLAN` against the real table on 2026-08-25:
+
+```
+subject='s'            SEARCH USING idx_kg_triples_team_subject   (team_id=? AND subject=?)
+predicate='retracts'   SEARCH USING idx_kg_triples_team_predicate (team_id=? AND predicate=?)
+source_drawer_id='d'   SEARCH USING idx_kg_triples_team_predicate (team_id=?)
+valid_to BETWEEN …     SEARCH USING idx_kg_triples_team_predicate (team_id=?)
+extracted_at > …       SEARCH USING idx_kg_triples_team_predicate (team_id=?)
+ORDER BY valid_from    SEARCH (team_id=?) + USE TEMP B-TREE FOR ORDER BY
+```
+
+**⚠ Read the constraint list, never the verb.** All six lines say `SEARCH … USING INDEX`. Only the first two are indexed on the column being filtered; the rest use an index to narrow to the tenant and then walk every row that team owns. A gate that greps for `SCAN` passes on all six and proves nothing — the same shape as a test asserting a call still returns something.
+
+Three existing indexes, from `db/migrations/00010_kg.sql`:
+
+```sql
+CREATE INDEX idx_kg_triples_team_subject   ON kg_triples (team_id, subject);
+CREATE INDEX idx_kg_triples_team_object    ON kg_triples (team_id, object);
+CREATE INDEX idx_kg_triples_team_predicate ON kg_triples (team_id, predicate);
+```
+
+**`(team_id, predicate)` is indexed and queried by nothing.** `KGQuery` fetches by subject and object only. The schema was built for predicate lookups and the query layer never arrived — the same unreachable-capability class as §5's three columns, one layer down.
+
+**So the rule, and it costs no migration:**
+
+- **Entry points** — `entity` (subject/object) and **`predicate`**. Both are two-column index matches today. A query must supply at least one.
+- **Refinements** — `status`, the three window pairs, and the provenance filters. Applied in Go **after** an entry point has narrowed the rows, exactly where `inEffectAt` already runs. Over a handful of rows they cost nothing and need no index.
+- **A refinement may not be the only filter.** `am_kg_query` with `source_drawer_id` and no entity or predicate is a per-tenant scan, and the tool refuses it rather than serving it slowly — ADR-007's principle that a mechanism should decline rather than answer badly.
+
+**What this buys:** *"show me every `retracts` edge"* becomes a first-class indexed query by making `entity` optional when `predicate` is supplied. Zero migration, zero new index, using a structure that has been sitting unused since `00010_kg.sql`.
+
+**What it defers, and the trigger for each:**
+
+| Wanted as an entry point | Index it would need | Ship when |
+|---|---|---|
+| drawer → facts (`source_drawer_id` alone) | `(team_id, source_drawer_id)` | someone asks it standalone; today it refines an entity query |
+| "what expired this week" with no entity | `(team_id, valid_to)` | the audit view exists and is used; a `CREATE INDEX` is additive and reversible |
+| entity-free timeline ordering | `(team_id, valid_from)` | the temp B-tree matters — negligible at ~1,300 triples, name a row count rather than a feeling |
+
+Each is one additive `CREATE INDEX`, no data rewrite, safe to add later. That is the difference between a **column** added ahead of its writer (§6, refused) and an **index** added ahead of its query: the column is a contract, the index is an optimisation, and only one of them lies to a reader when it is empty.
+
 ### 1. Endedness — `status`
 
 `status` = `current` | `ended` | `all`.
@@ -187,7 +230,7 @@ Asked directly — *what will we need in future, so this is the last modificatio
 
 The derivation in §0 surfaces four arguments that have nothing to do with time, and they belong here rather than in a follow-up because they come from the same walk of the same table and change the same signature.
 
-- **`predicate`** — the important one. The graph's relationships are its vocabulary (`retracts`, `supersedes`, `qualifies`, `depends_on`), and today an agent can write one and never select on it. *"Show me every `retracts` edge"* is how you audit what the team has changed its mind about; it is currently a full scan by eye. Optional, exact match after the same `normalizeEntityID`-style validation `kg_add` already applies to predicates.
+- **`predicate`** — the important one, and per §0b an **entry point**: supplying it makes `entity` optional, so *"show me every `retracts` edge"* becomes a first-class indexed query rather than a scan by eye. The graph's relationships are its vocabulary (`retracts`, `supersedes`, `qualifies`, `depends_on`) and today an agent can write one and never select on it, while `idx_kg_triples_team_predicate` sits unused. Exact match, after the same name validation `kg_add` already applies to predicates.
 - **`source_drawer_id`** — *"which facts did this memory assert?"* Issue #34 records supersession being filed as triples between **drawer ids** precisely because there was no other way to connect a fact to the note behind it; this makes the intended direction askable.
 - **`source_file`**, **`source_closet`** — the same question one level coarser: *"what did this mining run assert?"* Cheap, symmetric with the two above, and they close out the provenance columns so §0's gate has a decision for every one.
 
@@ -255,7 +298,9 @@ Response additions, all additive keys so a later field cannot break a caller: `s
 | T4 | **Flip the default to `current`** | mcpserver | `TestDefaultQueryIsCurrentOnly`, plus a release note per ADR-014 |
 | T5 | `limit`/`offset`/`total` on the entity-free timeline | palace + mcpserver | `TestTimelinePagesPastTheDefaultLimit` — assert row 101 is reachable |
 | T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | see T7 |
-| T7 | `predicate` and the three provenance filters, **and the derived gate** | palace + mcpserver | `TestEveryTripleColumnHasAQueryDecision` — walk `kgTripleRow` by reflection; each field must be a filter argument, a returned `KGFact` field, or in an exclusion map carrying a reason. Prove it by adding a dummy column and watching the build go red. This is the task that makes §0 true rather than aspirational |
+| T7 | `predicate` as an **entry point** (`entity` becomes optional when it is given) + the three provenance filters as refinements, **and the derived gate** | palace + mcpserver | `TestEveryTripleColumnHasAQueryDecision` — walk `kgTripleRow` by reflection; each field must be a filter argument, a returned `KGFact` field, or in an exclusion map carrying a reason. Prove it by adding a dummy column and watching the build go red. This is what makes §0 true rather than aspirational |
+| T8 | Refuse a refinement-only query | mcpserver | `TestRefinementWithoutAnEntryPointIsRefused` — `source_drawer_id` with no `entity` and no `predicate` must error, not serve a per-tenant scan |
+| T9 | Pin the entry points to real index use | palace | `TestEntryPointFiltersAreIndexed` — run `EXPLAIN QUERY PLAN` per entry-point shape and assert the **filtered column appears in the index constraint list**, not merely that the output says `SEARCH`. Mutate by dropping `idx_kg_triples_team_predicate` and it must go red; a test grepping for `SCAN` stays green through that and is worthless |
 
 T1 ships with the old default deliberately, so the filters can be exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
 
@@ -299,7 +344,9 @@ No migration, no backfill, no index rebuild in either direction.
 
 ## Follow-ups
 
-- **Push the filters into SQL** if an entity's row count ever makes the Go-side filter measurable. Not now: unmeasured, and ADR-009 is the standing rule against tuning on belief.
+- **Push the filters into SQL** if an entity's row count ever makes the Go-side filter measurable. Not now: unmeasured, and ADR-009 is the standing rule against tuning on belief. §0b's entry-point rule is what keeps the Go-side filter over a small set in the first place.
+- **The three deferred indexes** in §0b — `(team_id, source_drawer_id)`, `(team_id, valid_to)`, `(team_id, valid_from)` — each with its named trigger. An additive `CREATE INDEX` with no data rewrite, so none of them needs deciding now.
+- **Generalise the `EXPLAIN QUERY PLAN` gate.** T9 pins the KG's entry points; every other table in this repo has query shapes nobody has checked, and `idx_kg_triples_team_predicate` sat indexed-and-unqueried long enough to prove the reverse case exists too — an index nothing uses is as invisible as a filter nothing indexes.
 - **Reconcile `current` and `as_of` at the boundary instant** — the day-lag in the Context table. Documented here; a fix means deciding whether `temporalEndKey`'s end-of-day padding is right for `valid_to`, which touches the write path's semantics and therefore waits for ADR-004's measurement.
 - **A `withheld` convention for `am_search`** — if reporting what a filter removed is right here, it is likely right for wing/room-scoped recall too. Worth its own look rather than generalising from one case.
 - **The two owed release notes** (ADR-024's default change and this ADR's T4) should ship together, since both change what a caller receives with no flag set.
