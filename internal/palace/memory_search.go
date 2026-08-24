@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// maxCandidateWidening caps how far past candidateK the memory arm will widen
+// its vector prefix. Eight doublings' worth of headroom is far more than a
+// clustered prefix of siblings needs, and it converts an unbounded corpus walk
+// into a bounded one when a scope filter and the index disagree.
+const maxCandidateWidening = 8
+
 // searchCandidates resolves a vector prefix to in-scope drawer rows. The legacy
 // arm asks once for a chunk-sized pool. The memory arm widens the same ordered
 // prefix until candidateK distinct logical memories survive, or the backend has
@@ -14,19 +20,35 @@ import (
 // else.
 func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]SearchHit, int, error) {
 	k := candidateK
+	// Rows already resolved by a narrower prefix. Widening re-asks the index for
+	// a SUPERSET in the same order, so every row loaded on a previous round is
+	// still wanted on this one; refetching them made the doubling cost about
+	// twice the final prefix in database work rather than once.
+	rows := make(map[string]Drawer)
+	// Separate from rows because an orphan vector resolves to no row at all;
+	// without this it would be re-queried on every widening round.
+	looked := make(map[string]bool)
 	for {
 		hits, err := s.vectors.Search(ctx, teamID, vec, k, searchFilter(q))
 		if err != nil {
 			return nil, 0, fmt.Errorf("vector search: %w", err)
 		}
 
-		ids := make([]string, len(hits))
-		for i, h := range hits {
-			ids[i] = h.ID
+		missing := make([]string, 0, len(hits))
+		for _, h := range hits {
+			if !looked[h.ID] {
+				looked[h.ID] = true
+				missing = append(missing, h.ID)
+			}
 		}
-		rows, err := s.repo.GetMany(ctx, teamID, ids)
-		if err != nil {
-			return nil, 0, fmt.Errorf("load drawer rows: %w", err)
+		if len(missing) > 0 {
+			fetched, err := s.repo.GetMany(ctx, teamID, missing)
+			if err != nil {
+				return nil, 0, fmt.Errorf("load drawer rows: %w", err)
+			}
+			for id, d := range fetched {
+				rows[id] = d
+			}
 		}
 
 		survivors := make([]SearchHit, 0, len(hits))
@@ -62,9 +84,17 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 			return survivors, len(hits), nil
 		}
 		// Doubling bounds backend round trips logarithmically while preserving the
-		// exact prefix ordering. The overflow guard is reachable only at the int
-		// limit, where no backend can accept a wider request anyway.
-		if k > int(^uint(0)>>1)/2 {
+		// exact prefix ordering, but it needs a stop.
+		//
+		// Every condition above assumes the index honoured the scope filter. The
+		// loop deliberately does not rely on that — the durable row is the
+		// authority — and when the two disagree, nothing in the prefix survives
+		// filtering, the distinct count stays put, and the widening walks the
+		// whole corpus a doubling at a time. This bound is a safety stop for
+		// that case, not a tuning knob: at the ceiling the arm simply ranks the
+		// memories it did find, which is what it would do at any other point
+		// where the backend runs out.
+		if k >= candidateK*maxCandidateWidening {
 			return survivors, len(hits), nil
 		}
 		k *= 2
@@ -80,13 +110,20 @@ func drawerMatchesSearch(d Drawer, q SearchQuery) bool {
 // of retrieved matching chunks remain explicit signals; lexical and rerank text
 // comes from the whole reassembled memory.
 func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID string, q SearchQuery, chunks []SearchHit) ([]SearchHit, error) {
+	// One pass, not one pass per root. Rescanning every chunk for each root is
+	// quadratic in the candidate pool, and the pool is exactly what the memory
+	// arm widens.
 	roots := make([]string, 0, len(chunks))
-	seen := make(map[string]bool, len(chunks))
+	best := make(map[string]SearchHit, len(chunks))
+	matched := make(map[string]int, len(chunks))
 	for _, h := range chunks {
-		if !seen[h.MemoryID] {
-			seen[h.MemoryID] = true
+		if matched[h.MemoryID] == 0 {
 			roots = append(roots, h.MemoryID)
+			best[h.MemoryID] = h
+		} else if h.Distance < best[h.MemoryID].Distance {
+			best[h.MemoryID] = h
 		}
+		matched[h.MemoryID]++
 	}
 	byRoot, err := s.repo.MemoryChunksByRoots(ctx, teamID, roots)
 	if err != nil {
@@ -95,23 +132,14 @@ func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID strin
 
 	out := make([]SearchHit, 0, len(roots))
 	for _, root := range roots {
-		var representative SearchHit
-		matched := 0
-		for _, h := range chunks {
-			if h.MemoryID != root {
-				continue
-			}
-			if matched == 0 || h.Distance < representative.Distance {
-				representative = h
-			}
-			matched++
-		}
-		if matched == 0 {
-			continue
-		}
+		representative := best[root]
 
+		// Filter into a fresh slice rather than over byRoot[root] in place.
+		// Reusing that backing array truncates the map entry the caller handed
+		// us, which is only safe while nothing else reads it — a property that
+		// holds today and would break silently the moment this load is shared.
 		memoryChunks := byRoot[root]
-		inScope := memoryChunks[:0]
+		inScope := make([]Drawer, 0, len(memoryChunks))
 		for _, d := range memoryChunks {
 			if drawerMatchesSearch(d, q) {
 				inScope = append(inScope, d)
@@ -122,7 +150,7 @@ func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID strin
 		if representative.MemoryContent == "" {
 			representative.MemoryContent = representative.Drawer.Content
 		}
-		representative.ChunksMatched = matched
+		representative.ChunksMatched = matched[root]
 		out = append(out, representative)
 	}
 	return out, nil
