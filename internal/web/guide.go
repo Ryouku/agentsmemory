@@ -26,6 +26,22 @@ var claudeGuide string
 //go:embed windows-guide.md
 var windowsGuide string
 
+// installMemoryMCP is the harness-agnostic MCP registration document served at
+// /install-memory-mcp. It is the front door for every client: agentsmemory is a
+// remote server, so connecting reduces to a URL and a bearer token, and each
+// host differs only in where that pair is written.
+//
+// It exists alongside the two deeper guides rather than replacing them.
+// /claude-guide installs the CLI kit (macOS and Linux) and /windows-guide carries
+// the per-client config for VS Code, Cursor and Claude Desktop; this one answers
+// "how do I connect AT ALL" for a host neither covers — which on Windows is the
+// only question, because the bash installer cannot run there. It hands off to
+// /bootstrap-memory, since a connected server is an empty palace until the memory
+// model is built inside it.
+//
+//go:embed install-memory-mcp.md
+var installMemoryMCP string
+
 // bootstrapMemory is the memory-model handoff document served at
 // /bootstrap-memory as raw Markdown. Unlike the two install guides above it
 // assumes the MCP is already connected: it covers what a team must build INSIDE
@@ -52,6 +68,13 @@ const guideBaseURLPlaceholder = "{{BASE_URL}}"
 // dynamic part is the dashboard URL, filled in from the request.
 func (s *Server) handleClaudeGuide(w http.ResponseWriter, r *http.Request) {
 	serveGuide(w, r, claudeGuide)
+}
+
+// handleInstallMemoryMCP serves the harness-agnostic MCP registration document as
+// raw Markdown at /install-memory-mcp, on the same terms as the other guides:
+// public, unstyled, and origin-substituted.
+func (s *Server) handleInstallMemoryMCP(w http.ResponseWriter, r *http.Request) {
+	serveGuide(w, r, installMemoryMCP)
 }
 
 // handleBootstrapMemory serves the memory-model handoff document as raw Markdown

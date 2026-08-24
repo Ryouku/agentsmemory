@@ -44,7 +44,7 @@ const sitemapNS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 // sign-in form only competes with the pages that do. The list is a function
 // rather than a package var so no caller can mutate the shared slice.
 func contentPages() []string {
-	return []string{"/", "/sandboxes", "/claude-guide", "/windows-guide", "/bootstrap-memory"}
+	return []string{"/", "/sandboxes", "/claude-guide", "/windows-guide", "/install-memory-mcp", "/bootstrap-memory"}
 }
 
 // sitemapIndexDoc is a sitemaps.org <sitemapindex>: a sitemap that lists other

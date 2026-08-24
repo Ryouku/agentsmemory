@@ -113,3 +113,49 @@ func TestBootstrapMemoryServesMarkdown(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallMemoryMCPServesMarkdown covers /install-memory-mcp and asserts the
+// facts an assistant acts on without supervision.
+//
+// The two connection facts are the whole document: a client that gets the
+// endpoint or the auth header wrong fails at first use, far from this page. The
+// handoff is asserted because a connected server is an EMPTY palace — a guide
+// that stops at registration leaves the human with a working MCP and no memory,
+// which is the failure this page exists inside a chain to prevent. And the
+// token rule is asserted because an assistant that invents a credential produces
+// a config that looks correct and is not.
+//
+// The handoff is matched as a HEADING rather than as a bare URL. The document
+// links /bootstrap-memory elsewhere in passing, so a substring check passed even
+// with the handoff step deleted — it asserted that the words appear, not that the
+// reader is sent there.
+func TestInstallMemoryMCPServesMarkdown(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://memory.example/install-memory-mcp", nil)
+	rec := httptest.NewRecorder()
+
+	(&Server{}).handleInstallMemoryMCP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Fatalf("Content-Type = %q, want text/markdown", ct)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, guideBaseURLPlaceholder) {
+		t.Fatalf("placeholder %q was not substituted", guideBaseURLPlaceholder)
+	}
+	for _, want := range []string{
+		"http://memory.example/mcp",                    // the endpoint, origin-substituted
+		"Authorization: Bearer",                        // the only auth this server takes
+		"### → http://memory.example/bootstrap-memory", // the handoff AS A STEP, not a passing mention
+		"Never invent",                                 // the rule that keeps a real credential real
+		"claude mcp add",                               // a host with a registration command
+		"codex mcp add",                                // and one whose token rides the environment
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("install-memory-mcp document is missing %q", want)
+		}
+	}
+}
