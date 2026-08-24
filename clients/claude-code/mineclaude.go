@@ -27,6 +27,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/urfave/cli/v3"
 )
@@ -440,12 +443,12 @@ func wingForSession(cwd, project string) string {
 		// more stably than whatever the directory happens to be called.
 		if out, err := exec.Command("git", "-C", cwd, "remote", "get-url", "origin").Output(); err == nil {
 			if base := strings.TrimSuffix(filepath.Base(strings.TrimSpace(string(out))), ".git"); base != "" && base != "." {
-				return "wing_" + sanitizeWingName(base)
+				return palace.DeriveWingName(base)
 			}
 		}
-		return "wing_" + sanitizeWingName(filepath.Base(cwd))
+		return palace.DeriveWingName(filepath.Base(cwd))
 	}
-	return "wing_" + sanitizeWingName(strings.TrimPrefix(project, "-"))
+	return palace.DeriveWingName(strings.TrimPrefix(project, "-"))
 }
 
 // registeredWings caches the project→wing map read from the Claude config, keyed
@@ -493,32 +496,12 @@ func loadRegisteredWings(path string) map[string]string {
 	}
 	for dir, p := range cfg.Projects {
 		if srv, ok := p.McpServers["agentsmemory"]; ok {
-			if w := strings.TrimSpace(srv.Headers["X-Agentsmemory-Wing"]); w != "" {
+			if w := strings.TrimSpace(srv.Headers[mcpprotocol.WingHeader]); w != "" {
 				out[dir] = w
 			}
 		}
 	}
 	return out
-}
-
-// sanitizeWingName normalizes a directory name into a safe wing name. Leading
-// dots go first: a session run inside ~/.claude should become wing_claude, not
-// the double-underscored artifact of sanitizing the dot.
-func sanitizeWingName(name string) string {
-	name = strings.ToLower(strings.TrimLeft(name, "."))
-	var b strings.Builder
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "claude_sessions"
-	}
-	return b.String()
 }
 
 // mineClient is the one MCP call this command makes, as an interface so the flow
@@ -529,25 +512,14 @@ type mineClient interface {
 
 // mineOne files one document via am_mine.
 func mineOne(ctx context.Context, client mineClient, wing, room string, part minePart) error {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = toolPrefix + "mine"
-	req.Params.Arguments = map[string]any{
+	result, err := mcpcli.Call(ctx, client.CallTool, "mine", map[string]any{
 		"wing":    wing,
 		"room":    room,
 		"source":  part.Source,
 		"content": part.Content,
-	}
-	res, err := client.CallTool(ctx, req)
+	})
 	if err != nil {
 		return err
 	}
-	if res.IsError {
-		if len(res.Content) > 0 {
-			if t, ok := mcp.AsTextContent(res.Content[0]); ok {
-				return fmt.Errorf("%s", t.Text)
-			}
-		}
-		return fmt.Errorf("am_mine returned an error")
-	}
-	return nil
+	return mcpcli.Failed("mine", result)
 }

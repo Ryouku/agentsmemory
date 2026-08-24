@@ -50,34 +50,11 @@ func TestEveryToolIsExercisedEndToEnd(t *testing.T) {
 	}
 	sort.Strings(missing)
 
-	// A RATCHET, not a skip, and not a permanent red.
-	//
-	// The honest state today is 38 of 41 uncovered, and asserting zero would put
-	// the suite red for every unrelated task until T3 lands — at which point
-	// somebody deletes the gate rather than the gap. Skipping it is worse: a
-	// skipped gate is decoration that reads as coverage.
-	//
-	// So the count is pinned EXACTLY. It fails if coverage regresses, and it also
-	// fails when coverage improves without the number being lowered — otherwise
-	// the ceiling drifts upward silently and the ratchet stops ratcheting. Every
-	// scenario added takes this number down; ADR-008 T3 takes it to 0, and the
-	// constant is deleted with the last one.
-	const uncoveredCeiling = 5
-
-	switch {
-	case len(missing) > uncoveredCeiling:
+	if len(missing) != 0 {
 		t.Errorf("coverage REGRESSED: %d of %d registered tool(s) are exercised by no scenario "+
-			"and named in no exemption, up from %d:\n  %s\n\nA tool nobody calls end to end has "+
-			"only the evidence that the code looks right — the same evidence the four unreachable "+
-			"capabilities in this repo had.",
-			len(missing), len(registered), uncoveredCeiling, strings.Join(missing, "\n  "))
-	case len(missing) < uncoveredCeiling:
-		t.Errorf("coverage improved to %d uncovered (ceiling says %d) — lower uncoveredCeiling to "+
-			"%d in the same commit, or the ratchet stops ratcheting and the next regression hides "+
-			"under the old headroom.", len(missing), uncoveredCeiling, len(missing))
-	default:
-		t.Logf("%d of %d tool(s) still exercised by no scenario:\n  %s",
-			len(missing), len(registered), strings.Join(missing, "\n  "))
+			"and named in no exemption:\n  %s\n\nA tool nobody calls end to end has only "+
+			"the evidence that the code looks right — the same evidence the four unreachable "+
+			"capabilities in this repo had.", len(missing), len(registered), strings.Join(missing, "\n  "))
 	}
 }
 
@@ -192,7 +169,12 @@ func writeThenRead(calls []string) (wrote, readAfter bool) {
 // actually called.
 func runScenario(t *testing.T, sc mcptest.Scenario) []string {
 	t.Helper()
-	h := mcptest.New(t)
+	var h *mcptest.Harness
+	if sc.NewHarness != nil {
+		h = sc.NewHarness(t)
+	} else {
+		h = mcptest.New(t)
+	}
 	sc.Run(t, h)
 	return h.Called()
 }

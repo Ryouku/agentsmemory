@@ -1,6 +1,7 @@
 package mcptest_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcptest"
@@ -536,6 +537,182 @@ var scenarios = []mcptest.Scenario{
 		},
 	},
 	{
+		Name:  "listing drawers honours the registration wing and the explicit escape hatch",
+		Tools: []string{"am_add_drawer", "am_list_drawers"},
+		NewHarness: func(t *testing.T) *mcptest.Harness {
+			return mcptest.NewWithWing(t, "wing_beta")
+		},
+		Run: exerciseListDrawersRegistrationWing,
+	},
+	{
+		Name:  "deleting a tunnel removes only that woven link and is idempotent",
+		Tools: []string{"am_add_drawer", "am_create_tunnel", "am_delete_tunnel", "am_list_tunnels", "am_follow_tunnels"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			for _, w := range []string{"wing_from", "wing_to", "wing_alpha", "wing_beta"} {
+				h.MustCall(t, "am_add_drawer", map[string]any{
+					"wing": w, "room": "decisions", "content": "a tunnel endpoint in " + w,
+				})
+			}
+			target := createTunnel(t, h, "wing_from", "wing_to", "TARGET-TUNNEL")
+			keeper := createTunnel(t, h, "wing_alpha", "wing_beta", "KEEPER-TUNNEL")
+
+			if deleted(t, h.MustCall(t, "am_delete_tunnel", map[string]any{"tunnel_id": "missing-tunnel-id"})) {
+				t.Error("deleting an unknown tunnel reported that it removed something")
+			}
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "*"}); !contains(got, target) || !contains(got, keeper) {
+				t.Errorf("an unknown-id delete changed a real tunnel:\n%s", got)
+			}
+
+			if !deleted(t, h.MustCall(t, "am_delete_tunnel", map[string]any{"tunnel_id": target})) {
+				t.Error("deleting the target tunnel reported deleted=false")
+			}
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "*"}); contains(got, target) || !contains(got, keeper) {
+				t.Errorf("the target tunnel survived or the keeper was removed:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_follow_tunnels", map[string]any{
+				"wing": "wing_from", "room": "decisions",
+			}); contains(got, "TARGET-TUNNEL") {
+				t.Errorf("the deleted tunnel is still followable:\n%s", got)
+			}
+			if deleted(t, h.MustCall(t, "am_delete_tunnel", map[string]any{"tunnel_id": target})) {
+				t.Error("deleting the same tunnel twice reported a second deletion")
+			}
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "*"}); !contains(got, keeper) {
+				t.Errorf("the keeper tunnel disappeared after an idempotent delete:\n%s", got)
+			}
+		},
+	},
+	{
+		Name:  "deleting a derived hallway is selective and recompute restores it",
+		Tools: []string{"am_mine", "am_recompute_graph", "am_list_hallways", "am_delete_hallway"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			mineHallwayCorpus(t, h, "wing_alpha", "TARGET-HALLWAY")
+			mineHallwayCorpus(t, h, "wing_beta", "KEEPER-HALLWAY")
+			h.MustCall(t, "am_recompute_graph", map[string]any{})
+			target := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_alpha"}), "hallways")
+			keeper := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_beta"}), "hallways")
+
+			if deleted(t, h.MustCall(t, "am_delete_hallway", map[string]any{"hallway_id": "missing-hallway-id"})) {
+				t.Error("deleting an unknown hallway reported that it removed something")
+			}
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "*"}); !contains(got, target) || !contains(got, keeper) {
+				t.Errorf("an unknown-id delete changed a real hallway:\n%s", got)
+			}
+
+			if !deleted(t, h.MustCall(t, "am_delete_hallway", map[string]any{"hallway_id": target})) {
+				t.Error("deleting the target hallway reported deleted=false")
+			}
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "*"}); contains(got, target) || !contains(got, keeper) {
+				t.Errorf("the target hallway survived or the keeper was removed:\n%s", got)
+			}
+
+			h.MustCall(t, "am_recompute_graph", map[string]any{"wing": "wing_alpha"})
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_alpha"}); contains(got, `"count":0`) {
+				t.Errorf("recompute did not restore the still-supported derived hallway:\n%s", got)
+			}
+		},
+	},
+	{
+		Name:  "merging a wing moves both row enumeration and scoped vector recall",
+		Tools: []string{"am_add_drawer", "am_merge_wing", "am_list_drawers", "am_search"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			for wing, content := range map[string]string{
+				"wing_from":  "SOURCE-MERGE-MARKER the scheduler drains before deploy",
+				"wing_to":    "TARGET-MERGE-MARKER the target already has a decision",
+				"wing_other": "KEEPER-MERGE-MARKER an unrelated wing must remain",
+			} {
+				h.MustCall(t, "am_add_drawer", map[string]any{"wing": wing, "room": "decisions", "content": content})
+			}
+
+			h.MustRefuse(t, "am_merge_wing", map[string]any{"sources": []any{}, "target": "wing_to"})
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_from"}); !contains(got, "SOURCE-MERGE-MARKER") {
+				t.Errorf("a refused empty merge changed the source wing:\n%s", got)
+			}
+
+			h.MustCall(t, "am_merge_wing", map[string]any{
+				"sources": []any{"wing_from"}, "target": "wing_to",
+			})
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_to", "limit": 20}); !contains(got, "SOURCE-MERGE-MARKER") || !contains(got, "TARGET-MERGE-MARKER") {
+				t.Errorf("the target does not enumerate both its old memory and the merged memory:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_search", map[string]any{
+				"query": "scheduler drains before deploy", "wing": "wing_to", "limit": 20,
+			}); !contains(got, "SOURCE-MERGE-MARKER") {
+				t.Errorf("the merged row moved but its vector payload did not become searchable in the target:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_from", "limit": 20}); contains(got, "SOURCE-MERGE-MARKER") {
+				t.Errorf("the old source still enumerates the merged memory:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_search", map[string]any{
+				"query": "scheduler drains before deploy", "wing": "wing_from", "limit": 20,
+			}); contains(got, "SOURCE-MERGE-MARKER") {
+				t.Errorf("the old source still retrieves the merged memory from the vector index:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_other"}); !contains(got, "KEEPER-MERGE-MARKER") {
+				t.Errorf("the unrelated keeper wing changed during merge:\n%s", got)
+			}
+		},
+	},
+	{
+		Name:  "local wing deletion crosses the real local edge and removes every observable projection",
+		Tools: []string{"am_mine", "am_recompute_graph", "am_create_tunnel", "am_delete_wing", "am_list_drawers", "am_search", "am_list_hallways", "am_list_tunnels", "am_list_wings"},
+		NewHarness: func(t *testing.T) *mcptest.Harness {
+			return mcptest.NewLocalWithWing(t, "wing_gone")
+		},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			mineHallwayCorpus(t, h, "wing_gone", "DOOMED-WING-MARKER")
+			mineHallwayCorpus(t, h, "wing_other", "KEEPER-WING-MARKER")
+			h.MustCall(t, "am_recompute_graph", map[string]any{})
+			tunnel := createTunnel(t, h, "wing_gone", "wing_other", "DOOMED-TUNNEL-MARKER")
+			hallway := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_gone"}), "hallways")
+
+			msg := h.MustRefuse(t, "am_delete_wing", map[string]any{
+				"wing": "wing_gone", "confirm": "wing_other",
+			})
+			if !contains(msg, `confirm="wing_gone"`) {
+				t.Errorf("the refusal does not name the exact confirmation required:\n%s", msg)
+			}
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_gone"}); !contains(got, "DOOMED-WING-MARKER") {
+				t.Errorf("a refused delete removed the doomed wing's drawers:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_gone"}); !contains(got, hallway) {
+				t.Errorf("a refused delete removed the doomed wing's hallway:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "wing_gone"}); !contains(got, tunnel) {
+				t.Errorf("a refused delete removed the doomed wing's tunnel:\n%s", got)
+			}
+
+			out := h.MustCall(t, "am_delete_wing", map[string]any{
+				"wing": "wing_gone", "confirm": "wing_gone",
+			})
+			for _, field := range []string{"drawers_deleted", "closets_deleted", "hallways_deleted", "tunnels_deleted"} {
+				if jsonNumber(t, h, out, field) < 1 {
+					t.Errorf("wing deletion reported no %s despite the populated fixture:\n%s", field, out)
+				}
+			}
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_gone"}); contains(got, "DOOMED-WING-MARKER") {
+				t.Errorf("the deleted wing is still enumerable:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_search", map[string]any{
+				"query": "DOOMED-WING-MARKER", "wing": "wing_gone", "limit": 20,
+			}); contains(got, "DOOMED-WING-MARKER") {
+				t.Errorf("the deleted wing remains in vector recall:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "*"}); contains(got, hallway) {
+				t.Errorf("the deleted wing's hallway survived:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "*"}); contains(got, tunnel) {
+				t.Errorf("a tunnel whose endpoint was deleted survived:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_wings", map[string]any{}); contains(got, "wing_gone") {
+				t.Errorf("the deleted wing still appears in the wing catalogue:\n%s", got)
+			}
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_other"}); !contains(got, "KEEPER-WING-MARKER") {
+				t.Errorf("the keeper wing changed during deletion:\n%s", got)
+			}
+		},
+	},
+	{
 		Name:  "the vector backend can be re-readied without losing what is stored",
 		Tools: []string{"am_add_drawer", "am_reconnect", "am_search"},
 		Run: func(t *testing.T, h *mcptest.Harness) {
@@ -552,6 +729,93 @@ var scenarios = []mcptest.Scenario{
 			}
 		},
 	},
+}
+
+func exerciseListDrawersRegistrationWing(t *testing.T, h *mcptest.Harness) {
+	for _, wing := range []string{"wing_alpha", "wing_beta"} {
+		h.MustCall(t, "am_add_drawer", map[string]any{
+			"wing": wing, "room": "decisions", "content": "a decision in " + wing,
+		})
+	}
+	h.MustCall(t, "am_add_drawer", map[string]any{
+		"wing": "wing_alpha", "room": "inbox", "content": "alpha's private inbox item, not beta's business",
+	})
+	h.MustCall(t, "am_add_drawer", map[string]any{
+		"wing": "wing_beta", "room": "inbox", "content": "beta's own inbox item",
+	})
+
+	got := h.MustCall(t, "am_list_drawers", map[string]any{"room": "inbox", "limit": 20})
+	if contains(got, "alpha's private inbox item") {
+		t.Errorf("listing with no wing returned another project's inbox:\n%s", got)
+	}
+	if !contains(got, "beta's own inbox item") {
+		t.Errorf("listing with no wing did not return this registration's own inbox:\n%s", got)
+	}
+	if contains(got, "a decision in wing_beta") {
+		t.Errorf("the room filter did not exclude this wing's other rooms:\n%s", got)
+	}
+	if all := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "*", "room": "inbox", "limit": 20}); !contains(all, "alpha's private inbox item") {
+		t.Errorf(`wing:"*" must still enumerate every wing:\n%s`, all)
+	}
+}
+
+func createTunnel(t *testing.T, h *mcptest.Harness, source, target, label string) string {
+	t.Helper()
+	out := h.MustCall(t, "am_create_tunnel", map[string]any{
+		"source_wing": source, "source_room": "decisions",
+		"target_wing": target, "target_room": "decisions", "label": label,
+	})
+	id, _ := h.JSON(t, out)["id"].(string)
+	if id == "" {
+		t.Fatalf("created tunnel has no id:\n%s", out)
+	}
+	return id
+}
+
+func deleted(t *testing.T, out string) bool {
+	t.Helper()
+	var payload struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode deletion result: %v\n%s", err, out)
+	}
+	return payload.Deleted
+}
+
+func mineHallwayCorpus(t *testing.T, h *mcptest.Harness, wing, marker string) {
+	t.Helper()
+	for _, fixture := range []struct{ room, text string }{
+		{"decisions", marker + " We replaced Kafka with NATS. Kafka rebalancing stalled p99, and NATS avoided that rebalance."},
+		{"gotchas", marker + " NATS consumers can still stall. Kafka had the same failure, so NATS was not a free win over Kafka."},
+	} {
+		h.MustCall(t, "am_mine", map[string]any{
+			"wing": wing, "room": fixture.room, "source": wing + "-" + fixture.room + ".md", "content": fixture.text,
+		})
+	}
+}
+
+func firstListedID(t *testing.T, h *mcptest.Harness, out, field string) string {
+	t.Helper()
+	rows, _ := h.JSON(t, out)[field].([]any)
+	if len(rows) == 0 {
+		t.Fatalf("%s contains no rows:\n%s", field, out)
+	}
+	row, _ := rows[0].(map[string]any)
+	id, _ := row["id"].(string)
+	if id == "" {
+		t.Fatalf("first %s row has no id:\n%s", field, out)
+	}
+	return id
+}
+
+func jsonNumber(t *testing.T, h *mcptest.Harness, out, field string) float64 {
+	t.Helper()
+	n, ok := h.JSON(t, out)[field].(float64)
+	if !ok {
+		t.Fatalf("%s is not numeric:\n%s", field, out)
+	}
+	return n
 }
 
 // firstAnchorID pulls the id of the first anchor a listing returned.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
@@ -188,18 +189,18 @@ func TestEveryGraphToolCarriesTheNote(t *testing.T) {
 		keeps []string
 	}{
 		{
-			tool:  toolPrefix + "list_hallways",
+			tool:  mcpprotocol.ToolPrefix + "list_hallways",
 			args:  map[string]any{"wing": graphTestWing},
 			keeps: []string{"hallways", "count"},
 		},
 		// traverse and graph_stats name no wing: they answer for the whole palace.
 		{
-			tool:  toolPrefix + "traverse",
+			tool:  mcpprotocol.ToolPrefix + "traverse",
 			args:  map[string]any{"start_room": graphTestRoom},
 			keeps: []string{"nodes", "count"},
 		},
 		{
-			tool:  toolPrefix + "graph_stats",
+			tool:  mcpprotocol.ToolPrefix + "graph_stats",
 			args:  map[string]any{},
 			keeps: []string{"total_rooms", "tunnel_rooms", "total_edges", "rooms_per_wing"},
 		},

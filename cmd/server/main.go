@@ -33,6 +33,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embed/teiembed"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embedworker"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/importer"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mergejob"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
@@ -211,22 +212,32 @@ func serveFlags(def config.Config) []cli.Flag {
 		// AGENTSMEMORY_SOCKET is shared with the mcp-stdio proxy on purpose: one
 		// exported variable points the server at a socket and tells the proxy
 		// where to dial, so the pair cannot drift apart.
-		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
-		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
-		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(localTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
+		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars(mcpprotocol.SocketEnvVar), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
+		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars(mcpprotocol.LocalEnvVar), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
+		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.LocalTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
 }
 
-// localTokenEnvVar is the environment variable --local's shared bearer token is
-// read from, and the name the startup hints tell agents to present.
-//
-// Deliberately NOT AGENTSMEMORY_TOKEN: that one is the client half of the pair
-// (mcp-stdio presents it, the installer registers it), and a developer with a
-// hosted workspace key exported would otherwise find their local server silently
-// demanding it. The installer reads this same variable, so exporting it once
-// configures both halves.
-const localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+// productionMCPServer is the one composition seam for every in-process MCP
+// surface. The HTTP server and the direct CLI both call it, so neither can
+// silently omit a service, change the search-scope policy, or construct a
+// different set of handlers. A nil services value is registration-only: it is
+// used by the CLI to inspect tools/list without opening or migrating a database.
+func productionMCPServer(svc *services, cfg config.Config, local bool) *server.MCPServer {
+	deps := mcpserver.Deps{
+		Local:             local,
+		ScopeSearchToWing: cfg.ScopeSearchToWing(),
+	}
+	if svc != nil {
+		deps.Skills = svc.skills
+		deps.Skillset = svc.skillsets
+		deps.Usage = svc.usage
+		deps.Drawers = svc.drawers
+		deps.Workspaces = svc.tenants
+	}
+	return mcpserver.Compose(deps)
+}
 
 // run opens the database, migrates, wires dependencies, and serves until error.
 func run(ctx context.Context, cfg config.Config) error {
@@ -289,7 +300,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	// per request, turning the Bearer token into a tenant on the context the
 	// tools read — this is the only place auth touches the transport. Tools
 	// meter each call against the workspace's monthly cap via usageSvc.
-	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Workspaces: svc.tenants, Local: cfg.Local, ScopeSearchToWing: !strings.EqualFold(strings.TrimSpace(cfg.SearchScope), "workspace")})
+	mcpSrv := productionMCPServer(svc, cfg, cfg.Local)
 
 	// OAuth 2.1 authorization server (stateless), validating client credentials
 	// against our own api_keys (the merged authcounterapi role). It guards /mcp
@@ -562,8 +573,8 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 		// exported it substitutes the real value) without writing the secret down.
 		header := ""
 		if cfg.LocalToken != "" {
-			header = ` --header "Authorization: Bearer $` + localTokenEnvVar + `"`
-			install += ` --token "$` + localTokenEnvVar + `"`
+			header = ` --header "Authorization: Bearer $` + mcpprotocol.LocalTokenEnvVar + `"`
+			install += ` --token "$` + mcpprotocol.LocalTokenEnvVar + `"`
 		}
 		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory %s%s", agentEndpoint(cfg.Addr), header)
 	} else {
@@ -910,24 +921,40 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 // is safe to call from both entry points.
 func buildServices(cfg config.Config) (*services, error) { return buildServicesWith(cfg, true) }
 
-// buildServicesWith is buildServices with the index reconciliation made optional.
+// inspectServices wires the services against the palace exactly as it exists.
 //
-// A CHECKER must not repair the evidence before judging it. Reconciliation
-// replays the source of truth into the chromem index at construction, so an
-// index that had lost points was silently rebuilt and then reported clean — the
-// check could not fail on the fault it exists to find. Every serving path still
-// reconciles; only the read-only inspection does not.
-func buildServicesWith(cfg config.Config, reconcile bool) (*services, error) {
-	gdb, err := openDB(cfg.DBPath, cfg.Debug)
+// A checker must neither migrate the database nor reconcile its derived index:
+// either write can repair the evidence before doctor reports on it. Serving and
+// ordinary CLI paths still prepare the stores through buildServices.
+func inspectServices(cfg config.Config) (*services, error) { return buildServicesWith(cfg, false) }
+
+// inspectDatabaseServices wires a diagnostic whose question is answered wholly
+// by SQLite. It deliberately ignores the configured search backend: a missing
+// or stale derived index must not suppress an unrelated database report.
+func inspectDatabaseServices(cfg config.Config) (*services, error) {
+	cfg.VectorBackend = config.VectorBackendSQLite
+	return inspectServices(cfg)
+}
+
+// buildServicesWith holds the shared composition. prepare applies migrations
+// and reconciles the selected vector backend; false leaves both stores alone.
+func buildServicesWith(cfg config.Config, prepare bool) (*services, error) {
+	opener := openDB
+	if !prepare {
+		opener = openInspectionDB
+	}
+	gdb, err := opener(cfg.DBPath, cfg.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	sqlDB, err := gdb.DB()
-	if err != nil {
-		return nil, fmt.Errorf("sql handle: %w", err)
-	}
-	if err := migrate(sqlDB); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
+	if prepare {
+		sqlDB, err := gdb.DB()
+		if err != nil {
+			return nil, fmt.Errorf("sql handle: %w", err)
+		}
+		if err := migrate(sqlDB); err != nil {
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
 	}
 
 	// Bounded contexts: tenant (auth + workspaces), skill (load_skill), and
@@ -939,7 +966,7 @@ func buildServicesWith(cfg config.Config, reconcile bool) (*services, error) {
 
 	// Vector storage: SQLite is always the source of truth; cfg.VectorBackend
 	// selects whether it also serves search or Qdrant indexes it.
-	vectors, err := buildVectorStoreWith(cfg, gdb, reconcile)
+	vectors, err := buildVectorStoreWith(cfg, gdb, prepare)
 	if err != nil {
 		return nil, fmt.Errorf("vector store: %w", err)
 	}
@@ -1016,8 +1043,10 @@ func buildVectorStore(cfg config.Config, gdb *gorm.DB) (store.VectorStore, error
 	return buildVectorStoreWith(cfg, gdb, true)
 }
 
-// buildVectorStoreWith is buildVectorStore with reconciliation made optional, for
-// the read-only checker. See buildServicesWith.
+// buildVectorStoreWith is buildVectorStore with preparation made optional for
+// doctor. A non-preparing Chromem open also refuses to initialize or replace an
+// index layout; merely disabling reconciliation would still destroy stale
+// evidence in chromemvec.New. See inspectServices.
 func buildVectorStoreWith(cfg config.Config, gdb *gorm.DB, reconcile bool) (store.VectorStore, error) {
 	sot := sqlitevec.New(gdb)
 	switch cfg.VectorBackend {
@@ -1025,7 +1054,13 @@ func buildVectorStoreWith(cfg config.Config, gdb *gorm.DB, reconcile bool) (stor
 		return sot, nil
 	case config.VectorBackendChromem:
 		dir := config.ChromemPath(cfg.DBPath)
-		index, err := chromemvec.New(dir)
+		var index *chromemvec.Index
+		var err error
+		if reconcile {
+			index, err = chromemvec.New(dir)
+		} else {
+			index, err = chromemvec.OpenExisting(dir)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1255,6 +1290,18 @@ func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chrom
 // process legitimately opens this file: serve holds it open for its lifetime
 // while inspect, mcp, plan, share and an export all read it.
 func openDB(path string, debug bool) (*gorm.DB, error) {
+	return openDBWithPragmas(path, debug, dbPragmas)
+}
+
+// openInspectionDB opens SQLite with query_only enabled and without changing
+// its journal mode. It is the doctor connection: even if a future diagnostic
+// accidentally selects a write through one of the repositories, SQLite refuses
+// it instead of altering the evidence being inspected.
+func openInspectionDB(path string, debug bool) (*gorm.DB, error) {
+	return openDBWithPragmas(path, debug, inspectionDBPragmas)
+}
+
+func openDBWithPragmas(path string, debug bool, pragmas string) (*gorm.DB, error) {
 	level := logger.Silent
 	if debug {
 		level = logger.Info
@@ -1263,7 +1310,7 @@ func openDB(path string, debug bool) (*gorm.DB, error) {
 		log.New(os.Stderr, "\r\n", log.LstdFlags),
 		logger.Config{LogLevel: level},
 	)
-	return gorm.Open(sqlite.Open(path+dbPragmas), &gorm.Config{Logger: gormLog})
+	return gorm.Open(sqlite.Open(path+pragmas), &gorm.Config{Logger: gormLog})
 }
 
 // dbPragmas are the connection pragmas appended to the SQLite DSN.
@@ -1287,6 +1334,11 @@ func openDB(path string, debug bool) (*gorm.DB, error) {
 // stakes, because with WAL two servers on one database write happily and
 // silently instead of announcing themselves with lock errors.
 const dbPragmas = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
+// inspectionDBPragmas enforce doctor's no-write boundary at SQLite itself.
+// busy_timeout remains useful when doctor reads a live palace; journal_mode is
+// deliberately absent because changing it would itself mutate the database.
+const inspectionDBPragmas = "?_pragma=query_only(1)&_pragma=busy_timeout(5000)"
 
 // migrate applies the embedded goose migrations to the open database.
 func migrate(sqlDB *sql.DB) error {

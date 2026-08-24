@@ -73,7 +73,7 @@ type DuplicatePair struct {
 // a structural change to shared memory, so it takes the same writer/admin bar as
 // editing a shared skill — a read-only member cannot restructure the palace.
 func canManage(r tenant.Role) bool {
-	return r == tenant.RoleWriter || r == tenant.RoleAdmin
+	return tenant.CanWrite(r)
 }
 
 // Enqueue validates and queues a merge of one source wing into a target. It does

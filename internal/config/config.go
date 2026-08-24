@@ -302,6 +302,15 @@ func ParseSuperAdminEmails(raw string) []string {
 	return out
 }
 
+// ScopeSearchToWing reports whether a recall that names no wing is narrowed to
+// the registration's project. Only SearchScope "workspace" widens it; every
+// other value, including the default "wing", stays scoped. Production MCP
+// composition and the MCP test harness both call this, so a default flip
+// cannot silently leave the harness testing a configuration nobody runs.
+func (c Config) ScopeSearchToWing() bool {
+	return !strings.EqualFold(strings.TrimSpace(c.SearchScope), "workspace")
+}
+
 // Default returns a Config populated with the day-one development defaults.
 // Flag and env resolution in cmd/server overlays user-supplied values on top.
 func Default() Config {

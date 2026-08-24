@@ -90,6 +90,15 @@ func TestHostedComposeAcceptsCanonicalImageDigest(t *testing.T) {
 	)
 }
 
+func TestBuildWorkflowRunsContractAxisGate(t *testing.T) {
+	workflow := readRepoFile(t, ".github/workflows/build.yml")
+	requireText(t, workflow,
+		"go test ./...",
+		"-tags contractaxis",
+		"./internal/mcptest",
+	)
+}
+
 func readRepoFile(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join("..", "..", name)

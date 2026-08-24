@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 )
 
 // TestWingForPrefersTheCaller: an argument is a decision, a registration default
@@ -50,7 +51,7 @@ func TestWingForWithoutAnyWing(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when neither the call nor the registration names a wing")
 	}
-	for _, want := range []string{"wing is required", auth.WingHeader} {
+	for _, want := range []string{"wing is required", mcpprotocol.WingHeader} {
 		if !contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
@@ -95,5 +96,21 @@ func TestSearchWingStarSearchesEverything(t *testing.T) {
 	// And an explicit wing still wins over both.
 	if got, err := searchWingFor(ctx, "wing_beta", true); err != nil || got != "wing_beta" {
 		t.Errorf("an explicit wing must win, got %q (%v)", got, err)
+	}
+}
+
+// TestSearchWingForRegistrationDefaultStarIsEveryWing is the production
+// surface of "*": X-Agentsmemory-Wing, not the CLI --wing flag. An omitted
+// argument against a star registration must search every wing. Deleting
+// allWings(DefaultWingFrom) only failed the CLI adapter; this test is the
+// MCP selector itself.
+func TestSearchWingForRegistrationDefaultStarIsEveryWing(t *testing.T) {
+	ctx := auth.WithDefaultWing(context.Background(), "*")
+	got, err := searchWingFor(ctx, "", true)
+	if err != nil {
+		t.Fatalf("registration default *: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("registration default * must search every wing (empty filter), got %q", got)
 	}
 }

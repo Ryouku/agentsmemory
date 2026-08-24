@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 )
 
 const (
@@ -36,7 +38,7 @@ const (
 	// the wing has to travel from here. The memory protocol reads this variable
 	// first and falls back to the git remote when it is unset, which is why an
 	// unconfigured project still gets a sane wing instead of a shared one.
-	wingEnvVar = "AGENTSMEMORY_WING"
+	wingEnvVar = mcpprotocol.WingEnvVar
 )
 
 // projectConfig is the launch intent recorded for a project directory: which

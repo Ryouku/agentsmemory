@@ -36,7 +36,7 @@ func (c webSkillCaller) User() string { return c.userID }
 // It is the single source of truth for the role gate — the view flag and the
 // service call both derive from it, so the UI never disagrees with the server.
 func (c webSkillCaller) CanWrite() bool {
-	return c.role == tenant.RoleWriter || c.role == tenant.RoleAdmin
+	return tenant.CanWrite(c.role)
 }
 
 // skillSignals is the datastar payload for the skill editor. One typed struct per

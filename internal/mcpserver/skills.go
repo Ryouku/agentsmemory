@@ -29,7 +29,7 @@ func (c skillCaller) User() string { return c.t.UserID }
 // service and the registration cannot come to different conclusions about the
 // same role. It was the only role check in this package for a long time — the
 // predicate was right and it had one consumer.
-func (c skillCaller) CanWrite() bool { return canWrite(c.t.Role) }
+func (c skillCaller) CanWrite() bool { return tenant.CanWrite(c.t.Role) }
 
 // registerListSkills: list the team's centralised skills as metadata (no bodies),
 // so an agent can see what is available before loading one.

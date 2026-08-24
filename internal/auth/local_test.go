@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 )
 
@@ -120,7 +121,7 @@ func TestBridgeLiftsTheRegistrationWing(t *testing.T) {
 	for name, build := range map[string]func() *http.Request{
 		"header": func() *http.Request {
 			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			r.Header.Set(WingHeader, "wing_acme")
+			r.Header.Set(mcpprotocol.WingHeader, "wing_acme")
 			return r
 		},
 		"query parameter": func() *http.Request {
@@ -128,7 +129,7 @@ func TestBridgeLiftsTheRegistrationWing(t *testing.T) {
 		},
 		"header wins over query": func() *http.Request {
 			r := httptest.NewRequest(http.MethodPost, "/mcp?wing=wing_other", nil)
-			r.Header.Set(WingHeader, "wing_acme")
+			r.Header.Set(mcpprotocol.WingHeader, "wing_acme")
 			return r
 		},
 	} {

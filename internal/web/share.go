@@ -135,7 +135,7 @@ func (s *Server) postShareDecline(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildShareData(ctx context.Context, u tenant.User, teamID string, role tenant.Role) views.ShareData {
 	d := views.ShareData{
 		TeamID:   teamID,
-		CanShare: role == tenant.RoleWriter || role == tenant.RoleAdmin,
+		CanShare: tenant.CanWrite(role),
 		IsAdmin:  role == tenant.RoleAdmin,
 	}
 	if d.CanShare {

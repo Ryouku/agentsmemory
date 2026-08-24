@@ -24,17 +24,24 @@ package mcptest
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -133,9 +140,27 @@ type Harness struct {
 	called []string
 }
 
+// Hosted is a real hosted MCP edge over a migrated database. Unlike the normal
+// scenario harness it does not synthesize identity headers: clients must present
+// a raw project token or an OAuth access token to cross AuthServer.Gate.
+type Hosted struct {
+	URL     string
+	Tenants *tenant.Repo
+	Usage   *usage.Service
+
+	drawers *palace.Service
+	db      *gorm.DB
+	srv     *httptest.Server
+}
+
 // Called returns the tools this harness invoked, in order. The exhaustiveness
 // gate reads it; a scenario's own assertions do not need it.
 func (h *Harness) Called() []string { return append([]string(nil), h.called...) }
+
+// Endpoint returns the live MCP URL used by this harness. It lets a command
+// test dial through its own production transport code instead of borrowing the
+// harness's private client.
+func (h *Harness) Endpoint() string { return h.srv.URL }
 
 // New returns a harness whose client authenticates as TeamID with no default
 // wing, mirroring a registration that named no project.
@@ -147,6 +172,201 @@ func New(t *testing.T) *Harness { return NewWithWing(t, "") }
 func NewWithWing(t *testing.T, wing string) *Harness {
 	t.Helper()
 	return newOn(t, openDB(t, filepath.Join(t.TempDir(), "mcptest.db")), wing)
+}
+
+// NewLocalWithWing returns a harness mounted behind the production local-mode
+// tenant middleware. Use it for local-only tools: setting Deps.Local registers
+// those tools, while this constructor additionally proves the HTTP edge injects
+// the fixed local administrator that makes their handlers reachable.
+func NewLocalWithWing(t *testing.T, wing string) *Harness {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
+	srv, drawers := newLocalServer(t, gdb)
+	return newClient(t, srv, drawers, wing)
+}
+
+// NewHosted stands up the production hosted authentication chain: bearer
+// resolution, OAuth challenge/endpoints, MCP HTTP transport, Bridge, admission,
+// and handlers. Tests seed workspaces through Tenants and connect through Client.
+func NewHosted(t *testing.T) *Hosted {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest-hosted.db"))
+	tenants := tenant.NewRepo(gdb, tenant.WithTokenSecret("mcptest-token-at-rest-secret"))
+	usageSvc := usage.NewService(usage.NewRepo(gdb), tenants)
+	stream, drawers := newStreamWith(gdb, usageSvc, false)
+	sealer, err := oauth.NewSealer("mcptest-oauth-signing-secret")
+	if err != nil {
+		t.Fatalf("oauth sealer: %v", err)
+	}
+	var root http.Handler
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		root.ServeHTTP(w, r)
+	}))
+	issuer := "http://" + srv.Listener.Addr().String()
+	authSrv := oauth.NewAuthServer(issuer, sealer, tenants, tenants)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", authSrv.Gate(stream))
+	mux.HandleFunc("/authorize", authSrv.Authorize)
+	mux.HandleFunc("/token", authSrv.Token)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", authSrv.ProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", authSrv.AuthorizationServerMetadata)
+	root = mux
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return &Hosted{URL: srv.URL, Tenants: tenants, Usage: usageSvc, drawers: drawers, db: gdb, srv: srv}
+}
+
+// DurableStateDigest returns a deterministic digest of every durable
+// application table in the hosted harness. Tests use it to prove a refused call
+// did not mutate some table they forgot to put in a hand-maintained ledger.
+//
+// api_keys.last_used_at is deliberately normalised: resolving any valid bearer
+// stamps that observation field before the MCP role guard runs. It records that
+// authentication happened, not a change to stored memory. usage_counters is
+// likewise operational telemetry and is asserted independently by callers. All
+// other application rows and schemas participate in the digest.
+func (h *Hosted) DurableStateDigest(ctx context.Context) ([sha256.Size]byte, error) {
+	var empty [sha256.Size]byte
+	sqlDB, err := h.db.DB()
+	if err != nil {
+		return empty, fmt.Errorf("open hosted state snapshot: %w", err)
+	}
+	tx, err := sqlDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return empty, fmt.Errorf("begin hosted state snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	type tableSchema struct {
+		name string
+		sql  string
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT name, COALESCE(sql, '')
+		FROM sqlite_schema
+		WHERE type = 'table'
+		  AND name NOT LIKE 'sqlite_%'
+		  AND name <> 'usage_counters'
+		ORDER BY name`)
+	if err != nil {
+		return empty, fmt.Errorf("list hosted state tables: %w", err)
+	}
+	var tables []tableSchema
+	for rows.Next() {
+		var table tableSchema
+		if err := rows.Scan(&table.name, &table.sql); err != nil {
+			_ = rows.Close()
+			return empty, fmt.Errorf("scan hosted state table: %w", err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return empty, fmt.Errorf("iterate hosted state tables: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return empty, fmt.Errorf("close hosted state tables: %w", err)
+	}
+
+	digest := sha256.New()
+	writeJSON := func(value any) error {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		_, _ = digest.Write(encoded)
+		_, _ = digest.Write([]byte{'\n'})
+		return nil
+	}
+	for _, table := range tables {
+		if err := writeJSON([]string{table.name, table.sql}); err != nil {
+			return empty, fmt.Errorf("digest hosted table %s schema: %w", table.name, err)
+		}
+
+		columnRows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table.name)
+		if err != nil {
+			return empty, fmt.Errorf("list hosted table %s columns: %w", table.name, err)
+		}
+		var columns []string
+		for columnRows.Next() {
+			var column string
+			if err := columnRows.Scan(&column); err != nil {
+				_ = columnRows.Close()
+				return empty, fmt.Errorf("scan hosted table %s column: %w", table.name, err)
+			}
+			columns = append(columns, column)
+		}
+		if err := columnRows.Err(); err != nil {
+			_ = columnRows.Close()
+			return empty, fmt.Errorf("iterate hosted table %s columns: %w", table.name, err)
+		}
+		if err := columnRows.Close(); err != nil {
+			return empty, fmt.Errorf("close hosted table %s columns: %w", table.name, err)
+		}
+		if len(columns) == 0 {
+			return empty, fmt.Errorf("hosted table %s has no columns", table.name)
+		}
+
+		selects := make([]string, len(columns))
+		order := make([]string, len(columns))
+		for i, column := range columns {
+			quoted := quoteSQLiteIdentifier(column)
+			selects[i] = quoted
+			if table.name == "api_keys" && column == "last_used_at" {
+				selects[i] = "NULL AS " + quoted
+			}
+			order[i] = quoted
+		}
+		query := "SELECT " + strings.Join(selects, ", ") +
+			" FROM " + quoteSQLiteIdentifier(table.name) +
+			" ORDER BY " + strings.Join(order, ", ")
+		dataRows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return empty, fmt.Errorf("read hosted table %s: %w", table.name, err)
+		}
+		for dataRows.Next() {
+			values := make([]any, len(columns))
+			destinations := make([]any, len(columns))
+			for i := range values {
+				destinations[i] = &values[i]
+			}
+			if err := dataRows.Scan(destinations...); err != nil {
+				_ = dataRows.Close()
+				return empty, fmt.Errorf("scan hosted table %s row: %w", table.name, err)
+			}
+			if err := writeJSON(values); err != nil {
+				_ = dataRows.Close()
+				return empty, fmt.Errorf("digest hosted table %s row: %w", table.name, err)
+			}
+		}
+		if err := dataRows.Err(); err != nil {
+			_ = dataRows.Close()
+			return empty, fmt.Errorf("iterate hosted table %s: %w", table.name, err)
+		}
+		if err := dataRows.Close(); err != nil {
+			return empty, fmt.Errorf("close hosted table %s: %w", table.name, err)
+		}
+	}
+
+	var result [sha256.Size]byte
+	copy(result[:], digest.Sum(nil))
+	return result, nil
+}
+
+func quoteSQLiteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+// Client dials the hosted /mcp endpoint with the supplied bearer and registration
+// wing. Successful construction proves the credential crossed AuthServer.Gate.
+func (h *Hosted) Client(t *testing.T, wing, bearer string) *Harness {
+	t.Helper()
+	headers := map[string]string{"Authorization": "Bearer " + bearer}
+	if wing != "" {
+		headers[mcpprotocol.WingHeader] = wing
+	}
+	return newClientWithHeaders(t, h.srv, h.URL+"/mcp", h.drawers, wing, "", headers)
 }
 
 // Parties returns one client per wing, all over ONE database, so what one writes
@@ -221,24 +441,7 @@ func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
 // newServer builds one MCP server over one palace, exactly as the process does.
 func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 	t.Helper()
-
-	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
-	mcpSrv := mcpserver.New(mcpserver.Deps{
-		Skills:   skill.NewService(skill.NewRepo(gdb)),
-		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
-		Usage:    usage.NewService(usage.NewRepo(gdb), caps{}),
-		Drawers:  drawers,
-		// Wing-scoped reads are the production default (config.SearchScope), and
-		// a harness that quietly widened them would prove scoping works while
-		// testing a configuration nobody runs.
-		ScopeSearchToWing: true,
-		Local:             true,
-	})
-
-	stream := server.NewStreamableHTTPServer(mcpSrv,
-		server.WithHTTPContextFunc(auth.Bridge),
-		server.WithStateLess(true),
-	)
+	stream, drawers := newStream(gdb)
 
 	// The OAuth gate's job, minus OAuth: put a resolved tenant on the request
 	// context so auth.Bridge can forward it. Token validation is exercised by
@@ -263,6 +466,50 @@ func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 	}))
 	t.Cleanup(srv.Close)
 	return srv, drawers
+}
+
+// newLocalServer mounts the same MCP stream behind the production local tenant
+// middleware, including its credential-free loopback semantics.
+func newLocalServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
+	t.Helper()
+	stream, drawers := newStream(gdb)
+	local := auth.LocalTenant(tenant.Tenant{
+		TeamID: TeamID, UserID: "user-mcptest-local", Role: tenant.RoleAdmin,
+	}, "")(stream)
+	srv := httptest.NewServer(local)
+	t.Cleanup(srv.Close)
+	return srv, drawers
+}
+
+// newStream constructs the production MCP registration and HTTP bridge shared
+// by the hosted-edge substitute and the real local-mode edge.
+func newStream(gdb *gorm.DB) (http.Handler, *palace.Service) {
+	return newStreamWith(gdb, usage.NewService(usage.NewRepo(gdb), caps{}), true)
+}
+
+// newStreamWith constructs the production MCP registration and HTTP bridge with
+// the deployment's real usage policy and local/hosted surface selection.
+func newStreamWith(gdb *gorm.DB, usageSvc *usage.Service, local bool) (http.Handler, *palace.Service) {
+
+	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+	mcpSrv := mcpserver.Compose(mcpserver.Deps{
+		Skills:   skill.NewService(skill.NewRepo(gdb)),
+		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
+		Usage:    usageSvc,
+		Drawers:  drawers,
+		// Wing-scoped reads are the production default (config.SearchScope), and
+		// a harness that quietly widened them would prove scoping works while
+		// testing a configuration nobody runs.
+		ScopeSearchToWing: config.Default().ScopeSearchToWing(),
+		Local:             local,
+		Workspaces:        nil,
+	})
+
+	stream := server.NewStreamableHTTPServer(mcpSrv,
+		server.WithHTTPContextFunc(auth.Bridge),
+		server.WithStateLess(true),
+	)
+	return stream, drawers
 }
 
 // AsRole stands up a server and dials it as a registration whose caller holds the
@@ -297,19 +544,24 @@ func newClientRole(t *testing.T, srv *httptest.Server, drawers *palace.Service, 
 	t.Helper()
 
 	// The wing rides on the registration as a header, exactly as `install` writes
-	// it — see auth.WingHeader. A harness that stored the wing without sending it
+	// it — see mcpprotocol.WingHeader. A harness that stored the wing without sending it
 	// would show every registration as unscoped, and the first version of this
 	// file did: the positive half of the scoping pair passed and the negative half
 	// caught it, which is why the pair exists.
 	headers := map[string]string{teamHeader: team}
 	if wing != "" {
-		headers[auth.WingHeader] = wing
+		headers[mcpprotocol.WingHeader] = wing
 	}
 	if role != "" {
 		headers[roleHeader] = string(role)
 	}
+	return newClientWithHeaders(t, srv, srv.URL, drawers, wing, team, headers)
+}
+
+func newClientWithHeaders(t *testing.T, srv *httptest.Server, endpoint string, drawers *palace.Service, wing, team string, headers map[string]string) *Harness {
+	t.Helper()
 	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
-	cli, err := client.NewStreamableHttpClient(srv.URL, opts...)
+	cli, err := client.NewStreamableHttpClient(endpoint, opts...)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
@@ -402,10 +654,7 @@ func (h *Harness) ListTools(t *testing.T) ([]string, error) {
 func (h *Harness) Call(t *testing.T, name string, args map[string]any) (string, bool, error) {
 	t.Helper()
 	h.called = append(h.called, name)
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-	res, err := h.cli.CallTool(context.Background(), req)
+	res, err := mcpcli.Call(context.Background(), h.cli.CallTool, name, args)
 	if err != nil {
 		return "", false, err
 	}
