@@ -917,3 +917,51 @@ func TestCalibrateRefusesUnverifiedCases(t *testing.T) {
 		}
 	})
 }
+
+// TestTemporalCaseCarriesItsDistractor pins the SELECTION step, not the metric.
+//
+// Every consumer of a temporal case reads Distractor — SupersessionCell,
+// StaleAboveRate, the gate's vacuity rule — and every one of them is covered by a
+// test that builds the case BY HAND. That is precisely what let the generator
+// omit the field: each component passed while nothing asserted that the thing
+// which BUILDS a case fills it in. EvalCase.Distractor is `json:",omitempty"`, so
+// the omission left no trace in the file either — one run recorded
+// verified_pairs=5 over a file carrying zero pairs, and the gate could only refuse.
+//
+// Delete `Distractor: older.ID` from temporalCase and both halves below go red.
+func TestTemporalCaseCarriesItsDistractor(t *testing.T) {
+	newer := palace.Drawer{ID: "drawer-new"}
+	older := palace.Drawer{ID: "drawer-old"}
+
+	got := temporalCase("what is the current retention window?", "wing_acme", newer, older)
+	if got.Distractor != older.ID {
+		t.Fatalf("temporal case dropped its distractor: got %q, want %q — the supersession metric scores where the SUPERSEDED version landed, so a case without one measures nothing",
+			got.Distractor, older.ID)
+	}
+	if got.Expect != newer.ID {
+		t.Fatalf("temporal case gold = %q, want the NEWER drawer %q", got.Expect, newer.ID)
+	}
+	if got.Category != palace.CatTemporal {
+		t.Fatalf("temporal case category = %q, want %q", got.Category, palace.CatTemporal)
+	}
+
+	// The persistence half. `omitempty` means an unset distractor vanishes from
+	// the case file without a word, so a generated file can look well formed and
+	// still be unusable on replay. Assert it survives the round trip the gate
+	// actually depends on.
+	path := filepath.Join(t.TempDir(), "temporal.jsonl")
+	meta := caseFileMeta{Style: "temporal", PairCandidates: 1, VerifiedPairs: 1, Judge: "judge-model"}
+	if err := writeCases(path, []palace.EvalCase{got}, meta); err != nil {
+		t.Fatalf("writeCases: %v", err)
+	}
+	back, _, err := readCasesWithMeta(path)
+	if err != nil {
+		t.Fatalf("readCasesWithMeta: %v", err)
+	}
+	if len(back) != 1 {
+		t.Fatalf("round trip returned %d case(s), want 1", len(back))
+	}
+	if back[0].Distractor != older.ID {
+		t.Fatalf("distractor lost on the write/read round trip: got %q, want %q", back[0].Distractor, older.ID)
+	}
+}
