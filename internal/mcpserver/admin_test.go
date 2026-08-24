@@ -73,15 +73,37 @@ func (m *recordingMerger) RecomputeGraph(_ context.Context, teamID, wing string,
 	return palace.RecomputeResult{}, m.recomputeErr
 }
 
-// mergeWingCall drives the real handler as an unmetered local operator, which is
-// what lets the usage service be nil: admit returns before it is touched.
+// mergeWingCall drives the REGISTERED merge_wing handler — the one an agent
+// actually reaches through tools/call — rather than calling mergeWingHandler
+// directly.
+//
+// ⚠The distinction is the whole point, and skipping it cost this package its
+// coverage once already. Calling mergeWingHandler by name proves the BODY is
+// right and proves nothing about whether registerMergeWing SELECTS it: an
+// inlined copy of the body missing RecomputeGraph kept the entire suite green
+// while the shipped tool silently stopped rebuilding the graph. That is this
+// repo's named defect — a test exercising the component rather than the
+// selection — so the handler is resolved out of the live catalogue instead.
+//
+// Registering also puts the call through writeGuard, so the tenant needs a
+// writing role; the unmetered-local-operator context is what lets usageSvc be
+// nil, because admit returns before it is touched.
 func mergeWingCall(t *testing.T, merger *recordingMerger) *mcp.CallToolResult {
 	t.Helper()
+	reg := &registrar{srv: server.NewMCPServer("test", "0.0.0", server.WithToolCapabilities(true))}
+	registerMergeWing(reg, merger, nil)
+
+	const name = mcpprotocol.ToolPrefix + "merge_wing"
+	registered := reg.srv.GetTool(name)
+	if registered.Handler == nil {
+		t.Fatalf("%s is not registered, so nothing here tests the shipped tool", name)
+	}
+
 	ctx := WithUnmeteredLocalOperator(auth.WithTenant(context.Background(),
 		tenant.Tenant{TeamID: "team-1", Role: tenant.RoleAdmin}))
-	res, err := mergeWingHandler(merger, nil)(ctx, mcp.CallToolRequest{
+	res, err := registered.Handler(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      mcpprotocol.ToolPrefix + "merge_wing",
+			Name:      name,
 			Arguments: map[string]any{"sources": []any{"wing_a"}, "target": "wing_b"},
 		},
 	})
