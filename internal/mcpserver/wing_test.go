@@ -98,3 +98,19 @@ func TestSearchWingStarSearchesEverything(t *testing.T) {
 		t.Errorf("an explicit wing must win, got %q (%v)", got, err)
 	}
 }
+
+// TestSearchWingForRegistrationDefaultStarIsEveryWing is the production
+// surface of "*": X-Agentsmemory-Wing, not the CLI --wing flag. An omitted
+// argument against a star registration must search every wing. Deleting
+// allWings(DefaultWingFrom) only failed the CLI adapter; this test is the
+// MCP selector itself.
+func TestSearchWingForRegistrationDefaultStarIsEveryWing(t *testing.T) {
+	ctx := auth.WithDefaultWing(context.Background(), "*")
+	got, err := searchWingFor(ctx, "", true)
+	if err != nil {
+		t.Fatalf("registration default *: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("registration default * must search every wing (empty filter), got %q", got)
+	}
+}

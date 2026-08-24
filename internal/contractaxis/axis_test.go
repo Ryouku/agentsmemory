@@ -183,6 +183,34 @@ func TestAValidExceptionOwnsButDoesNotHideAResidual(t *testing.T) {
 	}
 }
 
+func TestInvalidExceptionDoesNotPoisonLaterValidSameKey(t *testing.T) {
+	axis := completeAxis("poison")
+	axis.Probe = func(_ context.Context, _, _ string, observation *Observation) error {
+		observation.RecordBinding()
+		observation.RecordPositive()
+		return nil
+	}
+	key := ResidualKey{Axis: "poison", Item: "item", Case: "default", Contract: NegativeContract}
+	valid := Exception{
+		Key: key, Kind: ExternalDependency, Owner: "storage",
+		Reason:    "the refusal is visible only against a live Qdrant namespace",
+		Reference: "issue-123", Expires: testNow.Add(24 * time.Hour),
+	}
+	invalid := Exception{
+		Key: key, Kind: ExternalDependency, Owner: "",
+		Reason: "missing owner", Reference: "issue-123", Expires: testNow.Add(24 * time.Hour),
+	}
+	axis.Exceptions = []Exception{invalid, valid}
+
+	report := Evaluate(context.Background(), testNow, axis)
+	assertStatus(t, report, Fail)
+	residual := findResidual(t, report, key)
+	if !residual.Excepted {
+		t.Fatalf("valid exception after an invalid same-key row was not applied: %+v", residual)
+	}
+	assertContract(t, report, ExceptionContract)
+}
+
 func TestAStaleExceptionFails(t *testing.T) {
 	axis := completeAxis("stale")
 	axis.Exceptions = []Exception{{
@@ -497,6 +525,27 @@ func TestReportOrderAndLabelsAreStable(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("successful mutation provenance omitted %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestWriteReportDoesNotVerifyMutantFromAnotherAxis(t *testing.T) {
+	wrongAxis := goodMutant("other")
+	wrongHead := goodMutant("a")
+	wrongHead.target = MutationTarget{repository: "/repo", head: "deadbeef"}
+	report := Report{Status: Fail, Axes: []AxisReport{{
+		Axis: "a", Status: Fail, Maturity: Enforced,
+		MutationTarget: testMutationTarget,
+		Mutants:        []MutantEvidence{wrongAxis, wrongHead},
+	}}}
+	var out bytes.Buffer
+	if err := WriteReport(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "VERIFIED") {
+		t.Fatalf("report printed VERIFIED for a mutant evaluateAxis would reject:\n%s", out.String())
+	}
+	if strings.Count(out.String(), "INVALID") != 2 {
+		t.Fatalf("want both mutants INVALID:\n%s", out.String())
 	}
 }
 

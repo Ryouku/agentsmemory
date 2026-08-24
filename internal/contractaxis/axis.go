@@ -127,6 +127,13 @@ func (m MutantEvidence) Verified() bool {
 		strings.TrimSpace(m.expectedFailure) != "" && m.applied && m.compiled && m.killed && m.restored
 }
 
+// VerifiedFor reports whether the mutant is structurally complete and belongs
+// to this axis at this repository HEAD. WriteReport uses this so a mutant
+// evaluateAxis would reject cannot print VERIFIED under a FAIL axis line.
+func (m MutantEvidence) VerifiedFor(axis string, target MutationTarget) bool {
+	return m.Verified() && m.axis == axis && m.target == target
+}
+
 // Detail returns bounded diagnostic evidence from the mutation run.
 func (m MutantEvidence) Detail() string { return m.detail }
 
@@ -221,13 +228,14 @@ const (
 
 // AxisReport is the deterministic result for one axis.
 type AxisReport struct {
-	Axis      string
-	Maturity  Maturity
-	Status    Status
-	Universe  int
-	Cases     int
-	Mutants   []MutantEvidence
-	Residuals []Residual
+	Axis           string
+	Maturity       Maturity
+	Status         Status
+	Universe       int
+	Cases          int
+	MutationTarget MutationTarget
+	Mutants        []MutantEvidence
+	Residuals      []Residual
 }
 
 // Report is the complete, sorted result for every evaluated axis.
@@ -310,7 +318,7 @@ func validateAxisRegistry(axes []Axis) []Residual {
 
 func evaluateAxis(ctx context.Context, now time.Time, axis Axis) AxisReport {
 	id := strings.TrimSpace(axis.ID)
-	ar := AxisReport{Axis: id, Maturity: axis.Maturity}
+	ar := AxisReport{Axis: id, Maturity: axis.Maturity, MutationTarget: axis.MutationTarget}
 	residuals := map[ResidualKey]Residual{}
 	add := func(item, caseID string, contract Contract, detail string) {
 		key := ResidualKey{Axis: id, Item: item, Case: caseID, Contract: contract}
@@ -497,10 +505,11 @@ func applyExceptions(now time.Time, axis string, residuals map[ResidualKey]Resid
 		if problem == "" && seen[ex.Key] {
 			problem = "exception is duplicated"
 		}
-		seen[ex.Key] = true
-		_, exists := base[ex.Key]
-		if problem == "" && !exists {
-			problem = "exception is stale because its residual is absent"
+		if problem == "" {
+			seen[ex.Key] = true
+			if _, exists := base[ex.Key]; !exists {
+				problem = "exception is stale because its residual is absent"
+			}
 		}
 		if problem != "" {
 			add(ex.Key.String(), "*", ExceptionContract, problem)

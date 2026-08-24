@@ -92,6 +92,13 @@ func runDirectMCP(t *testing.T, cfg config.Config, args ...string) (string, erro
 	return out.String(), err
 }
 
+func TestDirectCLIAdvertisesRawMode(t *testing.T) {
+	out, _ := runDirectMCP(t, config.Default(), "--help")
+	if !strings.Contains(out, "--raw") {
+		t.Fatalf("direct CLI help does not offer --raw, but PrintTools advertises it:\n%s", out)
+	}
+}
+
 func seedDirectDrawers(t *testing.T, cfg config.Config, teamID string) *services {
 	t.Helper()
 	svc, err := buildServices(cfg)
@@ -282,8 +289,8 @@ func TestDirectCLIAdmissionModes(t *testing.T) {
 	if err := json.Unmarshal([]byte(tokenOut), &tokenStatus); err != nil {
 		t.Fatalf("decode token status: %v\n%s", err, tokenOut)
 	}
-	if tokenStatus.Role != "admin" || tokenStatus.Mode != "hosted" || tokenStatus.Usage.Used != 1 {
-		t.Fatalf("token status = %#v, want admin/hosted and exactly one metered call", tokenStatus)
+	if tokenStatus.Role != "admin" || tokenStatus.Mode != "local" || tokenStatus.Usage.Used != 1 {
+		t.Fatalf("token status = %#v, want admin/local and exactly one metered call", tokenStatus)
 	}
 	before, err := svc.usage.Snapshot(t.Context(), resolved.TeamID)
 	if err != nil {
@@ -313,5 +320,27 @@ func TestDirectCLIAdmissionModes(t *testing.T) {
 	}
 	if after.Used != before.Used {
 		t.Fatalf("--team changed usage from %d to %d; trusted local reads must stay unmetered", before.Used, after.Used)
+	}
+
+	t.Setenv("AGENTSMEMORY_TOKEN", credential.Secret)
+	envTeamOut, err := runDirectMCP(t, cfg, "status", "--team", resolved.TeamID)
+	if err != nil {
+		t.Fatalf("--team with AGENTSMEMORY_TOKEN in the environment: %v\n%s", err, envTeamOut)
+	}
+	var envTeamStatus struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(envTeamOut), &envTeamStatus); err != nil {
+		t.Fatalf("decode env+team status: %v\n%s", err, envTeamOut)
+	}
+	if envTeamStatus.Mode != "local" {
+		t.Fatalf("env+team status mode = %q, want local; the client-kit token env must not collide with --team", envTeamStatus.Mode)
+	}
+	still, err := svc.usage.Snapshot(t.Context(), resolved.TeamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.Used != after.Used {
+		t.Fatalf("AGENTSMEMORY_TOKEN plus --team metered the call (%d → %d); --team must stay the unmetered local operator", after.Used, still.Used)
 	}
 }

@@ -63,6 +63,8 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+      - name: Contract-axis
+        run: go test -tags contractaxis ./internal/mcptest
 
   # Cross-compile the static binary for each target. CGO is off (pure-Go SQLite
   # via modernc), so every GOOS/GOARCH builds on the linux runner with no C

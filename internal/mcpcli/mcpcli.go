@@ -52,6 +52,9 @@ func Run(ctx context.Context, out io.Writer, endpoint Endpoint, invocation Invoc
 	if !ok {
 		return fmt.Errorf("unknown tool %q; run the mcp command without a tool to list the available tools", name)
 	}
+	if !publishesReadOnlyHints(tools) {
+		return fmt.Errorf("%q has no read-only annotation on this server; the CLI fails closed until the server publishes one (upgrade the server, or call it from an agent)", name)
+	}
 	if !IsReadOnly(tool) {
 		return fmt.Errorf("%q writes to the palace and is not available from the CLI, which is read-only; ask your agent to call it", name)
 	}
@@ -136,9 +139,23 @@ func firstText(result *mcp.CallToolResult) (string, bool) {
 }
 
 // IsReadOnly reports whether the live tool definition explicitly promises not
-// to modify its environment. Missing metadata fails closed.
+// to modify its environment. Missing or false metadata fails closed.
 func IsReadOnly(tool mcp.Tool) bool {
 	return tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint
+}
+
+// publishesReadOnlyHints reports whether this catalogue is from a server that
+// actually annotates reads. mcp-go defaults an unset hint to false, so an older
+// agentsmemory process (no WithReadOnlyHintAnnotation anywhere) looks like a
+// catalogue of writes. One true hint means the server is in on the contract;
+// zero means fail closed with the upgrade diagnosis, not "this tool writes".
+func publishesReadOnlyHints(tools []mcp.Tool) bool {
+	for _, tool := range tools {
+		if IsReadOnly(tool) {
+			return true
+		}
+	}
+	return false
 }
 
 // PrimaryArg returns the first required input named by the live schema, or an
@@ -272,9 +289,16 @@ func PrintTools(out io.Writer, tools []mcp.Tool, raw bool) error {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	readable := make([]mcp.Tool, 0, len(sorted))
-	for _, tool := range sorted {
-		if IsReadOnly(tool) {
-			readable = append(readable, tool)
+	writes, unlabeled := 0, 0
+	if !publishesReadOnlyHints(sorted) {
+		unlabeled = len(sorted)
+	} else {
+		for _, tool := range sorted {
+			if IsReadOnly(tool) {
+				readable = append(readable, tool)
+			} else {
+				writes++
+			}
 		}
 	}
 
@@ -286,17 +310,21 @@ func PrintTools(out io.Writer, tools []mcp.Tool, raw bool) error {
 		}
 		fmt.Fprintf(out, "  %s\n      %s\n", usage, firstLine(tool.Description, 96))
 	}
-	fmt.Fprintf(out, "\n%d write tools are not callable here — ask your agent to run those.\n", len(sorted)-len(readable))
+	if unlabeled > 0 {
+		fmt.Fprintf(out, "\n%d tools have no read-only annotation — this server is older than the CLI; upgrade the server to call them from here.\n", unlabeled)
+	}
+	fmt.Fprintf(out, "\n%d write tools are not callable here — ask your agent to run those.\n", writes)
 	fmt.Fprintln(out, "Arguments: `mcp <tool> <primary-arg> -a key=value`; raw mode prints every schema.")
 	return nil
 }
 
 func firstLine(text string, max int) string {
 	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
-	if len(text) <= max {
+	runes := []rune(text)
+	if len(runes) <= max {
 		return text
 	}
-	return strings.TrimSpace(text[:max]) + "…"
+	return strings.TrimSpace(string(runes[:max])) + "…"
 }
 
 func printJSON(out io.Writer, value any) error {

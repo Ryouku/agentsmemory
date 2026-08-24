@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
@@ -38,10 +39,11 @@ func mcpCommand(def config.Config) *cli.Command {
 		Usage:     "Invoke a read-only memory tool from the CLI (run with no tool to list them)",
 		ArgsUsage: "[tool] [primary-arg]",
 		Flags: append(dataFlags(def),
-			&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.TokenEnvVar), Usage: "API key: resolves the tenant and meters the call (HTTP parity)"},
+			&cli.StringFlag{Name: "token", Usage: "API key: resolves the tenant and meters the call (HTTP parity). AGENTSMEMORY_TOKEN is used only when neither --token nor --team is set"},
 			&cli.StringFlag{Name: "team", Usage: "team id: trusted local admin read, no metering (alternative to --token)"},
 			&cli.StringSliceFlag{Name: "arg", Aliases: []string{"a"}, Usage: "tool argument as key=value (repeatable)"},
 			&cli.StringFlag{Name: "wing", Usage: "default wing for this call, like a per-project MCP registration; explicit -a wing= wins and \"*\" searches every wing"},
+			&cli.BoolFlag{Name: "raw", Usage: "print the whole MCP envelope (content blocks, isError) instead of just the result"},
 		),
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runMCP(ctx, c, def)
@@ -54,7 +56,10 @@ func mcpCommand(def config.Config) *cli.Command {
 // an actual call wires services, authenticates, and invokes the live handler.
 func runMCP(ctx context.Context, c *cli.Command, def config.Config) error {
 	cfg := configFromCmd(c, def)
-	local := c.String("team") != "" && c.String("token") == ""
+	// Direct CLI always talks to this process's palace. --token meters a
+	// tenant against the local SQLite file; it does not make the process a
+	// hosted deployment. AGENTS.md uses mode to prove which palace opened.
+	const local = true
 	endpoint := mcpcli.Endpoint{
 		ListTools: func(callCtx context.Context) ([]mcp.Tool, error) {
 			return listMCPTools(callCtx, productionMCPServer(nil, cfg, local))
@@ -94,6 +99,7 @@ func runMCP(ctx context.Context, c *cli.Command, def config.Config) error {
 		Tool:     c.Args().First(),
 		ArgFlags: c.StringSlice("arg"),
 		Tail:     mcpcli.TailArgs(c.Args().Slice()),
+		Raw:      c.Bool("raw"),
 	})
 }
 
@@ -102,6 +108,13 @@ func runMCP(ctx context.Context, c *cli.Command, def config.Config) error {
 // boolean reports whether production admission should skip hosted metering.
 func resolveTenant(ctx context.Context, svc *services, c *cli.Command) (tenant.Tenant, bool, error) {
 	token, team := c.String("token"), c.String("team")
+	if token == "" && team == "" {
+		// Client-kit docs tell operators to export AGENTSMEMORY_TOKEN. Binding
+		// that env onto --token made `mcp status --team …` a hard error in any
+		// shell that already had the variable. Env is the fallback when neither
+		// identity flag is set, not a second identity that collides with --team.
+		token = os.Getenv(mcpprotocol.TokenEnvVar)
+	}
 	if token != "" && team != "" {
 		return tenant.Tenant{}, false, errors.New("provide exactly one of --token and --team, not both")
 	}

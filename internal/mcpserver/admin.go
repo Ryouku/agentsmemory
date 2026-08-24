@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -211,10 +212,12 @@ func registerDeleteWing(reg *registrar, drawers *palace.Service, usageSvc *usage
 }
 
 // registerMergeWing: fold one or more source wings into a target, relabeling every
-// drawer and closet. Run am_recompute_graph afterwards to rebuild the derived graph.
+// drawer and closet, then rebuild the derived graph. The dashboard enqueues the
+// same palace work asynchronously; this tool waits. Both must call MergeWing and
+// RecomputeGraph — a merge that leaves stale hallways is half done.
 func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("merge_wing",
-		mcp.WithDescription("Merge one or more source wings into a target wing, relabeling every drawer and closet in place. Run am_recompute_graph afterwards to rebuild hallways/tunnels."),
+		mcp.WithDescription("Merge one or more source wings into a target wing, relabeling every drawer and closet in place, then rebuild hallways/tunnels. If the graph rebuild fails after the relabel, re-run am_recompute_graph."),
 		mcp.WithArray("sources", mcp.Required(),
 			mcp.Description("The wing names to fold into the target."),
 			mcp.Items(map[string]any{"type": "string"}),
@@ -237,6 +240,11 @@ func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		res, err := drawers.MergeWing(ctx, t.TeamID, sources, target)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if _, err := drawers.RecomputeGraph(ctx, t.TeamID, "", true); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"relabeled %d drawers / %d closets, but graph rebuild failed: %v — re-run recompute_graph",
+				res.Drawers, res.Closets, err)), nil
 		}
 		return jsonResult(res), nil
 	})

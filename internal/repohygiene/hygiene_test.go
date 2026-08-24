@@ -371,3 +371,31 @@ func TestEveryComposeFileIsDocumented(t *testing.T) {
 			"from has no documented origin")
 	}
 }
+
+// TestADRNumbersAreUnique fails when two documents claim the same ADR-NNN-
+// prefix. Main's last number is 021; two open PRs both wrote ADR-024 and CI
+// would have stayed green whichever merged second.
+func TestADRNumbersAreUnique(t *testing.T) {
+	root := repoRoot(t)
+	matches, err := filepath.Glob(filepath.Join(root, "docs", "adr", "ADR-*.md"))
+	if err != nil {
+		t.Fatalf("glob ADRs: %v", err)
+	}
+	if len(matches) < 2 {
+		t.Fatalf("found %d ADR files — an empty glob would let a collision through", len(matches))
+	}
+	re := regexp.MustCompile(`^ADR-(\d{3})-`)
+	seen := map[string]string{}
+	for _, path := range matches {
+		base := filepath.Base(path)
+		m := re.FindStringSubmatch(base)
+		if m == nil {
+			t.Errorf("%s does not match ADR-NNN-slug.md", base)
+			continue
+		}
+		if prev, ok := seen[m[1]]; ok {
+			t.Errorf("ADR-%s is claimed by both %s and %s", m[1], prev, base)
+		}
+		seen[m[1]] = base
+	}
+}

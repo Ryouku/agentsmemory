@@ -28,7 +28,7 @@ func WriteReport(w io.Writer, report Report) error {
 				return fmt.Errorf("marshal mutation paths: %w", err)
 			}
 			state := "INVALID"
-			if mutant.Verified() {
+			if mutant.VerifiedFor(axis.Axis, axis.MutationTarget) {
 				state = "VERIFIED"
 			}
 			if _, err := fmt.Fprintf(w,

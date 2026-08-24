@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -53,6 +54,18 @@ func TestRunOwnsDiscoveryPolicyArgumentsCallAndRendering(t *testing.T) {
 	if toolCalls != 1 {
 		t.Fatalf("refused write reached transport; tool calls=%d", toolCalls)
 	}
+
+	unannotated := mcp.NewTool("am_search")
+	endpoint.ListTools = func(context.Context) ([]mcp.Tool, error) {
+		return []mcp.Tool{unannotated}, nil
+	}
+	err := Run(t.Context(), &out, endpoint, Invocation{Tool: "search"})
+	if err == nil || !strings.Contains(err.Error(), "no read-only annotation") || strings.Contains(err.Error(), "writes to the palace") {
+		t.Fatalf("missing-annotation refusal = %v", err)
+	}
+	if toolCalls != 1 {
+		t.Fatalf("unannotated read reached transport; tool calls=%d", toolCalls)
+	}
 }
 
 func TestPrintToolsAndResultsAreSharedAcrossTransports(t *testing.T) {
@@ -78,6 +91,27 @@ func TestPrintToolsAndResultsAreSharedAcrossTransports(t *testing.T) {
 		t.Errorf("catalogue exposed write tool:\n%s", catalogue.String())
 	}
 
+	unlabeled := []mcp.Tool{
+		mcp.NewTool("am_search", mcp.WithDescription("Semantically recall drawers — with an em dash.")),
+		mcp.NewTool("am_add_drawer", mcp.WithDescription("File a verbatim memory."), mcp.WithReadOnlyHintAnnotation(false)),
+	}
+	var oldServer bytes.Buffer
+	if err := PrintTools(&oldServer, unlabeled, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"0 read-only tools (of 2 on the production MCP surface)",
+		"2 tools have no read-only annotation",
+		"0 write tools are not callable here",
+	} {
+		if !strings.Contains(oldServer.String(), want) {
+			t.Errorf("unannotated catalogue missing %q:\n%s", want, oldServer.String())
+		}
+	}
+	if strings.Contains(oldServer.String(), "search <") {
+		t.Errorf("unannotated catalogue listed a tool as callable:\n%s", oldServer.String())
+	}
+
 	result := &mcp.CallToolResult{Content: []mcp.Content{
 		mcp.TextContent{Type: "text", Text: `{"ok":true,"total_drawers":5785}`},
 	}}
@@ -93,6 +127,21 @@ func TestPrintToolsAndResultsAreSharedAcrossTransports(t *testing.T) {
 	}
 	if !strings.Contains(raw.String(), `"content"`) {
 		t.Errorf("raw result = %s", raw.String())
+	}
+}
+
+func TestFirstLineDoesNotSplitUTF8(t *testing.T) {
+	// Descriptions in the live catalogue use em dashes; a byte cut here would
+	// emit invalid UTF-8 into `mcp` with no tool.
+	got := firstLine("recall — drawers", 8)
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated = %q, want an ellipsis", got)
+	}
+	if strings.ContainsRune(got, '\uFFFD') || !utf8.ValidString(got) {
+		t.Fatalf("truncated split a rune: %q", got)
+	}
+	if got != "recall —…" {
+		t.Fatalf("truncated = %q, want a rune-safe prefix of the em dash phrase", got)
 	}
 }
 
