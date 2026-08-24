@@ -72,6 +72,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -123,10 +125,11 @@ jobs:
             -o "$out" ./clients/claude-code
           echo "cli_asset=$out" >>"$GITHUB_ENV"
 
-      # No -X version stamp here, unlike the CLI above: ./cmd/server has no
-      # main.version symbol to write into, and the linker would silently discard
-      # the flag — leaving a stamp that looks authoritative but does nothing.
-      # This mirrors build.yml, which builds the same package with plain -s -w.
+      # The server now carries a main.version symbol (cmd/server/version.go),
+      # so the release stamp lands the same way it does for the CLI above.
+      # cmd/server/version_test.go goes red if the flag or the wiring is
+      # removed — the old comment here documented a stamp the linker would
+      # silently discard, and that failure mode is now a failing test.
       - name: Build agentsmemory server
         env:
           GOOS: ${{ matrix.goos }}
@@ -135,7 +138,7 @@ jobs:
         run: |
           out="aiagentmemory-server-${GOOS}-${GOARCH}"
           go build -trimpath \
-            -ldflags "-s -w" \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
             -o "$out" ./cmd/server
           echo "server_asset=$out" >>"$GITHUB_ENV"
 
