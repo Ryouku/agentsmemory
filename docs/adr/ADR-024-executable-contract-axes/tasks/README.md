@@ -10,7 +10,8 @@ Implementation plan for ADR-024. The task boundaries are also the intended PR bo
 | 2 | T2 — MCP closure and adapter parity | T1 | B |
 | 3 | T3 — CLI/config/eval axes | T1 | C |
 | 4 | T4 — persistence/installer/web axes | T1 | D |
-| 5 | T5 — three-stack extraction decision | T2, T3, T4 | later decision |
+| 5 | T5 — runtime execution telemetry axis | T1, T3 | E |
+| 6 | T6 — three-stack extraction decision | T2, T3, T4, T5 | later decision |
 
 ## Task Index
 
@@ -20,7 +21,8 @@ Implementation plan for ADR-024. The task boundaries are also the intended PR bo
 | T2 | Make every live MCP tool observable and derive adapter policy from one catalogue | 0/41 missing scenarios; `uncoveredCeiling` deleted; CLI and HTTP agree for every supported read tool |
 | T3 | Bind commands, flags, environment, config fields and eval arms to real behavioural effects | every item derived from the live command/config/eval universes is enforced or names a typed dependency |
 | T4 | Bind schema, stores, assets/hooks, routes and exports to outer observations | every item derived from migration/backend/embed/route/schema authorities is enforced or names a typed dependency |
-| T5 | Run the same data contract in two other stacks and decide whether to extract a standalone tool | three pilots require no agentsmemory-specific change in the core contract; otherwise keep it repository-local |
+| T5 | Trace semantic runtime decisions without making sampled traces the source of population claims | every enabled stage has a binding; unsampled counters distinguish no eligible traffic from eligible-but-never-selected; traces correlate by `search_id` and `profile_id` without raw query/content metric labels |
+| T6 | Run the same data contract in two other stacks and decide whether to extract a standalone tool | three pilots require no agentsmemory-specific change in the core contract; otherwise keep it repository-local |
 
 ## Per-task workflow
 
@@ -42,7 +44,7 @@ go test ./... -count=1
 go build ./...
 ```
 
-T2–T4 additionally run their axis report and require no unacknowledged residual. T5 does not authorise edits in another repository; each pilot runs in the repository that owns it, with that project’s intent and memory loaded.
+T2–T5 additionally run their axis report and require no unacknowledged residual. T6 does not authorise edits in another repository; each pilot runs in the repository that owns it, with that project’s intent and memory loaded.
 
 ## Decision points that block behaviour, not the harness
 
