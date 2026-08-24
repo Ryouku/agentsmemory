@@ -247,9 +247,15 @@ Normal operation. Recall before you act, persist before you stop.
 2. `am_status` — workspace identity (`mode` + `workspace`), palace shape, quota.
    This repo's wing is **`wing_agentmemories`**; if it is not in the list yet,
    this is the first session here and your first write creates it.
-3. `am_search(<task>)` — past decisions and rationale. This is the *only* source
+3. **Your root is `wing_agentmemories`, room `llm_init`.** Load it with
+   `am_list_drawers(wing:"wing_agentmemories", room:"llm_init")` before you plan or
+   write code. It is a routing table plus a floor plan: which rooms load whole,
+   which are searched, and the name+id of every drawer worth reaching first.
+   Everything else in the palace resolves from there — this is the only address you
+   have to know.
+4. `am_search(<task>)` — past decisions and rationale. This is the *only* source
    of cross-session *why*; don't reconstruct from code what memory explains.
-4. `am_list_skills` → `am_load_skill(<name>)` — the team's centralised
+5. `am_list_skills` → `am_load_skill(<name>)` — the team's centralised
    conventions for the stack you're touching. This repo is Go, so `effective-go`
    at minimum; add `cqrs` when the work is live/realtime or fans out across
    subagents.
