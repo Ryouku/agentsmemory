@@ -74,19 +74,28 @@ func (s *Service) computeHallwaysForWing(ctx context.Context, teamID, wing, now 
 		}
 	}
 
-	// Preserve dynamics across recompute: a pair that was already a hallway keeps
-	// its strength/stability/etc. rather than being reset to the initial values.
+	// Preserve dynamics AND the creation stamp across recompute: a pair that was
+	// already a hallway keeps its strength/stability/etc. rather than being reset
+	// to the initial values, and keeps the date it was first derived.
+	//
+	// Carrying only the dynamics is what inverted the two fields in production. A
+	// recompute rebuilds every hallway from scratch, so CreatedAt was re-stamped to
+	// `now` while LastActivated kept the moment of first derivation — leaving
+	// created_at meaning "last rebuilt", last_activated meaning "first derived",
+	// and 1,338 of 1,338 hallways claiming they were last activated eight days
+	// before they existed. Any decay or reinforcement computed from that pair reads
+	// a negative age.
 	existing, err := s.repo.ListHallways(ctx, teamID, wing)
 	if err != nil {
 		return nil, err
 	}
-	priorDyn := make(map[entityPair]Dynamics, len(existing))
+	prior := make(map[entityPair]Hallway, len(existing))
 	for _, h := range existing {
 		a, b := h.EntityA, h.EntityB
 		if a > b {
 			a, b = b, a
 		}
-		priorDyn[entityPair{a, b}] = h.Dynamics
+		prior[entityPair{a, b}] = h
 	}
 
 	out := make([]Hallway, 0, len(counts))
@@ -95,15 +104,15 @@ func (s *Service) computeHallwaysForWing(ctx context.Context, teamID, wing, now 
 			continue
 		}
 		rs := sortedSet(rooms[k])
-		dyn, ok := priorDyn[k]
-		if !ok {
-			dyn = initDynamics(now)
+		dyn, createdAt := initDynamics(now), now
+		if p, ok := prior[k]; ok {
+			dyn, createdAt = p.Dynamics, earliestStamp(p.CreatedAt, p.LastActivated)
 		}
 		out = append(out, Hallway{
 			ID: hallwayID(wing, k.a, k.b), TeamID: teamID, Wing: wing,
 			EntityA: k.a, EntityB: k.b, CoOccurrence: c, Rooms: rs,
 			Label:     fmt.Sprintf("%s ↔ %s (co-occur in %d drawers across %d rooms: %s)", k.a, k.b, c, len(rs), strings.Join(rs, ", ")),
-			CreatedAt: now, CreatedBy: "auto", Dynamics: dyn,
+			CreatedAt: createdAt, CreatedBy: "auto", Dynamics: dyn,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -123,6 +132,34 @@ func (s *Service) ListHallways(ctx context.Context, teamID, wing string) ([]Hall
 // DeleteHallway removes a hallway by id, reporting whether it existed.
 func (s *Service) DeleteHallway(ctx context.Context, teamID, id string) (bool, error) {
 	return s.repo.DeleteHallway(ctx, teamID, id)
+}
+
+// earliestStamp returns the earlier of a hallway's two surviving timestamps — the
+// best available evidence of when it was first derived.
+//
+// It REPAIRS rows written before the creation stamp was preserved, which is why it
+// is not simply "keep CreatedAt". Such a row carries created_at = the most recent
+// recompute and last_activated = the first derivation, because nothing in this
+// codebase has ever written LastActivated after initDynamics stamped it. The older
+// of the two is therefore the true creation date, and a fix that only stopped
+// re-stamping would have frozen every existing hallway at whatever wrong created_at
+// it happened to be holding.
+//
+// Both stamps are RFC3339 UTC from the same formatter, so lexical order is
+// chronological order. The empty cases are not defensive padding: "" sorts before
+// every real stamp, so without them a row missing one field would be "repaired" to
+// no date at all.
+func earliestStamp(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	case b < a:
+		return b
+	default:
+		return a
+	}
 }
 
 // dedupePreserve removes duplicate entities while keeping first-seen order, so the
