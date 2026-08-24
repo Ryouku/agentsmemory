@@ -1,6 +1,6 @@
-# ADR-022 Tasks
+# ADR-025 Tasks
 
-Implementation plan for ADR-022. The task boundaries are also the intended PR boundaries; do not combine them into one review.
+Implementation plan for ADR-025. The task boundaries are also the intended PR boundaries; do not combine them into one review.
 
 ## Execution Order
 

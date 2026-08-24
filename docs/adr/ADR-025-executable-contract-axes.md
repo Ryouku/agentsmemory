@@ -1,4 +1,4 @@
-# ADR-022: A production promise is a contract axis, not a passing component test
+# ADR-025: A production promise is a contract axis, not a passing component test
 
 **Status:** Proposed
 **Date:** 2026-08-24
@@ -207,7 +207,7 @@ Before an adapter may protect production, the runner’s own tests must prove:
 
 ## Acceptance
 
-ADR-022 is complete only when:
+ADR-025 is complete only when:
 
 1. every axis above is `enforced` or has an unexpired typed exception for an external/policy boundary;
 2. the live MCP catalogue reports 0/41 tools without an observable scenario;
@@ -219,7 +219,7 @@ ADR-022 is complete only when:
 
 ## Implementation
 
-See `ADR-022-executable-contract-axes/tasks/README.md`.
+See `ADR-025-executable-contract-axes/tasks/README.md`.
 
 ## Rollback
 
