@@ -46,6 +46,13 @@ func ValidRole(role Role) bool {
 	}
 }
 
+// CanWrite reports whether role may change workspace-owned memory or shared
+// artifacts. Every transport and domain service uses this policy function so a
+// writer cannot be accepted by one surface and refused by another.
+func CanWrite(role Role) bool {
+	return role == RoleWriter || role == RoleAdmin
+}
+
 // FreePlanID is the seeded id of the free entry tier. It is the plan a new
 // workspace starts on and the plan billing downgrades a workspace back to when
 // its paid subscription ends, so it is named once here rather than spelled as a

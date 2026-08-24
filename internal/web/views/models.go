@@ -969,9 +969,14 @@ const claudeGuideURL = "https://aiagentmemory.dev/claude-guide"
 // cleanly into a chat box.
 const landingClaudePrompt = "Read " + claudeGuideURL + " and install the agentsmemory Claude Code kit for me. When you need my workspace API token, ask me — I'll create one in the dashboard."
 
-// windowsGuideURL is the canonical public URL of the no-CLI install guide
-// (handleWindowsGuide). Hardcoded for the same reason as claudeGuideURL.
-const windowsGuideURL = "https://aiagentmemory.dev/windows-guide"
+// installMCPURL is the canonical public URL of the connect-any-client guide
+// (handleInstallMemoryMCP). Hardcoded for the same reason as claudeGuideURL.
+//
+// It replaces the older /windows-guide, which absorbed into it and now redirects.
+// The prompt below is pasted into a chat box and lives on past the page, so it
+// names the destination directly rather than spending a redirect hop — while the
+// old URL stays alive for prompts already in circulation.
+const installMCPURL = "https://aiagentmemory.dev/install-memory-mcp"
 
 // windowsPrompt is the copy-paste prompt for a visitor with no CLI — Windows, VS
 // Code, Cursor, Claude Desktop. The installer is a bash script and a Linux/macOS
@@ -985,7 +990,7 @@ const windowsGuideURL = "https://aiagentmemory.dev/windows-guide"
 // model, so it asks the human for the token instead of carrying it. Both mounts
 // therefore hand over the same line, and there is one constant rather than a
 // landing and a dashboard variant to keep in step.
-const windowsPrompt = "Read " + windowsGuideURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
+const windowsPrompt = "Read " + installMCPURL + " and set up agentsmemory for me globally in this editor. Ask me for my workspace API token when you need it."
 
 // installPlatform is one tab of the outer platform switch: the signal value the
 // tab sets, its label, and the line that appears beneath the tabs once chosen.

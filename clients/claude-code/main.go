@@ -149,7 +149,7 @@ func installCommand() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:    "socket",
-				Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"),
+				Sources: cli.EnvVars(socketEnvVar),
 				Usage: "register the MCP over stdio against a --local server listening on this Unix socket " +
 					"(the socket the server was started with); requires --local and replaces --mcp-url",
 			},

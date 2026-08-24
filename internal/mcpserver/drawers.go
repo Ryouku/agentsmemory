@@ -394,7 +394,7 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
 		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
-		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
+		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
 		mcp.WithNumber("offset", mcp.Description("Number of drawers to skip (default 0).")),
@@ -516,7 +516,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
-		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour.")),
+		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
 		mcp.WithNumber("snippet_chars", mcp.Description(
@@ -697,7 +697,7 @@ func registerListWings(reg *registrar, drawers *palace.Service, usageSvc *usage.
 func registerListRooms(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_rooms",
 		mcp.WithDescription("List the team's rooms with drawer counts, optionally restricted to one wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
-		mcp.WithString("wing", mcp.Description("Only rooms within this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately.")),
+		mcp.WithString("wing", mcp.Description("Only rooms within this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately."), searchWingProperty()),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)

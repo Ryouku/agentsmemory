@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -28,19 +29,19 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// toolPrefix namespaces every agentsmemory MCP tool (am_status, am_search,
-// am_list_wings, …). It exists so this server can run alongside other memory
-// MCPs — notably mempalace, which exposes same-named tools (search, add_drawer,
-// list_wings, diary_write, kg_add) — without the client seeing two tools of the
-// same name. The prefix is applied in exactly one place (newTool), so every
-// registration site keeps the bare, readable name.
-const toolPrefix = "am_"
-
 // newTool builds a tool with the agentsmemory prefix applied to its name: callers
 // pass the bare name and the wire name becomes am_<name>. This is the single
 // chokepoint that guarantees every registered tool is prefixed.
 func newTool(name string, opts ...mcp.ToolOption) mcp.Tool {
-	return mcp.NewTool(toolPrefix+name, opts...)
+	return mcp.NewTool(mcpprotocol.ToolPrefix+name, opts...)
+}
+
+// searchWingProperty marks the wing argument consumed by searchWingFor.
+// Registrations still spell mcp.WithString("wing", ...) directly so the
+// production argument-reachability audit sees the declared argument; this
+// option adds the machine-readable star contract without a test-side manifest.
+func searchWingProperty() mcp.PropertyOption {
+	return mcpprotocol.StarScopeProperty
 }
 
 // CatalogEntry is one registered tool's wire metadata: its prefixed name and the
@@ -75,6 +76,7 @@ type registrar struct {
 // mutating tool here is the same mistake as forgetting the check, and
 // TestEveryMutatingToolIsRegisteredAsAWrite fails when it happens.
 func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	tool = classifyTool(tool, false)
 	r.srv.AddTool(tool, handler)
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: false})
 }
@@ -92,8 +94,21 @@ func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 //
 // Role resolution is unchanged; this is the consumer that was missing.
 func (r *registrar) addWrite(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	tool = classifyTool(tool, true)
 	r.srv.AddTool(tool, writeGuard(tool.Name, handler))
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: true})
+}
+
+// classifyTool makes the execution policy visible on the wire at the same
+// chokepoint that enforces it. MCP clients can therefore fail closed from the
+// live tools/list response instead of maintaining a second read/write list that
+// drifts from the handlers actually registered here.
+func classifyTool(tool mcp.Tool, write bool) mcp.Tool {
+	tool.Annotations.ReadOnlyHint = mcp.ToBoolPtr(!write)
+	if !write {
+		tool.Annotations.DestructiveHint = mcp.ToBoolPtr(false)
+	}
+	return tool
 }
 
 // writeGuard refuses a call whose role may not change stored memory, before the
@@ -109,7 +124,7 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 		if !ok {
 			return mcp.NewToolResultError("unauthenticated: present a valid Bearer token"), nil
 		}
-		if !canWrite(t.Role) {
+		if !tenant.CanWrite(t.Role) {
 			return mcp.NewToolResultError(fmt.Sprintf(
 				"%s changes stored memory and your role on this workspace is %q, which is read-only. "+
 					"An admin can grant you the writer role; every read tool remains available.",
@@ -117,12 +132,6 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 		}
 		return handler(ctx, req)
 	}
-}
-
-// canWrite is the one definition of "may change stored memory", so the MCP
-// surface and the dashboard cannot drift into two different policies.
-func canWrite(role tenant.Role) bool {
-	return role == tenant.RoleWriter || role == tenant.RoleAdmin
 }
 
 // WorkspaceLookup resolves the workspace a session is scoped to. It is declared
@@ -174,6 +183,14 @@ func New(deps Deps) *server.MCPServer {
 	reg := &registrar{srv: srv}
 	registerAll(reg, deps)
 	return srv
+}
+
+// Compose is the one assembly of MCP collaborators. The HTTP process, the
+// in-process CLI, and the contract harness all call it, so a new Deps field
+// cannot be wired on one path and omitted on another. New remains the
+// constructor Compose calls.
+func Compose(deps Deps) *server.MCPServer {
+	return New(deps)
 }
 
 // serverInstructions is returned to every client in the MCP initialize response.
@@ -255,7 +272,7 @@ func registerAll(reg *registrar, deps Deps) {
 //
 // The fallback is what keeps projects apart without depending on an agent
 // remembering a convention. A per-project registration states its wing once (see
-// auth.WingHeader) and every write from that project lands there; an agent that
+// mcpprotocol.WingHeader) and every write from that project lands there; an agent that
 // does name a wing still wins, because an explicit argument is a decision and a
 // default is only a default.
 //
@@ -267,7 +284,7 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 			return palace.SanitizeName(def, "wing")
 		}
 		return "", fmt.Errorf("wing is required: pass one, or register this MCP with a default wing "+
-			"(header %s) so every write from this project files itself", auth.WingHeader)
+			"(header %s) so every write from this project files itself", mcpprotocol.WingHeader)
 	}
 	return palace.SanitizeName(passed, "wing")
 }
@@ -281,18 +298,21 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 // with no wing is a legitimate request to look everywhere. The two questions
 // only look alike.
 func searchWingFor(ctx context.Context, passed string, scoped bool) (string, error) {
+	if allWings(passed) {
+		return "", nil
+	}
 	if w := strings.TrimSpace(passed); w != "" {
 		// "*" asks for every wing the caller can see. Scoping made the empty
 		// argument mean "my project", which silently removed the only way to ask
 		// a cross-project question — and those are real: an infrastructure
 		// decision explains a deploy failure in the application it hosts. A
 		// default is only defensible when it can be overridden per call.
-		if w == "*" {
-			return "", nil
-		}
 		return palace.SanitizeName(w, "wing")
 	}
 	if !scoped {
+		return "", nil
+	}
+	if allWings(auth.DefaultWingFrom(ctx)) {
 		return "", nil
 	}
 	if def := auth.DefaultWingFrom(ctx); def != "" {
@@ -303,6 +323,26 @@ func searchWingFor(ctx context.Context, passed string, scoped bool) (string, err
 	return "", nil
 }
 
+func allWings(wing string) bool {
+	return strings.TrimSpace(wing) == "*"
+}
+
+type unmeteredLocalOperatorKey struct{}
+
+// WithUnmeteredLocalOperator marks an already-authenticated in-process call as
+// trusted local operator access. The direct server CLI uses this for --team:
+// it opens the operator's own database and historically did not consume hosted
+// request quota. No HTTP adapter copies this private context value, so a remote
+// caller cannot request the bypass over the wire.
+func WithUnmeteredLocalOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unmeteredLocalOperatorKey{}, true)
+}
+
+func isUnmeteredLocalOperator(ctx context.Context) bool {
+	on, _ := ctx.Value(unmeteredLocalOperatorKey{}).(bool)
+	return on
+}
+
 // admit resolves the tenant and meters one request against the workspace's
 // monthly cap. It returns the tenant on success, or a ready-to-return error
 // result (and ok=false) when the caller is unauthenticated, the meter fails, or
@@ -311,6 +351,9 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 	t, ok := auth.TenantFrom(ctx)
 	if !ok {
 		return tenant.Tenant{}, mcp.NewToolResultError("unauthenticated: present a valid Bearer token"), false
+	}
+	if isUnmeteredLocalOperator(ctx) {
+		return t, nil, true
 	}
 	st, err := usageSvc.Allow(ctx, t.TeamID)
 	if err != nil {

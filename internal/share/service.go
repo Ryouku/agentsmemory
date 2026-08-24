@@ -83,7 +83,7 @@ func NewService(repo requestStore, teams teamLookup, palace wingProvider) *Servi
 // takes the same writer/admin bar as editing a shared skill — a read-only member
 // cannot ship the workspace's memory elsewhere.
 func canExport(r tenant.Role) bool {
-	return r == tenant.RoleWriter || r == tenant.RoleAdmin
+	return tenant.CanWrite(r)
 }
 
 // Request files a pending share: copy `wing` from `fromTeamID` into the workspace

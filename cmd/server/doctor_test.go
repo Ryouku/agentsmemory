@@ -3,18 +3,57 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
+	"github.com/pressly/goose/v3"
 	"github.com/urfave/cli/v3"
 )
+
+// latestEmbeddedMigration is the highest version in db.Migrations, read from the
+// embedded set rather than written as a literal.
+//
+// The assertion that uses it means "ordinary preparation applied EVERY
+// migration". A literal restates the count instead, so it fails the next time
+// anyone adds one — for a reason that has nothing to do with what the test is
+// checking. It fatals on an empty set, because a derived expectation of zero
+// would make the comparison pass against a database that migrated nothing.
+func latestEmbeddedMigration(t *testing.T) int {
+	t.Helper()
+	entries, err := fs.ReadDir(db.Migrations, "migrations")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	highest := 0
+	for _, e := range entries {
+		var version int
+		if _, err := fmt.Sscanf(e.Name(), "%05d_", &version); err != nil {
+			continue
+		}
+		if version > highest {
+			highest = version
+		}
+	}
+	if highest == 0 {
+		t.Fatal("no versioned migrations found in the embedded set — this check would " +
+			"then pass against a database that applied nothing")
+	}
+	return highest
+}
 
 // TestDoctorIsRegistered: a command nothing registers is a command nobody can
 // run, and this repository has shipped that shape four times. The check reads
@@ -49,6 +88,301 @@ func TestDoctorRefusesWithNoCheckSelected(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "--index") {
 		t.Errorf("the refusal does not name the flag that would run a check: %v", err)
 	}
+}
+
+// TestDoctorHelpExplainsWhyItExists pins the operator contract, not merely the
+// command name. The modes came from different incidents and experiments, so a
+// list of flags does not explain which ones are integrity gates, which ones are
+// measurements, or whether running them changes the evidence being inspected.
+func TestDoctorHelpExplainsWhyItExists(t *testing.T) {
+	cmd := doctorCommand(config.Default())
+	description := cmd.Description
+	for _, want := range []string{
+		"silent failures",
+		"does not migrate",
+		"integrity checks",
+		"diagnostic reports",
+		"--index",
+		"--schema",
+		"--roles",
+		"--graph",
+		"--windows",
+	} {
+		if !strings.Contains(description, want) {
+			t.Errorf("doctor --help does not explain %q:\n%s", want, description)
+		}
+	}
+
+	var rolesUsage string
+	for _, flag := range cmd.Flags {
+		if f, ok := flag.(*cli.BoolFlag); ok && f.Name == "roles" {
+			rolesUsage = f.Usage
+		}
+	}
+	for _, want := range []string{"member roles", "missing membership rows", "empty roles"} {
+		if !strings.Contains(rolesUsage, want) {
+			t.Errorf("doctor --roles help does not explain %q: %q", want, rolesUsage)
+		}
+	}
+}
+
+// TestDoctorModesDoNotMigrateBeforeChecking proves the advertised read-only
+// boundary through every mode that builds the service stack. Version 22 with a
+// missing search_events table is deliberate: migration 23 would repair it, so
+// any mode that quietly runs goose destroys the evidence and fails this test.
+func TestDoctorModesDoNotMigrateBeforeChecking(t *testing.T) {
+	tests := map[string]func(context.Context, config.Config) error{
+		"index": func(ctx context.Context, cfg config.Config) error {
+			return doctorIndex(ctx, cfg, "local", io.Discard)
+		},
+		"graph": func(ctx context.Context, cfg config.Config) error {
+			return doctorGraph(ctx, cfg, "local", io.Discard)
+		},
+		"roles": func(ctx context.Context, cfg config.Config) error {
+			return doctorRoles(ctx, cfg, io.Discard)
+		},
+		"schema": func(ctx context.Context, cfg config.Config) error {
+			return doctorSchema(ctx, cfg, io.Discard)
+		},
+		"windows": func(ctx context.Context, cfg config.Config) error {
+			return doctorWindows(ctx, cfg, "local", "query", "missing-drawer", io.Discard)
+		},
+	}
+
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.DBPath = doctorDriftedDB(t)
+			journalMode := doctorJournalMode(t, cfg.DBPath)
+
+			_ = run(context.Background(), cfg)
+			assertDoctorDidNotMigrate(t, cfg.DBPath)
+			if got := doctorJournalMode(t, cfg.DBPath); got != journalMode {
+				t.Errorf("doctor changed journal mode from %q to %q", journalMode, got)
+			}
+		})
+	}
+}
+
+// TestBuildServicesStillPreparesThePalace pins the other side of the inspection
+// split through the production composition seam. Doctor must preserve drift;
+// serving and ordinary CLI paths must still migrate and rebuild an empty index.
+func TestBuildServicesStillPreparesThePalace(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.DBPath = doctorDriftedDB(t)
+	cfg.VectorBackend = config.VectorBackendChromem
+
+	gdb, err := openDB(cfg.DBPath, false)
+	if err != nil {
+		t.Fatalf("open drifted database: %v", err)
+	}
+	if err := sqlitevec.New(gdb).Upsert(ctx, "team-local", []store.Point{{
+		ID: "point-a", Vector: []float32{1, 0, 0}, Payload: map[string]any{"wing": "wing_one"},
+	}}); err != nil {
+		t.Fatalf("seed source-of-truth vector: %v", err)
+	}
+	if sqlDB, err := gdb.DB(); err != nil {
+		t.Fatalf("sql handle: %v", err)
+	} else if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	svc, err := buildServices(cfg)
+	if err != nil {
+		t.Fatalf("build services: %v", err)
+	}
+	if sqlDB, err := svc.gdb.DB(); err == nil {
+		defer sqlDB.Close()
+	}
+
+	var version int
+	if err := svc.gdb.Raw(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version).Error; err != nil {
+		t.Fatalf("read goose version: %v", err)
+	}
+	if want := latestEmbeddedMigration(t); version != want {
+		t.Errorf("ordinary preparation left goose at %d, want %d", version, want)
+	}
+	var searchEvents int
+	if err := svc.gdb.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_events'`).Scan(&searchEvents).Error; err != nil {
+		t.Fatalf("find repaired table: %v", err)
+	}
+	if searchEvents != 1 {
+		t.Error("ordinary preparation did not repair search_events")
+	}
+
+	hybrid, ok := svc.vectors.(*store.Hybrid)
+	if !ok {
+		t.Fatalf("prepared vector store = %T, want *store.Hybrid", svc.vectors)
+	}
+	_, index := hybrid.Halves()
+	counter, ok := index.(interface{ Count(string) (int, error) })
+	if !ok {
+		t.Fatalf("prepared index = %T, want a countable Chromem index", index)
+	}
+	if n, err := counter.Count("team-local"); err != nil || n != 1 {
+		t.Errorf("ordinary preparation rebuilt %d point(s), want 1 (err=%v)", n, err)
+	}
+}
+
+// TestDoctorIndexDoesNotReplaceAStaleChromemLayout covers the second write the
+// normal serving constructor performs: it discards an older derived-index
+// layout before replaying SQLite. That is correct at boot and destructive in a
+// diagnostic, where the stale layout is the evidence being inspected.
+func TestDoctorIndexDoesNotReplaceAStaleChromemLayout(t *testing.T) {
+	cfg := config.Default()
+	cfg.DBPath = doctorDriftedDB(t)
+	cfg.VectorBackend = config.VectorBackendChromem
+
+	stale := filepath.Join(config.ChromemPath(cfg.DBPath), "team1", "old-index.gob")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatalf("seed stale chromem directory: %v", err)
+	}
+	if err := os.WriteFile(stale, []byte("evidence"), 0o644); err != nil {
+		t.Fatalf("seed stale chromem file: %v", err)
+	}
+
+	_ = doctorIndex(context.Background(), cfg, "local", io.Discard)
+	if got, err := os.ReadFile(stale); err != nil || string(got) != "evidence" {
+		t.Errorf("doctor replaced the stale chromem evidence: content=%q err=%v", got, err)
+	}
+}
+
+// TestDatabaseDoctorModesIgnoreABrokenChromemIndex proves one failed subsystem
+// cannot hide answers about another. These modes read SQLite only, so a missing
+// or stale derived index is irrelevant evidence rather than a startup blocker.
+func TestDatabaseDoctorModesIgnoreABrokenChromemIndex(t *testing.T) {
+	cfg := config.Default()
+	cfg.DBPath = doctorDriftedDB(t)
+	cfg.VectorBackend = config.VectorBackendChromem
+
+	sqlDB, err := sql.Open("sqlite", cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := sqlDB.Exec(`INSERT INTO teams (id, name, slug, created_at) VALUES ('team-local', 'Local', 'local', '2026-08-23T00:00:00Z')`); err != nil {
+		sqlDB.Close()
+		t.Fatalf("seed local workspace: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	stale := filepath.Join(config.ChromemPath(cfg.DBPath), "team-local", "old-index.gob")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatalf("seed stale chromem directory: %v", err)
+	}
+	if err := os.WriteFile(stale, []byte("evidence"), 0o644); err != nil {
+		t.Fatalf("seed stale chromem file: %v", err)
+	}
+
+	var graph bytes.Buffer
+	if err := doctorGraph(context.Background(), cfg, "local", &graph); err != nil {
+		t.Errorf("graph was blocked by an unrelated index fault: %v", err)
+	} else if !strings.Contains(graph.String(), "graph:") {
+		t.Errorf("graph did not reach its report: %q", graph.String())
+	}
+
+	var roles bytes.Buffer
+	if err := doctorRoles(context.Background(), cfg, &roles); err != nil {
+		t.Errorf("roles was blocked by an unrelated index fault: %v", err)
+	} else if !strings.Contains(roles.String(), "roles:") {
+		t.Errorf("roles did not reach its report: %q", roles.String())
+	}
+
+	var schema bytes.Buffer
+	err = doctorSchema(context.Background(), cfg, &schema)
+	if err == nil || !strings.Contains(schema.String(), "MISSING") {
+		t.Errorf("schema did not report the deliberately missing table: output=%q err=%v", schema.String(), err)
+	}
+
+	err = doctorWindows(context.Background(), cfg, "local", "query", "missing-drawer", io.Discard)
+	if !errors.Is(err, palace.ErrNotFound) {
+		t.Errorf("windows did not reach the drawer lookup: %v", err)
+	}
+	if got, err := os.ReadFile(stale); err != nil || string(got) != "evidence" {
+		t.Errorf("database diagnostics changed the unrelated index: content=%q err=%v", got, err)
+	}
+}
+
+// TestInspectServicesOpensSQLiteQueryOnly makes the read-only boundary survive
+// future diagnostic code. Avoiding today's migrations is insufficient if a new
+// report can write through the repositories it receives tomorrow.
+func TestInspectServicesOpensSQLiteQueryOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.DBPath = doctorDriftedDB(t)
+
+	svc, err := inspectServices(cfg)
+	if err != nil {
+		t.Fatalf("inspect services: %v", err)
+	}
+	if err := svc.gdb.Exec(`UPDATE plans SET name = 'changed' WHERE code = 'personal'`).Error; err == nil {
+		t.Fatal("inspection service accepted a database write")
+	}
+}
+
+func doctorDriftedDB(t *testing.T) string {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "drifted.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlDB.Close()
+
+	goose.SetBaseFS(db.Migrations)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("dialect: %v", err)
+	}
+	if err := goose.UpTo(sqlDB, "migrations", 22); err != nil {
+		t.Fatalf("up to 22: %v", err)
+	}
+	if _, err := sqlDB.Exec(`DROP TABLE search_events`); err != nil {
+		t.Fatalf("drop search_events: %v", err)
+	}
+	return dbPath
+}
+
+func assertDoctorDidNotMigrate(t *testing.T, dbPath string) {
+	t.Helper()
+
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite: %v", err)
+	}
+	defer sqlDB.Close()
+
+	var version int
+	if err := sqlDB.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
+		t.Fatalf("read goose version: %v", err)
+	}
+	if version != 22 {
+		t.Errorf("doctor advanced goose from 22 to %d", version)
+	}
+
+	var tables int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_events'`).Scan(&tables); err != nil {
+		t.Fatalf("find search_events: %v", err)
+	}
+	if tables != 0 {
+		t.Error("doctor repaired search_events before reporting on the database")
+	}
+}
+
+func doctorJournalMode(t *testing.T, dbPath string) string {
+	t.Helper()
+
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlDB.Close()
+	var mode string
+	if err := sqlDB.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	return mode
 }
 
 // TestDoctorIndexExitsNonZeroOnDrift pins that the VERDICT is the exit code.
@@ -155,25 +489,22 @@ func TestDoctorRefusesAMissingDatabase(t *testing.T) {
 	}
 }
 
-// TestDoctorDoesNotReconcileBeforeChecking: a checker must not repair the
-// evidence.
-//
-// Building the chromem-backed store replays the source of truth into the index,
-// so an index that had lost points was rebuilt at construction and then reported
-// clean — the check could not fail on the fault it exists to find. Read off the
-// source, because the reconciliation happens inside a constructor a unit test
-// cannot observe without a database and an index on disk.
+// TestDoctorDoesNotReconcileBeforeChecking protects the two inspection seams.
+// Only --index may open the selected vector backend; the other three modes ask
+// SQLite-only questions and must remain independent of a broken search index.
 func TestDoctorDoesNotReconcileBeforeChecking(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "doctor.go"))
 	if err != nil {
 		t.Fatalf("read doctor.go: %v", err)
 	}
 	if regexp.MustCompile(`buildServices\(`).Match(src) {
-		t.Error("doctor.go calls buildServices, which reconciles the search index before the check " +
-			"can look at it — use buildServicesWith(cfg, false)")
+		t.Error("doctor.go calls buildServices, which migrates and reconciles before the check can look")
 	}
-	if !regexp.MustCompile(`buildServicesWith\(cfg, false\)`).Match(src) {
-		t.Error("doctor.go does not build its services with reconciliation disabled")
+	if got := len(regexp.MustCompile(`inspectServices\(cfg\)`).FindAll(src, -1)); got != 1 {
+		t.Errorf("doctor.go routes %d modes through vector inspection, want only --index", got)
+	}
+	if got := len(regexp.MustCompile(`inspectDatabaseServices\(cfg\)`).FindAll(src, -1)); got != 3 {
+		t.Errorf("doctor.go routes %d SQLite-only modes through database inspection, want 3", got)
 	}
 }
 

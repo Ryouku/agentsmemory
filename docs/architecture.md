@@ -231,13 +231,14 @@ seam stops being a seam.
 | Which flag fills which field | `configFromCmd` | every flag | `cmd/server/flagbinding_test.go` `TestEveryFlagFillsTheFieldItNamesRunsTheRealCLI` |
 | Documented environment variables | the compose files and README | what the program reads | `cmd/server/envreach_test.go` `TestDocumentedEnvVarsAreRead`, `TestReadEnvVarsAreDocumented` |
 | Eval arms | `EvalArm` constants | `evalArms()` registry | `internal/palace/armreach_test.go` `TestEveryDeclaredArmIsRegistered` |
-| The read/write split | `CatalogEntry.Write` | `readOnlyTools()` (CLI), `readOnlyRemoteTools` (client) | none — three hand-kept mirrors `(deferred: docs/adr/BACKLOG.md)` |
+| The read/write split | `registrar.add` / `addWrite`, published as `readOnlyHint` and `CatalogEntry.Write` | write guard, `tools/list`, `am_skillset`, both CLIs | `TestLiveToolMetadataMatchesRegistrationPolicy`, `TestDirectCLIReadSurfaceComesFromLiveAnnotations`, `TestIsReadOnlyTool` |
 
 ## Composition Root
 
 | Root | Constructs | Check |
 |------|------------|-------|
 | `cmd/server/main.go` `buildServices` | the database, vector store, embedder, every domain service | `cmd/server/wiring_test.go` `TestEveryConfigFieldIsPopulatedAndRead` |
+| `cmd/server/main.go` `productionMCPServer` | the one MCP handler graph used by HTTP and the direct CLI | `cmd/server/mcp_test.go` `TestProductionMCPConstructionHasOneChokepoint` |
 | `cmd/server/main.go` `configureRanking` | the ranking configuration, retrieval unit and the reranker | `cmd/server/configureranking_test.go` `TestConfigureRankingSelectsTheReportedUnit`, `TestRerankSurvivesEveryFusionMode` |
 | `internal/mcpserver` `registerAll` | every MCP tool, via `add` / `addWrite` | `internal/mcptest/exhaustive_test.go` `TestEveryToolIsExercisedEndToEnd` |
 
@@ -245,7 +246,7 @@ seam stops being a seam.
 
 | Fake | Stands in for | Contract | Check |
 |------|---------------|----------|-------|
-| `internal/mcptest` harness | a running server | real HTTP transport, real MCP client, real registration — only the OAuth gate is stubbed | `internal/mcptest/harness_test.go` `TestHarnessObservesAWriteThroughARead`, `TestHarnessFailsOnAnEmptyCatalogue` |
+| `internal/mcptest` harness | a running server | real HTTP transport, real MCP client, real registration; ordinary scenarios substitute hosted identity, `NewHosted` crosses the real OAuth gate, and local-only scenarios cross `auth.LocalTenant` | `internal/mcptest/harness_test.go` `TestHarnessObservesAWriteThroughARead`, `TestHarnessFailsOnAnEmptyCatalogue`; `TestHostedMCPAuthenticationAndIsolation`; lifecycle registry uses `NewLocalWithWing` for `am_delete_wing` |
 | `mcptest.fakeEmbedder` | a real embedder | deterministic vectors of the configured dimension | none — the fake's vectors are not asserted to behave like a real model's `(deferred: docs/adr/BACKLOG.md)` |
 | `cmd/server` `noReranker` | a cross-encoder | returns nil, so the factory call is observable while nothing reranks | `cmd/server/configureranking_test.go` `TestConfigureRankingHonoursTheRerankURLGuard` |
 

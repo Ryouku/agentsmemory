@@ -50,6 +50,14 @@ func (f fakeEmbedder) EmbedOne(ctx context.Context, input string) ([]float32, er
 // and search index, plus the fake embedder.
 func newTestService(t *testing.T) *Service {
 	t.Helper()
+	return newTestServiceWith(t, fakeEmbedder{})
+}
+
+// newTestServiceWith is newTestService with the embedder chosen by the caller, so
+// a test can observe what the service asks the embedder to do rather than only
+// what it returns.
+func newTestServiceWith(t *testing.T, embedder Embedder) *Service {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "palace_test.db")
 	gdb, err := gorm.Open(glebarez.Open(path), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -68,7 +76,7 @@ func newTestService(t *testing.T) *Service {
 	if err := goose.Up(sqlDB, "migrations"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+	return NewService(NewRepo(gdb), embedder, sqlitevec.New(gdb), fakeDim)
 }
 
 // fakeReranker is a cross-encoder stand-in: it ranks by how many query words a

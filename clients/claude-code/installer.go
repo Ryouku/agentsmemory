@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/urfave/cli/v3"
 )
 
@@ -81,30 +82,33 @@ const (
 	// `bearer_token_env_var` — codex stores the variable NAME and reads the value
 	// from its own environment at launch — and pi has no MCP client at all, so our
 	// bridge extension reads the same variable.
-	tokenEnvVar = "AGENTSMEMORY_TOKEN"
+	tokenEnvVar = mcpprotocol.TokenEnvVar
 
 	// mcpURLEnvVar tells the pi bridge extension which endpoint to talk to. Only
 	// pi needs it: Claude and codex store the URL in their own MCP config, but
 	// the extension has no config of its own to read.
-	mcpURLEnvVar = "AGENTSMEMORY_MCP_URL"
+	mcpURLEnvVar = mcpprotocol.MCPURLEnvVar
 
 	// localEnvVar tells the pi bridge extension that the endpoint is a self-hosted
 	// `agentsmemory --local` server, so a missing token means "this server wants
 	// none" rather than "the user skipped it". The extension needs the difference:
 	// without a token it must stay silent against the hosted service (where it
 	// would only 401), but connect anyway against a local one.
-	localEnvVar = "AGENTSMEMORY_LOCAL"
+	localEnvVar = mcpprotocol.LocalEnvVar
+
+	// socketEnvVar is the Unix socket serve and the installer share.
+	socketEnvVar = mcpprotocol.SocketEnvVar
 
 	// localTokenEnvVar is the variable a self-hosted `agentsmemory --local --token`
 	// server reads its required token from. The installer reads the same one (it is
 	// the first source behind --token), so exporting it once configures both the
 	// server that demands the credential and the agent that presents it.
-	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+	localTokenEnvVar = mcpprotocol.LocalTokenEnvVar
 
-	// wingHeader names the project a registration files into. It mirrors
-	// auth.WingHeader on the server; duplicating the string keeps this installer
-	// binary independent of the server package it configures.
-	wingHeader = "X-Agentsmemory-Wing"
+	// wingHeader names the project a registration files into. The installer and
+	// server compile against one wire constant, even though they ship in separate
+	// binaries.
+	wingHeader = mcpprotocol.WingHeader
 
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell

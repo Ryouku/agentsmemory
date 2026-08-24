@@ -20,6 +20,40 @@ const (
 	ChunkSize    = 1600 // target characters per chunk (~400 bge-m3 tokens)
 	ChunkOverlap = 320  // characters shared between adjacent chunks for context continuity (20%)
 	ChunkMin     = 50   // a trailing remnant shorter than this is merged back, never emitted alone
+
+	// MaxEmbedRunes bounds a single string handed to the embedder as ONE vector.
+	// Set to 4000 by M, 2026-08-25.
+	//
+	// It exists because ChunkText bounds the ADD path and nothing bounds the
+	// UPDATE path: Update re-embeds its whole content with EmbedOne, never
+	// re-chunking (deliberately — see Service.Update), so a memory created small
+	// and grown in place is the one input that can exceed the model's window. The
+	// TEI client asks for truncation so an over-long input cannot fail a whole
+	// batch, which means the server answers 200 with a vector for the PREFIX: the
+	// tail stays stored, still comes back from am_get_drawer, and is simply
+	// unfindable. Silent, and only on this path.
+	//
+	// ⚠IT IS CONSERVATIVE HEADROOM, NOT A MEASURED CEILING, and saying so matters
+	// because the obvious reading is wrong. Both shipped backends run bge-m3 —
+	// TEI's is fixed by --model-id and config.Default() sets OllamaEmbedModel to
+	// "bge-m3" too — so the model in front of us holds 8192 tokens either way, and
+	// 4000 characters is far below that. The bound is not sized to today's model.
+	//
+	// It is sized so that SWAPPING the model stays survivable. An operator may
+	// point EMBED_BACKEND or OLLAMA_EMBED_MODEL at something much smaller, and
+	// nothing in this repository measures any model's window or would notice. A
+	// limit computed from bge-m3 alone would be a limit only bge-m3 satisfies.
+	//
+	// ⚠It does NOT make every model safe, and the name of the test guarding it
+	// should not be read as claiming so: a 512-token model such as
+	// mxbai-embed-large tops out around 2k characters and 4000 would still cut it.
+	// This is a floor that removes the unbounded case, chosen by M, not a proof.
+	//
+	// Characters rather than tokens because the palace cannot ask the tokenizer,
+	// and the ratio is script-dependent (~4 chars/token for English, far worse for
+	// CJK), so any character bound is an approximation and must therefore err low.
+	// Live documents run ~2k runes today, leaving room to grow without meeting it.
+	MaxEmbedRunes = 4000
 )
 
 // Chunk is one slice of a larger text: the verbatim window plus its ordinal

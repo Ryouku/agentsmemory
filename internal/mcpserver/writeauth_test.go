@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -106,7 +107,7 @@ func registeredWrites(t *testing.T) map[string]bool {
 		registerAll(reg, Deps{Local: local})
 		for _, e := range reg.catalog {
 			if e.Write {
-				out[strings.TrimPrefix(e.Name, "am_")] = true
+				out[strings.TrimPrefix(e.Name, mcpprotocol.ToolPrefix)] = true
 			}
 		}
 	}
@@ -190,7 +191,7 @@ func notATest(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test
 //
 // The structural test proves the classification is right. This proves the
 // classification does something. Both are needed — a registrar whose addWrite
-// forgot to call canWrite would pass the first and fail this one.
+// forgot to call tenant.CanWrite would pass the first and fail this one.
 func TestAReadOnlyRoleIsRefusedByEveryWriteTool(t *testing.T) {
 	for _, tc := range []struct {
 		role    tenant.Role
@@ -245,7 +246,7 @@ func TestAnUnauthenticatedCallIsRefusedBeforeTheRoleCheck(t *testing.T) {
 	}
 	// The refusal must name the real reason. Deleting the unauthenticated branch
 	// leaves the call refused anyway — a zero Tenant carries an empty role and
-	// canWrite("") is false — so a test asserting only "refused" passes on a guard
+	// tenant.CanWrite("") is false — so a test asserting only "refused" passes on a guard
 	// that tells an anonymous caller their ROLE is insufficient. Failing closed and
 	// explaining correctly are two properties, and only one of them is free.
 	if msg := errText(res); !strings.Contains(msg, "unauthenticated") {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
 
 // maxCandidateWidening caps how far past candidateK the memory arm will widen
@@ -13,13 +15,55 @@ import (
 // disagree.
 const maxCandidateWidening = 8
 
-// searchCandidates resolves a vector prefix to in-scope drawer rows. The legacy
+// survivorsFrom applies the scope rule to a retrieved prefix: it drops orphan
+// vectors, rows outside the wing/room the caller asked for, and rows beyond the
+// distance boundary, preserving the index's closest-first order. It also reports
+// how many DISTINCT memories survived, which is what the widening loop needs to
+// decide whether another round can help.
+//
+// It exists as one function because two callers need the identical predicate —
+// searchCandidates while widening, and rankRetrieved while ranking. Spelling a
+// scope rule twice is how one copy quietly goes stale, and a stale copy of THIS
+// rule surfaces another wing's memory.
+//
+// The index filter is an optimization; the durable row remains the authority.
+func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]SearchHit, int) {
+	survivors := make([]SearchHit, 0, len(hits))
+	distinct := make(map[string]struct{}, len(hits))
+	for _, h := range hits {
+		d, ok := rows[h.ID]
+		if !ok {
+			continue // orphan vector (row deleted) — skip
+		}
+		if !drawerMatchesSearch(d, q) {
+			continue
+		}
+		distance := distanceFromScore(h.Score)
+		if q.MaxDistance > 0 && distance > q.MaxDistance {
+			continue
+		}
+		memoryID := memoryOf(d)
+		survivors = append(survivors, SearchHit{Drawer: d, MemoryID: memoryID, Distance: distance})
+		distinct[memoryID] = struct{}{}
+	}
+	return survivors, len(distinct)
+}
+
+// searchCandidates resolves a vector prefix to the rows behind it. The legacy
 // arm asks once for a chunk-sized pool. The memory arm widens the same ordered
 // prefix until candidateK distinct logical memories survive, or the backend has
 // no more results. Without this widening, a long memory can spend every slot on
 // siblings before BM25 or the cross-encoder gets a chance to compare anything
 // else.
-func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]SearchHit, int, error) {
+//
+// It returns the RAW hits and their rows rather than the survivors it filtered,
+// which looks wasteful and is deliberate: rankRetrieved takes (hits, rows)
+// because the eval arms share one retrieved pool across every arm, and an arm
+// that retrieved for itself would confound the comparison those arms exist to
+// make. Filtering here is for the widening decision only; rankRetrieved rebuilds
+// the survivors from survivorsFrom, the same predicate, over an in-memory slice
+// bounded by candidateK.
+func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]store.Hit, map[string]Drawer, error) {
 	k := candidateK
 	// Rows already resolved by a narrower prefix. Widening re-asks the index for
 	// a SUPERSET in the same order, so every row loaded on a previous round is
@@ -32,7 +76,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 	for {
 		hits, err := s.vectors.Search(ctx, teamID, vec, k, searchFilter(q))
 		if err != nil {
-			return nil, 0, fmt.Errorf("vector search: %w", err)
+			return nil, nil, fmt.Errorf("vector search: %w", err)
 		}
 
 		missing := make([]string, 0, len(hits))
@@ -45,44 +89,28 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		if len(missing) > 0 {
 			fetched, err := s.repo.GetMany(ctx, teamID, missing)
 			if err != nil {
-				return nil, 0, fmt.Errorf("load drawer rows: %w", err)
+				return nil, nil, fmt.Errorf("load drawer rows: %w", err)
 			}
 			for id, d := range fetched {
 				rows[id] = d
 			}
 		}
 
-		survivors := make([]SearchHit, 0, len(hits))
-		distinct := make(map[string]struct{}, candidateK)
-		for _, h := range hits {
-			d, ok := rows[h.ID]
-			if !ok {
-				continue // orphan vector (row deleted) — skip
-			}
-			// The index filter is an optimization; the durable row remains the
-			// authority and prevents a stale index from leaking another scope.
-			if !drawerMatchesSearch(d, q) {
-				continue
-			}
-			distance := distanceFromScore(h.Score)
-			if q.MaxDistance > 0 && distance > q.MaxDistance {
-				continue
-			}
-			memoryID := memoryOf(d)
-			survivors = append(survivors, SearchHit{
-				Drawer: d, MemoryID: memoryID, Distance: distance,
-			})
-			distinct[memoryID] = struct{}{}
-		}
+		// Only the distinct-memory COUNT is needed here; rankRetrieved rebuilds the
+		// survivors itself from the same helper. Returning raw hits+rows rather
+		// than survivors is what lets rankRetrieved keep the signature the eval
+		// arms depend on — they share one retrieved pool across arms, so a
+		// per-arm retrieval would confound the comparison they exist to make.
+		_, distinct := survivorsFrom(hits, rows, q)
 
-		if !s.memoryLevelRanking || len(distinct) >= candidateK || len(hits) < k {
-			return survivors, len(hits), nil
+		if !s.memoryLevelRanking || distinct >= candidateK || len(hits) < k {
+			return hits, rows, nil
 		}
 		// Search results are closest-first. Once the farthest member of a full
 		// prefix is outside the caller's distance boundary, every later member is
 		// outside too, so widening cannot add an admissible memory.
 		if q.MaxDistance > 0 && len(hits) > 0 && distanceFromScore(hits[len(hits)-1].Score) > q.MaxDistance {
-			return survivors, len(hits), nil
+			return hits, rows, nil
 		}
 		// Doubling bounds backend round trips logarithmically while preserving the
 		// exact prefix ordering, but it needs a stop.
@@ -96,7 +124,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		// memories it did find, which is what it would do at any other point
 		// where the backend runs out.
 		if k >= candidateK*maxCandidateWidening {
-			return survivors, len(hits), nil
+			return hits, rows, nil
 		}
 		k *= 2
 	}

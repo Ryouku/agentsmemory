@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/anchorcontract"
 )
 
 // Code anchors: the mechanism that lets a memory notice the code it describes has
@@ -74,23 +76,16 @@ type AnchorInput struct {
 	Snippet string
 }
 
-// NormalizeSnippet collapses whitespace so an anchor survives reformatting that
-// does not change the code — a re-indent must not read as drift, or the flag
-// becomes noise on the first gofmt.
-func NormalizeSnippet(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
 // anchorID is deterministic in (team, drawer, path, snippet), so re-filing the
 // same memory with the same anchor updates it rather than accumulating copies.
 func anchorID(teamID, drawerID, path, snippet string) string {
-	sum := sha256.Sum256([]byte(teamID + "\x00" + drawerID + "\x00" + path + "\x00" + NormalizeSnippet(snippet)))
+	sum := sha256.Sum256([]byte(teamID + "\x00" + drawerID + "\x00" + path + "\x00" + anchorcontract.NormalizeSnippet(snippet)))
 	return hex.EncodeToString(sum[:])[:32]
 }
 
 // snippetSHA fingerprints the normalized snippet.
 func snippetSHA(snippet string) string {
-	sum := sha256.Sum256([]byte(NormalizeSnippet(snippet)))
+	sum := sha256.Sum256([]byte(anchorcontract.NormalizeSnippet(snippet)))
 	return hex.EncodeToString(sum[:])
 }
 

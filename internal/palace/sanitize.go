@@ -74,3 +74,42 @@ func SanitizeContent(value string) (string, error) {
 	}
 	return value, nil
 }
+
+// DeriveWingName turns a directory or git-remote basename into a wing name
+// SanitizeName accepts. Leading dots go first: a session inside ~/.claude
+// becomes wing_claude, not a name the palace would refuse.
+func DeriveWingName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.TrimLeft(raw, ".")
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	suffix := strings.Trim(b.String(), "_-")
+	if suffix == "" {
+		suffix = "project"
+	}
+	const prefix = "wing_"
+	maxSuffix := MaxNameLength - len([]rune(prefix))
+	runes := []rune(suffix)
+	if maxSuffix < 1 {
+		return "wing_project"
+	}
+	if len(runes) > maxSuffix {
+		suffix = strings.TrimRight(string(runes[:maxSuffix]), "_-")
+		if suffix == "" {
+			suffix = "project"
+		}
+	}
+	name := prefix + suffix
+	cleaned, err := SanitizeName(name, "wing")
+	if err != nil {
+		return "wing_project"
+	}
+	return cleaned
+}

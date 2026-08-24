@@ -200,6 +200,13 @@ type Service struct {
 	// it over the mined gold. The operator knows which palace theirs is.
 	closetBoostScale float64
 
+	// recencyBand is the fused-score window inside which a newer content date
+	// may swap two adjacent candidates. Zero (the default, and the only value
+	// Search's composition root ever sets) leaves the fused order untouched.
+	// Eval recency arms set it on a Clone so they rank through rankRetrieved
+	// rather than a second reorder beside it. ADR-004 keeps production off.
+	recencyBand float64
+
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -357,6 +364,17 @@ func (s *Service) WithLexNorm(name string) *Service {
 	if n, ok := lexNormByName(name); ok {
 		s.lexNorm, s.lexNormName = n, name
 	}
+	return s
+}
+
+// WithRecencyBand sets the fused-score window for a date-preference reorder.
+// Zero or negative turns it off. Production never calls this; eval recency
+// arms do, so the reorder runs inside rankRetrieved instead of beside it.
+func (s *Service) WithRecencyBand(band float64) *Service {
+	if band < 0 {
+		band = 0
+	}
+	s.recencyBand = band
 	return s
 }
 
@@ -746,6 +764,31 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 	if patch.Room != nil {
 		finalRoom = *patch.Room
 	}
+
+	// Refuse BEFORE embedding, not after. Update never re-chunks, so this content
+	// becomes one vector however long it is — and the embedder is asked to
+	// truncate rather than fail, so past the model's window it returns a vector
+	// for the prefix and reports success. The memory would still read back whole
+	// from am_get_drawer while being unfindable by anything after the cut, which
+	// is the worst shape a storage bug can take: no error, no warning, and the
+	// symptom appears later as "search cannot find something I know is filed".
+	//
+	// Refusing rather than truncating or re-chunking keeps this consistent with
+	// the multi-chunk refusal above: the caller is told what to do instead, and
+	// Add is the path that handles arbitrary length (it chunks). Re-chunking here
+	// is the real fix and is an ADR, not a bug fix — docs/adr/BACKLOG.md, because
+	// it changes which ids exist and therefore what every anchor, tunnel and
+	// knowledge-graph fact still points at.
+	if n := len([]rune(finalContent)); n > MaxEmbedRunes {
+		return Drawer{}, fmt.Errorf(
+			"%w: updated content is %d characters and the embedder takes at most %d in one piece, "+
+				"so the text past that point would be stored but never findable. "+
+				"Delete this memory and file it again with add_drawer, which splits long content into "+
+				"chunks that each embed in full — note that re-filing mints new ids, so any anchor, "+
+				"tunnel or knowledge-graph fact pointing at this drawer must be re-pointed",
+			ErrInvalidInput, n, MaxEmbedRunes)
+	}
+
 	vec, err := s.embed.EmbedOne(ctx, finalContent)
 	if err != nil {
 		return Drawer{}, fmt.Errorf("re-embed updated drawer: %w", err)
@@ -904,16 +947,70 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
 	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
-	survivors, candidateCount, err := s.searchCandidates(ctx, teamID, q, vec, candidateK)
+	hits, rows, err := s.searchCandidates(ctx, teamID, q, vec, candidateK)
 	if err != nil {
 		return nil, err
 	}
+	q.Limit = limit
+	results, reranked, err := s.rankRetrieved(ctx, teamID, query, q, vec, hits, rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record what this recall found. Best-effort by construction: measurement must
+	// never be able to fail the thing it measures.
+	if q.SkipTelemetry {
+		return results, nil
+	}
+	ev := searchEventRow{
+		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
+		// Whether reranking HAPPENED, not whether a reranker exists. The previous
+		// value was boolToInt(s.rerank != nil), so at weight 0 — where
+		// applyRerankWith returns before scoring anything — every event claimed a
+		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
+		// threshold from these rows.
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
+	}
+	if len(results) > 0 {
+		ev.TopScore = results[0].Score
+	}
+	s.repo.recordSearch(ctx, ev)
+
+	return results, nil
+}
+
+// rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
+// Eval arms that reconstruct a served configuration call it on a Clone rather
+// than reimplementing fusion, closet boost, recency, rerank, or collapse.
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultSearchLimit
+	}
+
+	// Keep the survivors that pass the wing/room/max-distance filters, in vector
+	// order, carrying content (for BM25) and distance (for vector similarity).
+	// The wing/room comparisons are redundant when the index honoured the filter
+	// above, and deliberately kept: the drawer row is the truth about where a
+	// drawer lives, and a stale index must never surface another wing's memory.
+	//
+	// ONE spelling of that rule, shared with searchCandidates — which needs the
+	// same filter to know how many DISTINCT memories a widening round found, and
+	// therefore whether to widen again. Two copies of a scope predicate is how a
+	// stale one survives, so both paths call survivorsFrom instead.
+	survivors, _ := survivorsFrom(hits, rows, q)
+
+	// The unit being ranked is a MEMORY, not a chunk, when memory-level ranking is
+	// on — so the collapse happens HERE, before scoring, and every consumer of
+	// rankRetrieved gets it. That includes the eval arms, which call this on a
+	// Clone: an arm reconstructing the served configuration has to collapse the
+	// same way or it is measuring a pipeline nobody runs.
 	if s.memoryLevelRanking {
-		survivors, err = s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		candidateCount = len(survivors)
+		survivors = collapsed
 	}
 
 	// Closet boost: search the team's closets with the same query and let the
@@ -922,16 +1019,20 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// failed or empty closet search simply yields no boosts and search proceeds.
 	closetBoostBySource := s.closetBoosts(ctx, teamID, vec)
 
-	// Hybrid re-rank the survivors by content + distance + closet boost, then page.
 	docs := make([]string, len(survivors))
 	dists := make([]float64, len(survivors))
 	boosts := make([]float64, len(survivors))
+	dates := make([]string, len(survivors))
 	for i, h := range survivors {
 		docs[i] = h.rankingContent(query, false)
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
+		dates[i] = h.Drawer.ContentDate
 	}
 	ranked := s.fusionRanker()(query, docs, dists, boosts)
+	if s.recencyBand > 0 {
+		ranked = reorderByRecency(ranked, dates, s.recencyBand)
+	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
@@ -980,30 +1081,14 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
+	// Whole-memory hydration is the last step of RANKING, not of Search, so every
+	// caller of rankRetrieved — including the eval arms that reconstruct a served
+	// configuration on a Clone — gets the same shaped hit the wire does.
 	if err := s.hydrateResultMemories(ctx, teamID, results); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// Record what this recall found. Best-effort by construction: measurement must
-	// never be able to fail the thing it measures.
-	if q.SkipTelemetry {
-		return results, nil
-	}
-	ev := searchEventRow{
-		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
-		// Whether reranking HAPPENED, not whether a reranker exists. The previous
-		// value was boolToInt(s.rerank != nil), so at weight 0 — where
-		// applyRerankWith returns before scoring anything — every event claimed a
-		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
-		// threshold from these rows.
-		Candidates: candidateCount, Hits: len(results), Reranked: boolToInt(reranked),
-	}
-	if len(results) > 0 {
-		ev.TopScore = results[0].Score
-	}
-	s.repo.recordSearch(ctx, ev)
-
-	return results, nil
+	return results, reranked, nil
 }
 
 // candidateKFor is how many vector neighbours a search fetches.

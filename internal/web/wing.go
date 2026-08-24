@@ -109,7 +109,7 @@ func (s *Server) postWingImport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if role != tenant.RoleWriter && role != tenant.RoleAdmin {
+	if !tenant.CanWrite(role) {
 		http.Error(w, "importing a wing needs the writer or admin role", http.StatusForbidden)
 		return
 	}
@@ -175,7 +175,7 @@ func (s *Server) renderWingFlash(w http.ResponseWriter, r *http.Request, u tenan
 func (s *Server) buildWingTransferData(r *http.Request, teamID string, role tenant.Role) views.WingTransferVM {
 	d := views.WingTransferVM{
 		TeamID:    teamID,
-		CanImport: role == tenant.RoleWriter || role == tenant.RoleAdmin,
+		CanImport: tenant.CanWrite(role),
 	}
 	if names, err := s.merges.WingNames(r.Context(), teamID); err == nil {
 		d.Wings = names

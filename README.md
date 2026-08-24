@@ -709,6 +709,28 @@ release workflow), then swaps the container, probes `/healthz`, and rolls back
 to the previously-running tag if the new one never answers. Until enabled, the
 workflow is skipped, never failed.
 
+**PR test images.** `.github/workflows/pr-image.yml` builds same-repository PRs
+automatically without moving a release tag or `latest`. A maintainer can also
+run it manually with a PR number and its reviewed 40-character head SHA,
+including for a fork PR; the run fails if that PR head moved. Preview versions
+live in the separate `agentsmemory-pr` GHCR package. The run summary reports
+both a readable tag of the form
+`pr-24-sha256-<64-hex-container-digest>` and the canonical
+`ghcr.io/atvirokodosprendimai/agentsmemory-pr@sha256:<digest>` reference.
+Deploy the canonical digest so the tested bytes cannot move underneath the host:
+
+```bash
+AGENTSMEMORY_IMAGE='ghcr.io/atvirokodosprendimai/agentsmemory-pr@sha256:<digest>' \
+  docker compose -f docker-compose.prod.yml up -d
+```
+
+`AGENTSMEMORY_IMAGE` is a one-command override; omit it to return to the normal
+`AGENTSMEMORY_IMAGE_TAG`/`latest` path. A daily cleanup deletes GHCR versions
+whose complete tag set consists only of PR digest tags and whose creation time
+is more than seven days old. Because cleanup runs daily, practical retention is
+about seven to eight days. Release-tagged and `latest` versions do not match the
+cleanup filter.
+
 ### Choosing the index
 
 `VECTOR_BACKEND` (or `--vector-backend`) picks what answers searches. SQLite is

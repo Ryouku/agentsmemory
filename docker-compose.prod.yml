@@ -13,15 +13,17 @@
 # BILLING_PROVIDER and that provider's variables in .env.prod (the .env.example
 # Billing block documents the OpenCollective contribution-checkout URLs).
 #
-# AGENTSMEMORY_IMAGE_TAG pins the image tag (default: latest). The CI deploy
-# workflow (.github/workflows/deploy.yml) sets it to the released tag — e.g.
-# 0.0.75 for git tag v0.0.75 — so a rollout always runs the exact release.
+# AGENTSMEMORY_IMAGE accepts a complete image reference, including an immutable
+# ghcr.io/...@sha256:... PR preview. When it is empty, AGENTSMEMORY_IMAGE_TAG
+# pins the released image tag (default: latest). The CI deploy workflow
+# (.github/workflows/deploy.yml) sets the latter to the released tag — e.g.
+# 0.0.75 for git tag v0.0.75 — so a normal rollout runs the exact release.
 
 name: agentsmemory-hosted
 
 services:
   agentsmemory:
-    image: ghcr.io/atvirokodosprendimai/agentsmemory:${AGENTSMEMORY_IMAGE_TAG:-latest}
+    image: ${AGENTSMEMORY_IMAGE:-ghcr.io/atvirokodosprendimai/agentsmemory:${AGENTSMEMORY_IMAGE_TAG:-latest}}
     restart: unless-stopped
     env_file: .env.prod
     ports:

@@ -55,10 +55,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # A malformed workflow does not run and therefore cannot report its own
+      # failure. Lint every workflow from this independent, always-on CI path.
+      - name: Lint GitHub Actions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Vet
         run: go vet ./...
       - name: Test
         run: go test ./...
+      - name: Contract-axis
+        run: go test -tags contractaxis ./internal/mcptest
 
   # Cross-compile the static binary for each target. CGO is off (pure-Go SQLite
   # via modernc), so every GOOS/GOARCH builds on the linux runner with no C
@@ -94,7 +100,7 @@ jobs:
           bin=agentsmemory
           [ "${{ matrix.goos }}" = windows ] && bin=agentsmemory.exe
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags='-s -w' -o "$bin" ./cmd/server
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o "$bin" ./cmd/server
 
       # Conventional archives: tar.gz for unix, zip for windows. The archive name
       # is version-free — the Actions run (or the release tag) supplies the
@@ -144,7 +150,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS.txt
+          sha256sum -- * > SHA256SUMS.txt
 
       # softprops creates the Release if the tag has none yet (a pushed tag does
       # not auto-create one) and uploads the assets. The `check` gate only admits

@@ -5,12 +5,62 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestScopeSearchToWing(t *testing.T) {
+	for _, test := range []struct {
+		scope string
+		want  bool
+	}{
+		{"", true},
+		{"wing", true},
+		{"WING", true},
+		{"workspace", false},
+		{"Workspace", false},
+		{" workspace ", false},
+	} {
+		if got := (Config{SearchScope: test.scope}).ScopeSearchToWing(); got != test.want {
+			t.Errorf("SearchScope %q: ScopeSearchToWing() = %v, want %v", test.scope, got, test.want)
+		}
+	}
+	if !Default().ScopeSearchToWing() {
+		t.Fatal("Default search scope must stay wing-scoped; the harness follows Default()")
+	}
+}
+
+func TestScopeSearchToWingIsTheProductionSelector(t *testing.T) {
+	files := []string{
+		filepath.Clean("../../cmd/server/main.go"),
+		filepath.Clean("../../internal/mcptest/harness.go"),
+	}
+	for _, path := range files {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "ScopeSearchToWing" {
+				calls++
+			}
+			return true
+		})
+		if calls != 1 {
+			t.Errorf("%s calls ScopeSearchToWing %d times, want 1 — search scope must not be inlined beside productionMCPServer or the harness", path, calls)
+		}
+	}
+}
 
 // TestIsLoopback pins the classification that decides whether local mode warns
 // about exposing its unauthenticated endpoint. The case that matters most is

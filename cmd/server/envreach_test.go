@@ -190,7 +190,9 @@ func readEnvVars(t *testing.T, root string) map[string]bool {
 	// to resolve the indirection or they describe different sets and contradict
 	// each other.
 	constDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*"([A-Z][A-Z0-9_]+)"`)
+	aliasDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*[a-zA-Z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)`)
 	consts := map[string]string{}
+	var aliases [][2]string
 	bodies := map[string]string{}
 	for _, path := range goFilesUnder(t, root) {
 		src, err := os.ReadFile(path)
@@ -200,6 +202,14 @@ func readEnvVars(t *testing.T, root string) map[string]bool {
 		bodies[path] = string(src)
 		for _, m := range constDecl.FindAllStringSubmatch(bodies[path], -1) {
 			consts[m[1]] = m[2]
+		}
+		for _, m := range aliasDecl.FindAllStringSubmatch(bodies[path], -1) {
+			aliases = append(aliases, [2]string{m[1], m[2]})
+		}
+	}
+	for _, a := range aliases {
+		if name, ok := consts[a[1]]; ok {
+			consts[a[0]] = name
 		}
 	}
 	ident := regexp.MustCompile(`[a-zA-Z_][A-Za-z0-9_]*`)
@@ -344,10 +354,13 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 	// quote straight after EnvVars( could not see it, which is precisely the
 	// "knob only its author knows about" this check exists for.
 	envVarsLiteral := regexp.MustCompile(`EnvVars\("([A-Z][A-Z0-9_]+)"`)
-	envVarsConst := regexp.MustCompile(`EnvVars\(([a-zA-Z_][A-Za-z0-9_]*)\)`)
+	envVarsCall := regexp.MustCompile(`EnvVars\(([^)]*)\)`)
 	constDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*"([A-Z][A-Z0-9_]+)"`)
+	aliasDecl := regexp.MustCompile(`(?m)^\s*([a-zA-Z_][A-Za-z0-9_]*)\s*=\s*[a-zA-Z_][A-Za-z0-9_]*\.([A-Za-z0-9_]+)`)
+	ident := regexp.MustCompile(`[a-zA-Z_][A-Za-z0-9_]*`)
 
 	consts := map[string]string{} // identifier -> the variable name it holds
+	var aliases [][2]string
 	var sources []struct{ rel, body string }
 	for _, path := range goFilesUnder(t, root) {
 		if strings.HasSuffix(path, "_test.go") {
@@ -363,6 +376,14 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 		for _, m := range constDecl.FindAllStringSubmatch(body, -1) {
 			consts[m[1]] = m[2]
 		}
+		for _, m := range aliasDecl.FindAllStringSubmatch(body, -1) {
+			aliases = append(aliases, [2]string{m[1], m[2]})
+		}
+	}
+	for _, a := range aliases {
+		if name, ok := consts[a[1]]; ok {
+			consts[a[0]] = name
+		}
 	}
 	for _, src := range sources {
 		for _, m := range envVarsLiteral.FindAllStringSubmatch(src.body, -1) {
@@ -370,13 +391,15 @@ func TestReadEnvVarsAreDocumented(t *testing.T) {
 				read[m[1]] = src.rel
 			}
 		}
-		for _, m := range envVarsConst.FindAllStringSubmatch(src.body, -1) {
-			name, ok := consts[m[1]]
-			if !ok {
-				continue // not a single-constant indirection we can resolve
-			}
-			if _, seen := read[name]; !seen {
-				read[name] = src.rel
+		for _, m := range envVarsCall.FindAllStringSubmatch(src.body, -1) {
+			for _, id := range ident.FindAllString(m[1], -1) {
+				name, ok := consts[id]
+				if !ok {
+					continue
+				}
+				if _, seen := read[name]; !seen {
+					read[name] = src.rel
+				}
 			}
 		}
 	}

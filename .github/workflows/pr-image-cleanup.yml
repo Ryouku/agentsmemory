@@ -1,0 +1,75 @@
+name: pr-image-cleanup
+
+# GHCR has no per-push TTL. Delete only package versions whose complete tag set
+# consists of digest-derived PR tags and whose creation time is over seven days
+# old. A version that also carries `latest` or a release tag cannot match.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Delete expired PR image versions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="$GITHUB_REPOSITORY_OWNER"
+          # This is deliberately a different GHCR package from the released
+          # image. Even a broken filter cannot address agentsmemory:latest.
+          package="${GITHUB_REPOSITORY#*/}-pr"
+          cutoff="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          versions="$RUNNER_TEMP/package-versions.jsonl"
+          expired="$RUNNER_TEMP/expired-pr-images.tsv"
+
+          gh api --paginate \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/orgs/${owner}/packages/container/${package}/versions?per_page=100" \
+            > "$versions"
+
+          jq -r --arg cutoff "$cutoff" \
+            -f scripts/select-expired-pr-images.jq "$versions" > "$expired"
+
+          deleted=0
+          while IFS=$'\t' read -r version_id created_at tags; do
+            [ -n "$version_id" ] || continue
+            # Re-fetch immediately before deletion. If a human attached any
+            # non-PR tag since the list snapshot, the shared selector emits
+            # nothing and this version is preserved.
+            current="$RUNNER_TEMP/package-version-${version_id}.json"
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/orgs/${owner}/packages/container/${package}/versions/${version_id}" \
+              > "$current"
+            if ! jq -s -e --arg cutoff "$cutoff" \
+              -f scripts/select-expired-pr-images.jq "$current" >/dev/null; then
+              echo "preserving package version $version_id; tags or age changed"
+              continue
+            fi
+            echo "deleting package version $version_id ($created_at; $tags)"
+            gh api --method DELETE \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "/orgs/${owner}/packages/container/${package}/versions/${version_id}"
+            deleted=$((deleted + 1))
+          done < "$expired"
+
+          {
+            echo "## PR image cleanup"
+            echo
+            echo "Cutoff: \`${cutoff}\`"
+            echo "Deleted versions: **${deleted}**"
+            echo
+            echo "Only versions whose every tag matched \`pr-<number>-sha256-<64 hex>\` were eligible."
+          } >> "$GITHUB_STEP_SUMMARY"

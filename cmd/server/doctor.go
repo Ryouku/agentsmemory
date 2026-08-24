@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
@@ -25,18 +26,30 @@ import (
 func doctorCommand(def config.Config) *cli.Command {
 	return &cli.Command{
 		Name:  "doctor",
-		Usage: "Check the palace for inconsistencies between the stores (read-only; exit 1 when something is wrong)",
+		Usage: "Diagnose silent palace failures without repairing the evidence first",
+		Description: "Doctor exists for silent failures that normal requests and health checks can miss.\n" +
+			"It opens an existing palace exactly as it is: it does not migrate the database,\n" +
+			"reconcile the search index, repair data, or run every mode by default. Select one\n" +
+			"or more explicit questions and use the same storage flags as the server.\n\n" +
+			"  integrity checks (exit non-zero on a finding):\n" +
+			"    --index    do vector payload wings agree with their SQLite drawer rows?\n" +
+			"    --schema   are all tables declared by migrations actually present?\n" +
+			"    --roles    which active API keys authenticate but are refused every write?\n\n" +
+			"  diagnostic reports (measure a question; they do not declare palace health):\n" +
+			"    --graph    what graph would current entity extraction derive from this corpus?\n" +
+			"    --windows  which snippet windows compete for QUERY against --drawer?\n\n" +
+			"A bare `doctor` refuses to run so that zero checks can never look like a healthy palace.",
 		Flags: append(dataFlags(def),
 			// --local mirrors serve's, because without it doctor checks a backend
 			// nobody runs: `--local` is what switches the search index to chromem,
 			// and a self-hosted operator who started the server with it and then
 			// ran `doctor --index` was having a bare SQLite store inspected while
 			// chromem served every query. The check exited 0 on a broken palace.
-			&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Usage: "self-hosted single-workspace mode — must match how the server was started, or a different backend is checked"},
+			&cli.BoolFlag{Name: "local", Sources: cli.EnvVars(mcpprotocol.LocalEnvVar), Usage: "self-hosted single-workspace mode — must match how the server was started, or a different backend is checked"},
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},
-			&cli.BoolFlag{Name: "roles", Usage: "count active API keys that resolve to the read-only role because no membership row records what they may do"},
+			&cli.BoolFlag{Name: "roles", Usage: "count active API keys refused every write: deliberate member roles, missing membership rows, and empty roles"},
 			&cli.BoolFlag{Name: "schema", Usage: "check that every table the migrations declare actually exists — catches a goose version recorded without its effect"},
 			&cli.StringFlag{Name: "windows", Usage: "report every candidate snippet window for this QUERY against --drawer, and which one search returns (read-only)"},
 			&cli.StringFlag{Name: "drawer", Usage: "the memory id --windows reports on"},
@@ -84,7 +97,7 @@ func doctorIndex(ctx context.Context, cfg config.Config, slug string, out io.Wri
 	}
 	// reconcile=false: a checker that rebuilt the index first would report on a
 	// palace it had just repaired, and could not fail on the fault it exists for.
-	svc, err := buildServicesWith(cfg, false)
+	svc, err := inspectServices(cfg)
 	if err != nil {
 		return err
 	}
@@ -145,7 +158,7 @@ func doctorGraph(ctx context.Context, cfg config.Config, slug string, out io.Wri
 	if err := requireExistingDB(cfg.DBPath); err != nil {
 		return err
 	}
-	svc, err := buildServicesWith(cfg, false)
+	svc, err := inspectDatabaseServices(cfg)
 	if err != nil {
 		return err
 	}
@@ -226,7 +239,7 @@ func doctorWindows(ctx context.Context, cfg config.Config, slug, query, drawerID
 		return fmt.Errorf("--windows needs --drawer: a window report is about ONE memory, and picking " +
 			"one for you would report on a memory you did not choose")
 	}
-	svc, err := buildServicesWith(cfg, false)
+	svc, err := inspectDatabaseServices(cfg)
 	if err != nil {
 		return err
 	}
@@ -274,7 +287,7 @@ func doctorRoles(ctx context.Context, cfg config.Config, out io.Writer) error {
 	if err := requireExistingDB(cfg.DBPath); err != nil {
 		return err
 	}
-	svc, err := buildServicesWith(cfg, false)
+	svc, err := inspectDatabaseServices(cfg)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package chromemvec
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,6 +67,110 @@ func TestOpenDiscardsAnOlderIndexLayout(t *testing.T) {
 	if n, err := again.Count("team1"); err != nil || n != 1 {
 		t.Errorf("reopen lost the index: count=%d err=%v", n, err)
 	}
+}
+
+// TestOpenExistingNeverInitializesOrReplacesTheIndex pins the diagnostic open
+// against New's intentionally destructive boot behavior. A doctor must return
+// the fault and leave its evidence byte-for-byte where it found it.
+func TestOpenExistingNeverInitializesOrReplacesTheIndex(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "missing.chromem")
+		if _, err := OpenExisting(dir); err == nil {
+			t.Fatal("inspection initialized a missing index")
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("inspection created the missing index directory (err=%v)", err)
+		}
+	})
+
+	t.Run("stale", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "stale.chromem")
+		stale := filepath.Join(dir, "team1", "old-index.gob")
+		if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+			t.Fatalf("seed stale directory: %v", err)
+		}
+		if err := os.WriteFile(stale, []byte("evidence"), 0o644); err != nil {
+			t.Fatalf("seed stale file: %v", err)
+		}
+
+		if _, err := OpenExisting(dir); err == nil {
+			t.Fatal("inspection accepted an unstamped index")
+		}
+		if got, err := os.ReadFile(stale); err != nil || string(got) != "evidence" {
+			t.Errorf("inspection replaced stale evidence: content=%q err=%v", got, err)
+		}
+	})
+
+	t.Run("current", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "current.chromem")
+		writer, err := New(dir)
+		if err != nil {
+			t.Fatalf("create current index: %v", err)
+		}
+		if err := writer.Upsert(context.Background(), "team1", []store.Point{{
+			ID: "a", Vector: []float32{1, 0, 0}, Payload: map[string]any{"wing": "wing_one"},
+		}}); err != nil {
+			t.Fatalf("seed current index: %v", err)
+		}
+
+		reader, err := OpenExisting(dir)
+		if err != nil {
+			t.Fatalf("inspect current index: %v", err)
+		}
+		points, err := reader.PointsByIDs(context.Background(), "team1", []string{"a"})
+		if err != nil || len(points) != 1 || points[0].ID != "a" {
+			t.Fatalf("read current index: points=%v err=%v", points, err)
+		}
+
+		mutations := []struct {
+			name string
+			run  func() error
+		}{
+			{"ensure namespace", func() error { return reader.EnsureNamespace(context.Background(), "new-team", 3) }},
+			{"upsert", func() error {
+				return reader.Upsert(context.Background(), "team1", []store.Point{{ID: "b", Vector: []float32{0, 1, 0}}})
+			}},
+			{"set payload", func() error {
+				return reader.SetPayload(context.Background(), "team1", []string{"a"}, map[string]string{"wing": "changed"})
+			}},
+			{"delete", func() error { return reader.Delete(context.Background(), "team1", []string{"a"}) }},
+		}
+		for _, mutation := range mutations {
+			if err := mutation.run(); !errors.Is(err, errReadOnly) {
+				t.Errorf("read-only %s error = %v, want %v", mutation.name, err, errReadOnly)
+			}
+		}
+		if collections := reader.db.ListCollections(); len(collections) != 1 || collections["team1"] == nil {
+			t.Errorf("rejected writes changed the in-memory collection set: %v", collections)
+		}
+
+		again, err := OpenExisting(dir)
+		if err != nil {
+			t.Fatalf("reopen after rejected writes: %v", err)
+		}
+		if collections := again.db.ListCollections(); len(collections) != 1 || collections["team1"] == nil {
+			t.Errorf("rejected writes changed the persisted collection set: %v", collections)
+		}
+		points, err = again.PointsByIDs(context.Background(), "team1", []string{"a", "b"})
+		if err != nil || len(points) != 1 || points[0].ID != "a" || points[0].Payload["wing"] != "wing_one" {
+			t.Fatalf("rejected writes changed persisted state: points=%v err=%v", points, err)
+		}
+
+		hits, err := again.Search(context.Background(), "missing-team", []float32{1, 0, 0}, 1, nil)
+		if err != nil || len(hits) != 0 {
+			t.Errorf("search missing namespace: hits=%v err=%v", hits, err)
+		}
+		points, err = again.PointsByIDs(context.Background(), "missing-team", []string{"a"})
+		if err != nil || len(points) != 0 {
+			t.Errorf("read missing namespace: points=%v err=%v", points, err)
+		}
+		if n, err := again.Count("missing-team"); err != nil || n != 0 {
+			t.Errorf("count missing namespace: count=%d err=%v", n, err)
+		}
+		if collections := again.db.ListCollections(); len(collections) != 1 || collections["team1"] == nil {
+			t.Errorf("reads changed the collection set: %v", collections)
+		}
+	})
 }
 
 // TestSearchFilterNarrowsToPayload proves the wing/room scope is answered by the

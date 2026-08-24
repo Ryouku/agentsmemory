@@ -15,7 +15,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/anchorcontract"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/urfave/cli/v3"
 )
@@ -158,7 +159,7 @@ func readSource(path string) *sourceFile {
 	lines := strings.Split(string(raw), "\n")
 	norm := make([]string, len(lines))
 	for i, l := range lines {
-		norm[i] = normalizeSnippet(l)
+		norm[i] = anchorcontract.NormalizeSnippet(l)
 	}
 	return &sourceFile{exists: true, lines: lines, normalized: norm}
 }
@@ -174,7 +175,7 @@ func (s *sourceFile) find(snippet string) (int, bool) {
 	want := strings.Split(strings.TrimSpace(snippet), "\n")
 	var norm []string
 	for _, w := range want {
-		if n := normalizeSnippet(w); n != "" {
+		if n := anchorcontract.NormalizeSnippet(w); n != "" {
 			norm = append(norm, n)
 		}
 	}
@@ -209,10 +210,6 @@ func (s *sourceFile) find(snippet string) (int, bool) {
 	return 0, false
 }
 
-// normalizeSnippet collapses runs of whitespace, mirroring the server's
-// palace.NormalizeSnippet so both sides agree on what "the same code" means.
-func normalizeSnippet(s string) string { return strings.Join(strings.Fields(s), " ") }
-
 // listAnchors fetches the anchors to check.
 func listAnchors(ctx context.Context, c mcpCaller, wing, repo string) ([]anchor, error) {
 	args := map[string]any{"limit": 500}
@@ -225,7 +222,7 @@ func listAnchors(ctx context.Context, c mcpCaller, wing, repo string) ([]anchor,
 	var payload struct {
 		Anchors []anchor `json:"anchors"`
 	}
-	if err := callJSON(ctx, c, toolPrefix+"list_anchors", args, &payload); err != nil {
+	if err := mcpcli.DecodeJSON(ctx, c.CallTool, "list_anchors", args, &payload); err != nil {
 		return nil, err
 	}
 	return payload.Anchors, nil
@@ -240,7 +237,7 @@ func markAnchors(ctx context.Context, c mcpCaller, verdicts []verdict) (int, err
 	var payload struct {
 		Marked int `json:"marked"`
 	}
-	if err := callJSON(ctx, c, toolPrefix+"mark_anchors", map[string]any{"verdicts": items}, &payload); err != nil {
+	if err := mcpcli.DecodeJSON(ctx, c.CallTool, "mark_anchors", map[string]any{"verdicts": items}, &payload); err != nil {
 		return 0, err
 	}
 	return payload.Marked, nil
@@ -250,31 +247,6 @@ func markAnchors(ctx context.Context, c mcpCaller, verdicts []verdict) (int, err
 // flow is testable against a fake without a server.
 type mcpCaller interface {
 	CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error)
-}
-
-// callJSON calls a tool and decodes its JSON text result into out.
-func callJSON(ctx context.Context, c mcpCaller, tool string, args map[string]any, out any) error {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = tool
-	req.Params.Arguments = args
-	res, err := c.CallTool(ctx, req)
-	if err != nil {
-		return fmt.Errorf("%s: %w", tool, err)
-	}
-	if len(res.Content) == 0 {
-		return fmt.Errorf("%s: empty response", tool)
-	}
-	text, ok := mcp.AsTextContent(res.Content[0])
-	if !ok {
-		return fmt.Errorf("%s: unexpected response type", tool)
-	}
-	if res.IsError {
-		return fmt.Errorf("%s: %s", tool, text.Text)
-	}
-	if err := json.Unmarshal([]byte(text.Text), out); err != nil {
-		return fmt.Errorf("%s: decode response: %w", tool, err)
-	}
-	return nil
 }
 
 // resolveProjectWing finds the wing for a directory the same way `load` does, so
@@ -395,10 +367,18 @@ func verifyAnchors(root string, anchors []anchor, out io.Writer) ([]verdict, anc
 			} else {
 				v.Status, drifted = statusDrifted, drifted+1
 				fmt.Fprintf(out, "  DRIFTED  %s — the pinned code is no longer there (memory %s)\n", a.Path, short(a.DrawerID))
-				fmt.Fprintf(out, "           was: %s\n", firstLine(a.Snippet, 88))
+				fmt.Fprintf(out, "           was: %s\n", snippetHeadline(a.Snippet, 88))
 			}
 		}
 		verdicts = append(verdicts, v)
 	}
 	return verdicts, anchorCounts{verified: verified, drifted: drifted, missing: missing, elsewhere: elsewhere}
+}
+
+func snippetHeadline(text string, max int) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if len(text) <= max {
+		return text
+	}
+	return strings.TrimSpace(text[:max]) + "…"
 }

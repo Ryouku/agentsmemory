@@ -12,8 +12,9 @@ RUN go mod download
 # Build a fully static, CGO-free binary. The pure-Go SQLite driver (glebarez)
 # means no cgo is needed; the goose migrations and the dashboard's static
 # assets are embedded, so the resulting binary is entirely self-contained.
+ARG VERSION=dev
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/agentsmemory ./cmd/server
 
 # ---- runtime stage ----
