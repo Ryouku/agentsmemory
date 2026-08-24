@@ -306,8 +306,14 @@ func TestSemanticEvidenceBatchesOverlap(t *testing.T) {
 	ranked := []HybridScore{{Index: 0}, {Index: 1}}
 	lexical := []string{"one", "two"}
 
-	if got := len(semanticEvidenceWindows(long)); got <= windowsPerBatch {
-		t.Fatalf("fixture memory yields %d windows, which is one batch; the test cannot observe overlap", got)
+	// Batching is over the FLATTENED window list across documents, not per
+	// memory — and one document now yields at most one batch by construction (see
+	// the stride widening in semanticEvidenceWindows, which bounds a single
+	// document to semanticEvidenceBatchSize passages). So what this test needs is
+	// more than one batch in TOTAL, which two full documents provide.
+	if total := len(semanticEvidenceWindows(long)) * len(survivors); total <= windowsPerBatch {
+		t.Fatalf("fixture yields %d windows across %d memories, which is one batch; the test "+
+			"cannot observe concurrency", total, len(survivors))
 	}
 
 	query := make([]float32, fakeDim)

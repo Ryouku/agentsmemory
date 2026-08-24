@@ -82,9 +82,28 @@ func (s *Service) semanticRerankDocuments(
 				return fmt.Errorf("embed semantic evidence passages: got %d vectors for %d passages", len(vectors), len(inputs))
 			}
 			for i, vector := range vectors {
+				// A GLOBAL fault stays fatal; a LOCAL one costs one passage.
+				//
+				// Dimension mismatch is a property of the model or the stored
+				// index, not of this passage: every other vector has it too, so
+				// failing fast names the real problem instead of silently
+				// scoring a whole shortlist at zero.
+				if len(vector) != len(queryVector) {
+					return fmt.Errorf("embed semantic evidence passages: vector %d has %d dimensions, "+
+						"query has %d — the embedding model and the query vector disagree",
+						from+i, len(vector), len(queryVector))
+				}
+				// Anything else cosineSimilarity rejects is a property of THIS
+				// passage: a zero-magnitude vector, or a non-finite component.
+				// semanticEvidenceWindows genuinely emits whitespace-only windows
+				// (a long blank run in a memory yields a whole batch of them), and
+				// aborting the errgroup for one of those dropped every document in
+				// the shortlist back to lexical evidence — ten documents' semantic
+				// ranking lost to one blank passage. It scores 0 and competes
+				// honestly instead, which is what an uninformative passage deserves.
 				similarity, ok := cosineSimilarity(queryVector, vector)
 				if !ok {
-					return fmt.Errorf("embed semantic evidence passages: vector %d has incompatible dimensions or zero magnitude", from+i)
+					similarity = 0
 				}
 				windows[from+i].similarity = similarity
 			}
@@ -121,6 +140,26 @@ func semanticEvidenceWindows(content string) []Region {
 	}
 
 	step := DefaultSnippetChars - minRegionRunes
+	// Bound the passages ONE document may put on the shared embedder.
+	//
+	// The natural stride yields about one window per 300 runes, so a 100k-rune
+	// memory produces ~334 of them and a shortlist of ten produces ~3,340 — to
+	// keep four each. That is ~1% utilisation of a server doing real inference
+	// for every tenant, and nothing capped it.
+	//
+	// The cap is one batch per document, which is why it is expressed as
+	// semanticEvidenceBatchSize rather than a new number: past it, a single
+	// document would need more round trips than the batching was designed to
+	// hide. WIDENING the stride rather than truncating the list is the whole
+	// point — the windows still span the entire memory, so evidence can still be
+	// selected from its end. A truncating cap would quietly make the tail of a
+	// long memory unreachable, which is the failure this path exists to avoid.
+	//
+	// ⚠It changes which passages exist for memories past ~48k runes, and so can
+	// change selected evidence for them. Note it if ADR-024's arms are re-run.
+	if spread := (len(runes) + semanticEvidenceBatchSize - 1) / semanticEvidenceBatchSize; spread > step {
+		step = spread
+	}
 	windows := make([]Region, 0, (len(runes)+step-1)/step)
 	for start := 0; start < len(runes); start += step {
 		end := min(start+DefaultSnippetChars, len(runes))
