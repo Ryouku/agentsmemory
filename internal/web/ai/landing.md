@@ -221,7 +221,7 @@ source, you can always self-host and pay your own hardware bill instead.
 
 - [Sandboxed installs](./sandboxes.md)
 - [Agent self-install guide](./claude-guide.md)
-- [Setup without the CLI](./windows-guide.md)
+- [Connect any agent (MCP install)](./install-memory-mcp.md)
 
 [^landing]: AI Agent Memory — landing page
 [^repo]: agentsmemory source code (Go)

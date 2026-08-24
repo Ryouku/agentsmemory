@@ -136,6 +136,9 @@ func (s *Server) Routes(r chi.Router) {
 	// Its sibling for the clients the CLI installer cannot reach — Windows, VS Code,
 	// Cursor, Claude Desktop — which connect to the remote MCP directly instead.
 	r.Get("/windows-guide", s.handleWindowsGuide)
+	// The harness-agnostic MCP registration document — the front door for any
+	// client, and the only route for hosts the CLI installer cannot reach.
+	r.Get("/install-memory-mcp", s.handleInstallMemoryMCP)
 	// The memory-model handoff document. Not an install guide — it starts from a
 	// connected MCP and covers what the team builds inside the palace.
 	r.Get("/bootstrap-memory", s.handleBootstrapMemory)

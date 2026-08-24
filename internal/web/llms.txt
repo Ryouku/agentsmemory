@@ -14,14 +14,14 @@ file carries YAML frontmatter with a `type`.
 - [What AI Agent Memory is]({{BASE_URL}}/ai/landing.md): the product, the memory-palace data model (wing, room, drawer, closet, hallway, tunnel, knowledge graph), the four-step MCP flow, capabilities, pricing and the full FAQ. Start here.
 - [Sandboxed installs]({{BASE_URL}}/ai/sandboxes.md): one isolated agent config per project under `~/.sandboxes/<name>`, the verified per-agent matrix for Claude Code, Codex and pi, and what `init` / `load` commit to a repository.
 - [Agent self-install, CLI]({{BASE_URL}}/ai/claude-guide.md): how a coding agent installs the kit and registers the MCP server on its own, on macOS or Linux.
-- [Setup without the CLI]({{BASE_URL}}/ai/windows-guide.md): Windows, VS Code, Cursor and Claude Desktop connect to the remote MCP server by hand-written config, because the bash installer cannot run there.
+- [Connect any agent (MCP install)]({{BASE_URL}}/ai/install-memory-mcp.md): the harness-agnostic registration route and the only one needed on Windows — a URL and a bearer token, `mcp add` commands for Claude Code and codex, verified per-client config for VS Code, Cursor and Claude Desktop, and what to do on a host we have not verified. `/windows-guide` redirects here.
 - [Bootstrap memory]({{BASE_URL}}/ai/bootstrap-memory.md): the memory model a team builds once the MCP is connected — wings and rooms, the two auto-loaded skills, knowledge-graph scoping, recall, continuity, and the acceptance test. Not an install guide.
 - [Bundle index]({{BASE_URL}}/ai/index.md): the OKF bundle's own table of contents.
 
 ## Install guides (authoritative, served as Markdown)
 
 - [/claude-guide]({{BASE_URL}}/claude-guide): the full agent-facing install guide. Paste its URL into a coding agent and it performs the install, asking you for the workspace token it must not invent.
-- [/windows-guide]({{BASE_URL}}/windows-guide): the full no-CLI setup guide, with per-client MCP config paths for VS Code, Cursor and Claude Desktop.
+- [/install-memory-mcp]({{BASE_URL}}/install-memory-mcp): the full connect-any-client guide. Paste its URL into any coding assistant and it registers the MCP server, then hands off to /bootstrap-memory.
 - [/bootstrap-memory]({{BASE_URL}}/bootstrap-memory): the full memory-model document. Hand its URL to a coding agent and say "implement memory from this"; it assumes the MCP is already connected and never installs anything.
 
 ## Optional
