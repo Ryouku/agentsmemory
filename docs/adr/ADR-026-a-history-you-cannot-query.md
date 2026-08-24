@@ -145,10 +145,36 @@ CREATE INDEX idx_kg_triples_team_predicate ON kg_triples (team_id, predicate);
 | Wanted as an entry point | Index it would need | Ship when |
 |---|---|---|
 | drawer → facts (`source_drawer_id` alone) | `(team_id, source_drawer_id)` | someone asks it standalone; today it refines an entity query |
-| "what expired this week" with no entity | `(team_id, valid_to)` | the audit view exists and is used; a `CREATE INDEX` is additive and reversible |
 | entity-free timeline ordering | `(team_id, valid_from)` | the temp B-tree matters — negligible at ~1,300 triples, name a row count rather than a feeling |
+| any date range as an entry point | `(team_id, valid_to)` etc. | **blocked, not merely deferred — see §0c** |
 
-Each is one additive `CREATE INDEX`, no data rewrite, safe to add later. That is the difference between a **column** added ahead of its writer (§6, refused) and an **index** added ahead of its query: the column is a contract, the index is an optimisation, and only one of them lies to a reader when it is empty.
+The first two are one additive `CREATE INDEX`, no data rewrite, safe to add later. That is the difference between a **column** added ahead of its writer (§6, refused) and an **index** added ahead of its query: the column is a contract, the index is an optimisation, and only one of them lies to a reader when it is empty. The third is a different case entirely.
+
+### 0c. Dates cannot be indexed here, and the reason is correctness rather than cost
+
+`KGAdd` stores `valid_from` and `valid_to` **exactly as supplied** (`kg.go:366`). It normalises them only to reject an inverted interval, never for storage. So the column holds a mixture: `2026-08-25` beside `2026-08-25T09:00:00Z`.
+
+The comparison is what that costs. SQLite compares TEXT as bytes, so a shorter string that is a prefix sorts first — measured in a scratch database on 2026-08-25:
+
+```
+window [2026-08-01T00:00:00Z .. 2026-08-07T23:59:59Z]
+  2026-08-01T09:00:00Z   MATCHED
+  2026-08-07             MATCHED
+  2026-08-07T09:00:00Z   MATCHED
+  2026-08-01             DROPPED   ← a date-only value ON the lower bound
+```
+
+A fact ending on the first day of the window is silently excluded from it. Only for date-only values, only at the lower boundary — which is to say, invisible to any test written with datetime fixtures, and wrong on exactly the rows an agent files by hand.
+
+**Today's behaviour is nonetheless correct, and how it manages that is the whole point.** `inEffectAt` normalises *both* sides at comparison time — `temporalStartKey(row.ValidFrom)` against a `temporalStartKey(ao)` argument (`kg.go:434`). The correctness lives in Go, per row, at the moment of comparison. **An index cannot do that**: it compares the stored bytes, and the stored bytes are not canonical.
+
+So the ordering of work is forced, and it is not a preference:
+
+1. **Date filters stay Go-side refinements.** Not for performance — pushing them into SQL would be *wrong*, and wrong in a way that returns fewer rows rather than erroring.
+2. **Indexing a date column requires normalising on write first**, plus a backfill of existing rows. That changes `kg_add`, which this ADR's own Amendment deliberately leaves out of scope so ADR-004's measurement stays intact.
+3. **Therefore it is a separate ADR**, listed in Follow-ups. Attempting it here would trade the one guarantee that made the Amendment defensible.
+
+**Which repairs an inconsistency in an earlier draft of this document.** *"What expired this week"* is the motivating question of issue #23 and it is entity-free, so relegating date filters to refinements-behind-an-entry-point would have made the headline feature unaskable across the graph. It is answerable, and the route is `am_kg_timeline` with no entity: an explicit, bounded, tenant-scoped scan with the date filter applied in Go, paged by T5. At ~1,300 triples that is correct and cheap. The number at which it stops being cheap belongs in Follow-ups as a row count, not as a feeling.
 
 ### 1. Endedness — `status`
 
@@ -299,7 +325,8 @@ Response additions, all additive keys so a later field cannot break a caller: `s
 | T5 | `limit`/`offset`/`total` on the entity-free timeline | palace + mcpserver | `TestTimelinePagesPastTheDefaultLimit` — assert row 101 is reachable |
 | T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | see T7 |
 | T7 | `predicate` as an **entry point** (`entity` becomes optional when it is given) + the three provenance filters as refinements, **and the derived gate** | palace + mcpserver | `TestEveryTripleColumnHasAQueryDecision` — walk `kgTripleRow` by reflection; each field must be a filter argument, a returned `KGFact` field, or in an exclusion map carrying a reason. Prove it by adding a dummy column and watching the build go red. This is what makes §0 true rather than aspirational |
-| T8 | Refuse a refinement-only query | mcpserver | `TestRefinementWithoutAnEntryPointIsRefused` — `source_drawer_id` with no `entity` and no `predicate` must error, not serve a per-tenant scan |
+| T8 | Refuse a refinement-only query, **except a date filter on the entity-free timeline**, which is the sanctioned bounded scan (§0c) | mcpserver | `TestRefinementWithoutAnEntryPointIsRefused` — `source_drawer_id` with no `entity` and no `predicate` must error; and `TestTimelineAcceptsADateWindowWithNoEntity`, so the refusal does not eat the feature the ADR exists for |
+| T8b | Pin the date-only boundary case | palace | `TestDateOnlyBoundIsIncludedAtTheWindowEdge` — a fact with `valid_to` `2026-08-01` must be returned by a window starting `2026-08-01`. Mutate by comparing raw strings instead of `temporalEndKey`-normalised ones and it must go red. This is the case a datetime fixture cannot see |
 | T9 | Pin the entry points to real index use | palace | `TestEntryPointFiltersAreIndexed` — run `EXPLAIN QUERY PLAN` per entry-point shape and assert the **filtered column appears in the index constraint list**, not merely that the output says `SEARCH`. Mutate by dropping `idx_kg_triples_team_predicate` and it must go red; a test grepping for `SCAN` stays green through that and is worthless |
 
 T1 ships with the old default deliberately, so the filters can be exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
@@ -345,7 +372,9 @@ No migration, no backfill, no index rebuild in either direction.
 ## Follow-ups
 
 - **Push the filters into SQL** if an entity's row count ever makes the Go-side filter measurable. Not now: unmeasured, and ADR-009 is the standing rule against tuning on belief. §0b's entry-point rule is what keeps the Go-side filter over a small set in the first place.
-- **The three deferred indexes** in §0b — `(team_id, source_drawer_id)`, `(team_id, valid_to)`, `(team_id, valid_from)` — each with its named trigger. An additive `CREATE INDEX` with no data rewrite, so none of them needs deciding now.
+- **The two deferred indexes** in §0b — `(team_id, source_drawer_id)` and `(team_id, valid_from)` — each with its named trigger. An additive `CREATE INDEX` with no data rewrite, so neither needs deciding now.
+- **Normalise temporal values on write, then index them** — the prerequisite §0c identifies, and its own ADR because it changes `kg_add` and needs a backfill. Three parts, in this order: canonicalise `valid_from` / `valid_to` / `extracted_at` to `YYYY-MM-DDTHH:MM:SSZ` at the write path; backfill existing rows; only then `CREATE INDEX (team_id, valid_to)` and push date filters into SQL. Doing any of it out of order produces the silent boundary drop in §0c, in production, on the rows an agent hand-filed.
+- **The row count at which the entity-free timeline scan stops being acceptable.** §0c sanctions it at ~1,300 triples. Nobody has measured where it stops, and ADR-009's rule says the number must come from this corpus rather than from a feeling. Until then it is bounded by T5's paging.
 - **Generalise the `EXPLAIN QUERY PLAN` gate.** T9 pins the KG's entry points; every other table in this repo has query shapes nobody has checked, and `idx_kg_triples_team_predicate` sat indexed-and-unqueried long enough to prove the reverse case exists too — an index nothing uses is as invisible as a filter nothing indexes.
 - **Reconcile `current` and `as_of` at the boundary instant** — the day-lag in the Context table. Documented here; a fix means deciding whether `temporalEndKey`'s end-of-day padding is right for `valid_to`, which touches the write path's semantics and therefore waits for ADR-004's measurement.
 - **A `withheld` convention for `am_search`** — if reporting what a filter removed is right here, it is likely right for wing/room-scoped recall too. Worth its own look rather than generalising from one case.
