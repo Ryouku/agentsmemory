@@ -261,7 +261,7 @@ func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []s
 		return out, nil
 	}
 	var rows []drawerRow
-	if err := r.memoryChunkQuery(ctx, teamID, roots, "*").Scan(&rows).Error; err != nil {
+	if err := r.memoryChunkQuery(ctx, teamID, roots, allDrawerColumns).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
@@ -290,7 +290,7 @@ func (r *Repo) MemoryChunkIDsByRoots(ctx context.Context, teamID string, roots [
 		ParentID   string
 		ChunkIndex int
 	}
-	if err := r.memoryChunkQuery(ctx, teamID, roots, "id, parent_id, chunk_index").Scan(&rows).Error; err != nil {
+	if err := r.memoryChunkQuery(ctx, teamID, roots, chunkIdentityColumns).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
@@ -301,6 +301,33 @@ func (r *Repo) MemoryChunkIDsByRoots(ctx context.Context, teamID string, roots [
 		out[root] = append(out[root], row.ID)
 	}
 	return out, nil
+}
+
+// memoryChunkColumns names a projection memoryChunkQuery may select. It is a
+// closed type rather than a string because the value is interpolated into
+// Select() — GORM cannot parameterise a column list — so a `string` parameter is
+// an SQL-injection sink one careless call site away from being reachable. Every
+// call site today passes a literal and nothing external reaches it; making the
+// type closed means nothing external CAN, without the compiler objecting.
+type memoryChunkColumns int
+
+const (
+	// allDrawerColumns loads whole chunks, for reassembling a memory's text.
+	allDrawerColumns memoryChunkColumns = iota
+	// chunkIdentityColumns loads only identity. chunk_index is included because a
+	// compound SELECT can only order by a column it returns; content and entities
+	// — the columns this projection exists to avoid — stay on the server.
+	chunkIdentityColumns
+)
+
+// sql renders the projection. An unknown value falls back to the widest
+// projection, which is the safe direction to be wrong in: too much data, never
+// a malformed statement.
+func (c memoryChunkColumns) sql() string {
+	if c == chunkIdentityColumns {
+		return "id, parent_id, chunk_index"
+	}
+	return "*"
 }
 
 // memoryChunkQuery selects a memory's chunks as a UNION of two single-column
@@ -320,10 +347,16 @@ func (r *Repo) MemoryChunkIDsByRoots(ctx context.Context, teamID string, roots [
 // undoes the fix. The branches cannot overlap anyway: a root is stored with an
 // empty parent_id, so `id IN roots` matches only roots and `parent_id IN roots`
 // only their children.
-func (r *Repo) memoryChunkQuery(ctx context.Context, teamID string, roots []string, columns string) *gorm.DB {
+// ⚠BOTH branches carry `team_id = ?`, and both are load-bearing. The child
+// branch matches on parent_id, which is caller-influenced data: a row in ANOTHER
+// tenant whose parent_id happens to name this tenant's root would be returned by
+// an unscoped branch, and it flows straight through reassembleMemory onto the
+// wire. TestMemoryChunkQueriesRefuseToCrossTenants is the gate; delete either
+// predicate and watch it go red.
+func (r *Repo) memoryChunkQuery(ctx context.Context, teamID string, roots []string, columns memoryChunkColumns) *gorm.DB {
 	db := r.db.WithContext(ctx)
-	byID := db.Select(columns).Table("drawers").Where("team_id = ? AND id IN ?", teamID, roots)
-	byParent := db.Select(columns).Table("drawers").Where("team_id = ? AND parent_id IN ?", teamID, roots)
+	byID := db.Select(columns.sql()).Table("drawers").Where("team_id = ? AND id IN ?", teamID, roots)
+	byParent := db.Select(columns.sql()).Table("drawers").Where("team_id = ? AND parent_id IN ?", teamID, roots)
 	// Ordering belongs on the compound result: sorting inside a branch is not
 	// guaranteed to survive the union. SQLite rejects parenthesised operands
 	// around UNION ALL, so the branches are spliced bare and only the compound

@@ -34,6 +34,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,38 @@ type Embedder struct {
 	probing     bool
 	nextProbe   time.Time
 	batchWarned bool
+
+	// safeEndpoint is infoEndpoint with any userinfo stripped, for logs.
+	//
+	// EMBED_URL is an operator-supplied URL and http://user:pass@host is a valid
+	// one, so logging the configured address verbatim writes the password into
+	// whatever collects those lines — where it outlives the process, is readable
+	// by anyone with log access, and is invisible to the operator who set it.
+	// Computed once here rather than at each log site so a future log line cannot
+	// reach for the wrong field by habit.
+	safeEndpoint string
+}
+
+// redactURL removes userinfo from a URL for logging, returning it otherwise
+// unchanged so the host, port and path stay diagnosable. A redaction that also
+// hid the host would turn a connectivity bug into an unreadable log line, which
+// is how redaction gets removed again.
+//
+// It clears User outright rather than using url.Redacted(), which masks only the
+// PASSWORD and prints the username verbatim. A username identifies an account
+// and contributes nothing to "which endpoint failed", so there is no reason to
+// keep it in a line that may be shipped to a log collector.
+//
+// A URL that does not parse is reported as an opaque placeholder rather than
+// echoed: an unparseable value is exactly the case where assuming it holds no
+// secret is unjustified.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable embed URL)"
+	}
+	u.User = nil
+	return u.String()
 }
 
 // New constructs an Embedder for the given TEI base URL (e.g.
@@ -97,6 +130,7 @@ func New(baseURL string, timeout time.Duration) *Embedder {
 	return &Embedder{
 		endpoint:     baseURL + "/embed",
 		infoEndpoint: baseURL + "/info",
+		safeEndpoint: redactURL(baseURL) + "/info",
 		http:         &http.Client{Timeout: timeout},
 		retryAfter:   defaultProbeRetry,
 	}
@@ -199,7 +233,7 @@ func (e *Embedder) clientBatchSize(ctx context.Context) int {
 		// deployment rather than a fault.
 		if warn {
 			slog.Warn("TEI capability discovery failed; using the default client batch size and will retry",
-				"endpoint", e.infoEndpoint, "batch", maxBatch, "error", err)
+				"endpoint", e.safeEndpoint, "batch", maxBatch, "error", err)
 		}
 		return maxBatch
 	}
@@ -228,16 +262,16 @@ func (e *Embedder) discoverClientBatchSize(ctx context.Context) (int, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("GET %s: %s", e.infoEndpoint, resp.Status)
+		return 0, fmt.Errorf("GET %s: %s", e.safeEndpoint, resp.Status)
 	}
 	var info struct {
 		MaxClientBatchSize int `json:"max_client_batch_size"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return 0, fmt.Errorf("decode %s: %w", e.infoEndpoint, err)
+		return 0, fmt.Errorf("decode %s: %w", e.safeEndpoint, err)
 	}
 	if info.MaxClientBatchSize < 1 {
-		return 0, fmt.Errorf("%s advertised max_client_batch_size=%d", e.infoEndpoint, info.MaxClientBatchSize)
+		return 0, fmt.Errorf("%s advertised max_client_batch_size=%d", e.safeEndpoint, info.MaxClientBatchSize)
 	}
 	return min(info.MaxClientBatchSize, maxDiscoveredBatch), nil
 }

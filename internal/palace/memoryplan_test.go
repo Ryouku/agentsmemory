@@ -44,10 +44,10 @@ func TestMemoryChunkLookupSeeksRatherThanScansTheTenant(t *testing.T) {
 	}
 	root := added.Drawers[0].ID
 
-	for _, columns := range []string{"*", "id, parent_id, chunk_index"} {
+	for _, columns := range []memoryChunkColumns{allDrawerColumns, chunkIdentityColumns} {
 		plan := memoryChunkQueryPlan(t, svc, ctx, "team-alpha", []string{root}, columns)
 		if strings.Contains(strings.ToUpper(plan), "SCAN DRAWERS") {
-			t.Fatalf("memory chunk lookup (columns %q) scans the tenant's drawers instead of seeking:\n%s", columns, plan)
+			t.Fatalf("memory chunk lookup (columns %q) scans the tenant's drawers instead of seeking:\n%s", columns.sql(), plan)
 		}
 		// Assert on the CONSTRAINED COLUMNS, not on the index name.
 		//
@@ -59,7 +59,7 @@ func TestMemoryChunkLookupSeeksRatherThanScansTheTenant(t *testing.T) {
 		for _, seek := range []string{"AND id=?", "AND parent_id=?"} {
 			if !strings.Contains(plan, seek) {
 				t.Fatalf("memory chunk lookup (columns %q) has no %q seek, so it is reading more than the requested roots:\n%s",
-					columns, seek, plan)
+					columns.sql(), seek, plan)
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func (r *sqlRecorder) statements() []string {
 // memoryChunkQueryPlan returns SQLite's plan for the REAL query the repo issues,
 // one plan row per line. It renders the query through a dry-run session so the
 // statement under test is the shipped one rather than a hand-copied echo of it.
-func memoryChunkQueryPlan(t *testing.T, svc *Service, ctx context.Context, teamID string, roots []string, columns string) string {
+func memoryChunkQueryPlan(t *testing.T, svc *Service, ctx context.Context, teamID string, roots []string, columns memoryChunkColumns) string {
 	t.Helper()
 
 	dry := &Repo{db: svc.repo.db.Session(&gorm.Session{DryRun: true})}
