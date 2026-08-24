@@ -483,3 +483,106 @@ func TestRankOfCountsMemorySlotsNotChunkPositions(t *testing.T) {
 			"when there is nothing to fold", got)
 	}
 }
+
+// TestReassemblingAMinedMemoryDoesNotDuplicateItsOverlap is a gate on the
+// content an agent reads, in BOTH arms.
+//
+// reassembleMemory skipped overlap removal for chunks carrying an author,
+// documented as "diary chunks, which were stored without overlap". Mine stamps
+// an author on every drawer it writes and overlaps by MineChunkOverlap, so
+// every multi-chunk mined memory was reassembled with its overlap re-emitted at
+// each boundary — measured at +4,477 runes on a 19,390-rune source, 57 of 260
+// paragraphs twice.
+//
+// hydrateResultMemories runs unconditionally, so this reached the wire with
+// MEMORY_LEVEL_RANKING=false too, and Identity, Coverage, FullLength and the
+// snippet regions were all computed over the duplicated text.
+func TestReassemblingAMinedMemoryDoesNotDuplicateItsOverlap(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var b strings.Builder
+	for i := 0; i < 260; i++ {
+		fmt.Fprintf(&b, "Paragraph %d states a distinct claim about retrieval and its measurement. ", i)
+	}
+	original := b.String()
+
+	if _, err := svc.Mine(ctx, "team-mine", MineInput{
+		Wing: "wing_alpha", Room: "decisions", Source: "overlap.md", Content: original,
+	}); err != nil {
+		t.Fatalf("mine: %v", err)
+	}
+
+	var rows []drawerRow
+	if err := svc.repo.db.WithContext(ctx).
+		Where("team_id = ? AND source_file = ?", "team-mine", "overlap.md").
+		Order("chunk_index ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load mined chunks: %v", err)
+	}
+	stored := make([]Drawer, 0, len(rows))
+	for _, r := range rows {
+		stored = append(stored, fromRow(r))
+	}
+	if len(stored) < 3 {
+		t.Fatalf("mined into %d chunks; the fixture needs several boundaries", len(stored))
+	}
+
+	got := reassembleMemory(stored)
+	if len([]rune(got)) > len([]rune(original)) {
+		t.Fatalf("reassembled mined memory is %d runes against an original of %d (+%d, about %d boundaries x %d overlap): the stored overlap was re-emitted",
+			len([]rune(got)), len([]rune(original)),
+			len([]rune(got))-len([]rune(original)), len(stored)-1, MineChunkOverlap)
+	}
+	for i := 0; i < 260; i++ {
+		marker := fmt.Sprintf("Paragraph %d states", i)
+		if strings.Count(got, marker) > 1 {
+			t.Fatalf("%q appears %d times in the reassembled memory; an agent reads the same prose twice",
+				marker, strings.Count(got, marker))
+		}
+	}
+}
+
+// TestReassemblingADiaryMemoryKeepsEveryChunk pins the other side: the diary is
+// the one writer that does NOT overlap, so stripping there would delete real
+// prose rather than a duplicate.
+func TestReassemblingADiaryMemoryKeepsEveryChunk(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "SESSION line %d recording what happened and why it mattered. ", i)
+	}
+	entry := b.String()
+
+	if _, err := svc.WriteDiary(ctx, "team-diary", DiaryWriteInput{
+		Agent: "claude-code-aks", Wing: "wing_alpha", Entry: entry,
+	}); err != nil {
+		t.Fatalf("write diary: %v", err)
+	}
+
+	var rows []drawerRow
+	if err := svc.repo.db.WithContext(ctx).
+		Where("team_id = ? AND room = ?", "team-diary", DiaryRoom).
+		Order("chunk_index ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load diary chunks: %v", err)
+	}
+	stored := make([]Drawer, 0, len(rows))
+	for _, r := range rows {
+		stored = append(stored, fromRow(r))
+	}
+	if len(stored) < 2 {
+		t.Fatalf("diary entry stored as %d chunk(s); the fixture needs a boundary", len(stored))
+	}
+	if !storedWithoutOverlap(stored[1]) {
+		t.Fatalf("a diary chunk (agent=%q source=%q) is not recognised as overlap-free",
+			stored[1].Agent, stored[1].SourceFile)
+	}
+
+	got := reassembleMemory(stored)
+	for i := 0; i < 200; i++ {
+		if !strings.Contains(got, fmt.Sprintf("SESSION line %d ", i)) {
+			t.Fatalf("line %d is missing from the reassembled diary entry: overlap stripping deleted real prose", i)
+		}
+	}
+}

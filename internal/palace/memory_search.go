@@ -7,9 +7,10 @@ import (
 )
 
 // maxCandidateWidening caps how far past candidateK the memory arm will widen
-// its vector prefix. Eight doublings' worth of headroom is far more than a
-// clustered prefix of siblings needs, and it converts an unbounded corpus walk
-// into a bounded one when a scope filter and the index disagree.
+// its vector prefix: eight TIMES it, which is three doublings. That is far more
+// headroom than a clustered prefix of siblings needs, and it converts an
+// unbounded corpus walk into a bounded one when a scope filter and the index
+// disagree.
 const maxCandidateWidening = 8
 
 // searchCandidates resolves a vector prefix to in-scope drawer rows. The legacy
@@ -187,8 +188,27 @@ func (s *Service) hydrateResultMemories(ctx context.Context, teamID string, resu
 	return nil
 }
 
-// reassembleMemory removes ChunkText's exact overlap while preserving diary
-// chunks, which were stored without overlap. It never summarizes or invents
+// storedWithoutOverlap reports whether a chunk came from the ONE writer that
+// does not overlap adjacent chunks: the diary.
+//
+// The discriminator used to be "has an author", which is wrong and was
+// expensive. Mine stamps an author on every drawer it writes — defaulting to
+// DefaultMineAgent when the caller supplies none, so it is never empty — while
+// mineChunkText overlaps by MineChunkOverlap. Every multi-chunk MINED memory
+// therefore took the no-overlap branch and re-emitted its overlap at each
+// boundary: measured at +4,477 runes on a 19,390-rune source, with 57 of 260
+// paragraphs appearing twice.
+//
+// Author-without-source is exact: WriteDiary and Mine are the only writers that
+// set an author, Mine requires a source (sanitizeSource rejects an empty one),
+// and Add sets no author at all. So this admits diary chunks and nothing else,
+// including a memory mined into the diary room.
+func storedWithoutOverlap(d Drawer) bool {
+	return d.Agent != "" && d.SourceFile == ""
+}
+
+// reassembleMemory removes the exact overlap chunking added while preserving
+// diary chunks, which were stored without any. It never summarizes or invents
 // prose: the result consists only of stored content in chunk order.
 func reassembleMemory(chunks []Drawer) string {
 	if len(chunks) == 0 {
@@ -201,7 +221,7 @@ func reassembleMemory(chunks []Drawer) string {
 	b.WriteString(chunks[0].Content)
 	for i := 1; i < len(chunks); i++ {
 		next := chunks[i].Content
-		if chunks[i].Agent != "" || chunks[i-1].Agent != "" {
+		if storedWithoutOverlap(chunks[i]) {
 			b.WriteString(next)
 			continue
 		}
