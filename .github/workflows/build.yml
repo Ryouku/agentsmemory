@@ -55,6 +55,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # A malformed workflow does not run and therefore cannot report its own
+      # failure. Lint every workflow from this independent, always-on CI path.
+      - name: Lint GitHub Actions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Vet
         run: go vet ./...
       - name: Test
