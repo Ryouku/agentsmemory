@@ -94,6 +94,51 @@ Compose or process environment.
 The default stays false until production comparison selects a winner. Shipping an unmeasured default
 would contradict ADR-014; shipping an unreachable treatment would contradict ADR-006.
 
+### Measured production comparison (2026-08-24)
+
+The first bounded production comparison does **not** justify changing the default. The same PR #25
+image was restarted once per arm. `am_status.ranking` proved that every ranking knob was unchanged
+(`rrf`, auto lexical weight, page-max normalisation, closet boost 0, reranker pool 128 and weight
+0.75); only `unit=memory` changed to `unit=chunk`. Six fixed queries with preselected memory ids were
+run three times per arm against `wing_agentmemories`, with the same limits, context and distance
+thresholds.
+
+| Query | Treatment rank | Control rank | Treatment median | Control median |
+|---|---:|---:|---:|---:|
+| live open threads | 1 | 1 | 1,479 ms | 1,257 ms |
+| chunk-crowding design | 1 | 1 | 1,318 ms | 1,267 ms |
+| authenticated templ preview technique | 1 | 1 | 1,464 ms | 1,172 ms |
+| PR image protocol | 1 | 1 | 1,469 ms | 1,341 ms |
+| current deploy truth | 1 | 2 | 1,467 ms | 1,230 ms |
+| rejected alternatives / child passage | 2 | 2 | 1,423 ms | 1,309 ms |
+
+Using one expected id per query gives treatment MRR 0.917 and control MRR 0.833, with hit@1 of 5/6
+and 4/6 respectively. That apparent quality gain is not strong evidence: for the deploy query the
+control ranked an older memory containing the same correct answer first, and the child-passage query
+also had another relevant implementation diary at rank 1 in both arms. By answer correctness rather
+than one-id identity, both arms answered all six probes. The treatment did select child chunk 1 for
+the child-passage probe while control selected root chunk 0; both returned the full memory and both
+delivered the two verified sibling/root anchors. Anchor delivery is therefore verified, but it does
+not distinguish the arms because the protocol fix intentionally applies to both.
+
+Across the 18 graded calls, client-observed median elapsed time was 1,466 ms for treatment and
+1,269 ms for control: treatment was about 197 ms or 15.5% slower. This is a small sequential sample,
+not a server-side latency benchmark. The treatment-baseline write also added two chunks before the
+control window (1,460 to 1,462 drawers), so the comparison is near-matched rather than an identical
+corpus. Neither change altered the selected answers except for the equivalent deploy ordering above.
+
+The required cost attribution is still incomplete. Search telemetry records candidates, hits and
+whether reranking ran, but neither `am_search` nor `am_recall_stats` exposes candidate/vector depth or
+reranker document cost. The comparison can therefore assess returned ranks, evidence, anchors and
+client latency, but cannot say how much prefix widening or reranker work the treatment paid for.
+
+**Verdict:** retain `MEMORY_LEVEL_RANKING=false`. The treatment fixes the adversarial structural
+failures pinned by tests, but this small live workload showed equivalent answer quality and a latency
+cost. A later decision to change the default needs a larger real-query population with multi-answer
+relevance (`ExpectAny` or human judgement), an unchanged corpus or crossover replay, and exposed
+candidate/reranker cost. The treatment remains available for that experiment; the control is not
+removed.
+
 ## Alternatives Considered
 
 - **Change the durable schema to one row and one vector per memory.** Rejected. It removes passage-level
