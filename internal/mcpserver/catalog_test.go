@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -120,8 +121,8 @@ func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 func TestEveryToolNameIsUniqueAndPrefixed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, name := range fullCatalog(true) {
-		if !strings.HasPrefix(name, toolPrefix) {
-			t.Errorf("tool %q is missing the %q namespace prefix", name, toolPrefix)
+		if !strings.HasPrefix(name, mcpprotocol.ToolPrefix) {
+			t.Errorf("tool %q is missing the %q namespace prefix", name, mcpprotocol.ToolPrefix)
 		}
 		if seen[name] {
 			t.Errorf("tool %q is registered twice", name)

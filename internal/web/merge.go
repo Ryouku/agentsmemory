@@ -90,7 +90,7 @@ func (s *Server) getMerges(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildMergeData(ctx context.Context, u tenant.User, teamID string, role tenant.Role) views.MergeData {
 	d := views.MergeData{
 		TeamID:    teamID,
-		CanManage: role == tenant.RoleWriter || role == tenant.RoleAdmin,
+		CanManage: tenant.CanWrite(role),
 	}
 	if !d.CanManage {
 		return d

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/urfave/cli/v3"
 )
@@ -493,7 +494,7 @@ func loadRegisteredWings(path string) map[string]string {
 	}
 	for dir, p := range cfg.Projects {
 		if srv, ok := p.McpServers["agentsmemory"]; ok {
-			if w := strings.TrimSpace(srv.Headers["X-Agentsmemory-Wing"]); w != "" {
+			if w := strings.TrimSpace(srv.Headers[mcpprotocol.WingHeader]); w != "" {
 				out[dir] = w
 			}
 		}
@@ -530,7 +531,7 @@ type mineClient interface {
 // mineOne files one document via am_mine.
 func mineOne(ctx context.Context, client mineClient, wing, room string, part minePart) error {
 	req := mcp.CallToolRequest{}
-	req.Params.Name = toolPrefix + "mine"
+	req.Params.Name = mcpprotocol.ToolPrefix + "mine"
 	req.Params.Arguments = map[string]any{
 		"wing":    wing,
 		"room":    room,

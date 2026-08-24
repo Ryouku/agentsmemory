@@ -23,12 +23,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -40,19 +38,6 @@ import (
 
 	"github.com/urfave/cli/v3"
 )
-
-// toolPrefix is the namespace the server puts on every tool (am_status,
-// am_search, …). The CLI accepts a name with or without it and always sends the
-// prefixed form on the wire.
-const toolPrefix = "am_"
-
-// isReadOnlyTool reports whether the exact live tool definition says the call
-// cannot modify its environment. Missing metadata fails closed: names are not a
-// security boundary, and a future mutating list_* tool must not become callable
-// merely because its verb looks harmless.
-func isReadOnlyTool(tool mcp.Tool) bool {
-	return mcpcli.IsReadOnly(tool)
-}
 
 // mcpCommand builds the `mcp` subcommand. With no tool it prints the catalogue;
 // with one it calls the tool and prints what came back.
@@ -118,9 +103,6 @@ func mcpCommand() *cli.Command {
 // Only tool output goes to out (stdout); every diagnostic goes to stderr, so
 // `aiagentmemory mcp search q | jq` keeps working.
 func runRemoteMCP(ctx context.Context, c *cli.Command, out io.Writer) error {
-	// The am_ prefix is for client disambiguation; accept it, don't require it.
-	name := strings.TrimPrefix(c.Args().First(), toolPrefix)
-
 	token, source, err := resolveWorkspaceToken(c)
 	if err != nil {
 		return err
@@ -136,43 +118,24 @@ func runRemoteMCP(ctx context.Context, c *cli.Command, out io.Writer) error {
 	}
 	defer session.Close()
 
-	tools, err := session.ListTools(ctx, mcp.ListToolsRequest{})
-	if err != nil {
-		return fmt.Errorf("list tools: %w", err)
+	endpoint := mcpcli.Endpoint{
+		ListTools: func(callCtx context.Context) ([]mcp.Tool, error) {
+			result, err := session.ListTools(callCtx, mcp.ListToolsRequest{})
+			if err != nil {
+				return nil, err
+			}
+			return result.Tools, nil
+		},
+		CallTool: func(callCtx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return session.CallTool(callCtx, request)
+		},
 	}
-
-	if name == "" {
-		return printRemoteTools(out, tools.Tools, c.Bool("raw"))
-	}
-
-	tool, ok := findRemoteTool(tools.Tools, name)
-	if !ok {
-		return fmt.Errorf("unknown tool %q; run `aiagentmemory mcp` to list the available tools", name)
-	}
-	if !isReadOnlyTool(tool) {
-		// A write tool exists on the endpoint but is out of bounds here: the
-		// shell is for looking, the agent is for writing.
-		return fmt.Errorf("%q writes to the palace and is not available from the CLI, which is read-only; ask your agent to call it", name)
-	}
-
-	args := parseToolArgs(c.StringSlice("arg"), tailArgs(c), tool.InputSchema.Properties, primaryArg(tool))
-	req := mcp.CallToolRequest{}
-	req.Params.Name = tool.Name
-	req.Params.Arguments = args
-
-	res, err := session.CallTool(ctx, req)
-	if err != nil {
-		return fmt.Errorf("call %s: %w", tool.Name, err)
-	}
-	if err := printCallResult(out, res, c.Bool("raw")); err != nil {
-		return err
-	}
-	if res.IsError {
-		// Whatever the tool said is already on stdout; this only sets the exit
-		// code so a script can tell success from failure.
-		return errors.New("the tool reported an error")
-	}
-	return nil
+	return mcpcli.Run(ctx, out, endpoint, mcpcli.Invocation{
+		Tool:     c.Args().First(),
+		ArgFlags: c.StringSlice("arg"),
+		Tail:     mcpcli.TailArgs(c.Args().Slice()),
+		Raw:      c.Bool("raw"),
+	})
 }
 
 // dialMCP opens and initialises a Streamable-HTTP MCP session against url,
@@ -199,114 +162,6 @@ func dialMCP(ctx context.Context, url, token string, timeout time.Duration) (*cl
 		return nil, fmt.Errorf("initialize %s: %w", url, err)
 	}
 	return c, nil
-}
-
-// findRemoteTool looks a bare tool name up in the live catalogue, matching with
-// or without the am_ prefix.
-func findRemoteTool(tools []mcp.Tool, name string) (mcp.Tool, bool) {
-	for _, t := range tools {
-		if strings.TrimPrefix(t.Name, toolPrefix) == name {
-			return t, true
-		}
-	}
-	return mcp.Tool{}, false
-}
-
-// primaryArg is the argument the bare positional fills: the tool's first
-// required input. Taking it from the live schema rather than a hand-kept table
-// is what lets `mcp search "x"` and `mcp get_drawer <id>` work without this
-// binary knowing anything about either tool. A tool with no required input (like
-// status) has no primary, and a positional passed to it is simply dropped.
-func primaryArg(t mcp.Tool) string {
-	return mcpcli.PrimaryArg(t)
-}
-
-// tailArgs returns the positional tokens after the tool name. parseToolArgs
-// re-scans them so the hybrid syntax works regardless of whether urfave/cli
-// consumed an interspersed -a into its flag slice.
-func tailArgs(c *cli.Command) []string {
-	all := c.Args().Slice()
-	if len(all) <= 1 {
-		return nil
-	}
-	return all[1:]
-}
-
-// parseToolArgs builds the JSON arguments for a tool call from the -a/--arg
-// values plus the raw trailing tokens, coercing each value to the type the
-// tool's schema declares. The first plain token (not key=value, not an -a
-// marker) becomes the primary positional, folded under primaryKey unless an
-// explicit -a already set it.
-//
-// Both CLIs share this coercion because their arguments enter an MCP request:
-// `-a limit=3` has to arrive as the number 3 or GetInt silently uses its default.
-// Only schema-declared number/integer/boolean values are converted, so a hex id
-// stays a string. Unparsable input stays raw for the server to reject.
-func parseToolArgs(argFlags, rawTail []string, props map[string]any, primaryKey string) map[string]any {
-	return mcpcli.ParseArgs(argFlags, rawTail, props, primaryKey)
-}
-
-// printCallResult writes what the tool returned. By default that is the text
-// content itself — which for every agentsmemory tool is JSON, so it pipes
-// straight into jq — re-indented when it parses. --raw prints the whole MCP
-// envelope instead, for when the question is what the protocol returned rather
-// than what the tool did.
-func printCallResult(out io.Writer, res *mcp.CallToolResult, raw bool) error {
-	if raw {
-		return writeJSON(out, res)
-	}
-	return mcpcli.PrintResult(out, res)
-}
-
-// printRemoteTools prints the live catalogue, listing only the tools this CLI
-// can actually call and counting the rest. --raw prints tools/list verbatim,
-// schemas included — the way to discover what arguments a tool takes.
-func printRemoteTools(out io.Writer, tools []mcp.Tool, raw bool) error {
-	if raw {
-		return writeJSON(out, tools)
-	}
-
-	sorted := append([]mcp.Tool(nil), tools...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-
-	var readable []mcp.Tool
-	for _, t := range sorted {
-		if isReadOnlyTool(t) {
-			readable = append(readable, t)
-		}
-	}
-
-	fmt.Fprintf(out, "%d read-only tools (of %d on the endpoint):\n\n", len(readable), len(sorted))
-	for _, t := range readable {
-		usage := strings.TrimPrefix(t.Name, toolPrefix)
-		if p := primaryArg(t); p != "" {
-			usage += " <" + p + ">"
-		}
-		fmt.Fprintf(out, "  %s\n      %s\n", usage, firstLine(t.Description, 96))
-	}
-	fmt.Fprintf(out, "\n%d write tools are not callable here — ask your agent to run those.\n", len(sorted)-len(readable))
-	fmt.Fprintln(out, "Arguments: `mcp <tool> <primary-arg> -a key=value`; `mcp --raw` prints every schema.")
-	return nil
-}
-
-// firstLine trims a tool description to one readable line for the catalogue.
-func firstLine(s string, max int) string {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
-	if len(s) <= max {
-		return s
-	}
-	return strings.TrimSpace(s[:max]) + "…"
-}
-
-// writeJSON prints v as indented JSON — the CLI's one output format, so every
-// result is pipeable into jq.
-func writeJSON(out io.Writer, v any) error {
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		return fmt.Errorf("render result: %w", err)
-	}
-	return nil
 }
 
 // resolveWorkspaceToken finds the token to authenticate with and describes where

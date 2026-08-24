@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -20,7 +21,7 @@ var searchSchema = map[string]any{
 }
 
 func TestParseToolArgsCoercesToSchemaTypes(t *testing.T) {
-	args := parseToolArgs([]string{"limit=3", "verbose=true"}, []string{"auth bug"}, searchSchema, "query")
+	args := mcpcli.ParseArgs([]string{"limit=3", "verbose=true"}, []string{"auth bug"}, searchSchema, "query")
 
 	if got, ok := args["limit"].(float64); !ok || got != 3 {
 		t.Errorf("limit = %#v, want float64(3) — a string would make the server fall back to its default", args["limit"])
@@ -37,7 +38,7 @@ func TestParseToolArgsLeavesUndeclaredAndUnparsableValuesAsStrings(t *testing.T)
 	// A hex drawer id must survive as a string, and a value that does not parse
 	// as its declared type is passed through so the server reports the error.
 	props := map[string]any{"id": map[string]any{"type": "string"}, "limit": map[string]any{"type": "number"}}
-	args := parseToolArgs([]string{"limit=many", "room=decisions"}, []string{"25f83165ab"}, props, "id")
+	args := mcpcli.ParseArgs([]string{"limit=many", "room=decisions"}, []string{"25f83165ab"}, props, "id")
 
 	if got := args["id"]; got != "25f83165ab" {
 		t.Errorf("id = %#v, want the untouched string", got)
@@ -54,7 +55,7 @@ func TestParseToolArgsHybridSyntax(t *testing.T) {
 	// -a may arrive in the cli-parsed slice or still be sitting in the tail,
 	// depending on flag order; both must land, and an explicit -a beats the
 	// positional for the same key.
-	args := parseToolArgs(nil, []string{"positional", "-a", "limit=5", "wing=wing_x", "--arg", "room=diary"}, searchSchema, "query")
+	args := mcpcli.ParseArgs(nil, []string{"positional", "-a", "limit=5", "wing=wing_x", "--arg", "room=diary"}, searchSchema, "query")
 
 	if got := args["query"]; got != "positional" {
 		t.Errorf("query = %#v, want the positional", got)
@@ -69,7 +70,7 @@ func TestParseToolArgsHybridSyntax(t *testing.T) {
 		t.Errorf("room = %#v, want the --arg in the tail", got)
 	}
 
-	explicit := parseToolArgs([]string{"query=explicit"}, []string{"positional"}, searchSchema, "query")
+	explicit := mcpcli.ParseArgs([]string{"query=explicit"}, []string{"positional"}, searchSchema, "query")
 	if got := explicit["query"]; got != "explicit" {
 		t.Errorf("query = %#v, want the explicit -a to win over the positional", got)
 	}
@@ -77,7 +78,7 @@ func TestParseToolArgsHybridSyntax(t *testing.T) {
 
 func TestParseToolArgsWithoutPrimaryDropsPositional(t *testing.T) {
 	// am_status takes no arguments: a stray positional must not invent one.
-	args := parseToolArgs(nil, []string{"stray"}, nil, "")
+	args := mcpcli.ParseArgs(nil, []string{"stray"}, nil, "")
 	if len(args) != 0 {
 		t.Errorf("args = %#v, want empty for a tool with no required input", args)
 	}
@@ -90,7 +91,7 @@ func TestIsReadOnlyTool(t *testing.T) {
 		"am_status", "am_search", "am_recall_stats", "am_list_anchors",
 	} {
 		tool := mcp.NewTool(name, mcp.WithReadOnlyHintAnnotation(true))
-		if !isReadOnlyTool(tool) {
+		if !mcpcli.IsReadOnly(tool) {
 			t.Errorf("isReadOnlyTool(%q) = false, want true", name)
 		}
 	}
@@ -101,32 +102,32 @@ func TestIsReadOnlyTool(t *testing.T) {
 		"am_add_drawer", "am_mine", "am_list_destroy_everything",
 	} {
 		tool := mcp.NewTool(name, mcp.WithReadOnlyHintAnnotation(false))
-		if isReadOnlyTool(tool) {
+		if mcpcli.IsReadOnly(tool) {
 			t.Errorf("isReadOnlyTool(%q) = true, want false — the CLI must never write", name)
 		}
 	}
-	if isReadOnlyTool(mcp.Tool{Name: "am_unclassified"}) {
+	if mcpcli.IsReadOnly(mcp.Tool{Name: "am_unclassified"}) {
 		t.Error("tool without readOnlyHint was accepted; missing policy must fail closed")
 	}
 }
 
 func TestPrimaryArgComesFromTheLiveSchema(t *testing.T) {
 	search := mcp.Tool{Name: "am_search", InputSchema: mcp.ToolInputSchema{Required: []string{"query"}}}
-	if got := primaryArg(search); got != "query" {
+	if got := mcpcli.PrimaryArg(search); got != "query" {
 		t.Errorf("primaryArg(am_search) = %q, want query", got)
 	}
 	status := mcp.Tool{Name: "am_status"}
-	if got := primaryArg(status); got != "" {
+	if got := mcpcli.PrimaryArg(status); got != "" {
 		t.Errorf("primaryArg(am_status) = %q, want empty", got)
 	}
 }
 
 func TestFindRemoteToolAcceptsBothNameForms(t *testing.T) {
 	tools := []mcp.Tool{{Name: "am_search"}, {Name: "am_status"}}
-	if _, ok := findRemoteTool(tools, "search"); !ok {
+	if _, ok := mcpcli.FindTool(tools, "search"); !ok {
 		t.Error("findRemoteTool(search) = not found, want the am_-prefixed tool")
 	}
-	if _, ok := findRemoteTool(tools, "nope"); ok {
+	if _, ok := mcpcli.FindTool(tools, "nope"); ok {
 		t.Error("findRemoteTool(nope) = found, want not found")
 	}
 }
@@ -207,7 +208,7 @@ func TestPrintRemoteToolsListsOnlyCallableTools(t *testing.T) {
 		mcp.NewTool("am_add_drawer", mcp.WithDescription("File a verbatim memory."), mcp.WithString("content", mcp.Required()), mcp.WithReadOnlyHintAnnotation(false)),
 	}
 	var out bytes.Buffer
-	if err := printRemoteTools(&out, tools, false); err != nil {
+	if err := mcpcli.PrintTools(&out, tools, false); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -218,7 +219,7 @@ func TestPrintRemoteToolsListsOnlyCallableTools(t *testing.T) {
 	if strings.Contains(got, "add_drawer") {
 		t.Errorf("catalogue lists a write tool:\n%s", got)
 	}
-	if !strings.Contains(got, "2 read-only tools (of 3 on the endpoint)") {
+	if !strings.Contains(got, "2 read-only tools (of 3 on the production MCP surface)") {
 		t.Errorf("catalogue counts wrong:\n%s", got)
 	}
 	if !strings.Contains(got, "1 write tools are not callable here") {
@@ -230,7 +231,7 @@ func TestPrintCallResultPrettyPrintsJSONAndRawEnvelope(t *testing.T) {
 	res := &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: `{"ok":true,"total_drawers":5785}`}}}
 
 	var pretty bytes.Buffer
-	if err := printCallResult(&pretty, res, false); err != nil {
+	if err := mcpcli.PrintCallResult(&pretty, res, false); err != nil {
 		t.Fatal(err)
 	}
 	// Re-indented, so the payload is readable and still valid JSON for jq.
@@ -242,7 +243,7 @@ func TestPrintCallResultPrettyPrintsJSONAndRawEnvelope(t *testing.T) {
 	}
 
 	var raw bytes.Buffer
-	if err := printCallResult(&raw, res, true); err != nil {
+	if err := mcpcli.PrintCallResult(&raw, res, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(raw.String(), "\"content\"") {
@@ -253,7 +254,7 @@ func TestPrintCallResultPrettyPrintsJSONAndRawEnvelope(t *testing.T) {
 func TestPrintCallResultPassesNonJSONThrough(t *testing.T) {
 	res := &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "skill: not found"}}}
 	var out bytes.Buffer
-	if err := printCallResult(&out, res, false); err != nil {
+	if err := mcpcli.PrintCallResult(&out, res, false); err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(out.String()) != "skill: not found" {

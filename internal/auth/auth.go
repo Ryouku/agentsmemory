@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 )
 
@@ -40,11 +41,9 @@ type wingKeyType struct{}
 
 var wingKey = wingKeyType{}
 
-// WingHeader and wingQueryParam are the two ways a registration states its wing.
+// mcpprotocol.WingHeader and wingQueryParam are the two ways a registration states its wing.
 // The header is the clean one; the query parameter exists because not every MCP
 // client can attach custom headers, and a URL always can.
-const WingHeader = "X-Agentsmemory-Wing"
-
 const wingQueryParam = "wing"
 
 // Resolver resolves a plaintext bearer token to a tenant. *tenant.Repo
@@ -153,7 +152,7 @@ func Bridge(ctx context.Context, r *http.Request) context.Context {
 // is the pre-existing behaviour: the caller passes a wing per call or the tool
 // says it needs one.
 func requestWing(r *http.Request) string {
-	if w := strings.TrimSpace(r.Header.Get(WingHeader)); w != "" {
+	if w := strings.TrimSpace(r.Header.Get(mcpprotocol.WingHeader)); w != "" {
 		return w
 	}
 	return strings.TrimSpace(r.URL.Query().Get(wingQueryParam))
