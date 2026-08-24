@@ -25,7 +25,7 @@ Taken literally that forbids this ADR outright, and `permanent` is not `deferred
 
 **What stays untouched so the measurement holds:** `kg_add`, `kg_invalidate`, `tripleID`, `CurrentTripleID`, the schema, and the meaning of `valid_from` / `valid_to`. Every fact this graph holds before the change is the same fact after it. Only the questions you may ask change.
 
-**This needs a human decision and nothing below assumes it.** T0 is the amendment; if it is rejected, T1–T5 do not proceed and issue #23 stays open with "blocked on ADR-004" as its recorded reason — a legitimate outcome, and a better one than a filter shipped past an Accepted ADR.
+**Decided by M, 2026-08-25: amend.** M's words: *"i vote to modify kg_query"*. The rejected alternative was leaving the clause as written and closing issue #23 as blocked on ADR-004 — recorded here because a decision without its alternative reads as preference and gets reopened. T0 carries the edit into ADR-004 itself; T1–T5 are authorised by it and by nothing else.
 
 ## Context
 
@@ -120,7 +120,45 @@ So the withholding is never silent. Every response that filtered anything carrie
 
 `withheld` is present only when a filter removed something, so the key's presence is itself information. This is ADR-007's rule applied to retrieval: **a filtered set reports what it filtered rather than presenting itself as the whole.** An agent reading `count: 3` is now reading a number that told it what it left out.
 
-### 5. Paging on the entity-free timeline
+### 5. Transaction time — surface `extracted_at`, and filter on it
+
+`kgTripleRow` carries `extracted_at`, written on every fact (`kg.go:367`, `ExtractedAt: now`). `KGFact` has no such field and no tool returns it. **The graph has recorded transaction time since it was built and has never been able to report it.**
+
+That matters more than a missing convenience, because valid time and transaction time answer different questions and this store has only ever been able to answer one:
+
+| Question | Dimension | Today |
+|---|---|---|
+| What was true on D? | valid (`valid_from`/`valid_to`) | `as_of` |
+| What did we **know** on D? | transaction (`extracted_at`) | inexpressible |
+| When did we learn a fact we recorded was already wrong? | both | inexpressible |
+
+So `extracted_at` joins the wire as `recorded_at`, with `recorded_from` / `recorded_to` bounds normalised exactly like the others. **No migration**: the column exists and is populated.
+
+Two more columns are in the same state and ship with it — `source_drawer_id` and `source_file` are stored on every fact and returned by nothing, while `source_closet` beside them is returned. `source_drawer_id` is the costly one: every fact knows which memory asserted it, and no agent can ask. This is the "a column written and never returned" class the palace already named on 2026-08-23, and checked 2026-08-25 it is not claimed by ADR-022, which was rewritten on 2026-08-24 and is about a memory carrying its own scope.
+
+**Why this belongs in this ADR rather than a later one.** It is the same contract, changed once. Adding valid-time filters now and transaction-time filters later is two breaking passes over the same tool for one coherent capability, and the second would have no better argument than the first.
+
+### 6. What is deliberately NOT added, and why the schema stops here
+
+Asked directly — *what will we need in future, so this is the last modification?* — the honest answer has three tiers, and the middle one is a trap this repository has fallen into repeatedly.
+
+**Free now (stored, unreachable):** `extracted_at`, `source_drawer_id`, `source_file`. Covered by §5. No migration, no writer, pure surfacing.
+
+**Needs a column AND a writer, so it lands with the writer, not here:**
+
+| Field | Purpose | Where it belongs |
+|---|---|---|
+| `reason` | why a fact ended — ADR-010's *"the gap that actually costs money"* | ADR-010. It also changes `am_kg_invalidate`, which the Amendment above deliberately leaves out of scope |
+| `ended_by` | which agent or human retracted it | with `reason`; an audit trail wants both or neither |
+| `superseded_by` | explicit link to the replacing fact, instead of today's workaround of filing supersession as triples between drawer ids (issue #34) | ADR-010, or its own once supersession is justified |
+
+**These are not added speculatively, and the reason is this repository's own defect record.** A nullable column added ahead of its writer is a capability that is finished and unreachable — the class `AGENTS.md` is built around, and the class §5 is fixing three live instances of. Shipping `reason` empty today would mean explaining in six months why the graph has a reason column that is always blank, which is strictly worse than not having it.
+
+**The counter-argument, stated fairly:** batching schema changes avoids repeat migrations. It is answered by what a migration actually costs here — gorm `AutoMigrate` over SQLite, where a nullable column is close to free. The expensive things are breaking the wire contract twice and carrying dead fields, and neither is helped by adding columns early. So the **contract** is designed once (§1–§5, additive-only response keys); the **schema** grows when something writes to it.
+
+**Deliberately never:** wing-scoping the graph. KG facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. That is a decision with a test behind it, not an omission, and reversing it is its own ADR — noted here because "facts are workspace-wide while drawers are wing-scoped" is raised as a defect often enough (issue #34 among them) that its absence from this ADR should be visibly on purpose.
+
+### 7. Paging on the entity-free timeline
 
 `am_kg_timeline` with no entity gains `limit` and `offset` and reports the total it paged through. Without this the filters are half-useful: *"what expired this week"* that silently stops at 100 rows is the truncation §4 exists to forbid, one layer down.
 
@@ -154,9 +192,10 @@ Stated per parameter, because a parameter documented and unconsumed is the defec
 | `as_of` | both | `inEffectAt` (unchanged) | none | no point-in-time filter |
 | `started_from`, `started_to` | both | `valid_from` bound via `temporalStartKey`/`temporalEndKey` | none | no start-window filter |
 | `ended_from`, `ended_to` | both | `valid_to` bound, same normalisation | none | no end-window filter |
+| `recorded_from`, `recorded_to` | both | `extracted_at` bound, same normalisation | none | no transaction-time filter |
 | `limit`, `offset` | `kg_timeline` (entity-free) | repo query | `kgTimelineLimit` / 0 | first 100, as today |
 
-Response additions: `status` (always, echoing what was applied), `withheld` (only when something was removed), `hint` (only alongside `withheld`), `total` (entity-free timeline only).
+Response additions, all additive keys so a later field cannot break a caller: `status` (always, echoing what was applied), `withheld` (only when something was removed), `hint` (only alongside `withheld`), `total` (entity-free timeline only), and three fields that are already stored and were never returned — `recorded_at` (from `extracted_at`), `source_drawer_id`, `source_file`.
 
 ## Inter-task Contracts
 
@@ -175,6 +214,7 @@ Response additions: `status` (always, echoing what was applied), `withheld` (onl
 | T3 | `withheld` + `hint` on every filtered response | mcpserver | `TestFilteredResponseReportsWhatItWithheld` — assert the withheld **number** equals what was removed |
 | T4 | **Flip the default to `current`** | mcpserver | `TestDefaultQueryIsCurrentOnly`, plus a release note per ADR-014 |
 | T5 | `limit`/`offset`/`total` on the entity-free timeline | palace + mcpserver | `TestTimelinePagesPastTheDefaultLimit` — assert row 101 is reachable |
+| T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | `TestEveryStoredTripleColumnIsReturned` — walk `kgTripleRow`'s fields and assert each appears on `KGFact` or is named in an explicit exclusion list. Written derived rather than hand-listed, so a column added tomorrow enters the check in the same commit that creates it |
 
 T1 ships with the old default deliberately, so the filters can be exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
 
@@ -211,6 +251,7 @@ Per task, and cheap by construction because nothing is written differently.
 
 - **T1–T3, T5** — additive parameters over unchanged storage. Rollback is deleting the parameters and their handlers; no data was written in a new shape, so nothing needs migrating back and no stored fact changes meaning.
 - **T4** — the one that can hurt, and the one designed to be revertible: it is a single default value in the tool registration. Reverting restores `all` and every caller sees today's behaviour on the next request. This is why it is a separate commit from T1.
+- **T6** — surfacing only. Rollback is removing three response keys; the columns were already written and stay written, so nothing is lost either way.
 - **T0** — an ADR edit; reverting restores ADR-004's clause verbatim and the tasks stop being authorised.
 
 No migration, no backfill, no index rebuild in either direction.
