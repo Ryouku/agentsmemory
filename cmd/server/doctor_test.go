@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +23,37 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/urfave/cli/v3"
 )
+
+// latestEmbeddedMigration is the highest version in db.Migrations, read from the
+// embedded set rather than written as a literal.
+//
+// The assertion that uses it means "ordinary preparation applied EVERY
+// migration". A literal restates the count instead, so it fails the next time
+// anyone adds one — for a reason that has nothing to do with what the test is
+// checking. It fatals on an empty set, because a derived expectation of zero
+// would make the comparison pass against a database that migrated nothing.
+func latestEmbeddedMigration(t *testing.T) int {
+	t.Helper()
+	entries, err := fs.ReadDir(db.Migrations, "migrations")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	highest := 0
+	for _, e := range entries {
+		var version int
+		if _, err := fmt.Sscanf(e.Name(), "%05d_", &version); err != nil {
+			continue
+		}
+		if version > highest {
+			highest = version
+		}
+	}
+	if highest == 0 {
+		t.Fatal("no versioned migrations found in the embedded set — this check would " +
+			"then pass against a database that applied nothing")
+	}
+	return highest
+}
 
 // TestDoctorIsRegistered: a command nothing registers is a command nobody can
 // run, and this repository has shipped that shape four times. The check reads
@@ -167,8 +200,8 @@ func TestBuildServicesStillPreparesThePalace(t *testing.T) {
 	if err := svc.gdb.Raw(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version).Error; err != nil {
 		t.Fatalf("read goose version: %v", err)
 	}
-	if version != 23 {
-		t.Errorf("ordinary preparation left goose at %d, want 23", version)
+	if want := latestEmbeddedMigration(t); version != want {
+		t.Errorf("ordinary preparation left goose at %d, want %d", version, want)
 	}
 	var searchEvents int
 	if err := svc.gdb.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_events'`).Scan(&searchEvents).Error; err != nil {

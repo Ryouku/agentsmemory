@@ -32,6 +32,25 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerReconnect(reg, drawers, usageSvc)
 }
 
+// wholeMemoryBudget bounds the TOTAL whole-memory content one search response
+// may carry, in runes.
+//
+// snippet_chars=0 means "give me whole memories" and that is a documented,
+// deliberate request. What was missing is a ceiling on the PAGE: a memory may be
+// up to palace.MaxContentLength (100,000 runes) and MaxSearchLimit is 100, so a
+// single search could assemble ~10M runes — against roughly 1,920 before whole
+// memories were returned at all. Nothing capped it.
+//
+// The number is not arbitrary. Measured on this MCP transport, a tool result
+// past roughly 40-45KB is not delivered to the agent at all — it spills to a
+// file the model never reads. So beyond this point a bigger response is not a
+// more generous answer, it is a silently emptier one, and the honest behaviour
+// is to return less and SAY so rather than more and have it vanish.
+//
+// Hits are filled in rank order, so the budget spends itself on the best matches
+// and the tail degrades to a bounded window rather than the page being cut.
+const wholeMemoryBudget = 40_000
+
 // drawerView is the agent-facing JSON shape of a drawer. It omits TeamID (the
 // caller already knows its own scope) and gives every field an explicit snake_case
 // tag so the wire format is stable regardless of Go field names.
@@ -430,6 +449,9 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 // searchHitView is one ranked search result: the drawer plus its scores.
 type searchHitView struct {
 	drawerView
+	// MemoryID is the stable logical-memory handle. ID above remains the best
+	// matching stored passage for compatibility and may be a child chunk.
+	MemoryID    string  `json:"memory_id"`
 	Score       float64 `json:"score"`        // fused hybrid rank (vector + BM25 + closet boost), higher is better
 	BM25        float64 `json:"bm25_score"`   // raw lexical BM25 component, for transparency
 	ClosetBoost float64 `json:"closet_boost"` // closet rank boost folded into score, for transparency
@@ -512,7 +534,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
-		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse, 1-100 (default 5).")),
+		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
@@ -547,21 +569,28 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
+		// spent/overBudget bound the WHOLE-memory expansion. See wholeMemoryBudget.
+		spent, overBudget := 0, 0
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
-			ids[i] = h.Drawer.ID
+			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
+			ids[i] = h.MemoryID
+			fullContent := h.MemoryContent
+			if fullContent == "" {
+				fullContent = h.Drawer.Content
+			}
+			views[i].Content = fullContent
+			views[i].Identity = palace.MemoryIdentity(fullContent)
 			if snippetChars > 0 {
 				// The window is centred on the query's own terms, so what comes
-				// back is the part that matched rather than the memory's heading.
-				// chunk 0 (and an unsplit memory) carries the identity line, so its
-				// opening is preserved even when the match is further down.
-				isHead := h.Drawer.ChunkIndex == 0
-				if snippet := palace.SnippetWithHead(h.Drawer.Content, query, snippetChars, isHead); snippet != h.Drawer.Content {
+				// back is the part that matched rather than only the memory's
+				// heading. The input is the whole memory, so the authored opening is
+				// available even when a child chunk nominated the result.
+				if snippet := palace.SnippetWithHead(fullContent, query, snippetChars, true); snippet != fullContent {
 					views[i].Content = snippet
 					views[i].Truncated = true
-					views[i].FullLength = len([]rune(h.Drawer.Content))
+					views[i].FullLength = len([]rune(fullContent))
 
 					// Every OTHER place this memory matched, and the line its author
 					// wrote to say what it is.
@@ -579,7 +608,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 					// 98% of hits, which is why it cannot be acted on: an agent cannot
 					// fetch five whole memories and nothing told it which one hid the
 					// answer. These fields are what let it choose.
-					regions := palace.SnippetRegions(h.Drawer.Content, query, snippetChars)
+					regions := palace.SnippetRegions(fullContent, query, snippetChars)
 					if len(regions) > 1 {
 						// One region is what content already is; repeating it would spend
 						// the page on a duplicate and teach a reader to skip the field.
@@ -589,21 +618,28 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 							})
 						}
 					}
-					views[i].Identity = palace.MemoryIdentity(h.Drawer.Content)
 				}
-				// Coverage is set for EVERY hit, truncated or not.
-				//
-				// Setting it only when the snippet cut something left a hit that
-				// shows the WHOLE memory reporting 0 — which reads as "you see none
-				// of this", the exact opposite of the truth, and is worse than the
-				// uninformative flag it replaces. Found by a mutant that made
-				// coverage a constant and still passed, because the wrong zero on the
-				// untruncated hit supplied the variation the test was looking for.
-				if full := len([]rune(h.Drawer.Content)); full > 0 {
-					views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
-					if views[i].Coverage > 1 {
-						views[i].Coverage = 1 // the head join adds runes the memory does not have
-					}
+			}
+			// snippet_chars=0 asks for whole memories, and that request is honoured
+			// until the page as a whole stops being deliverable — see
+			// wholeMemoryBudget. Past it the remaining hits fall back to a bounded
+			// window, marked truncated with the full length like any other trim, so
+			// a caller can tell it happened and ask for the rest by id.
+			if snippetChars <= 0 && spent+len([]rune(fullContent)) > wholeMemoryBudget {
+				views[i].Content = palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
+				views[i].Truncated = true
+				views[i].FullLength = len([]rune(fullContent))
+				overBudget++
+			}
+			spent += len([]rune(views[i].Content))
+
+			// Coverage is set for EVERY hit, including snippet_chars=0. Otherwise
+			// "the caller requested and received the whole memory" reports the same
+			// zero as "the caller saw none of it".
+			if full := len([]rune(fullContent)); full > 0 {
+				views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
+				if views[i].Coverage > 1 {
+					views[i].Coverage = 1 // the head join adds runes the memory does not have
 				}
 			}
 		}
@@ -611,7 +647,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// has since changed is the one failure mode a confident agent cannot catch
 		// on its own — it reads as knowledge either way.
 		stale := 0
-		if anchors, err := drawers.AnchorsForDrawers(ctx, t.TeamID, ids); err == nil {
+		if anchors, err := drawers.AnchorsForMemories(ctx, t.TeamID, ids); err == nil {
 			for i := range views {
 				for _, a := range anchors[ids[i]] {
 					views[i].Anchors = append(views[i].Anchors, anchorView{
@@ -627,6 +663,18 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 		out := map[string]any{"hits": views, "count": len(views)}
+		// Say it, rather than letting the caller infer it from a truncation flag on
+		// hits it did not ask to have truncated. A silent cap on a "give me
+		// everything" request is the shape that teaches an agent the palace is
+		// missing content it actually holds.
+		if overBudget > 0 {
+			out["note"] = fmt.Sprintf(
+				"whole memories were requested and the last %d hit(s) exceeded this response's "+
+					"size budget, so they are windowed instead (content_truncated carries "+
+					"content_length). Fetch any of them in full with am_get_drawer(id, whole=true), "+
+					"or narrow the search — a larger response would not reach you: this transport "+
+					"drops a result past roughly 40-45KB to a file rather than delivering it.", overBudget)
+		}
 		// A zero-hit page from a wing that holds nothing is not a miss, and the two
 		// were indistinguishable: same count, same empty list, same sub-second
 		// reply. Measured against real queries, that confusion produced every hard

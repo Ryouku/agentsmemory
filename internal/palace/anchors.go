@@ -245,6 +245,50 @@ func (s *Service) AnchorsForDrawers(ctx context.Context, teamID string, ids []st
 	return out, nil
 }
 
+// AnchorsForMemories returns anchors attached to any chunk of each logical
+// memory, keyed by memory root. Add currently pins chunk zero, but retrieval may
+// select a child; resolving siblings here keeps staleness attached to the memory
+// instead of to whichever chunk happened to win.
+func (s *Service) AnchorsForMemories(ctx context.Context, teamID string, memoryIDs []string) (map[string][]Anchor, error) {
+	out := make(map[string][]Anchor, len(memoryIDs))
+	// Identity only. This runs on every search, right after the caller has
+	// already loaded these same memories in full, and all it needs is which
+	// chunk ids belong to which root — fetching the content again would make
+	// anchor resolution the largest read in the request for nothing.
+	chunks, err := s.repo.MemoryChunkIDsByRoots(ctx, teamID, memoryIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load memory chunks for anchors: %w", err)
+	}
+	// Walk the CALLER's roots, and each root's chunks in the chunk order the
+	// repo returned. Ranging the maps instead put a memory's anchors in a
+	// different order on every call, and that order is user-visible — the MCP
+	// search response appends them straight through, so an agent diffing two
+	// identical recalls saw its anchors move.
+	ids := make([]string, 0, len(memoryIDs))
+	rootOf := make(map[string]string, len(memoryIDs))
+	seen := make(map[string]bool, len(memoryIDs))
+	for _, root := range memoryIDs {
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		for _, id := range chunks[root] {
+			ids = append(ids, id)
+			rootOf[id] = root
+		}
+	}
+	byDrawer, err := s.AnchorsForDrawers(ctx, teamID, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if anchors := byDrawer[id]; len(anchors) > 0 {
+			out[rootOf[id]] = append(out[rootOf[id]], anchors...)
+		}
+	}
+	return out, nil
+}
+
 // ReplaceAnchors swaps a drawer's anchors for a new set, returning how many were
 // written.
 //

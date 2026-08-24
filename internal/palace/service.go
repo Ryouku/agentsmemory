@@ -166,6 +166,14 @@ type Service struct {
 	// existing palace returns. FUSION=rrf turns it on for the corpora where the
 	// eval says it should be.
 	fusionRRF bool
+	// memoryLevelRanking changes the candidate and scoring unit from a stored
+	// chunk to a logical memory. It is opt-in while production compares the two
+	// arms; chunk storage and embeddings remain unchanged in both.
+	memoryLevelRanking bool
+	// memoryEvidenceSelector chooses the bounded document the optional
+	// cross-encoder receives for a reassembled memory. The lexical control uses
+	// literal query coverage; the semantic arm embeds windows at query time.
+	memoryEvidenceSelector string
 
 	// lexNorm is how the raw BM25 scores are normalised before fusion, and
 	// lexNormName is the operator-facing spelling of it.
@@ -224,6 +232,7 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// on identifier queries.
 		bm25Auto: true, bm25Base: hybridBM25Weight,
 		lexNorm: lexNormPageMax, lexNormName: DefaultLexNorm,
+		memoryEvidenceSelector: DefaultMemoryEvidenceSelector,
 		// Pointers, not values: the eval's degraded path shallow-copies the
 		// service to drop the reranker, and a copied sync.Map is a vet error and
 		// a real hazard — the copy must SHARE these locks, it guards the same
@@ -260,6 +269,42 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 func (s *Service) WithFusion(mode string) *Service {
 	s.fusionRRF = strings.EqualFold(strings.TrimSpace(mode), "rrf")
 	return s
+}
+
+// WithMemoryLevelRanking selects the treatment arm where candidate capacity,
+// BM25, closet boost, and cross-encoding operate once per logical memory. False
+// keeps the legacy chunk-ranked control. Call it before sharing the service
+// across goroutines, like the other post-construction setters.
+func (s *Service) WithMemoryLevelRanking(on bool) *Service {
+	s.memoryLevelRanking = on
+	return s
+}
+
+// DefaultMemoryEvidenceSelector is the control arm: bounded passages selected
+// by literal query-term coverage, with no extra embedding call.
+const DefaultMemoryEvidenceSelector = "lexical"
+
+const semanticMemoryEvidenceSelector = "semantic"
+
+// WithMemoryEvidenceSelector selects how a reassembled memory is reduced to the
+// cross-encoder budget. Unknown values keep the current selector. Call it before
+// sharing the service across goroutines, like the other post-construction setters.
+func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", DefaultMemoryEvidenceSelector:
+		s.memoryEvidenceSelector = DefaultMemoryEvidenceSelector
+	case semanticMemoryEvidenceSelector:
+		s.memoryEvidenceSelector = semanticMemoryEvidenceSelector
+	}
+	return s
+}
+
+// MemoryEvidenceSelectorName reports the resolved operator-facing selector.
+func (s *Service) MemoryEvidenceSelectorName() string {
+	if s.memoryEvidenceSelector == semanticMemoryEvidenceSelector {
+		return semanticMemoryEvidenceSelector
+	}
+	return DefaultMemoryEvidenceSelector
 }
 
 // Clone returns a shallow copy, so a caller can configure one Service several
@@ -373,6 +418,10 @@ func (s *Service) fusionRanker() func(query string, docs []string, dists, boosts
 // corresponds to. A measurement that cannot be tied to a configuration is a
 // number about nothing.
 func (s *Service) RankingProfile() string {
+	unit := "chunk"
+	if s.memoryLevelRanking {
+		unit = "memory"
+	}
 	fusion := "linear"
 	if s.fusionRRF {
 		fusion = "rrf"
@@ -388,8 +437,8 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s",
-		fusion, lex, s.lexNormName, s.closetBoostScale, rerank)
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=%s evidence=%s",
+		fusion, lex, s.lexNormName, s.closetBoostScale, rerank, unit, s.MemoryEvidenceSelectorName())
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -898,21 +947,10 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
 	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
-	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
+	hits, rows, err := s.searchCandidates(ctx, teamID, q, vec, candidateK)
 	if err != nil {
-		return nil, fmt.Errorf("vector search: %w", err)
+		return nil, err
 	}
-
-	// Resolve candidate ids to rows in one query.
-	ids := make([]string, len(hits))
-	for i, h := range hits {
-		ids[i] = h.ID
-	}
-	rows, err := s.repo.GetMany(ctx, teamID, ids)
-	if err != nil {
-		return nil, fmt.Errorf("load drawer rows: %w", err)
-	}
-
 	q.Limit = limit
 	results, reranked, err := s.rankRetrieved(ctx, teamID, query, q, vec, hits, rows)
 	if err != nil {
@@ -955,23 +993,24 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// The wing/room comparisons are redundant when the index honoured the filter
 	// above, and deliberately kept: the drawer row is the truth about where a
 	// drawer lives, and a stale index must never surface another wing's memory.
-	survivors := make([]SearchHit, 0, len(hits))
-	for _, h := range hits {
-		d, ok := rows[h.ID]
-		if !ok {
-			continue // orphan vector (row deleted) — skip
+	//
+	// ONE spelling of that rule, shared with searchCandidates — which needs the
+	// same filter to know how many DISTINCT memories a widening round found, and
+	// therefore whether to widen again. Two copies of a scope predicate is how a
+	// stale one survives, so both paths call survivorsFrom instead.
+	survivors, _ := survivorsFrom(hits, rows, q)
+
+	// The unit being ranked is a MEMORY, not a chunk, when memory-level ranking is
+	// on — so the collapse happens HERE, before scoring, and every consumer of
+	// rankRetrieved gets it. That includes the eval arms, which call this on a
+	// Clone: an arm reconstructing the served configuration has to collapse the
+	// same way or it is measuring a pipeline nobody runs.
+	if s.memoryLevelRanking {
+		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+		if err != nil {
+			return nil, false, err
 		}
-		if q.Wing != "" && d.Wing != q.Wing {
-			continue
-		}
-		if q.Room != "" && d.Room != q.Room {
-			continue
-		}
-		distance := distanceFromScore(h.Score)
-		if q.MaxDistance > 0 && distance > q.MaxDistance {
-			continue
-		}
-		survivors = append(survivors, SearchHit{Drawer: d, Distance: distance})
+		survivors = collapsed
 	}
 
 	// Closet boost: search the team's closets with the same query and let the
@@ -985,7 +1024,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	boosts := make([]float64, len(survivors))
 	dates := make([]string, len(survivors))
 	for i, h := range survivors {
-		docs[i] = h.Drawer.Content
+		docs[i] = h.rankingContent(query, false)
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 		dates[i] = h.Drawer.ContentDate
@@ -1001,7 +1040,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
 
 	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
 	// query, so without this they cluster and crowd each other out: measured on a
@@ -1021,7 +1060,10 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	slotOf := make(map[string]int, limit)
 	for _, r := range ranked {
 		hit := survivors[r.Index]
-		mem := memoryOf(hit.Drawer)
+		mem := hit.MemoryID
+		if mem == "" {
+			mem = memoryOf(hit.Drawer)
+		}
 		if i, seen := slotOf[mem]; seen {
 			results[i].ChunksMatched++
 			continue
@@ -1033,10 +1075,19 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
 		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
-		hit.ChunksMatched = 1
+		if hit.ChunksMatched == 0 {
+			hit.ChunksMatched = 1
+		}
 		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
+	// Whole-memory hydration is the last step of RANKING, not of Search, so every
+	// caller of rankRetrieved — including the eval arms that reconstruct a served
+	// configuration on a Clone — gets the same shaped hit the wire does.
+	if err := s.hydrateResultMemories(ctx, teamID, results); err != nil {
+		return nil, false, err
+	}
+
 	return results, reranked, nil
 }
 
@@ -1078,8 +1129,8 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
-	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
+func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
+	return s.applyRerankWith(ctx, rerankQuery, evidenceQuery, queryVector, survivors, ranked, s.rerankWeight)
 }
 
 // applyRerankWith is applyRerank at an explicit blend weight, so the eval can
@@ -1089,17 +1140,26 @@ func (s *Service) applyRerank(ctx context.Context, query string, survivors []Sea
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
+func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
 		return ranked, false
 	}
 	pool := min(s.rerankPool, len(ranked))
 	docs := make([]string, pool)
 	for i := range docs {
-		docs[i] = survivors[ranked[i].Index].Drawer.Content
+		hit := survivors[ranked[i].Index]
+		docs[i] = hit.rankingContent(evidenceQuery, hit.MemoryContent != "")
+	}
+	if s.memoryLevelRanking && s.MemoryEvidenceSelectorName() == semanticMemoryEvidenceSelector {
+		semanticDocs, err := s.semanticRerankDocuments(ctx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
+		if err != nil {
+			slog.Warn("semantic evidence selection failed, falling back to lexical evidence", "error", err, "candidates", pool)
+		} else {
+			docs = semanticDocs
+		}
 	}
 
-	scores, err := s.rerank.Rerank(ctx, query, docs)
+	scores, err := s.rerank.Rerank(ctx, rerankQuery, docs)
 	if err != nil {
 		// A degraded reranker returns FALSE, deliberately. It failed open and the
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass

@@ -43,11 +43,24 @@ type Region struct {
 // Position order and not score order: an agent can sort by score itself, and it
 // cannot un-jumble prose.
 func SnippetRegions(content, query string, maxChars int) []Region {
+	return snippetRegions(content, query, maxChars, 0, false)
+}
+
+// snippetRegions is SnippetRegions with an optional ceiling on how many
+// passages may share the budget. A zero ceiling preserves the public function's
+// behavior. Ranking also asks for distinct-term coverage because a cross-encoder
+// must receive every clause of a compound question before it receives another
+// passage repeating terms already represented. Agent-visible regions retain
+// their existing score-first behavior.
+func snippetRegions(content, query string, maxChars, maxRegions int, coverTerms bool) []Region {
 	if maxChars <= 0 {
 		maxChars = DefaultSnippetChars
 	}
 	runes := []rune(content)
 	terms := tokenize(query)
+	if coverTerms {
+		terms = distinctTerms(terms)
+	}
 	if len(runes) == 0 {
 		return nil
 	}
@@ -71,14 +84,11 @@ func SnippetRegions(content, query string, maxChars int) []Region {
 	// only way a region grows past its size is the word-boundary extension below,
 	// and that checks the remaining budget before taking it. A clamp here would be
 	// a branch no input reaches, which reads as a guard and is not one.
-	size := maxChars
-	want := 1
-	for n := maxChars / minRegionRunes; n > 1; n-- {
-		if maxChars/n >= minRegionRunes {
-			want, size = n, maxChars/n
-			break
-		}
+	want := max(maxChars/minRegionRunes, 1)
+	if maxRegions > 0 {
+		want = min(want, maxRegions)
 	}
+	size := maxChars / want
 
 	candidates := snippetCandidates(runes, lower, terms, size)
 	// Best first, and among equals the earliest — so the selection is
@@ -91,30 +101,19 @@ func SnippetRegions(content, query string, maxChars int) []Region {
 	})
 
 	var picked []windowCandidate
-	for _, c := range candidates {
-		if c.Terms == 0 {
-			break // nothing below here matched anything; padding with misses helps nobody
-		}
-		if len(picked) >= want {
-			break
-		}
-		// One region per NEIGHBOURHOOD, not simply per non-overlapping span.
-		//
-		// Non-overlap alone is not enough: adjacent windows step by half a window,
-		// so the four highest-scoring candidates are usually four views of the same
-		// paragraph, and the budget goes on one passage while the memory's other
-		// matches — the ones the single-window chooser already could not reach —
-		// stay unshown. Requiring a window's worth of separation makes each region
-		// a different PLACE in the memory, which is the thing being delivered.
-		near := false
-		for _, p := range picked {
-			if c.Start < p.End+size && p.Start < c.End+size {
-				near = true
+	if coverTerms {
+		picked = coverageCandidates(candidates, lower, terms, want, size)
+	} else {
+		for _, c := range candidates {
+			if c.Terms == 0 {
+				break // nothing below here matched anything; padding with misses helps nobody
+			}
+			if len(picked) >= want {
 				break
 			}
-		}
-		if !near {
-			picked = append(picked, c)
+			if !nearRegion(c, picked, size) {
+				picked = append(picked, c)
+			}
 		}
 	}
 	if len(picked) == 0 {
@@ -164,6 +163,91 @@ func SnippetRegions(content, query string, maxChars int) []Region {
 		}
 		out = append(out, Region{Text: string(runes[start:end]), Score: p.Terms, Start: start})
 		spent += end - start
+	}
+	return out
+}
+
+// coverageCandidates selects a new query term before another occurrence of a
+// term already represented. Once every term reachable within the budget is
+// covered, score order resumes so repeated occurrences can still contribute
+// separate evidence — important when one subject term introduces several
+// distant premises and conclusions.
+func coverageCandidates(candidates []windowCandidate, lower []rune, terms []string, want, size int) []windowCandidate {
+	// Which terms each window contains, computed ONCE.
+	//
+	// This loop runs up to `want` times and previously rebuilt every candidate's
+	// window text on each pass — string(lower[start:end]) for ~2,500 candidates,
+	// then a Contains scan per term, repeated per round. The membership cannot
+	// change between rounds, only `covered` does, so the scanning was pure repeat
+	// work: measured at 22.4ms/6.2MB/12,400 allocs on a 100k-rune memory against
+	// 5.1ms/2.1MB with coverage off, per document, ten documents per search.
+	has := make([][]bool, len(candidates))
+	for i, c := range candidates {
+		if c.Terms == 0 {
+			continue // never selectable; skip the scan entirely
+		}
+		window := string(lower[c.Start:c.End])
+		row := make([]bool, len(terms))
+		for j, term := range terms {
+			row[j] = strings.Contains(window, term)
+		}
+		has[i] = row
+	}
+
+	picked := make([]windowCandidate, 0, want)
+	covered := make([]bool, len(terms))
+	for len(picked) < want {
+		best := -1
+		bestFresh := -1
+		for i, c := range candidates {
+			if has[i] == nil || nearRegion(c, picked, size) {
+				continue
+			}
+			fresh := 0
+			for j := range terms {
+				if !covered[j] && has[i][j] {
+					fresh++
+				}
+			}
+			// candidates are already score-first and position-second. Keeping the
+			// first tie preserves those deterministic tie-breakers.
+			if fresh > bestFresh {
+				best, bestFresh = i, fresh
+			}
+		}
+		if best < 0 {
+			break
+		}
+		picked = append(picked, candidates[best])
+		for j := range terms {
+			if has[best][j] {
+				covered[j] = true
+			}
+		}
+	}
+	return picked
+}
+
+// nearRegion enforces one region per neighbourhood, not merely non-overlap.
+// Candidate windows advance by much less than their width, so without this the
+// highest-scoring choices are usually several views of one paragraph.
+func nearRegion(candidate windowCandidate, picked []windowCandidate, size int) bool {
+	for _, p := range picked {
+		if candidate.Start < p.End+size && p.Start < candidate.End+size {
+			return true
+		}
+	}
+	return false
+}
+
+func distinctTerms(terms []string) []string {
+	out := make([]string, 0, len(terms))
+	seen := make(map[string]bool, len(terms))
+	for _, term := range terms {
+		if !seen[term] {
+			seen[term] = true
+			out = append(out, term)
+		}
 	}
 	return out
 }

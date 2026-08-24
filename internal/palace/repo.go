@@ -252,6 +252,118 @@ func (r *Repo) GetMany(ctx context.Context, teamID string, ids []string) (map[st
 	return out, nil
 }
 
+// MemoryChunksByRoots loads every stored chunk for the requested logical memory
+// roots in one query, keyed by root id and ordered by chunk index. Missing roots
+// are absent from the map.
+func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []string) (map[string][]Drawer, error) {
+	out := make(map[string][]Drawer, len(roots))
+	if len(roots) == 0 {
+		return out, nil
+	}
+	var rows []drawerRow
+	if err := r.memoryChunkQuery(ctx, teamID, roots, allDrawerColumns).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		d := fromRow(row)
+		root := memoryOf(d)
+		out[root] = append(out[root], d)
+	}
+	return out, nil
+}
+
+// MemoryChunkIDsByRoots is MemoryChunksByRoots reduced to identity. Anchor
+// resolution needs only which chunk ids belong to which memory, and loading
+// whole memories to build a list of ids moves every chunk's content across the
+// wire for nothing — on a page of long memories that is the largest read in the
+// request.
+func (r *Repo) MemoryChunkIDsByRoots(ctx context.Context, teamID string, roots []string) (map[string][]string, error) {
+	out := make(map[string][]string, len(roots))
+	if len(roots) == 0 {
+		return out, nil
+	}
+	// chunk_index is selected because a compound SELECT can only order by a
+	// column it returns. It costs an int; content and entities — the columns
+	// this projection exists to avoid — stay on the server.
+	var rows []struct {
+		ID         string
+		ParentID   string
+		ChunkIndex int
+	}
+	if err := r.memoryChunkQuery(ctx, teamID, roots, chunkIdentityColumns).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		root := row.ParentID
+		if root == "" {
+			root = row.ID
+		}
+		out[root] = append(out[root], row.ID)
+	}
+	return out, nil
+}
+
+// memoryChunkColumns names a projection memoryChunkQuery may select. It is a
+// closed type rather than a string because the value is interpolated into
+// Select() — GORM cannot parameterise a column list — so a `string` parameter is
+// an SQL-injection sink one careless call site away from being reachable. Every
+// call site today passes a literal and nothing external reaches it; making the
+// type closed means nothing external CAN, without the compiler objecting.
+type memoryChunkColumns int
+
+const (
+	// allDrawerColumns loads whole chunks, for reassembling a memory's text.
+	allDrawerColumns memoryChunkColumns = iota
+	// chunkIdentityColumns loads only identity. chunk_index is included because a
+	// compound SELECT can only order by a column it returns; content and entities
+	// — the columns this projection exists to avoid — stay on the server.
+	chunkIdentityColumns
+)
+
+// sql renders the projection. An unknown value falls back to the widest
+// projection, which is the safe direction to be wrong in: too much data, never
+// a malformed statement.
+func (c memoryChunkColumns) sql() string {
+	if c == chunkIdentityColumns {
+		return "id, parent_id, chunk_index"
+	}
+	return "*"
+}
+
+// memoryChunkQuery selects a memory's chunks as a UNION of two single-column
+// lookups rather than `id IN (...) OR parent_id IN (...)`.
+//
+// The OR spelling is the readable one and it is why this was a full scan: no
+// planner can seek both sides of a disjunction in one index pass, so it
+// degrades to examining every row of the tenant however the table is indexed —
+// adding the parent_id index alone leaves the plan unchanged. Split into a
+// union, each branch seeks its own index (the primary key for roots,
+// idx_drawers_team_parent from migration 00024 for children).
+//
+// UNION ALL rather than UNION, and that is load-bearing rather than a
+// micro-optimisation. Deduplicating forces the compound to produce sorted
+// inputs, and at least one SQLite build answers that by merging on the primary
+// key — which puts the child branch back on a tenant-wide scan and quietly
+// undoes the fix. The branches cannot overlap anyway: a root is stored with an
+// empty parent_id, so `id IN roots` matches only roots and `parent_id IN roots`
+// only their children.
+// ⚠BOTH branches carry `team_id = ?`, and both are load-bearing. The child
+// branch matches on parent_id, which is caller-influenced data: a row in ANOTHER
+// tenant whose parent_id happens to name this tenant's root would be returned by
+// an unscoped branch, and it flows straight through reassembleMemory onto the
+// wire. TestMemoryChunkQueriesRefuseToCrossTenants is the gate; delete either
+// predicate and watch it go red.
+func (r *Repo) memoryChunkQuery(ctx context.Context, teamID string, roots []string, columns memoryChunkColumns) *gorm.DB {
+	db := r.db.WithContext(ctx)
+	byID := db.Select(columns.sql()).Table("drawers").Where("team_id = ? AND id IN ?", teamID, roots)
+	byParent := db.Select(columns.sql()).Table("drawers").Where("team_id = ? AND parent_id IN ?", teamID, roots)
+	// Ordering belongs on the compound result: sorting inside a branch is not
+	// guaranteed to survive the union. SQLite rejects parenthesised operands
+	// around UNION ALL, so the branches are spliced bare and only the compound
+	// is wrapped.
+	return db.Table("(? UNION ALL ?) AS memory_chunks", byID, byParent).Order("chunk_index ASC")
+}
+
 // DrawerPatch carries the optional fields update_drawer may change. A nil field
 // means "leave unchanged", distinguishing "set to empty" from "not provided".
 type DrawerPatch struct {

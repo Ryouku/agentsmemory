@@ -559,7 +559,7 @@ func TestRunRecordCarriesTheCaseSet(t *testing.T) {
 	report.CaseSetOrigin = palace.CaseSetReplayed
 
 	if err := writeCells(path, report, caseFileMeta{Generator: "g", Style: "paraphrase", Wing: "wing_acme"}, cellsConfig{
-		Pool: 50, Cases: 4, Ranking: "fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off",
+		Pool: 50, Cases: 4, Ranking: "fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off unit=chunk evidence=lexical",
 	}); err != nil {
 		t.Fatalf("writeCells: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestRunRecordCarriesTheCaseSet(t *testing.T) {
 func TestRunRecordNamesTheRankingItMeasured(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "run.cells.json")
-	ranking := "fusion=rrf lex-weight=auto-idf lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50)"
+	ranking := "fusion=rrf lex-weight=auto-idf lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=chunk evidence=lexical"
 	if err := writeCells(path, closetReport(), caseFileMeta{Generator: "g"}, cellsConfig{Pool: 50, Cases: 4, Ranking: ranking}); err != nil {
 		t.Fatalf("writeCells: %v", err)
 	}

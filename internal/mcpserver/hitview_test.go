@@ -14,7 +14,8 @@ import (
 // button: TestEveryHitFieldIsOnTheWireOrExcused rejects a name that is not
 // actually a field, so the list cannot outlive what it excuses.
 var hitFieldsNotOnTheWire = map[string]string{
-	"Drawer": "flattened into the embedded drawerView rather than nested, so the memory's own fields sit at the top level of a hit",
+	"Drawer":        "flattened into the embedded drawerView rather than nested, so the memory's own fields sit at the top level of a hit",
+	"MemoryContent": "mapped onto drawerView.Content after reassembly rather than exposed as a second duplicate content field",
 }
 
 // TestEveryHitFieldIsOnTheWireOrExcused: a field on palace.SearchHit either

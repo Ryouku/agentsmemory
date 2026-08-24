@@ -2,9 +2,45 @@ package palace
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
+
+// orderedVectors returns a caller-controlled vector prefix and records every
+// requested depth. It makes chunk crowding deterministic: the real vector
+// backend is allowed to order siblings this way, but a corpus fixture should not
+// depend on a fake embedder happening to do so today.
+type orderedVectors struct {
+	store.VectorStore
+	hits []store.Hit
+	ks   []int
+}
+
+func (o *orderedVectors) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
+	if strings.HasSuffix(namespace, "::closets") {
+		return o.VectorStore.Search(ctx, namespace, vector, k, filter)
+	}
+	o.ks = append(o.ks, k)
+	if k > len(o.hits) {
+		k = len(o.hits)
+	}
+	return append([]store.Hit(nil), o.hits[:k]...), nil
+}
+
+// recordingDocuments is a cross-encoder spy. Scores are intentionally equal:
+// these tests inspect the documents the served path supplied, not a fake model's
+// opinion of them.
+type recordingDocuments struct {
+	docs [][]string
+}
+
+func (r *recordingDocuments) Rerank(_ context.Context, _ string, docs []string) ([]float64, error) {
+	r.docs = append(r.docs, append([]string(nil), docs...))
+	return make([]float64, len(docs)), nil
+}
 
 // longMemory builds content long enough that Add chunks it, with a marker term
 // repeated so every chunk matches the same query — which is exactly the shape
@@ -102,6 +138,248 @@ func TestSearchReportsHowManyChunksMatched(t *testing.T) {
 	if hits[0].ChunksMatched < 2 {
 		t.Errorf("ChunksMatched = %d for a memory whose chunks all matched; the collapse threw "+
 			"away how much of the memory was relevant", hits[0].ChunksMatched)
+	}
+}
+
+// TestMemoryLevelSearchFillsThePoolWithDistinctMemories pins the defect that
+// post-ranking collapse cannot repair: if the vector prefix is all siblings,
+// BM25 and the cross-encoder never see the next memory at all.
+//
+// The control makes one k=6 request and cannot return NEEDLE. The treatment must
+// widen the SAME prefix until six distinct memories are available, at which
+// point memory-level BM25 promotes NEEDLE. Removing the widening makes the
+// treatment assertion red; merely keeping the final collapse does not help.
+func TestMemoryLevelSearchFillsThePoolWithDistinctMemories(t *testing.T) {
+	ctx := context.Background()
+	base := newTestService(t)
+	const team = "team-memory-pool"
+
+	long, err := base.Add(ctx, team, AddInput{
+		Wing: "w", Room: "r", Content: longMemory("crowding", 6),
+	})
+	if err != nil {
+		t.Fatalf("add long memory: %v", err)
+	}
+	if len(long.Drawers) < 6 {
+		t.Fatalf("fixture produced %d chunks, want at least 6", len(long.Drawers))
+	}
+	target := mustAddOne(t, base, team, AddInput{
+		Wing: "w", Room: "r", Content: "NEEDLE the memory-level candidate must become reachable",
+	})
+	var fillers []Drawer
+	for i := 0; i < 5; i++ {
+		fillers = append(fillers, mustAddOne(t, base, team, AddInput{
+			Wing: "w", Room: "r", Content: fmt.Sprintf("unrelated distinct memory %d for pool capacity", i),
+		}))
+	}
+
+	ordered := make([]store.Hit, 0, len(long.Drawers)+1+len(fillers))
+	for i, d := range append(append(append([]Drawer(nil), long.Drawers...), target), fillers...) {
+		ordered = append(ordered, store.Hit{ID: d.ID, Score: float32(1 - float64(i)/100)})
+	}
+
+	controlVectors := &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	control := base.Clone().WithMemoryLevelRanking(false)
+	control.vectors = controlVectors
+	controlHits, err := control.Search(ctx, team, SearchQuery{Query: "NEEDLE", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("control search: %v", err)
+	}
+	for _, h := range controlHits {
+		if strings.Contains(h.Drawer.Content, "NEEDLE") {
+			t.Fatal("control unexpectedly reached the memory outside its chunk pool; fixture no longer reproduces the defect")
+		}
+	}
+	if len(controlVectors.ks) != 1 || controlVectors.ks[0] != 6 {
+		t.Fatalf("control vector depths = %v, want one request at 6", controlVectors.ks)
+	}
+
+	treatmentVectors := &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	treatment := base.Clone().WithMemoryLevelRanking(true)
+	treatment.vectors = treatmentVectors
+	treatmentHits, err := treatment.Search(ctx, team, SearchQuery{Query: "NEEDLE", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("treatment search: %v", err)
+	}
+	if len(treatmentVectors.ks) < 2 {
+		t.Fatalf("treatment asked only for %v; sibling chunks still consume the declared memory pool", treatmentVectors.ks)
+	}
+	if len(treatmentHits) == 0 || !strings.Contains(treatmentHits[0].MemoryContent, "NEEDLE") {
+		t.Fatalf("memory outside the first chunk prefix was not promoted after pool fill: %+v", treatmentHits)
+	}
+}
+
+// TestMemoryLevelRerankingCombinesCrossChunkEvidence proves both halves of the
+// A/B switch through the real Search path. The control gives the cross-encoder
+// chunk documents, none containing both terms. The treatment gives it one
+// bounded document per memory, and one document carries evidence assembled from
+// separate chunks.
+func TestMemoryLevelRerankingCombinesCrossChunkEvidence(t *testing.T) {
+	ctx := context.Background()
+	base := newTestService(t)
+	const team = "team-memory-evidence"
+
+	content := "ALPHA premise " + strings.Repeat("neutral filler sentence. ", 90) + " OMEGA conclusion"
+	created, err := base.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: content})
+	if err != nil {
+		t.Fatalf("add split evidence: %v", err)
+	}
+	if len(created.Drawers) < 2 {
+		t.Fatalf("fixture produced %d chunk(s); evidence is not split", len(created.Drawers))
+	}
+	mustAddOne(t, base, team, AddInput{Wing: "w", Room: "r", Content: "ALPHA competitor with one half"})
+
+	controlReranker := &recordingDocuments{}
+	control := base.Clone().WithMemoryLevelRanking(false).
+		WithReranker(controlReranker, 10).WithRerankWeight(0.5)
+	if _, err := control.Search(ctx, team, SearchQuery{Query: "ALPHA OMEGA", Limit: 5, SkipTelemetry: true}); err != nil {
+		t.Fatalf("control search: %v", err)
+	}
+	if len(controlReranker.docs) != 1 {
+		t.Fatalf("control reranker calls = %d, want 1", len(controlReranker.docs))
+	}
+	for _, doc := range controlReranker.docs[0] {
+		if strings.Contains(doc, "ALPHA") && strings.Contains(doc, "OMEGA") {
+			t.Fatal("control received combined evidence; the A/B fixture no longer distinguishes the paths")
+		}
+	}
+
+	treatmentReranker := &recordingDocuments{}
+	treatment := base.Clone().WithMemoryLevelRanking(true).
+		WithReranker(treatmentReranker, 10).WithRerankWeight(0.5)
+	if _, err := treatment.Search(ctx, team, SearchQuery{Query: "ALPHA OMEGA", Limit: 5, SkipTelemetry: true}); err != nil {
+		t.Fatalf("treatment search: %v", err)
+	}
+	if len(treatmentReranker.docs) != 1 {
+		t.Fatalf("treatment reranker calls = %d, want 1", len(treatmentReranker.docs))
+	}
+	if got, want := len(treatmentReranker.docs[0]), 2; got != want {
+		t.Fatalf("treatment cross-encoded %d documents, want %d distinct memories", got, want)
+	}
+	combined := false
+	for _, doc := range treatmentReranker.docs[0] {
+		if got := len([]rune(doc)); got > ChunkSize {
+			t.Errorf("treatment evidence is %d runes, above the %d-rune model budget", got, ChunkSize)
+		}
+		if strings.Contains(doc, "ALPHA") && strings.Contains(doc, "OMEGA") {
+			combined = true
+		}
+	}
+	if !combined {
+		t.Fatalf("no treatment document combined evidence from separate chunks: %#v", treatmentReranker.docs[0])
+	}
+}
+
+// TestMemoryLevelRerankingKeepsEnoughContextToJudgeTheAnswer reproduces the
+// live failure where a complete long memory lost to a shorter, partial diary.
+// The query term occurs in three distant passages and each answer follows it by
+// more than 100 runes: fragmenting the model's 1600-rune budget into sixteen
+// tiny slices hides all three reasons, while a few coherent passages expose the
+// complete answer to the cross-encoder.
+func TestMemoryLevelRerankingKeepsEnoughContextToJudgeTheAnswer(t *testing.T) {
+	ctx := context.Background()
+	base := newTestService(t)
+	const team = "team-memory-reasoning"
+
+	section := func(reason string, fill string) string {
+		return "constraint " + strings.Repeat("background ", 18) + reason + " " + strings.Repeat(fill+" ", 260)
+	}
+	complete, err := base.Add(ctx, team, AddInput{
+		Wing: "w", Room: "operations",
+		Content: section("CAUSE_ALPHA", "amber") + section("CAUSE_BETA", "birch") + section("CAUSE_GAMMA", "cedar"),
+	})
+	if err != nil {
+		t.Fatalf("add complete memory: %v", err)
+	}
+	if len(complete.Drawers) < 3 {
+		t.Fatalf("fixture produced %d chunks, want at least 3", len(complete.Drawers))
+	}
+	partial := mustAddOne(t, base, team, AddInput{
+		Wing: "w", Room: "operations", Content: "constraint short diary mentions CAUSE_ALPHA and CAUSE_BETA only",
+	})
+
+	ordered := make([]store.Hit, 0, len(complete.Drawers)+1)
+	for i, d := range append(append([]Drawer(nil), complete.Drawers...), partial) {
+		ordered = append(ordered, store.Hit{ID: d.ID, Score: float32(1 - float64(i)/100)})
+	}
+	reranker := rerankFunc(func(_ context.Context, _ string, docs []string) ([]float64, error) {
+		scores := make([]float64, len(docs))
+		for i, doc := range docs {
+			for _, reason := range []string{"CAUSE_ALPHA", "CAUSE_BETA", "CAUSE_GAMMA"} {
+				if strings.Contains(doc, reason) {
+					scores[i]++
+				}
+			}
+		}
+		return scores, nil
+	})
+
+	control := base.Clone().WithMemoryLevelRanking(false).WithReranker(reranker, 10).WithRerankWeight(1)
+	control.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	controlHits, err := control.Search(ctx, team, SearchQuery{Query: "constraint", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("control search: %v", err)
+	}
+	if len(controlHits) == 0 || controlHits[0].MemoryID != partial.ID {
+		t.Fatalf("control top memory = %+v, want the short partial diary; the fixture no longer distinguishes the arms", controlHits)
+	}
+
+	treatment := base.Clone().WithMemoryLevelRanking(true).WithReranker(reranker, 10).WithRerankWeight(1)
+	treatment.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	treatmentHits, err := treatment.Search(ctx, team, SearchQuery{Query: "constraint", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("treatment search: %v", err)
+	}
+	if len(treatmentHits) == 0 || treatmentHits[0].MemoryID != complete.Drawers[0].ID {
+		t.Fatalf("treatment top memory = %+v, want the complete cross-chunk answer", treatmentHits)
+	}
+}
+
+// TestMemoryEvidenceCoversDistinctQuestionClauses reproduces the second live
+// failure: four passages repeating the dense first clause consumed all four
+// evidence slots, so the lower-density "what remained open" clause vanished and
+// an incomplete memory won. A multi-part question needs new vocabulary covered
+// before another occurrence of vocabulary already represented.
+func TestMemoryEvidenceCoversDistinctQuestionClauses(t *testing.T) {
+	dense := "subject field deriving address wing room " + strings.Repeat("amber ", 150)
+	content := strings.Repeat(dense, maxMemoryEvidenceRegions) +
+		"remained open " + strings.Repeat("background ", 18) + "OPEN_REASON " + strings.Repeat("tail ", 30)
+
+	evidence := memoryEvidence(content, "subject field deriving address wing room remained open", content[:ChunkSize])
+	if !strings.Contains(evidence, "OPEN_REASON") {
+		t.Fatalf("evidence omitted the distinct low-density query clause: %q", evidence)
+	}
+}
+
+// TestReassembleMemoryPreservesChunkedText makes the treatment's whole-memory
+// document falsifiable independently of ranking. ChunkText overlaps and trims
+// window edges; removing the wrong overlap silently duplicates or drops prose.
+func TestReassembleMemoryPreservesChunkedText(t *testing.T) {
+	content := strings.Repeat("alpha beta gamma delta. ", 180) + "TAIL-MARKER"
+	chunks := ChunkText(content, ChunkSize, ChunkOverlap, ChunkMin)
+	if len(chunks) < 2 {
+		t.Fatalf("fixture produced %d chunk(s)", len(chunks))
+	}
+	drawers := make([]Drawer, len(chunks))
+	for i, chunk := range chunks {
+		drawers[i] = Drawer{ChunkIndex: chunk.Index, Content: chunk.Content}
+	}
+	if got, want := reassembleMemory(drawers), strings.TrimSpace(content); got != want {
+		t.Fatalf("reassembled add-drawer text changed: got %d runes, want %d", len([]rune(got)), len([]rune(want)))
+	}
+}
+
+// TestReassembleMemoryPreservesDiaryWhitespace covers the other chunk protocol:
+// diary windows never overlap or trim, so concatenation must be byte-exact.
+func TestReassembleMemoryPreservesDiaryWhitespace(t *testing.T) {
+	content := "  opening\n" + strings.Repeat("journal line with spacing  \n", 100) + "  closing  "
+	chunks := diaryChunks(content, 211)
+	drawers := make([]Drawer, len(chunks))
+	for i, chunk := range chunks {
+		drawers[i] = Drawer{Agent: "codex", ChunkIndex: chunk.Index, Content: chunk.Content}
+	}
+	if got := reassembleMemory(drawers); got != content {
+		t.Fatalf("reassembled diary changed: got %q, want %q", got, content)
 	}
 }
 
@@ -203,5 +481,108 @@ func TestRankOfCountsMemorySlotsNotChunkPositions(t *testing.T) {
 	if got := rankOf([]string{"A", "B"}, []int{0, 1}, map[string]bool{"B": true}); got != 2 {
 		t.Errorf("rankOf with no sibling chunks = %d, want 2 — the fold must not move a rank "+
 			"when there is nothing to fold", got)
+	}
+}
+
+// TestReassemblingAMinedMemoryDoesNotDuplicateItsOverlap is a gate on the
+// content an agent reads, in BOTH arms.
+//
+// reassembleMemory skipped overlap removal for chunks carrying an author,
+// documented as "diary chunks, which were stored without overlap". Mine stamps
+// an author on every drawer it writes and overlaps by MineChunkOverlap, so
+// every multi-chunk mined memory was reassembled with its overlap re-emitted at
+// each boundary — measured at +4,477 runes on a 19,390-rune source, 57 of 260
+// paragraphs twice.
+//
+// hydrateResultMemories runs unconditionally, so this reached the wire with
+// MEMORY_LEVEL_RANKING=false too, and Identity, Coverage, FullLength and the
+// snippet regions were all computed over the duplicated text.
+func TestReassemblingAMinedMemoryDoesNotDuplicateItsOverlap(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var b strings.Builder
+	for i := 0; i < 260; i++ {
+		fmt.Fprintf(&b, "Paragraph %d states a distinct claim about retrieval and its measurement. ", i)
+	}
+	original := b.String()
+
+	if _, err := svc.Mine(ctx, "team-mine", MineInput{
+		Wing: "wing_alpha", Room: "decisions", Source: "overlap.md", Content: original,
+	}); err != nil {
+		t.Fatalf("mine: %v", err)
+	}
+
+	var rows []drawerRow
+	if err := svc.repo.db.WithContext(ctx).
+		Where("team_id = ? AND source_file = ?", "team-mine", "overlap.md").
+		Order("chunk_index ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load mined chunks: %v", err)
+	}
+	stored := make([]Drawer, 0, len(rows))
+	for _, r := range rows {
+		stored = append(stored, fromRow(r))
+	}
+	if len(stored) < 3 {
+		t.Fatalf("mined into %d chunks; the fixture needs several boundaries", len(stored))
+	}
+
+	got := reassembleMemory(stored)
+	if len([]rune(got)) > len([]rune(original)) {
+		t.Fatalf("reassembled mined memory is %d runes against an original of %d (+%d, about %d boundaries x %d overlap): the stored overlap was re-emitted",
+			len([]rune(got)), len([]rune(original)),
+			len([]rune(got))-len([]rune(original)), len(stored)-1, MineChunkOverlap)
+	}
+	for i := 0; i < 260; i++ {
+		marker := fmt.Sprintf("Paragraph %d states", i)
+		if strings.Count(got, marker) > 1 {
+			t.Fatalf("%q appears %d times in the reassembled memory; an agent reads the same prose twice",
+				marker, strings.Count(got, marker))
+		}
+	}
+}
+
+// TestReassemblingADiaryMemoryKeepsEveryChunk pins the other side: the diary is
+// the one writer that does NOT overlap, so stripping there would delete real
+// prose rather than a duplicate.
+func TestReassemblingADiaryMemoryKeepsEveryChunk(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "SESSION line %d recording what happened and why it mattered. ", i)
+	}
+	entry := b.String()
+
+	if _, err := svc.WriteDiary(ctx, "team-diary", DiaryWriteInput{
+		Agent: "claude-code-aks", Wing: "wing_alpha", Entry: entry,
+	}); err != nil {
+		t.Fatalf("write diary: %v", err)
+	}
+
+	var rows []drawerRow
+	if err := svc.repo.db.WithContext(ctx).
+		Where("team_id = ? AND room = ?", "team-diary", DiaryRoom).
+		Order("chunk_index ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load diary chunks: %v", err)
+	}
+	stored := make([]Drawer, 0, len(rows))
+	for _, r := range rows {
+		stored = append(stored, fromRow(r))
+	}
+	if len(stored) < 2 {
+		t.Fatalf("diary entry stored as %d chunk(s); the fixture needs a boundary", len(stored))
+	}
+	if !storedWithoutOverlap(stored[1]) {
+		t.Fatalf("a diary chunk (agent=%q source=%q) is not recognised as overlap-free",
+			stored[1].Agent, stored[1].SourceFile)
+	}
+
+	got := reassembleMemory(stored)
+	for i := 0; i < 200; i++ {
+		if !strings.Contains(got, fmt.Sprintf("SESSION line %d ", i)) {
+			t.Fatalf("line %d is missing from the reassembled diary entry: overlap stripping deleted real prose", i)
+		}
 	}
 }

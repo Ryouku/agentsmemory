@@ -16,6 +16,34 @@ recalls what its team already decided, does the work, and writes back what it le
 retrieval half has to be good enough that recall beats re-deriving from source; the tenancy half
 has to be strict enough that one team's decisions never surface in another's session.
 
+## Retrieval unit A/B
+
+SQLite remains the durable source of truth and vectors remain indexed per chunk. The served ranking
+unit is selected at the composition root by `MEMORY_LEVEL_RANKING` / `--memory-level-ranking`:
+
+- `false` (control) retrieves and ranks chunks, then collapses the page to distinct memories;
+- `true` (treatment) widens the ordered vector prefix to distinct memory roots, hydrates their
+  chunks, and applies BM25, closet boost and cross-encoding once per memory.
+
+Both arms expose the stable root as `am_search.memory_id`, present snippets/regions against the
+reassembled memory, and resolve anchors across every sibling so a child passage cannot lose a root
+staleness verdict. The startup and `am_status` ranking profile ends in `unit=chunk|memory`; this is
+the live-arm authority because process environment may override an `.env` file. ADR-024 owns the
+experiment and its rollback.
+
+Within `unit=memory`, `MEMORY_EVIDENCE_SELECTOR` / `--memory-evidence-selector`
+selects the bounded cross-encoder document. `lexical` (default/control) chooses
+regions by literal query-term coverage. `semantic` reuses the raw query vector,
+batch-embeds overlapping windows from the reassembled long memory, then selects
+several distant high-similarity passages in source order. Short memories bypass
+the extra pass, and any invalid or failed passage batch falls back to lexical
+evidence for the whole shortlist. Semantic batches are bounded at 128 windows;
+the TEI adapter reads `max_client_batch_size` from `/info` — caching only a successful
+answer, retried after a backoff otherwise, and never probed under the lock that
+guards it — then splits to the
+server's actual limit, falling back to TEI's standard 32 when discovery is not
+available. The profile reports `evidence=lexical|semantic`.
+
 ## Module Map
 
 One row per module, one reason to change per module. `In use` says what selects it in a running
@@ -211,7 +239,7 @@ seam stops being a seam.
 |------|------------|-------|
 | `cmd/server/main.go` `buildServices` | the database, vector store, embedder, every domain service | `cmd/server/wiring_test.go` `TestEveryConfigFieldIsPopulatedAndRead` |
 | `cmd/server/main.go` `productionMCPServer` | the one MCP handler graph used by HTTP and the direct CLI | `cmd/server/mcp_test.go` `TestProductionMCPConstructionHasOneChokepoint` |
-| `cmd/server/main.go` `configureRanking` | the ranking configuration and the reranker | `cmd/server/configureranking_test.go` `TestRerankSurvivesEveryFusionMode` |
+| `cmd/server/main.go` `configureRanking` | the ranking configuration, retrieval unit and the reranker | `cmd/server/configureranking_test.go` `TestConfigureRankingSelectsTheReportedUnit`, `TestRerankSurvivesEveryFusionMode` |
 | `internal/mcpserver` `registerAll` | every MCP tool, via `add` / `addWrite` | `internal/mcptest/exhaustive_test.go` `TestEveryToolIsExercisedEndToEnd` |
 
 ## Test Doubles

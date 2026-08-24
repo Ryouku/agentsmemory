@@ -31,7 +31,7 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 	}{
 		{"a default configuration still announces the profile it resolved",
 			func(c config.Config) config.Config { return c },
-			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off"}},
+			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off unit=chunk evidence=lexical"}},
 		{"the shipped default announces that the lexical knobs do not apply",
 			func(c config.Config) config.Config { return c },
 			[]string{"fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)"}},
@@ -74,6 +74,60 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 				t.Errorf("a default configuration announced %d line(s):\n%s", len(lines), joined)
 			}
 		})
+	}
+}
+
+// TestConfigureRankingSelectsTheReportedUnit proves the production composition
+// root applies the A/B arm. A Config field and a palace setter tested separately
+// would still permit the one missing line that makes a finished feature
+// unreachable.
+func TestConfigureRankingSelectsTheReportedUnit(t *testing.T) {
+	for _, tc := range []struct {
+		enabled bool
+		unit    string
+	}{
+		{enabled: false, unit: "chunk"},
+		{enabled: true, unit: "memory"},
+	} {
+		cfg := config.Default()
+		cfg.MemoryLevelRanking = tc.enabled
+		svc, lines := configureRanking(bareService(), cfg, noReranker)
+		if got := svc.RankingProfile(); !strings.Contains(got, "unit="+tc.unit) {
+			t.Errorf("enabled=%v profile = %q, want unit=%s", tc.enabled, got, tc.unit)
+		}
+		if got := strings.Join(lines, "\n"); !strings.Contains(got, "unit="+tc.unit) {
+			t.Errorf("enabled=%v startup did not expose the A/B arm:\n%s", tc.enabled, got)
+		}
+	}
+}
+
+// TestConfigureRankingSelectsTheReportedEvidence proves the operator-facing
+// selector reaches the served rerank-document path and the resolved profile.
+// Testing a palace setter alone would permit the same reachability gap this
+// repository has shipped before: finished behavior with no production wire.
+func TestConfigureRankingSelectsTheReportedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		set  string
+		want string
+	}{
+		{set: "lexical", want: "lexical"},
+		{set: "semantic", want: "semantic"},
+		{set: "SEMANTIC", want: "semantic"},
+		{set: "typo", want: "lexical"},
+	} {
+		cfg := config.Default()
+		cfg.MemoryEvidenceSelector = tc.set
+		svc, lines := configureRanking(bareService(), cfg, noReranker)
+		if got := svc.MemoryEvidenceSelectorName(); got != tc.want {
+			t.Errorf("selector=%q resolved to %q, want %q; lines=%v", tc.set, got, tc.want, lines)
+		}
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "evidence="+tc.want) {
+			t.Errorf("selector=%q startup did not expose evidence=%s:\n%s", tc.set, tc.want, joined)
+		}
+		if tc.set == "typo" && !strings.Contains(joined, "is not 'lexical' or 'semantic'") {
+			t.Errorf("invalid selector was not reported:\n%s", joined)
+		}
 	}
 }
 
@@ -192,5 +246,8 @@ func TestConfiguredDefaultsMatchConfig(t *testing.T) {
 	}
 	if defaultClosetBoost != d.ClosetBoost {
 		t.Errorf("defaultClosetBoost = %v but config.Default().ClosetBoost = %v", defaultClosetBoost, d.ClosetBoost)
+	}
+	if d.MemoryEvidenceSelector != palace.DefaultMemoryEvidenceSelector {
+		t.Errorf("config.Default().MemoryEvidenceSelector = %q but palace default = %q", d.MemoryEvidenceSelector, palace.DefaultMemoryEvidenceSelector)
 	}
 }
