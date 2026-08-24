@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -50,14 +51,24 @@ const maxBatch = 32
 
 const maxDiscoveredBatch = 128
 
+// infoTimeout bounds the capability probe. It is short because /info is a
+// static read served before any inference, and because the probe is on the
+// critical path of the embed that triggered it.
+const infoTimeout = 5 * time.Second
+
 // Embedder is a client for TEI's /embed endpoint. It satisfies the Embedder
 // interface that internal/palace declares at the consumer.
 type Embedder struct {
 	endpoint     string
 	infoEndpoint string
 	http         *http.Client
-	batchOnce    sync.Once
-	batchSize    int
+
+	// batchMu guards the discovered limit. It is a mutex and not a sync.Once
+	// because Once fires whether the probe succeeded or FAILED, which pinned a
+	// transient error to the whole process lifetime.
+	batchMu     sync.Mutex
+	batchSize   int
+	batchWarned bool
 }
 
 // New constructs an Embedder for the given TEI base URL (e.g.
@@ -111,37 +122,71 @@ func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, err
 	return out, nil
 }
 
-// clientBatchSize reads the server's real client limit once. Capability
-// discovery is an optimisation rather than an availability dependency: a
-// proxy may expose /embed without /info, in which case the public TEI default
-// remains the safe answer.
+// clientBatchSize reports the server's real client limit, discovering it on
+// first use and CACHING ONLY A SUCCESSFUL ANSWER. Capability discovery is an
+// optimisation rather than an availability dependency: a proxy may expose
+// /embed without /info, in which case the public TEI default is the safe
+// answer — but it must be a safe answer for this call, not a verdict on the
+// process.
+//
+// Memoizing failure is how the optimisation disappears in production. TEI is
+// commonly still loading its model when the first embed arrives, and one 503,
+// one dial error, or one caller who hangs up is otherwise enough to pin 32 for
+// the lifetime of the server, four times the round trips, with nothing said.
 func (e *Embedder) clientBatchSize(ctx context.Context) int {
-	e.batchOnce.Do(func() {
-		e.batchSize = e.discoverClientBatchSize(ctx)
-	})
+	e.batchMu.Lock()
+	defer e.batchMu.Unlock()
+	if e.batchSize > 0 {
+		return e.batchSize
+	}
+	size, err := e.discoverClientBatchSize(ctx)
+	if err != nil {
+		// Said once, not per call: a warning on every embed would bury the log
+		// of a server whose /info is permanently absent, which is a supported
+		// deployment rather than a fault.
+		if !e.batchWarned {
+			e.batchWarned = true
+			slog.Warn("TEI capability discovery failed; using the default client batch size and will retry",
+				"endpoint", e.infoEndpoint, "batch", maxBatch, "error", err)
+		}
+		return maxBatch
+	}
+	e.batchSize = size
 	return e.batchSize
 }
 
-func (e *Embedder) discoverClientBatchSize(ctx context.Context) int {
+// discoverClientBatchSize asks TEI what it will accept.
+//
+// The probe deliberately does NOT inherit the caller's cancellation. Whichever
+// embed happens to be first would otherwise decide a process-wide setting, so a
+// client that disconnects mid-request downgrades every later batch. It keeps
+// the caller's values (deadline aside) so tracing and auth survive.
+func (e *Embedder) discoverClientBatchSize(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), infoTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.infoEndpoint, nil)
 	if err != nil {
-		return maxBatch
+		return 0, err
 	}
 	resp, err := e.http.Do(req)
 	if err != nil {
-		return maxBatch
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return maxBatch
+		return 0, fmt.Errorf("GET %s: %s", e.infoEndpoint, resp.Status)
 	}
 	var info struct {
 		MaxClientBatchSize int `json:"max_client_batch_size"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.MaxClientBatchSize < 1 {
-		return maxBatch
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return 0, fmt.Errorf("decode %s: %w", e.infoEndpoint, err)
 	}
-	return min(info.MaxClientBatchSize, maxDiscoveredBatch)
+	if info.MaxClientBatchSize < 1 {
+		return 0, fmt.Errorf("%s advertised max_client_batch_size=%d", e.infoEndpoint, info.MaxClientBatchSize)
+	}
+	return min(info.MaxClientBatchSize, maxDiscoveredBatch), nil
 }
 
 // embedBatch embeds one request's worth of inputs and returns the vectors in

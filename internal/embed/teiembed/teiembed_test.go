@@ -315,3 +315,93 @@ func TestEmbedOneReturnsTheSingleVector(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// TestCapabilityDiscoveryRetriesAfterAFailedProbe is the gate on a permanent,
+// silent downgrade.
+//
+// Discovery used sync.Once, which fires whether the probe succeeded or failed.
+// One transient error — TEI still loading its model, a proxy 503, or a caller
+// who hangs up, since the probe also inherited the FIRST caller's context —
+// pinned the 32-input default for the lifetime of the process: four times the
+// round trips, no log, no retry, and the adaptive batching this package exists
+// to provide silently gone.
+//
+// The existing 128-input test cannot fail for this reason, because its first
+// call succeeds. That is the gap this closes.
+func TestCapabilityDiscoveryRetriesAfterAFailedProbe(t *testing.T) {
+	var infoHits, infoFailures int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/info" {
+			infoHits++
+			// Fail the first probe the way a still-warming TEI does.
+			if infoFailures == 0 {
+				infoFailures++
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte(`{"max_client_batch_size":128}`))
+			return
+		}
+		var req embedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		out := make([][]float32, len(req.Inputs))
+		for i := range out {
+			out[i] = []float32{1, 0}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+	if _, err := e.Embed(context.Background(), []string{"a", "b"}); err != nil {
+		t.Fatalf("first embed: %v", err)
+	}
+	if got := e.clientBatchSize(context.Background()); got != maxDiscoveredBatch {
+		t.Fatalf("after a failed probe the client is stuck at batch %d; want it to retry and discover %d", got, maxDiscoveredBatch)
+	}
+	if infoHits < 2 {
+		t.Fatalf("/info was asked %d times; a failed probe must not be cached as the answer", infoHits)
+	}
+
+	// And once discovered, it is not re-probed on every call.
+	before := infoHits
+	if _, err := e.Embed(context.Background(), []string{"c", "d"}); err != nil {
+		t.Fatalf("third embed: %v", err)
+	}
+	if infoHits != before {
+		t.Fatalf("/info re-probed after a successful discovery (%d -> %d); the success must be cached", before, infoHits)
+	}
+}
+
+// TestCallerCancellationDoesNotDecideTheProcessBatchSize pins the second half:
+// the probe must not inherit the cancellation of whichever embed happened to be
+// first, or one disconnecting client downgrades every later batch.
+func TestCallerCancellationDoesNotDecideTheProcessBatchSize(t *testing.T) {
+	var infoHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/info" {
+			infoHits++
+			_, _ = w.Write([]byte(`{"max_client_batch_size":128}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[[1,0]]`))
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+	// The embed itself is expected to fail. What must not happen is the
+	// capability probe being cancelled along with it.
+	_, _ = e.Embed(dead, []string{"a", "b"})
+
+	// Assert on the probe, not on a later retry: with the retry in place a
+	// second call would rediscover 128 either way, so only whether /info was
+	// REACHED separates a detached probe from an inherited cancellation.
+	if infoHits == 0 {
+		t.Fatal("a cancelled caller cancelled the capability probe with it; /info was never reached")
+	}
+	if e.batchSize != maxDiscoveredBatch {
+		t.Fatalf("probe under a cancelled caller left batchSize=%d; want %d discovered on that same call", e.batchSize, maxDiscoveredBatch)
+	}
+}
