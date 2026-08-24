@@ -80,7 +80,32 @@ The last row is latent rather than observed — nothing in the corpus schedules 
 
 ## Decision
 
-Four filters, one default change, and a rule that the default may never withhold silently.
+The argument list is **derived from the stored columns**, one default changes, and the default may never withhold silently.
+
+### 0. The argument list is derived from the schema, and a gate keeps it that way
+
+The question this ADR was asked to settle is *"what arguments will we need, so this is the last modification?"* — and the answer is not a better guess. **A query surface is complete when every stored column has a recorded decision about whether you can ask about it.** Anything else is foresight, and foresight is what runs out.
+
+So the arguments are derived by walking `kgTripleRow` rather than imagined, and the derivation is enforced by a test rather than left as an intention:
+
+| Column | Askable as | Verdict |
+|---|---|---|
+| `team_id` | — | **Never.** Scoping comes from the authenticated session; a caller-supplied team is a tenancy hole, not a filter |
+| `id` | — | **Excluded on purpose.** `am_kg_query` is an entity lookup. Fetch-by-triple-id is a different tool with a different shape; recorded so its absence is a decision |
+| `subject` | `entity` + `direction: outgoing` | covered by the existing pair |
+| `predicate` | **`predicate`** | **MISSING TODAY — added here.** `predicate` is a required argument on `kg_add` and `kg_invalidate` and appears on `kg_query` nowhere, so *"what `retracts` edges exist?"* and *"what does X `depends_on`?"* are unanswerable. The graph's own vocabulary is the one dimension you cannot select on |
+| `object` | `entity` + `direction: incoming` | covered |
+| `valid_from` | `started_from` / `started_to` | §3 |
+| `valid_to` | `ended_from` / `ended_to`, `status` | §1, §3 |
+| `confidence` | — | **Excluded, with a reason, and revisit when it becomes true.** `KGAdd` hardcodes `Confidence: 1.0` (`kg.go:366`) and nothing writes any other value, so the column is a constant. A `min_confidence` over a constant is a knob that does nothing — precisely ADR-006's defect — and it would read as a working filter. Reachable only once `kg-extract` runs at scale and varies it, which ADR-004 gates |
+| `source_closet` | `source_closet` | §8 |
+| `source_file` | `source_file` | §8 |
+| `source_drawer_id` | **`source_drawer_id`** | **Added here.** The inverse lookup: *"which facts did this memory assert?"* Pairs with §5 returning it — a field you can read but not select on is half a capability |
+| `extracted_at` | `recorded_from` / `recorded_to` | §5 |
+
+**The gate is what makes this the last modification, not the table.** `TestEveryTripleColumnHasAQueryDecision` walks `kgTripleRow`'s fields and requires each to be reachable as a filter, returned on `KGFact`, or named in an explicit exclusion map carrying a reason. A column added tomorrow fails the build until somebody decides which it is.
+
+Derived rather than hand-listed, deliberately: this repository already learned that a hand-maintained mirror is one migration away from the hole it closed, and the existing `TestEveryConfigFieldIsPopulatedAndRead` and `TestEveryFlagIsRead` are the same shape. A hand-written list of columns would need updating by exactly the person who forgot to.
 
 ### 1. Endedness — `status`
 
@@ -158,7 +183,17 @@ Asked directly — *what will we need in future, so this is the last modificatio
 
 **Deliberately never:** wing-scoping the graph. KG facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. That is a decision with a test behind it, not an omission, and reversing it is its own ADR — noted here because "facts are workspace-wide while drawers are wing-scoped" is raised as a defect often enough (issue #34 among them) that its absence from this ADR should be visibly on purpose.
 
-### 7. Paging on the entity-free timeline
+### 7. Selecting on predicate and provenance
+
+The derivation in §0 surfaces four arguments that have nothing to do with time, and they belong here rather than in a follow-up because they come from the same walk of the same table and change the same signature.
+
+- **`predicate`** — the important one. The graph's relationships are its vocabulary (`retracts`, `supersedes`, `qualifies`, `depends_on`), and today an agent can write one and never select on it. *"Show me every `retracts` edge"* is how you audit what the team has changed its mind about; it is currently a full scan by eye. Optional, exact match after the same `normalizeEntityID`-style validation `kg_add` already applies to predicates.
+- **`source_drawer_id`** — *"which facts did this memory assert?"* Issue #34 records supersession being filed as triples between **drawer ids** precisely because there was no other way to connect a fact to the note behind it; this makes the intended direction askable.
+- **`source_file`**, **`source_closet`** — the same question one level coarser: *"what did this mining run assert?"* Cheap, symmetric with the two above, and they close out the provenance columns so §0's gate has a decision for every one.
+
+All four compose by AND with the temporal filters, same as everything else. None of them needs a migration.
+
+### 8. Paging on the entity-free timeline
 
 `am_kg_timeline` with no entity gains `limit` and `offset` and reports the total it paged through. Without this the filters are half-useful: *"what expired this week"* that silently stops at 100 rows is the truncation §4 exists to forbid, one layer down.
 
@@ -193,7 +228,12 @@ Stated per parameter, because a parameter documented and unconsumed is the defec
 | `started_from`, `started_to` | both | `valid_from` bound via `temporalStartKey`/`temporalEndKey` | none | no start-window filter |
 | `ended_from`, `ended_to` | both | `valid_to` bound, same normalisation | none | no end-window filter |
 | `recorded_from`, `recorded_to` | both | `extracted_at` bound, same normalisation | none | no transaction-time filter |
+| `predicate` | both | exact match on `predicate` | none | every predicate |
+| `source_drawer_id` | both | exact match on `source_drawer_id` | none | every source |
+| `source_file`, `source_closet` | both | exact match on their columns | none | every source |
 | `limit`, `offset` | `kg_timeline` (entity-free) | repo query | `kgTimelineLimit` / 0 | first 100, as today |
+
+**Not exposed, and each recorded in §0 with a reason:** `team_id` (tenancy, never caller-supplied), `id` (a different tool's shape), `confidence` (a constant — a filter over it would be a knob that does nothing).
 
 Response additions, all additive keys so a later field cannot break a caller: `status` (always, echoing what was applied), `withheld` (only when something was removed), `hint` (only alongside `withheld`), `total` (entity-free timeline only), and three fields that are already stored and were never returned — `recorded_at` (from `extracted_at`), `source_drawer_id`, `source_file`.
 
@@ -214,7 +254,8 @@ Response additions, all additive keys so a later field cannot break a caller: `s
 | T3 | `withheld` + `hint` on every filtered response | mcpserver | `TestFilteredResponseReportsWhatItWithheld` — assert the withheld **number** equals what was removed |
 | T4 | **Flip the default to `current`** | mcpserver | `TestDefaultQueryIsCurrentOnly`, plus a release note per ADR-014 |
 | T5 | `limit`/`offset`/`total` on the entity-free timeline | palace + mcpserver | `TestTimelinePagesPastTheDefaultLimit` — assert row 101 is reachable |
-| T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | `TestEveryStoredTripleColumnIsReturned` — walk `kgTripleRow`'s fields and assert each appears on `KGFact` or is named in an explicit exclusion list. Written derived rather than hand-listed, so a column added tomorrow enters the check in the same commit that creates it |
+| T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | see T7 |
+| T7 | `predicate` and the three provenance filters, **and the derived gate** | palace + mcpserver | `TestEveryTripleColumnHasAQueryDecision` — walk `kgTripleRow` by reflection; each field must be a filter argument, a returned `KGFact` field, or in an exclusion map carrying a reason. Prove it by adding a dummy column and watching the build go red. This is the task that makes §0 true rather than aspirational |
 
 T1 ships with the old default deliberately, so the filters can be exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
 
