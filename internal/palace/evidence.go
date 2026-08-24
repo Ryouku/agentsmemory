@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // semanticEvidenceBatchSize bounds each request without falling back to one
@@ -14,6 +16,12 @@ import (
 // of long memories can produce thousands of windows, which should not become
 // one unbounded embedding payload.
 const semanticEvidenceBatchSize = 128
+
+// semanticEvidenceConcurrency bounds how many of those batches are in flight at
+// once. The embedder is one shared server doing real inference for every tenant,
+// so the goal is to stop paying latency serially, not to hand it the whole
+// shortlist at once and turn a client-side wait into a server-side queue.
+const semanticEvidenceConcurrency = 4
 
 type semanticEvidenceWindow struct {
 	doc        int
@@ -47,26 +55,44 @@ func (s *Service) semanticRerankDocuments(
 		return docs, nil
 	}
 
+	// Batches run CONCURRENTLY. They were serial, and that is where the
+	// selector's latency lived rather than in the cross-encoder: a five
+	// thousand rune memory yields seventeen windows, so a full shortlist is
+	// thousands of passages, and at one round trip after another the reranker
+	// had not started yet. Adaptive batching cut the NUMBER of trips and left
+	// them end to end, which is why it bought so little.
+	//
+	// Each goroutine writes only windows[from:to], a disjoint span, so no lock
+	// is needed and the selected evidence is byte-identical to the serial
+	// version — the A/B comparing selectors stays valid.
+	group, ctx := errgroup.WithContext(ctx)
+	group.SetLimit(semanticEvidenceConcurrency)
 	for from := 0; from < len(windows); from += semanticEvidenceBatchSize {
 		to := min(from+semanticEvidenceBatchSize, len(windows))
-		inputs := make([]string, to-from)
-		for i := range inputs {
-			inputs[i] = windows[from+i].region.Text
-		}
-		vectors, err := s.embed.Embed(ctx, inputs)
-		if err != nil {
-			return nil, fmt.Errorf("embed semantic evidence passages: %w", err)
-		}
-		if len(vectors) != len(inputs) {
-			return nil, fmt.Errorf("embed semantic evidence passages: got %d vectors for %d passages", len(vectors), len(inputs))
-		}
-		for i, vector := range vectors {
-			similarity, ok := cosineSimilarity(queryVector, vector)
-			if !ok {
-				return nil, fmt.Errorf("embed semantic evidence passages: vector %d has incompatible dimensions or zero magnitude", from+i)
+		group.Go(func() error {
+			inputs := make([]string, to-from)
+			for i := range inputs {
+				inputs[i] = windows[from+i].region.Text
 			}
-			windows[from+i].similarity = similarity
-		}
+			vectors, err := s.embed.Embed(ctx, inputs)
+			if err != nil {
+				return fmt.Errorf("embed semantic evidence passages: %w", err)
+			}
+			if len(vectors) != len(inputs) {
+				return fmt.Errorf("embed semantic evidence passages: got %d vectors for %d passages", len(vectors), len(inputs))
+			}
+			for i, vector := range vectors {
+				similarity, ok := cosineSimilarity(queryVector, vector)
+				if !ok {
+					return fmt.Errorf("embed semantic evidence passages: vector %d has incompatible dimensions or zero magnitude", from+i)
+				}
+				windows[from+i].similarity = similarity
+			}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 
 	byDocument := make(map[int][]semanticEvidenceWindow)

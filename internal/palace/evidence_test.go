@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
@@ -13,13 +15,18 @@ import (
 // the query. Retrieval order is controlled separately by orderedVectors, so the
 // test observes evidence selection rather than an incidental vector ranking.
 type selectiveEvidenceEmbedder struct {
+	// mu guards batches/queries: evidence batches are embedded concurrently, so
+	// an unsynchronised spy is itself a data race under -race.
+	mu      sync.Mutex
 	batches [][]string
 	queries []string
 	err     error
 }
 
 func (e *selectiveEvidenceEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	e.mu.Lock()
 	e.batches = append(e.batches, append([]string(nil), inputs...))
+	e.mu.Unlock()
 	if e.err != nil {
 		return nil, e.err
 	}
@@ -36,7 +43,9 @@ func (e *selectiveEvidenceEmbedder) Embed(_ context.Context, inputs []string) ([
 }
 
 func (e *selectiveEvidenceEmbedder) EmbedOne(_ context.Context, input string) ([]float32, error) {
+	e.mu.Lock()
 	e.queries = append(e.queries, input)
+	e.mu.Unlock()
 	query := make([]float32, fakeDim)
 	query[0] = 1
 	return query, nil
@@ -205,5 +214,109 @@ func TestSemanticEvidenceSelectorFailsOpenForTheWholeShortlist(t *testing.T) {
 		len(failedDocs.docs) != 1 || len(failedDocs.docs[0]) != 2 ||
 		strings.Join(lexicalDocs.docs[0], "\x00") != strings.Join(failedDocs.docs[0], "\x00") {
 		t.Fatalf("failed semantic selector did not preserve the lexical shortlist:\nlexical=%#v\nfailed=%#v", lexicalDocs.docs, failedDocs.docs)
+	}
+}
+
+// concurrencyWitnessEmbedder answers only once enough callers have arrived
+// together, so the test cannot pass on a serial implementation: with batches
+// end to end the first caller waits alone and the barrier times out.
+//
+// It records the high-water mark of simultaneous calls rather than timing
+// anything, so the gate is about overlap and not about how fast the machine is.
+type concurrencyWitnessEmbedder struct {
+	want    int
+	arrived chan struct{}
+	release sync.Once
+
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+}
+
+func newConcurrencyWitness(want int) *concurrencyWitnessEmbedder {
+	return &concurrencyWitnessEmbedder{want: want, arrived: make(chan struct{})}
+}
+
+func (e *concurrencyWitnessEmbedder) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.inFlight++
+	e.peak = max(e.peak, e.inFlight)
+	reached := e.inFlight >= e.want
+	e.mu.Unlock()
+
+	if reached {
+		e.release.Do(func() { close(e.arrived) })
+	}
+	select {
+	case <-e.arrived:
+	case <-time.After(2 * time.Second): // serial implementation: nobody else is coming
+	case <-ctx.Done():
+	}
+
+	e.mu.Lock()
+	e.inFlight--
+	e.mu.Unlock()
+
+	out := make([][]float32, len(inputs))
+	for i := range out {
+		out[i] = make([]float32, fakeDim)
+		out[i][0] = 1
+	}
+	return out, nil
+}
+
+func (e *concurrencyWitnessEmbedder) EmbedOne(_ context.Context, _ string) ([]float32, error) {
+	v := make([]float32, fakeDim)
+	v[0] = 1
+	return v, nil
+}
+
+func (e *concurrencyWitnessEmbedder) peakInFlight() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.peak
+}
+
+// TestSemanticEvidenceBatchesOverlap gates the fix for the selector's latency.
+//
+// The cost was never the cross-encoder: a 5,000-rune memory yields 17 windows,
+// so a full shortlist is thousands of passages, and embedding them one batch
+// after another meant the reranker had not started yet. Adaptive batching
+// reduced the NUMBER of round trips and left them serial, which is why it
+// bought so little.
+//
+// Nothing about the RESULT can see this — the selected evidence is identical
+// either way, deliberately, so the selector A/B stays valid. So the gate
+// observes overlap directly, and removing SetLimit/errgroup makes it red.
+func TestSemanticEvidenceBatchesOverlap(t *testing.T) {
+	svc := newTestService(t)
+	witness := newConcurrencyWitness(2)
+	svc.embed = witness
+
+	// Two memories, each long enough to produce more than one batch of windows.
+	const windowsPerBatch = semanticEvidenceBatchSize
+	// Sized just past one batch of windows: enough to observe overlap, not
+	// enough to make the suite carry a megabyte of fixture strings.
+	long := strings.Repeat("premise conclusion evidence latency corpus drawer palace signal ", 700)
+
+	survivors := []SearchHit{
+		{Drawer: Drawer{ID: "m1", Content: long}, MemoryID: "m1", MemoryContent: long},
+		{Drawer: Drawer{ID: "m2", Content: long}, MemoryID: "m2", MemoryContent: long},
+	}
+	ranked := []HybridScore{{Index: 0}, {Index: 1}}
+	lexical := []string{"one", "two"}
+
+	if got := len(semanticEvidenceWindows(long)); got <= windowsPerBatch {
+		t.Fatalf("fixture memory yields %d windows, which is one batch; the test cannot observe overlap", got)
+	}
+
+	query := make([]float32, fakeDim)
+	query[0] = 1
+	if _, err := svc.semanticRerankDocuments(context.Background(), "latency", query, survivors, ranked, lexical); err != nil {
+		t.Fatalf("semanticRerankDocuments: %v", err)
+	}
+
+	if peak := witness.peakInFlight(); peak < 2 {
+		t.Fatalf("peak concurrent embed calls = %d; evidence batches are still serialised", peak)
 	}
 }
