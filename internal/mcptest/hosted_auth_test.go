@@ -1,6 +1,7 @@
 package mcptest_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -73,6 +74,73 @@ func TestHostedMCPAuthenticationAndIsolation(t *testing.T) {
 	writer := hosted.Client(t, "wing_shared", writerToken)
 	beta := hosted.Client(t, "wing_shared", credB.Secret)
 
+	definitions, err := admin.ListToolDefinitions(t)
+	if err != nil {
+		t.Fatalf("list live hosted tools: %v", err)
+	}
+	var writeTools []string
+	for _, tool := range definitions {
+		if tool.Annotations.ReadOnlyHint == nil {
+			t.Fatalf("live tool %s has no readOnlyHint, so hosted policy cannot classify it", tool.Name)
+		}
+		if !*tool.Annotations.ReadOnlyHint {
+			writeTools = append(writeTools, tool.Name)
+		}
+	}
+	if len(writeTools) == 0 {
+		t.Fatal("live hosted catalogue exposed no write tools; the authorization class would pass vacuously")
+	}
+
+	// Authentication and write authorization are properties of the whole live
+	// write class, not three examples chosen beside the registrar. Discover the
+	// class from tools/list so a newly registered write joins this gate without
+	// somebody remembering to update a second policy table.
+	for _, toolName := range writeTools {
+		toolName := toolName
+		t.Run("unauthenticated/"+toolName, func(t *testing.T) {
+			beforeAlpha := usageUsed(t, hosted, adminA.TeamID)
+			beforeBeta := usageUsed(t, hosted, adminB.TeamID)
+			if beforeAlpha != 0 || beforeBeta != 0 {
+				t.Fatalf("fixture was metered before unauthenticated write probe: alpha=%d beta=%d", beforeAlpha, beforeBeta)
+			}
+
+			status, body := unauthenticatedToolCall(t, hosted.URL, toolName)
+			if status != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401; body=%s", status, body)
+			}
+			if after := usageUsed(t, hosted, adminA.TeamID); after != beforeAlpha {
+				t.Errorf("unauthenticated %s was metered to alpha: used %d -> %d", toolName, beforeAlpha, after)
+			}
+			if after := usageUsed(t, hosted, adminB.TeamID); after != beforeBeta {
+				t.Errorf("unauthenticated %s was metered to beta: used %d -> %d", toolName, beforeBeta, after)
+			}
+		})
+
+		t.Run("member/"+toolName, func(t *testing.T) {
+			beforeState, err := hosted.DurableStateDigest(ctx)
+			if err != nil {
+				t.Fatalf("state before member refusal: %v", err)
+			}
+			beforeUsage := usageUsed(t, hosted, adminA.TeamID)
+
+			out := member.MustRefuse(t, toolName, map[string]any{})
+			if !contains(out, "changes stored memory") || !contains(out, "read-only") {
+				t.Errorf("%s was not refused by the production write guard:\n%s", toolName, out)
+			}
+
+			afterState, err := hosted.DurableStateDigest(ctx)
+			if err != nil {
+				t.Fatalf("state after member refusal: %v", err)
+			}
+			if afterState != beforeState {
+				t.Errorf("member-refused %s changed durable hosted state: %x -> %x", toolName, beforeState, afterState)
+			}
+			if after := usageUsed(t, hosted, adminA.TeamID); after != beforeUsage {
+				t.Errorf("member-refused %s reached admission/metering: used %d -> %d", toolName, beforeUsage, after)
+			}
+		})
+	}
+
 	beforeOAuth := usageUsed(t, hosted, adminA.TeamID)
 	if got := oauthAdmin.MustCall(t, "am_status", map[string]any{}); !contains(got, `"role":"admin"`) {
 		t.Errorf("OAuth admin did not receive its database-backed role:\n%s", got)
@@ -126,9 +194,20 @@ func TestHostedMCPAuthenticationAndIsolation(t *testing.T) {
 			beforeOAuthRefusal.Used, afterOAuthRefusal.Used)
 	}
 
+	beforeAcceptedWrite, err := hosted.DurableStateDigest(ctx)
+	if err != nil {
+		t.Fatalf("state before accepted admin write: %v", err)
+	}
 	created := admin.MustCall(t, "am_add_drawer", map[string]any{
 		"room": "decisions", "content": "ALPHA-PRIVATE-MARKER the signing key stays in alpha's vault",
 	})
+	afterAcceptedWrite, err := hosted.DurableStateDigest(ctx)
+	if err != nil {
+		t.Fatalf("state after accepted admin write: %v", err)
+	}
+	if afterAcceptedWrite == beforeAcceptedWrite {
+		t.Fatal("durable state digest did not observe an accepted drawer write; refusal checks would be vacuous")
+	}
 	id := firstDrawerID(t, admin, created)
 	if got := member.MustCall(t, "am_search", map[string]any{
 		"query": "where does alpha keep the signing key", "limit": 10,
@@ -136,24 +215,6 @@ func TestHostedMCPAuthenticationAndIsolation(t *testing.T) {
 		t.Errorf("a read-only member could not read its own workspace:\n%s", got)
 	}
 
-	beforeMemberRefusal, err := hosted.Usage.Snapshot(ctx, adminA.TeamID)
-	if err != nil {
-		t.Fatalf("usage before member refusal: %v", err)
-	}
-	member.MustRefuse(t, "am_add_drawer", map[string]any{
-		"room": "decisions", "content": "REFUSED-MEMBER-WRITE must never be stored",
-	})
-	afterMemberRefusal, err := hosted.Usage.Snapshot(ctx, adminA.TeamID)
-	if err != nil {
-		t.Fatalf("usage after member refusal: %v", err)
-	}
-	if afterMemberRefusal.Used != beforeMemberRefusal.Used {
-		t.Errorf("role-refused member write reached admission/metering: used %d -> %d",
-			beforeMemberRefusal.Used, afterMemberRefusal.Used)
-	}
-	if got := admin.MustCall(t, "am_list_drawers", map[string]any{"limit": 20}); contains(got, "REFUSED-MEMBER-WRITE") {
-		t.Errorf("the member's refused write changed state anyway:\n%s", got)
-	}
 	if got := admin.MustCall(t, "am_list_drawers", map[string]any{"limit": 20}); contains(got, "STALE-OAUTH-ROLE-WRITE") {
 		t.Errorf("the demoted OAuth token's refused write changed state anyway:\n%s", got)
 	}
@@ -189,6 +250,38 @@ func TestHostedMCPAuthenticationAndIsolation(t *testing.T) {
 	if got := admin.MustCall(t, "am_list_drawers", map[string]any{"wing": "*", "limit": 50}); contains(got, "BETA-PRIVATE-MARKER") {
 		t.Errorf("alpha enumerated beta's memory despite sharing the same wing name:\n%s", got)
 	}
+}
+
+func unauthenticatedToolCall(t *testing.T, baseURL, toolName string) (int, string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      toolName,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      toolName,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("encode unauthenticated %s call: %v", toolName, err)
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build unauthenticated %s call: %v", toolName, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("send unauthenticated %s call: %v", toolName, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read unauthenticated %s response: %v", toolName, err)
+	}
+	return resp.StatusCode, string(body)
 }
 
 func addHostedMember(t *testing.T, hosted *mcptest.Hosted, teamID, email string, role tenant.Role) string {

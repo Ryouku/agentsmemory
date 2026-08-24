@@ -24,12 +24,15 @@ package mcptest
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
@@ -144,6 +147,7 @@ type Hosted struct {
 	Usage   *usage.Service
 
 	drawers *palace.Service
+	db      *gorm.DB
 	srv     *httptest.Server
 }
 
@@ -208,7 +212,148 @@ func NewHosted(t *testing.T) *Hosted {
 	root = mux
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &Hosted{URL: srv.URL, Tenants: tenants, Usage: usageSvc, drawers: drawers, srv: srv}
+	return &Hosted{URL: srv.URL, Tenants: tenants, Usage: usageSvc, drawers: drawers, db: gdb, srv: srv}
+}
+
+// DurableStateDigest returns a deterministic digest of every durable
+// application table in the hosted harness. Tests use it to prove a refused call
+// did not mutate some table they forgot to put in a hand-maintained ledger.
+//
+// api_keys.last_used_at is deliberately normalised: resolving any valid bearer
+// stamps that observation field before the MCP role guard runs. It records that
+// authentication happened, not a change to stored memory. usage_counters is
+// likewise operational telemetry and is asserted independently by callers. All
+// other application rows and schemas participate in the digest.
+func (h *Hosted) DurableStateDigest(ctx context.Context) ([sha256.Size]byte, error) {
+	var empty [sha256.Size]byte
+	sqlDB, err := h.db.DB()
+	if err != nil {
+		return empty, fmt.Errorf("open hosted state snapshot: %w", err)
+	}
+	tx, err := sqlDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return empty, fmt.Errorf("begin hosted state snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	type tableSchema struct {
+		name string
+		sql  string
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT name, COALESCE(sql, '')
+		FROM sqlite_schema
+		WHERE type = 'table'
+		  AND name NOT LIKE 'sqlite_%'
+		  AND name <> 'usage_counters'
+		ORDER BY name`)
+	if err != nil {
+		return empty, fmt.Errorf("list hosted state tables: %w", err)
+	}
+	var tables []tableSchema
+	for rows.Next() {
+		var table tableSchema
+		if err := rows.Scan(&table.name, &table.sql); err != nil {
+			_ = rows.Close()
+			return empty, fmt.Errorf("scan hosted state table: %w", err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return empty, fmt.Errorf("iterate hosted state tables: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return empty, fmt.Errorf("close hosted state tables: %w", err)
+	}
+
+	digest := sha256.New()
+	writeJSON := func(value any) error {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		_, _ = digest.Write(encoded)
+		_, _ = digest.Write([]byte{'\n'})
+		return nil
+	}
+	for _, table := range tables {
+		if err := writeJSON([]string{table.name, table.sql}); err != nil {
+			return empty, fmt.Errorf("digest hosted table %s schema: %w", table.name, err)
+		}
+
+		columnRows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table.name)
+		if err != nil {
+			return empty, fmt.Errorf("list hosted table %s columns: %w", table.name, err)
+		}
+		var columns []string
+		for columnRows.Next() {
+			var column string
+			if err := columnRows.Scan(&column); err != nil {
+				_ = columnRows.Close()
+				return empty, fmt.Errorf("scan hosted table %s column: %w", table.name, err)
+			}
+			columns = append(columns, column)
+		}
+		if err := columnRows.Err(); err != nil {
+			_ = columnRows.Close()
+			return empty, fmt.Errorf("iterate hosted table %s columns: %w", table.name, err)
+		}
+		if err := columnRows.Close(); err != nil {
+			return empty, fmt.Errorf("close hosted table %s columns: %w", table.name, err)
+		}
+		if len(columns) == 0 {
+			return empty, fmt.Errorf("hosted table %s has no columns", table.name)
+		}
+
+		selects := make([]string, len(columns))
+		order := make([]string, len(columns))
+		for i, column := range columns {
+			quoted := quoteSQLiteIdentifier(column)
+			selects[i] = quoted
+			if table.name == "api_keys" && column == "last_used_at" {
+				selects[i] = "NULL AS " + quoted
+			}
+			order[i] = quoted
+		}
+		query := "SELECT " + strings.Join(selects, ", ") +
+			" FROM " + quoteSQLiteIdentifier(table.name) +
+			" ORDER BY " + strings.Join(order, ", ")
+		dataRows, err := tx.QueryContext(ctx, query)
+		if err != nil {
+			return empty, fmt.Errorf("read hosted table %s: %w", table.name, err)
+		}
+		for dataRows.Next() {
+			values := make([]any, len(columns))
+			destinations := make([]any, len(columns))
+			for i := range values {
+				destinations[i] = &values[i]
+			}
+			if err := dataRows.Scan(destinations...); err != nil {
+				_ = dataRows.Close()
+				return empty, fmt.Errorf("scan hosted table %s row: %w", table.name, err)
+			}
+			if err := writeJSON(values); err != nil {
+				_ = dataRows.Close()
+				return empty, fmt.Errorf("digest hosted table %s row: %w", table.name, err)
+			}
+		}
+		if err := dataRows.Err(); err != nil {
+			_ = dataRows.Close()
+			return empty, fmt.Errorf("iterate hosted table %s: %w", table.name, err)
+		}
+		if err := dataRows.Close(); err != nil {
+			return empty, fmt.Errorf("close hosted table %s: %w", table.name, err)
+		}
+	}
+
+	var result [sha256.Size]byte
+	copy(result[:], digest.Sum(nil))
+	return result, nil
+}
+
+func quoteSQLiteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 
 // Client dials the hosted /mcp endpoint with the supplied bearer and registration
