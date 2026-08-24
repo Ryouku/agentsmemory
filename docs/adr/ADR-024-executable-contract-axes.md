@@ -24,7 +24,7 @@ The test is honest in its source and misleading at the build boundary: a green s
 
 “Fix every bug” is not a finite or falsifiable target. The finite target is:
 
-> Every item reachable from a production registry or composition root is selected, observed at the outer surface in both the positive and negative case, and protected by a compiling mutant — or it carries a typed, owned, expiring exception. The complete residual set is printed every run.
+> Every item reachable from a production registry or composition root has named cases, and every case is selected and observed at the outer surface in both the positive and negative direction — or it carries a typed, owned, expiring exception. Every axis is protected by a compiling selector mutant. The complete residual set is printed every run.
 
 This is the **contract axis**. A field, tool, route, backend, migration or installable asset is an item in a universe. Its production selector is a separate fact. Its externally visible effect is a third. A component test proves none of the latter two by implication.
 
@@ -32,19 +32,24 @@ This is the **contract axis**. A field, tool, route, backend, migration or insta
 
 ### 1. One small runner, thin adapters
 
-Add a repository-local `internal/contractaxis` test library. The core is stack-neutral: it compares item identifiers and records binding/positive/negative calls in a runner-owned observation. An adapter cannot return a precomputed passing evidence struct. The core knows nothing about MCP, urfave/cli, Goose, Chi, embed.FS or Go ASTs. Those details live in thin adapters beside the production surface they inspect.
+Add a repository-local `internal/contractaxis` test library. The core is stack-neutral: it compares item and case identifiers and records binding/positive/negative calls in a runner-owned observation. An adapter cannot return a precomputed passing evidence struct. The core knows nothing about MCP, urfave/cli, Goose, Chi, embed.FS or Go ASTs. Those details live in thin adapters beside the production surface they inspect.
 
 An axis supplies:
 
 1. **Universe** — derived from the authoritative production structure at runtime, never an item list copied into a manifest.
-2. **Binding** — the real selector or adapter that makes each item reachable.
-3. **Positive observation** — evidence at the outer surface that selecting the item changes the promised state or output.
-4. **Negative observation** — the forbidden effect is absent: another workspace cannot read it, a refused role cannot write it, a deleted object is gone by every read route, an unknown selector fails loudly.
-5. **Mutant** — a disposable wire cut or default flip that compiles and makes a named assertion fail.
-6. **Maturity** — `enforced`, `ratchet`, or `advisory`.
-7. **Exception** — typed ownership of a residual that cannot yet be closed.
+2. **Cases** — a non-nil, non-empty set of unique, stable names for every item. A case is one selectable contract path such as a role, transport, success/refusal path or mode; it is not an optional label on a shared probe.
+3. **Binding** — the real selector or adapter that makes each named case reachable.
+4. **Positive observation** — per-case evidence at the outer surface that selecting the case changes the promised state or output.
+5. **Negative observation** — per-case evidence that the forbidden effect is absent: another workspace cannot read it, a refused role cannot write it, a deleted object is gone by every read route, an unknown selector fails loudly.
+6. **Mutant** — a disposable wire cut or default flip that compiles and makes a named assertion fail.
+7. **Maturity** — `enforced`, `ratchet`, or `advisory`.
+8. **Exception** — typed ownership of a residual that cannot yet be closed.
 
-The core emits every residual, sorted by `(axis, item, contract)`. It never stops at the first failure and never turns an unknown into an all-clear.
+Axis IDs are unique within a run. The structural sentinels `*`, `<empty>` and `<registry>` are reserved and cannot be production identifiers. Nil or empty case sets, duplicate case IDs, and declared cases the adapter never observes are structural failures, not empty coverage. The probe receives `(item, case)` while the runner supplies the current axis identity; binding/positive/negative calls are recorded against that exact `(axis, item, case)` tuple, so evidence from one case cannot satisfy another.
+
+The core emits every residual, sorted lexicographically by `(axis, item, case, contract)`. Its stable report and ratchet identity is `escape(axis)/escape(item)/escape(case)/escape(contract)`, where `escape` uses URL path escaping (including `%` and `/` as `%25` and `%2F`); identifiers containing delimiters therefore cannot collide. It never stops at the first failure and never turns an unknown into an all-clear.
+
+The trust boundary is explicit: the core proves which adapter calls it recorded and whether the declared assertion is mutation-sensitive. It cannot prove that a dishonest adapter actually crossed the production boundary. Adapters therefore remain thin and reviewable, and every production axis still needs a wire-cut mutant that would survive if its probe observed a fake or copied list.
 
 ### 2. The axis list is finite because the production roots are finite
 
@@ -76,7 +81,7 @@ The end state of this ADR is zero ratchet axes for in-process production surface
 
 An exception carries:
 
-- axis and item identifier;
+- axis, item and case identifier;
 - kind: `external_dependency`, `policy_undecided`, `unsupported_platform`, or `non_production`;
 - owner;
 - concrete reason and the issue/ADR that can close it;
@@ -85,6 +90,8 @@ An exception carries:
 
 Free-text substring admission such as “mentions qdrant” is insufficient: it proves vocabulary, not dependency. An expired, ownerless, unknown-kind or no-longer-present exception fails.
 
+Exceptions and ratchets may own only real per-case contract residuals. Structural instrument failures — including universe or probe failure, invalid/duplicate axis or case definitions, stale ratchet declarations, and invalid or surviving mutant evidence — cannot be excepted or ratcheted into green. Mutation execution may be excepted only when it returns the typed `ErrMutationUnsupported`, and that obligation must use `unsupported_platform`; compile failure, an unapplied patch, an un-killed assertion or missing provenance is a failed instrument, not an external dependency.
+
 `policy_undecided` is not permission to invent behaviour. The current examples are concurrent update semantics, a possible admin-only tier, and mid-session realtime delivery. They stay visible as decision points until their owning ADR settles them.
 
 ### 5. Mutants execute away from the working tree
@@ -92,14 +99,18 @@ Free-text substring admission such as “mentions qdrant” is insufficient: it 
 The mutation runner creates a disposable Git worktree, applies one patch, and requires this sequence:
 
 1. the mutant applies cleanly;
-2. the relevant package still compiles;
-3. the named assertion fails for the expected reason;
+2. the directly declared compile command succeeds — the runner never infers compilation from the assertion command;
+3. the named assertion fails and emits exactly once a marker constructed from the runner's unpredictable one-run challenge, supplied through a dedicated environment variable;
 4. the clean source passes the same assertion;
 5. no generated or derived artifact differs after cleanup.
 
-A mutant that does not compile is skipped evidence, not killed evidence. Every mutant names a failure marker that the clean assertion must not emit and the mutated assertion must emit; a non-zero exit alone is never kill evidence. The primary worktree is never mutated, and a fence that invokes a generator must either regenerate after restoration or prove every generated output is unchanged. Command directories are resolved through symlinks before execution and special files are rejected without opening them.
+A mutant that does not compile is skipped evidence, not killed evidence. The runner generates an unpredictable nonce for each execution and injects the challenge into the assertion environment; the clean assertion must not emit the resulting marker and the mutated assertion must emit it exactly once. A hard-coded marker or non-zero exit alone is never kill evidence.
 
-T1 mutation execution is supported on POSIX platforms where the runner can kill a complete process group. Windows returns a typed `ErrMutationUnsupported` until a Job Object implementation and native process-tree test exist; killing only the immediate process would make timeout and cleanup claims false.
+Successful evidence is bound to the axis ID, the resolved repository root, the exact `HEAD`, the SHA-256 digest of the patch and the normalized paths changed by that patch. Restoration re-checks both the primary and disposable repository `HEAD`; a content-equivalent empty commit is still a failure. Changed paths include ignored and untracked files, preserve legal whitespace, are sorted, and are serialized as a JSON array so delimiters remain unambiguous. The report prints that provenance together with structured identities for the directly declared compile and assertion commands. Each identity preserves argv boundaries and working directory and carries only environment key names plus a digest of declared values, so secrets are not printed and distinct declarations do not collapse. Evidence therefore cannot be silently replayed for another axis, checkout, patch or declared fence.
+
+The primary worktree must remain unchanged, and a fence that invokes a generator must either regenerate after restoration or prove every generated output in the primary repository and disposable worktree is unchanged. Command directories are resolved through symlinks before execution and special files are rejected without opening them. This is not a general filesystem sandbox: T1 detects changes in the primary repository and disposable worktree, but cannot attest arbitrary ambient filesystem state. Adapters that can write elsewhere must redirect those writes into a declared temporary root and assert it separately.
+
+T1 mutation execution is supported on POSIX platforms where the runner can contain and kill the command's process group. Intentionally detached descendants are outside that guarantee. Windows returns a typed `ErrMutationUnsupported` until a Job Object implementation and native process-tree test exist; killing only the immediate process would make timeout and cleanup claims false.
 
 Every axis has at least one **axis mutant** that breaks the selection rather than the component. High-risk items also keep item-specific mutants.
 
@@ -146,14 +157,18 @@ Do not stack all production fixes into one review. Each confirmed residual is a 
 
 Before an adapter may protect production, the runner’s own tests must prove:
 
+- axis IDs are unique and duplicate IDs fail structurally;
 - an empty universe fails instead of passing vacuously;
+- every item declares a non-nil, non-empty case set, duplicate case IDs fail, and a declared-but-unobserved case remains a residual;
 - an item added to the universe with no binding appears as a residual;
-- a binding with no positive observation remains a residual;
-- a positive-only scenario does not satisfy the negative contract;
+- a case binding with no positive observation remains a residual;
+- a positive-only case does not satisfy the negative contract, and observations from another case cannot satisfy it;
 - a copied/claimed coverage list cannot outrank calls the harness actually recorded;
 - an unknown, stale, ownerless or expired exception fails;
+- structural instrument failures cannot be excepted or acknowledged by a ratchet, and mutation unsupported is admitted only as typed `unsupported_platform`;
 - a ratchet reports exact residual identifiers and fails on both regression and unacknowledged improvement;
-- a mutant must compile, fail the named assertion, and leave the clean worktree unchanged.
+- a mutant is bound to its axis, repository, `HEAD`, patch digest and changed paths; must pass its explicit compile fence; must fail the named assertion with a runner-generated nonce marker; and must leave the clean repository and disposable worktree unchanged;
+- POSIX cleanup proves process-group containment without claiming containment of intentionally detached descendants or writes to arbitrary external paths.
 
 ## Consequences
 

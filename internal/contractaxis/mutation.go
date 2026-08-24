@@ -2,7 +2,9 @@ package contractaxis
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +14,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+)
+
+const (
+	mutationChallengeEnv  = "CONTRACT_AXIS_CHALLENGE"
+	mutationFailurePrefix = "CONTRACT_AXIS_KILL"
 )
 
 // Command is one directly executed mutation fence command.
@@ -25,23 +32,94 @@ type Command struct {
 // MutationSpec describes a disposable source mutation and the assertion it must kill.
 type MutationSpec struct {
 	ID              string
+	Axis            string
+	Item            string
+	Case            string
 	Patch           string
 	Compile         Command
 	Assertion       Command
 	ExpectedFailure string
 }
 
+// MutationTarget identifies one resolved Git repository at one immutable HEAD.
+// Its fields are private so adapters obtain it from ResolveMutationTarget rather
+// than constructing provenance by assertion.
+type MutationTarget struct {
+	repository string
+	head       string
+}
+
+// Repository returns the resolved repository root used for mutation.
+func (t MutationTarget) Repository() string { return t.repository }
+
+// Head returns the full Git commit identifier used for mutation.
+func (t MutationTarget) Head() string { return t.head }
+
+func (t MutationTarget) valid() bool {
+	return strings.TrimSpace(t.repository) != "" && strings.TrimSpace(t.head) != ""
+}
+
+// ResolveMutationTarget resolves a repository root and its current HEAD for an Axis.
+func ResolveMutationTarget(ctx context.Context, repo string) (MutationTarget, error) {
+	repo, err := filepath.Abs(repo)
+	if err != nil {
+		return MutationTarget{}, fmt.Errorf("absolute repository path: %w", err)
+	}
+	root, err := gitOutput(ctx, repo, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return MutationTarget{}, fmt.Errorf("resolve repository root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(strings.TrimSpace(root))
+	if err != nil {
+		return MutationTarget{}, fmt.Errorf("resolve repository root symlinks: %w", err)
+	}
+	head, err := gitOutput(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return MutationTarget{}, fmt.Errorf("resolve repository HEAD: %w", err)
+	}
+	return MutationTarget{repository: root, head: strings.TrimSpace(head)}, nil
+}
+
 // ErrMutationUnsupported means this platform cannot yet contain a complete
 // subprocess tree, so mutation execution is refused instead of partially run.
 var ErrMutationUnsupported = errors.New("contract-axis mutation execution is unsupported")
+
+// MutationFailure returns the nonce-attested failure marker that a named Go
+// assertion must emit when the production wire is cut.
+func MutationFailure(reason string) string {
+	return attestedFailureMarker(os.Getenv(mutationChallengeEnv), strings.TrimSpace(reason))
+}
 
 // RunMutation applies a patch in a disposable Git worktree and proves that it
 // compiles, kills the named assertion, and restores to the exact pristine tree.
 func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result MutantEvidence, err error) {
 	result.id = strings.TrimSpace(spec.ID)
+	result.axis = strings.TrimSpace(spec.Axis)
+	result.item = strings.TrimSpace(spec.Item)
+	result.caseID = strings.TrimSpace(spec.Case)
+	result.compile = commandString(spec.Compile)
 	result.assertion = commandString(spec.Assertion)
+	result.expectedFailure = strings.TrimSpace(spec.ExpectedFailure)
 	if result.id == "" {
 		return result, errors.New("mutation id is required")
+	}
+	if isReservedContractIdentifier(result.id) {
+		return result, errors.New("mutation id is reserved for structural residuals")
+	}
+	if result.axis == "" {
+		return result, errors.New("mutation axis is required")
+	}
+	if isReservedContractIdentifier(result.axis) {
+		return result, errors.New("mutation axis is reserved for structural residuals")
+	}
+	if result.item == "" || result.caseID == "" {
+		return result, errors.New("mutation item and case are required; use * for an axis mutant")
+	}
+	if result.item != "*" && isReservedContractIdentifier(result.item) {
+		return result, errors.New("mutation item is reserved for structural residuals")
+	}
+	if result.caseID != "*" && isReservedContractIdentifier(result.caseID) {
+		return result, errors.New("mutation case is reserved for structural residuals")
 	}
 	if strings.TrimSpace(spec.Patch) == "" {
 		return result, errors.New("mutation patch is required")
@@ -52,32 +130,43 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 	if problem := validateCommand("assertion", spec.Assertion); problem != "" {
 		return result, errors.New(problem)
 	}
-	if strings.TrimSpace(spec.ExpectedFailure) == "" {
+	if result.expectedFailure == "" {
 		return result, errors.New("mutation expected failure marker is required")
+	}
+	if strings.ContainsAny(result.expectedFailure, "\r\n") {
+		return result, errors.New("mutation expected failure marker must fit on one line")
 	}
 	if platformErr := mutationPlatformError(); platformErr != nil {
 		return result, platformErr
 	}
 
-	repo, err = filepath.Abs(repo)
+	target, err := ResolveMutationTarget(ctx, repo)
 	if err != nil {
-		return result, fmt.Errorf("absolute repository path: %w", err)
+		return result, err
 	}
+	result.target = target
+	repo = target.repository
 	if status, statusErr := gitOutput(ctx, repo, "status", "--porcelain", "--untracked-files=all"); statusErr != nil {
 		return result, fmt.Errorf("read repository status: %w", statusErr)
 	} else if strings.TrimSpace(status) != "" {
 		return result, fmt.Errorf("repository must be clean before mutation:\n%s", status)
 	}
-	head, err := gitOutput(ctx, repo, "rev-parse", "HEAD")
+	sourcePristine, err := treeDigest(repo)
 	if err != nil {
-		return result, fmt.Errorf("resolve repository HEAD: %w", err)
+		return result, fmt.Errorf("digest primary repository: %w", err)
 	}
+	result.patchDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(spec.Patch)))
+	challenge, err := mutationChallenge()
+	if err != nil {
+		return result, err
+	}
+	failureMarker := attestedFailureMarker(challenge, result.expectedFailure)
 
 	worktree, err := os.MkdirTemp("", "contractaxis-mutant-")
 	if err != nil {
 		return result, fmt.Errorf("create mutation worktree: %w", err)
 	}
-	if _, err = gitOutput(ctx, repo, "worktree", "add", "--detach", worktree, strings.TrimSpace(head)); err != nil {
+	if _, err = gitOutput(ctx, repo, "worktree", "add", "--detach", worktree, target.head); err != nil {
 		_ = os.RemoveAll(worktree)
 		return result, fmt.Errorf("add mutation worktree: %w", err)
 	}
@@ -98,12 +187,12 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 			}
 		}
 		if applied && restoreErr == nil {
-			restoredOutput, restoredCode, restoredErr := runCommand(cleanupCtx, worktree, spec.Assertion)
+			restoredOutput, restoredCode, restoredErr := runCommandWithEnv(cleanupCtx, worktree, spec.Assertion, mutationChallengeEnv+"="+challenge)
 			switch {
 			case restoredErr != nil || restoredCode != 0:
 				restoreErr = fmt.Errorf("restored assertion must pass (exit %d): %s", restoredCode, trimOutput(restoredOutput))
 				restoreErr = errors.Join(restoreErr, restoredErr)
-			case strings.Contains(restoredOutput, spec.ExpectedFailure):
+			case strings.Count(restoredOutput, failureMarker) != 0:
 				restoreErr = errors.New("restored assertion emitted the expected failure marker")
 			default:
 				assertionRestored = true
@@ -118,11 +207,22 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 				treeRestored = true
 			}
 		}
+		if headErr := requireRepositoryHead(cleanupCtx, worktree, target.head, "disposable worktree"); headErr != nil {
+			restoreErr = errors.Join(restoreErr, headErr)
+		}
 		if _, removeErr := gitOutput(cleanupCtx, repo, "worktree", "remove", "--force", worktree); removeErr != nil {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("remove mutation worktree: %w", removeErr))
 		}
 		if removeErr := os.RemoveAll(worktree); removeErr != nil {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("remove mutation worktree directory: %w", removeErr))
+		}
+		if sourceRestored, digestErr := treeDigest(repo); digestErr != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("digest primary repository after mutation: %w", digestErr))
+		} else if sourceRestored != sourcePristine {
+			restoreErr = errors.Join(restoreErr, errors.New("mutation command changed the primary repository"))
+		}
+		if headErr := requireRepositoryHead(cleanupCtx, repo, target.head, "primary repository"); headErr != nil {
+			restoreErr = errors.Join(restoreErr, headErr)
 		}
 		result.restored = treeRestored && assertionRestored && restoreErr == nil
 		if restoreErr != nil {
@@ -135,12 +235,12 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 	if err != nil {
 		return result, fmt.Errorf("digest pristine worktree: %w", err)
 	}
-	cleanOutput, cleanCode, cleanErr := runCommand(ctx, worktree, spec.Assertion)
+	cleanOutput, cleanCode, cleanErr := runCommandWithEnv(ctx, worktree, spec.Assertion, mutationChallengeEnv+"="+challenge)
 	if cleanErr != nil || cleanCode != 0 {
 		result.detail = appendDetail(result.detail, "clean assertion: "+trimOutput(cleanOutput))
 		return result, fmt.Errorf("clean assertion must pass before mutation (exit %d): %w", cleanCode, cleanErr)
 	}
-	if strings.Contains(cleanOutput, spec.ExpectedFailure) {
+	if strings.Count(cleanOutput, failureMarker) != 0 {
 		return result, errors.New("clean assertion emitted the expected failure marker")
 	}
 	if afterClean, digestErr := treeDigest(worktree); digestErr != nil {
@@ -156,6 +256,14 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 	}
 	applied = true
 	result.applied = true
+	changedPaths, pathErr := mutationPaths(ctx, worktree)
+	if pathErr != nil {
+		return result, fmt.Errorf("enumerate mutation paths: %w", pathErr)
+	}
+	result.paths = changedPaths
+	if len(result.paths) == 0 {
+		return result, errors.New("mutation patch changed no repository paths")
+	}
 
 	compileOutput, compileCode, compileErr := runCommand(ctx, worktree, spec.Compile)
 	if compileErr != nil || compileCode != 0 {
@@ -164,7 +272,7 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 	}
 	result.compiled = true
 
-	mutantOutput, mutantCode, mutantErr := runCommand(ctx, worktree, spec.Assertion)
+	mutantOutput, mutantCode, mutantErr := runCommandWithEnv(ctx, worktree, spec.Assertion, mutationChallengeEnv+"="+challenge)
 	if mutantErr == nil && mutantCode == 0 {
 		result.detail = appendDetail(result.detail, "mutant survived: "+trimOutput(mutantOutput))
 		return result, errors.New("mutant survived the named assertion")
@@ -173,9 +281,9 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 		result.detail = appendDetail(result.detail, "assertion did not start: "+trimOutput(mutantOutput))
 		return result, fmt.Errorf("run mutant assertion: %w", mutantErr)
 	}
-	if !strings.Contains(mutantOutput, spec.ExpectedFailure) {
+	if strings.Count(mutantOutput, failureMarker) != 1 {
 		result.detail = appendDetail(result.detail, "unrelated assertion failure: "+trimOutput(mutantOutput))
-		return result, fmt.Errorf("mutant assertion did not contain expected failure marker %q", spec.ExpectedFailure)
+		return result, fmt.Errorf("mutant assertion did not contain nonce-attested failure marker for %q", result.expectedFailure)
 	}
 	result.killed = true
 	result.detail = appendDetail(result.detail, "killed by "+result.assertion)
@@ -185,6 +293,11 @@ func RunMutation(ctx context.Context, repo string, spec MutationSpec) (result Mu
 func validateCommand(label string, command Command) string {
 	if strings.TrimSpace(command.Name) == "" {
 		return label + " command name is required"
+	}
+	for _, env := range command.Env {
+		if strings.HasPrefix(env, mutationChallengeEnv+"=") {
+			return label + " command may not set the runner challenge environment"
+		}
 	}
 	if command.Dir == "" {
 		return ""
@@ -197,6 +310,10 @@ func validateCommand(label string, command Command) string {
 }
 
 func runCommand(ctx context.Context, worktree string, command Command) (string, int, error) {
+	return runCommandWithEnv(ctx, worktree, command, "")
+}
+
+func runCommandWithEnv(ctx context.Context, worktree string, command Command, extraEnv string) (string, int, error) {
 	dir, err := resolveCommandDir(worktree, command.Dir)
 	if err != nil {
 		return "", -1, err
@@ -205,6 +322,9 @@ func runCommand(ctx context.Context, worktree string, command Command) (string, 
 	configureCommand(cmd)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), command.Env...)
+	if extraEnv != "" {
+		cmd.Env = append(cmd.Env, extraEnv)
+	}
 	output, err := cmd.CombinedOutput()
 	if cleanupErr := cleanupCommand(cmd); cleanupErr != nil {
 		return string(output), -1, errors.Join(err, fmt.Errorf("terminate command process group: %w", cleanupErr))
@@ -217,6 +337,54 @@ func runCommand(ctx context.Context, worktree string, command Command) (string, 
 		return string(output), exitErr.ExitCode(), err
 	}
 	return string(output), -1, err
+}
+
+func mutationChallenge() (string, error) {
+	var challenge [16]byte
+	if _, err := rand.Read(challenge[:]); err != nil {
+		return "", fmt.Errorf("create mutation challenge: %w", err)
+	}
+	return fmt.Sprintf("%x", challenge[:]), nil
+}
+
+func mutationPaths(ctx context.Context, worktree string) ([]string, error) {
+	tracked, err := gitOutput(ctx, worktree, "diff", "--name-only", "-z", "--no-renames")
+	if err != nil {
+		return nil, err
+	}
+	untracked, err := gitOutput(ctx, worktree, "ls-files", "--others", "-z")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, output := range []string{tracked, untracked} {
+		for _, path := range strings.Split(output, "\x00") {
+			if path != "" {
+				seen[filepath.ToSlash(path)] = true
+			}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func requireRepositoryHead(ctx context.Context, repo, want, label string) error {
+	head, err := gitOutput(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve %s HEAD after mutation: %w", label, err)
+	}
+	if got := strings.TrimSpace(head); got != want {
+		return fmt.Errorf("%s HEAD changed from %s to %s", label, want, got)
+	}
+	return nil
+}
+
+func attestedFailureMarker(challenge, expected string) string {
+	return mutationFailurePrefix + ":" + challenge + ":" + expected
 }
 
 func resolveCommandDir(worktree, relative string) (string, error) {
@@ -342,8 +510,30 @@ func treeDigest(root string) ([sha256.Size]byte, error) {
 }
 
 func commandString(command Command) string {
-	parts := append([]string{command.Name}, command.Args...)
-	return strings.TrimSpace(strings.Join(parts, " "))
+	type identity struct {
+		Name      string   `json:"name"`
+		Args      []string `json:"args"`
+		Dir       string   `json:"dir"`
+		EnvKeys   []string `json:"env_keys,omitempty"`
+		EnvDigest string   `json:"env_sha256,omitempty"`
+	}
+	args := make([]string, len(command.Args))
+	copy(args, command.Args)
+	record := identity{Name: command.Name, Args: args, Dir: command.Dir}
+	if len(command.Env) > 0 {
+		keys := map[string]bool{}
+		for _, entry := range command.Env {
+			key, _, _ := strings.Cut(entry, "=")
+			keys[key] = true
+		}
+		record.EnvKeys = sortedKeys(keys)
+		record.EnvDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(command.Env, "\x00"))))
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func appendDetail(existing, detail string) string {
