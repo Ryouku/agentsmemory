@@ -134,46 +134,7 @@ func TestScenarioHandoffReachesBAndNotC(t *testing.T) {
 // the wake-up advice read other projects' inboxes. A scoped read that one
 // enumeration route ignores is not scoped.
 func TestScenarioListDrawersHonoursTheRegistrationWing(t *testing.T) {
-	a, b := mcptest.Pair(t, "wing_alpha", "wing_beta")
-
-	// Seed both wings first: an inbox item into an empty wing is refused, which
-	// is a different behaviour and is asserted by its own scenario.
-	for _, h := range []*mcptest.Harness{a, b} {
-		h.MustCall(t, "am_add_drawer", map[string]any{
-			"wing": h.Wing, "room": "decisions", "content": "a decision in " + h.Wing,
-		})
-	}
-	a.MustCall(t, "am_add_drawer", map[string]any{
-		"wing": "wing_alpha", "room": "inbox",
-		"content": "alpha's private inbox item, not beta's business",
-	})
-	b.MustCall(t, "am_add_drawer", map[string]any{
-		"wing": "wing_beta", "room": "inbox", "content": "beta's own inbox item",
-	})
-
-	// Exactly the call am_status recommends, with no wing named.
-	got := b.MustCall(t, "am_list_drawers", map[string]any{"room": "inbox", "limit": 20})
-	if contains(got, "alpha's private inbox item") {
-		t.Errorf("listing with no wing returned another project's inbox — and this is the call "+
-			"am_status tells a waking agent to make:\n%s", got)
-	}
-	if !contains(got, "beta's own inbox item") {
-		t.Errorf("listing with no wing did not return this registration's own inbox:\n%s", got)
-	}
-	// The ROOM filter must exclude too, not merely include. Asserting only that
-	// the inbox item is present passes when the filter is dropped entirely —
-	// verified by mutation.
-	if contains(got, "a decision in wing_beta") {
-		t.Errorf("the room filter did not exclude this wing's other rooms:\n%s", got)
-	}
-
-	// The explicit escape hatch must still work, as it does for search.
-	if got := b.MustCall(t, "am_list_drawers", map[string]any{
-		"wing": "*", "room": "inbox", "limit": 20,
-	}); !contains(got, "alpha's private inbox item") {
-		t.Errorf(`wing:"*" must still enumerate every wing, or a deliberate cross-project `+
-			"question becomes impossible:\n%s", got)
-	}
+	exerciseListDrawersRegistrationWing(t, mcptest.NewWithWing(t, "wing_beta"))
 }
 
 // TestScenarioHandoffIntoAnUnknownWingIsRefusedForEveryone: a refusal must leave
