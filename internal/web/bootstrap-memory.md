@@ -1,6 +1,7 @@
-# setup.md — the memory model to set up in another team
+# Bootstrap memory — the memory model to set up in another team
 
-**Hand this to an agent and say "implement memory @setup.md".**
+**Hand an agent this page's URL and say "implement memory from this".** It is written to be
+read by a model rather than rendered, so an agent can fetch it and work straight from it.
 
 This is **not** an installer guide, and it does not cover installing anything. It assumes the
 agentsmemory MCP is already connected and starts from there. What it carries is the part teams
@@ -573,6 +574,32 @@ hesitate on anything — a flag, a spelling, a convention, a tool's parameters �
 Before any broad grep over unfamiliar code: ask memory first, grep only the gap, and write back
 whatever you had to re-derive.
 
+**Hesitation is not the only trigger, and it is not the dangerous one.** Search before anything
+you are doing **for the first time in this repository**, and before anything **outward-facing or
+hard to reverse** — a tag, a merge, a push to a shared branch, a migration, a published
+artifact, a message to a person. Those are the moments you are least likely to hesitate,
+because the convention is usually derivable from the artifacts and deriving it feels
+sufficient.
+
+It is not, and here is the difference:
+
+> **Artifacts show you the FORM of a convention. Memory shows you its BLAST RADIUS.**
+
+Measured case: an agent asked to cut a release derived the conventions correctly — `git log`
+gave the merge style, `git tag -l` gave the annotated-tag format — tagged, pushed, and reported
+that a release had been published. The palace held a record whose first line was *"'tag' MEANS
+RELEASE **AND DEPLOY**. Read this before pushing a version tag."* The tag fired three workflows,
+not the two it had accounted for, and the third rolls the production host. It skipped only
+because a deploy secret happened to be unset. Nothing in `git tag -l` could ever have said that.
+
+**The usable tell:** *if you are reading `git log` or a config file to work out "how is this
+normally done here", the answer to "has someone written down how this is normally done here" is
+very often yes.* Reconstructing a procedure from artifacts is itself the signal to search.
+
+And note why the wake-up recall does not cover this: at startup you search for **the task**, and
+the task changes. The session above searched for the task it was given — reviewing a change —
+four exchanges before releasing became the job.
+
 ---
 
 ## 8. Tasks, unfinished work, and continuing
@@ -691,6 +718,46 @@ subject is reachable by that subject and by nothing else.
 **Ask the question a future reader would ask. If your record is not the top hit, it is not
 filed — it is stored.** One call, and it is the only thing standing between a palace and a
 write-only archive.
+
+**But you are the worst person to run it.** You just wrote the record, so its wording is in
+your head, and the probe you reach for is shaped by the text you are testing. You will phrase
+the question using the words you happened to choose — which is the one phrasing guaranteed to
+work, and the one a stranger will never type.
+
+### 9.2b ★ Spawn a subagent to verify recall
+
+**The reliable form of the probe is to have someone else run it — an agent that has not read
+what you wrote.** If your harness can spawn a subagent, this costs one call and it is the only
+version of this test that can actually fail.
+
+Give it the *question*, never the answer, and never the drawer:
+
+> You have the agentsmemory MCP tools. Using **only** `am_search` in wing `<wing>` — do not
+> read files, do not use prior knowledge — answer: **"<the question a future session would
+> ask>"**. Report the answer, the drawer that carried it, and its rank. If nothing usable
+> came back, say so plainly.
+
+Then judge three things, in this order:
+
+1. **Did it find the record at all?** Rank matters less than presence. Absent means unfiled.
+2. **Did it answer correctly from the drawer alone?** A record that ranks first and still
+   leaves the reader guessing is a pointer, not an answer (§5.2).
+3. **What did it search for?** This is the part you cannot get any other way. If its query
+   differs from yours, *its* phrasing is the real one — a future session will phrase it that
+   way too, and you now know the vocabulary your record is missing.
+
+**Never tell it the answer, the drawer id, or your probe string.** A subagent handed the
+expected result will confirm it; the whole value is that it is uncontaminated. For the same
+reason, do not paste your record into the prompt — that reintroduces exactly the lexical
+contamination §9.4 is about.
+
+**Cheapest high-value use:** run it once against `llm_index` (*"what should I load next"*) and
+once against `llm_open_threads` (*"what is still open"*), because those two are the hops
+everything else depends on. If a fresh agent cannot find them, nothing downstream is reachable
+either — and that failure is invisible to you, because you know where they are.
+
+This is also the honest version of the §14 limit *"retrievable ≠ retrieved"*. A subagent
+narrows the gap: it proves an agent that was never told where to look still got there.
 
 ### 9.3 `llm_corrections` — retracted claims
 
@@ -813,6 +880,12 @@ The auto-loaded protocol should say, at minimum:
 | 9 | Search one fact you moved skill→drawer | comes back at/near the top | **A pointer to nothing (§5.2).** Restore it. |
 | 10 | `am_kg_add` then `am_kg_query(subject)` | returns for the **exact** key | Spelling differs; add it to §4.3 |
 | 11 | `am_recall_stats()` | it answers | The stats table may be missing; check the schema |
+| 12 | **Spawn a subagent** (§9.2b): *"using only `am_search` in `<wing>`, what should I load next?"* | it reaches `llm_index` **without being told where to look** | The index hop is invisible to anyone who did not build it |
+| 13 | Same, for *"what is still open?"* | it reaches `llm_open_threads` | Rows 5–6 passed on **your** phrasing, not a stranger's |
+
+Rows 12–13 are not duplicates of 5–6. Those two you ran yourself, knowing the wording you were
+testing; these are the same questions asked by someone who has never seen the drawers. When the
+two disagree, the subagent is right — a future session is a stranger, not you.
 
 **Then the test that is not a tool call:** open a fresh session, ask *"where did we finish?"*,
 and see whether it answers from the palace without being told where to look. That is the only
@@ -826,7 +899,9 @@ test of the whole thing, and it is worth repeating monthly.
   enforces the index hop. It works because agents load the skills at wake-up and act on them.
 - **Retrievable ≠ retrieved.** You can prove a fact comes back at the top for a probe. You
   cannot prove a future agent will *think to search* for it. That gap is what the always-loaded
-  skills exist to bridge, and it is why §5.2's test is narrow.
+  skills exist to bridge, and it is why §5.2's test is narrow. §9.2b's subagent probe narrows it
+  further — an agent that was never told where to look either got there or did not — but it
+  still tests a question you chose to ask.
 - **Recall degrades as the corpus grows unless it is scoped.** More memory is not automatically
   better memory.
 - **`am_search` never says "I found nothing."** Whoever reads the results is the filter.

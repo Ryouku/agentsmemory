@@ -26,6 +26,20 @@ var claudeGuide string
 //go:embed windows-guide.md
 var windowsGuide string
 
+// bootstrapMemory is the memory-model handoff document served at
+// /bootstrap-memory as raw Markdown. Unlike the two install guides above it
+// assumes the MCP is already connected: it covers what a team must build INSIDE
+// a palace that already answers — the rooms, the two auto-loaded skills, the
+// knowledge-graph rules, how to recall, and how a session resumes work the last
+// one left unfinished.
+//
+// It is served rather than shipped in the repository because the reader is an
+// agent that has this URL and not a checkout, which is also why it is Markdown
+// with no HTML chrome.
+//
+//go:embed bootstrap-memory.md
+var bootstrapMemory string
+
 // guideBaseURLPlaceholder marks where the guide's "sign in at <url>" step should
 // carry this server's public origin. It is substituted per request so the link
 // points at whatever host the request arrived through (localhost in dev, the real
@@ -38,6 +52,13 @@ const guideBaseURLPlaceholder = "{{BASE_URL}}"
 // dynamic part is the dashboard URL, filled in from the request.
 func (s *Server) handleClaudeGuide(w http.ResponseWriter, r *http.Request) {
 	serveGuide(w, r, claudeGuide)
+}
+
+// handleBootstrapMemory serves the memory-model handoff document as raw Markdown
+// at /bootstrap-memory, on the same terms as the install guides: public,
+// unstyled, and origin-substituted.
+func (s *Server) handleBootstrapMemory(w http.ResponseWriter, r *http.Request) {
+	serveGuide(w, r, bootstrapMemory)
 }
 
 // handleWindowsGuide serves the no-CLI install guide as raw Markdown at
