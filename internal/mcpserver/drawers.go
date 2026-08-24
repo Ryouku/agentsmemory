@@ -32,6 +32,25 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerReconnect(reg, drawers, usageSvc)
 }
 
+// wholeMemoryBudget bounds the TOTAL whole-memory content one search response
+// may carry, in runes.
+//
+// snippet_chars=0 means "give me whole memories" and that is a documented,
+// deliberate request. What was missing is a ceiling on the PAGE: a memory may be
+// up to palace.MaxContentLength (100,000 runes) and MaxSearchLimit is 100, so a
+// single search could assemble ~10M runes — against roughly 1,920 before whole
+// memories were returned at all. Nothing capped it.
+//
+// The number is not arbitrary. Measured on this MCP transport, a tool result
+// past roughly 40-45KB is not delivered to the agent at all — it spills to a
+// file the model never reads. So beyond this point a bigger response is not a
+// more generous answer, it is a silently emptier one, and the honest behaviour
+// is to return less and SAY so rather than more and have it vanish.
+//
+// Hits are filled in rank order, so the budget spends itself on the best matches
+// and the tail degrades to a bounded window rather than the page being cut.
+const wholeMemoryBudget = 40_000
+
 // drawerView is the agent-facing JSON shape of a drawer. It omits TeamID (the
 // caller already knows its own scope) and gives every field an explicit snake_case
 // tag so the wire format is stable regardless of Go field names.
@@ -550,6 +569,8 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
+		// spent/overBudget bound the WHOLE-memory expansion. See wholeMemoryBudget.
+		spent, overBudget := 0, 0
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
@@ -599,6 +620,19 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 					}
 				}
 			}
+			// snippet_chars=0 asks for whole memories, and that request is honoured
+			// until the page as a whole stops being deliverable — see
+			// wholeMemoryBudget. Past it the remaining hits fall back to a bounded
+			// window, marked truncated with the full length like any other trim, so
+			// a caller can tell it happened and ask for the rest by id.
+			if snippetChars <= 0 && spent+len([]rune(fullContent)) > wholeMemoryBudget {
+				views[i].Content = palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
+				views[i].Truncated = true
+				views[i].FullLength = len([]rune(fullContent))
+				overBudget++
+			}
+			spent += len([]rune(views[i].Content))
+
 			// Coverage is set for EVERY hit, including snippet_chars=0. Otherwise
 			// "the caller requested and received the whole memory" reports the same
 			// zero as "the caller saw none of it".
@@ -629,6 +663,18 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 		out := map[string]any{"hits": views, "count": len(views)}
+		// Say it, rather than letting the caller infer it from a truncation flag on
+		// hits it did not ask to have truncated. A silent cap on a "give me
+		// everything" request is the shape that teaches an agent the palace is
+		// missing content it actually holds.
+		if overBudget > 0 {
+			out["note"] = fmt.Sprintf(
+				"whole memories were requested and the last %d hit(s) exceeded this response's "+
+					"size budget, so they are windowed instead (content_truncated carries "+
+					"content_length). Fetch any of them in full with am_get_drawer(id, whole=true), "+
+					"or narrow the search — a larger response would not reach you: this transport "+
+					"drops a result past roughly 40-45KB to a file rather than delivering it.", overBudget)
+		}
 		// A zero-hit page from a wing that holds nothing is not a miss, and the two
 		// were indistinguishable: same count, same empty list, same sub-second
 		// reply. Measured against real queries, that confusion produced every hard
