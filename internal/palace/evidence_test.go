@@ -320,3 +320,60 @@ func TestSemanticEvidenceBatchesOverlap(t *testing.T) {
 		t.Fatalf("peak concurrent embed calls = %d; evidence batches are still serialised", peak)
 	}
 }
+
+// TestSemanticWindowsCoverUnbrokenTokenRuns pins evidence coverage across the
+// content this corpus actually holds: sha256 digests, image refs and URLs.
+//
+// Windows start at a word boundary, and a long unbroken token has none — the
+// boundary walk ran to the end of the window and emitted nothing, so the run and
+// everything the step covered were never eligible as evidence. Measured before
+// the fix: 87% of a 6,002-rune memory reachable, plus a 98-rune stub sharing a
+// start offset with a full window, embedded twice and able to occupy one of only
+// four evidence slots.
+func TestSemanticWindowsCoverUnbrokenTokenRuns(t *testing.T) {
+	prose := strings.Repeat("ranking memory chunk rerank fusion candidate vector lexical ", 10)
+	digest := strings.Repeat("a1b2c3d4e5f6", 200) // a 2,400-rune token with no boundary
+	content := prose + " " + digest + " " + strings.Repeat("budget passage evidence latency corpus drawer ", 50)
+	runes := []rune(content)
+
+	windows := semanticEvidenceWindows(content)
+	if len(windows) < 2 {
+		t.Fatalf("fixture produced %d windows; it is not exercising the walk", len(windows))
+	}
+
+	// Every rune must be reachable through some window. Coverage is what the
+	// selector can choose from; text outside it cannot be evidence at all.
+	covered := make([]bool, len(runes))
+	starts := make(map[int]int)
+	for _, w := range windows {
+		starts[w.Start]++
+		if n := len([]rune(w.Text)); n < minRegionRunes {
+			t.Fatalf("window at %d is %d runes, below the %d-rune floor; a stub can win an evidence slot",
+				w.Start, n, minRegionRunes)
+		}
+		for i := w.Start; i < w.Start+len([]rune(w.Text)) && i < len(runes); i++ {
+			covered[i] = true
+		}
+	}
+	for offset, count := range starts {
+		if count > 1 {
+			t.Fatalf("%d windows share start offset %d; the same passage is embedded more than once", count, offset)
+		}
+	}
+	for i, ok := range covered {
+		if !ok {
+			t.Fatalf("rune %d of %d is in no window, so it can never be selected as evidence (first gap of %d)",
+				i, len(runes), countFalse(covered))
+		}
+	}
+}
+
+func countFalse(b []bool) int {
+	n := 0
+	for _, v := range b {
+		if !v {
+			n++
+		}
+	}
+	return n
+}
