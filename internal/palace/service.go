@@ -715,6 +715,31 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 	if patch.Room != nil {
 		finalRoom = *patch.Room
 	}
+
+	// Refuse BEFORE embedding, not after. Update never re-chunks, so this content
+	// becomes one vector however long it is — and the embedder is asked to
+	// truncate rather than fail, so past the model's window it returns a vector
+	// for the prefix and reports success. The memory would still read back whole
+	// from am_get_drawer while being unfindable by anything after the cut, which
+	// is the worst shape a storage bug can take: no error, no warning, and the
+	// symptom appears later as "search cannot find something I know is filed".
+	//
+	// Refusing rather than truncating or re-chunking keeps this consistent with
+	// the multi-chunk refusal above: the caller is told what to do instead, and
+	// Add is the path that handles arbitrary length (it chunks). Re-chunking here
+	// is the real fix and is an ADR, not a bug fix — docs/adr/BACKLOG.md, because
+	// it changes which ids exist and therefore what every anchor, tunnel and
+	// knowledge-graph fact still points at.
+	if n := len([]rune(finalContent)); n > MaxEmbedRunes {
+		return Drawer{}, fmt.Errorf(
+			"%w: updated content is %d characters and the embedder takes at most %d in one piece, "+
+				"so the text past that point would be stored but never findable. "+
+				"Delete this memory and file it again with add_drawer, which splits long content into "+
+				"chunks that each embed in full — note that re-filing mints new ids, so any anchor, "+
+				"tunnel or knowledge-graph fact pointing at this drawer must be re-pointed",
+			ErrInvalidInput, n, MaxEmbedRunes)
+	}
+
 	vec, err := s.embed.EmbedOne(ctx, finalContent)
 	if err != nil {
 		return Drawer{}, fmt.Errorf("re-embed updated drawer: %w", err)
