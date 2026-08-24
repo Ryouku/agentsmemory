@@ -79,6 +79,22 @@ type TraverseNode struct {
 // adjacent when they share a wing, out to maxHops (clamped to [1, traverseMaxHops]).
 // Results are ordered by hop then descending count and capped, matching the frozen
 // traverse. An unknown start room is reported as an error the tool surfaces.
+//
+// A walk carries the wings it is travelling through and may only step onward
+// through those, which is what keeps it a walk rather than a flood. A room node is
+// GLOBAL — one node per room NAME, carrying every wing that uses it — so "diary"
+// is a single node standing for eleven unrelated wings. Matching a neighbour
+// against the current room's full wing set therefore let a walk enter diary from
+// one project and leave it into any of the other ten: not a link between related
+// memories but a NAME COLLISION presented as one, and it silently crossed the wing
+// boundary the rest of the protocol is built on. Measured before this changed, a
+// two-hop walk from a single-wing room returned 36 of the palace's 36 rooms —
+// every room in every project, at zero selectivity.
+//
+// Intersecting against the carried wings instead confines a walk to the wings its
+// start room actually belongs to, narrowing as it goes. Reaching a genuinely
+// unrelated project is then the job of an explicit tunnel, which is authored and
+// says what it means.
 func (s *Service) Traverse(ctx context.Context, teamID, startRoom string, maxHops int) ([]TraverseNode, error) {
 	if maxHops <= 0 {
 		maxHops = traverseDefaultHops
@@ -97,28 +113,39 @@ func (s *Service) Traverse(ctx context.Context, teamID, startRoom string, maxHop
 	type qitem struct {
 		room string
 		hop  int
-		via  []string
+		// via is the set of wings this walk is confined to, not merely a label for
+		// the hop that produced it: the next step is matched against via, so it
+		// narrows along the path and a walk can never leave through a wing it did
+		// not arrive by.
+		via []string
 	}
 	// Sort the room names once, not per BFS pop: the neighbour scan reuses this
 	// stable order so the walk is deterministic without re-sorting each level.
 	roomOrder := sortedRooms(nodes)
 	visited := map[string]struct{}{startRoom: {}}
-	queue := []qitem{{room: startRoom, hop: 0}}
+	queue := []qitem{{room: startRoom, hop: 0, via: nodes[startRoom].Wings}}
 	var result []TraverseNode
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 		n := nodes[cur.room]
-		result = append(result, TraverseNode{Room: cur.room, Wings: n.Wings, Count: n.Count, Hop: cur.hop, ConnectedVia: cur.via})
+		node := TraverseNode{Room: cur.room, Wings: n.Wings, Count: n.Count, Hop: cur.hop}
+		// The start room was not reached through anything, so it reports no
+		// connecting wing even though the walk starts out carrying its own.
+		if cur.hop > 0 {
+			node.ConnectedVia = cur.via
+		}
+		result = append(result, node)
 		if cur.hop >= maxHops {
 			continue
 		}
-		// Neighbours are rooms sharing at least one wing, scanned in the stable order.
+		// Neighbours are rooms sharing a wing the walk is ALREADY in, scanned in the
+		// stable order.
 		for _, other := range roomOrder {
 			if _, seen := visited[other]; seen {
 				continue
 			}
-			shared := intersectSorted(n.Wings, nodes[other].Wings)
+			shared := intersectSorted(cur.via, nodes[other].Wings)
 			if len(shared) == 0 {
 				continue
 			}
