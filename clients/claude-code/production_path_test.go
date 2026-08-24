@@ -29,7 +29,7 @@ func TestMineClaudeCrossesTheProductionMCPPath(t *testing.T) {
 	err := command.Run(t.Context(), []string{
 		"mine-claude",
 		"--dir", root,
-		"--wing", "wing_client_path",
+		"--wing", "wing_alpha",
 		"--room", "sessions",
 		"--min-chars", "1",
 		"--limit", "0",
@@ -39,7 +39,7 @@ func TestMineClaudeCrossesTheProductionMCPPath(t *testing.T) {
 		t.Fatalf("mine-claude: %v\n%s", err, out.String())
 	}
 
-	drawers, err := harness.Drawers.List(t.Context(), mcptest.TeamID, "wing_client_path", "sessions", 100, 0)
+	drawers, err := harness.Drawers.List(t.Context(), mcptest.TeamID, "wing_alpha", "sessions", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestMineClaudeCrossesTheProductionMCPPath(t *testing.T) {
 
 func TestVerifyCrossesProductionListAndMarkHandlers(t *testing.T) {
 	harness := mcptest.New(t)
-	const wing = "wing_verify_path"
+	const wing = "wing_beta"
 	filed, err := harness.Drawers.Add(t.Context(), mcptest.TeamID, palace.AddInput{
 		Wing: wing, Room: "decisions", Content: "Target is intentionally anchored.", SourceFile: "decision.md",
 	})

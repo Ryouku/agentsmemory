@@ -47,6 +47,10 @@ func TestCommandIdentityPreservesArgumentsDirectoryAndRedactsEnvironmentValues(t
 
 func TestMutationRunnerKillsACompilingWireCutAndRestoresSource(t *testing.T) {
 	repo := newMutationFixture(t, false)
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve fixture repository: %v", err)
+	}
 	result, err := RunMutation(context.Background(), repo, mutationSpec(falsePatch()))
 	if err != nil {
 		t.Fatalf("run mutation: %v (%+v)", err, result)
@@ -57,7 +61,7 @@ func TestMutationRunnerKillsACompilingWireCutAndRestoresSource(t *testing.T) {
 	if result.Axis() != "fixture-selector" || result.Item() != "*" || result.Case() != "*" {
 		t.Fatalf("mutation target identity = %s/%s/%s", result.Axis(), result.Item(), result.Case())
 	}
-	if result.Target().Repository() != repo || result.Target().Head() == "" || result.PatchDigest() == "" {
+	if result.Target().Repository() != resolvedRepo || result.Target().Head() == "" || result.PatchDigest() == "" {
 		t.Fatalf("mutation provenance = target %+v patch %q", result.Target(), result.PatchDigest())
 	}
 	if got := result.Paths(); len(got) != 1 || got[0] != "feature.go" {

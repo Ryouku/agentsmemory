@@ -548,13 +548,13 @@ var scenarios = []mcptest.Scenario{
 		Name:  "deleting a tunnel removes only that woven link and is idempotent",
 		Tools: []string{"am_add_drawer", "am_create_tunnel", "am_delete_tunnel", "am_list_tunnels", "am_follow_tunnels"},
 		Run: func(t *testing.T, h *mcptest.Harness) {
-			for _, w := range []string{"wing_tunnel_from", "wing_tunnel_to", "wing_tunnel_keep_a", "wing_tunnel_keep_b"} {
+			for _, w := range []string{"wing_from", "wing_to", "wing_alpha", "wing_beta"} {
 				h.MustCall(t, "am_add_drawer", map[string]any{
 					"wing": w, "room": "decisions", "content": "a tunnel endpoint in " + w,
 				})
 			}
-			target := createTunnel(t, h, "wing_tunnel_from", "wing_tunnel_to", "TARGET-TUNNEL")
-			keeper := createTunnel(t, h, "wing_tunnel_keep_a", "wing_tunnel_keep_b", "KEEPER-TUNNEL")
+			target := createTunnel(t, h, "wing_from", "wing_to", "TARGET-TUNNEL")
+			keeper := createTunnel(t, h, "wing_alpha", "wing_beta", "KEEPER-TUNNEL")
 
 			if deleted(t, h.MustCall(t, "am_delete_tunnel", map[string]any{"tunnel_id": "missing-tunnel-id"})) {
 				t.Error("deleting an unknown tunnel reported that it removed something")
@@ -570,7 +570,7 @@ var scenarios = []mcptest.Scenario{
 				t.Errorf("the target tunnel survived or the keeper was removed:\n%s", got)
 			}
 			if got := h.MustCall(t, "am_follow_tunnels", map[string]any{
-				"wing": "wing_tunnel_from", "room": "decisions",
+				"wing": "wing_from", "room": "decisions",
 			}); contains(got, "TARGET-TUNNEL") {
 				t.Errorf("the deleted tunnel is still followable:\n%s", got)
 			}
@@ -586,11 +586,11 @@ var scenarios = []mcptest.Scenario{
 		Name:  "deleting a derived hallway is selective and recompute restores it",
 		Tools: []string{"am_mine", "am_recompute_graph", "am_list_hallways", "am_delete_hallway"},
 		Run: func(t *testing.T, h *mcptest.Harness) {
-			mineHallwayCorpus(t, h, "wing_hallway_target", "TARGET-HALLWAY")
-			mineHallwayCorpus(t, h, "wing_hallway_keeper", "KEEPER-HALLWAY")
+			mineHallwayCorpus(t, h, "wing_alpha", "TARGET-HALLWAY")
+			mineHallwayCorpus(t, h, "wing_beta", "KEEPER-HALLWAY")
 			h.MustCall(t, "am_recompute_graph", map[string]any{})
-			target := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_hallway_target"}), "hallways")
-			keeper := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_hallway_keeper"}), "hallways")
+			target := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_alpha"}), "hallways")
+			keeper := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_beta"}), "hallways")
 
 			if deleted(t, h.MustCall(t, "am_delete_hallway", map[string]any{"hallway_id": "missing-hallway-id"})) {
 				t.Error("deleting an unknown hallway reported that it removed something")
@@ -606,8 +606,8 @@ var scenarios = []mcptest.Scenario{
 				t.Errorf("the target hallway survived or the keeper was removed:\n%s", got)
 			}
 
-			h.MustCall(t, "am_recompute_graph", map[string]any{"wing": "wing_hallway_target"})
-			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_hallway_target"}); contains(got, `"count":0`) {
+			h.MustCall(t, "am_recompute_graph", map[string]any{"wing": "wing_alpha"})
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_alpha"}); contains(got, `"count":0`) {
 				t.Errorf("recompute did not restore the still-supported derived hallway:\n%s", got)
 			}
 		},
@@ -617,38 +617,38 @@ var scenarios = []mcptest.Scenario{
 		Tools: []string{"am_add_drawer", "am_merge_wing", "am_list_drawers", "am_search"},
 		Run: func(t *testing.T, h *mcptest.Harness) {
 			for wing, content := range map[string]string{
-				"wing_merge_source": "SOURCE-MERGE-MARKER the scheduler drains before deploy",
-				"wing_merge_target": "TARGET-MERGE-MARKER the target already has a decision",
-				"wing_merge_keeper": "KEEPER-MERGE-MARKER an unrelated wing must remain",
+				"wing_from":  "SOURCE-MERGE-MARKER the scheduler drains before deploy",
+				"wing_to":    "TARGET-MERGE-MARKER the target already has a decision",
+				"wing_other": "KEEPER-MERGE-MARKER an unrelated wing must remain",
 			} {
 				h.MustCall(t, "am_add_drawer", map[string]any{"wing": wing, "room": "decisions", "content": content})
 			}
 
-			h.MustRefuse(t, "am_merge_wing", map[string]any{"sources": []any{}, "target": "wing_merge_target"})
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_merge_source"}); !contains(got, "SOURCE-MERGE-MARKER") {
+			h.MustRefuse(t, "am_merge_wing", map[string]any{"sources": []any{}, "target": "wing_to"})
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_from"}); !contains(got, "SOURCE-MERGE-MARKER") {
 				t.Errorf("a refused empty merge changed the source wing:\n%s", got)
 			}
 
 			h.MustCall(t, "am_merge_wing", map[string]any{
-				"sources": []any{"wing_merge_source"}, "target": "wing_merge_target",
+				"sources": []any{"wing_from"}, "target": "wing_to",
 			})
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_merge_target", "limit": 20}); !contains(got, "SOURCE-MERGE-MARKER") || !contains(got, "TARGET-MERGE-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_to", "limit": 20}); !contains(got, "SOURCE-MERGE-MARKER") || !contains(got, "TARGET-MERGE-MARKER") {
 				t.Errorf("the target does not enumerate both its old memory and the merged memory:\n%s", got)
 			}
 			if got := h.MustCall(t, "am_search", map[string]any{
-				"query": "scheduler drains before deploy", "wing": "wing_merge_target", "limit": 20,
+				"query": "scheduler drains before deploy", "wing": "wing_to", "limit": 20,
 			}); !contains(got, "SOURCE-MERGE-MARKER") {
 				t.Errorf("the merged row moved but its vector payload did not become searchable in the target:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_merge_source", "limit": 20}); contains(got, "SOURCE-MERGE-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_from", "limit": 20}); contains(got, "SOURCE-MERGE-MARKER") {
 				t.Errorf("the old source still enumerates the merged memory:\n%s", got)
 			}
 			if got := h.MustCall(t, "am_search", map[string]any{
-				"query": "scheduler drains before deploy", "wing": "wing_merge_source", "limit": 20,
+				"query": "scheduler drains before deploy", "wing": "wing_from", "limit": 20,
 			}); contains(got, "SOURCE-MERGE-MARKER") {
 				t.Errorf("the old source still retrieves the merged memory from the vector index:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_merge_keeper"}); !contains(got, "KEEPER-MERGE-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_other"}); !contains(got, "KEEPER-MERGE-MARKER") {
 				t.Errorf("the unrelated keeper wing changed during merge:\n%s", got)
 			}
 		},
@@ -657,44 +657,44 @@ var scenarios = []mcptest.Scenario{
 		Name:  "local wing deletion crosses the real local edge and removes every observable projection",
 		Tools: []string{"am_mine", "am_recompute_graph", "am_create_tunnel", "am_delete_wing", "am_list_drawers", "am_search", "am_list_hallways", "am_list_tunnels", "am_list_wings"},
 		NewHarness: func(t *testing.T) *mcptest.Harness {
-			return mcptest.NewLocalWithWing(t, "wing_delete_doomed")
+			return mcptest.NewLocalWithWing(t, "wing_gone")
 		},
 		Run: func(t *testing.T, h *mcptest.Harness) {
-			mineHallwayCorpus(t, h, "wing_delete_doomed", "DOOMED-WING-MARKER")
-			mineHallwayCorpus(t, h, "wing_delete_keeper", "KEEPER-WING-MARKER")
+			mineHallwayCorpus(t, h, "wing_gone", "DOOMED-WING-MARKER")
+			mineHallwayCorpus(t, h, "wing_other", "KEEPER-WING-MARKER")
 			h.MustCall(t, "am_recompute_graph", map[string]any{})
-			tunnel := createTunnel(t, h, "wing_delete_doomed", "wing_delete_keeper", "DOOMED-TUNNEL-MARKER")
-			hallway := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_delete_doomed"}), "hallways")
+			tunnel := createTunnel(t, h, "wing_gone", "wing_other", "DOOMED-TUNNEL-MARKER")
+			hallway := firstListedID(t, h, h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_gone"}), "hallways")
 
 			msg := h.MustRefuse(t, "am_delete_wing", map[string]any{
-				"wing": "wing_delete_doomed", "confirm": "wing_delete_keeper",
+				"wing": "wing_gone", "confirm": "wing_other",
 			})
-			if !contains(msg, `confirm="wing_delete_doomed"`) {
+			if !contains(msg, `confirm="wing_gone"`) {
 				t.Errorf("the refusal does not name the exact confirmation required:\n%s", msg)
 			}
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_delete_doomed"}); !contains(got, "DOOMED-WING-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_gone"}); !contains(got, "DOOMED-WING-MARKER") {
 				t.Errorf("a refused delete removed the doomed wing's drawers:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_delete_doomed"}); !contains(got, hallway) {
+			if got := h.MustCall(t, "am_list_hallways", map[string]any{"wing": "wing_gone"}); !contains(got, hallway) {
 				t.Errorf("a refused delete removed the doomed wing's hallway:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "wing_delete_doomed"}); !contains(got, tunnel) {
+			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "wing_gone"}); !contains(got, tunnel) {
 				t.Errorf("a refused delete removed the doomed wing's tunnel:\n%s", got)
 			}
 
 			out := h.MustCall(t, "am_delete_wing", map[string]any{
-				"wing": "wing_delete_doomed", "confirm": "wing_delete_doomed",
+				"wing": "wing_gone", "confirm": "wing_gone",
 			})
 			for _, field := range []string{"drawers_deleted", "closets_deleted", "hallways_deleted", "tunnels_deleted"} {
 				if jsonNumber(t, h, out, field) < 1 {
 					t.Errorf("wing deletion reported no %s despite the populated fixture:\n%s", field, out)
 				}
 			}
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_delete_doomed"}); contains(got, "DOOMED-WING-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_gone"}); contains(got, "DOOMED-WING-MARKER") {
 				t.Errorf("the deleted wing is still enumerable:\n%s", got)
 			}
 			if got := h.MustCall(t, "am_search", map[string]any{
-				"query": "DOOMED-WING-MARKER", "wing": "wing_delete_doomed", "limit": 20,
+				"query": "DOOMED-WING-MARKER", "wing": "wing_gone", "limit": 20,
 			}); contains(got, "DOOMED-WING-MARKER") {
 				t.Errorf("the deleted wing remains in vector recall:\n%s", got)
 			}
@@ -704,10 +704,10 @@ var scenarios = []mcptest.Scenario{
 			if got := h.MustCall(t, "am_list_tunnels", map[string]any{"wing": "*"}); contains(got, tunnel) {
 				t.Errorf("a tunnel whose endpoint was deleted survived:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_wings", map[string]any{}); contains(got, "wing_delete_doomed") {
+			if got := h.MustCall(t, "am_list_wings", map[string]any{}); contains(got, "wing_gone") {
 				t.Errorf("the deleted wing still appears in the wing catalogue:\n%s", got)
 			}
-			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_delete_keeper"}); !contains(got, "KEEPER-WING-MARKER") {
+			if got := h.MustCall(t, "am_list_drawers", map[string]any{"wing": "wing_other"}); !contains(got, "KEEPER-WING-MARKER") {
 				t.Errorf("the keeper wing changed during deletion:\n%s", got)
 			}
 		},

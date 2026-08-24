@@ -25,8 +25,8 @@ const (
 	readOnlyHintMutationFailure  = "live tools/list lost registration policy"
 	starScopeMutationFailure     = "star scope no longer widens and narrows"
 	writeGuardMutationFailure    = "member write reached an unguarded handler"
-	contractAlphaWing            = "wing_contract_alpha"
-	contractBetaWing             = "wing_contract_beta"
+	contractAlphaWing            = "wing_alpha"
+	contractBetaWing             = "wing_beta"
 	contractSharedQuery          = "contract axis shared memory"
 	contractUnknownSiblingSuffix = "__contract_axis_unknown"
 )
