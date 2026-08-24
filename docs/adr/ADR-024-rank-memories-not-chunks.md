@@ -66,7 +66,8 @@ chunks are de-overlapped; diary chunks, which never overlap, are concatenated ex
 - vector distance is the best (smallest) distance among the memory's retrieved chunks;
 - BM25 sees the reassembled memory once, so terms in separate chunks contribute to one score;
 - the cross-encoder sees one bounded evidence document per memory, assembled from at most four
-  coherent 400-rune matching passages within the existing `ChunkSize` budget;
+  coherent 400-rune matching passages within the existing `ChunkSize` budget; selection covers
+  previously unseen query terms before spending another passage on repeated vocabulary;
 - only the raw user query selects those passages; optional `SearchQuery.Context` is appended to the
   cross-encoder query but cannot change which source text the model receives;
 - closet boost is applied once per memory;
@@ -193,9 +194,54 @@ a two-reason short diary first, while the corrected memory arm exposes all three
 and ranks the complete memory first. A second test proves adding Context changes the model query but
 not its evidence documents.
 
-This correction is a hypothesis supported by a falsifiable reproduction, not a production verdict.
-The default remains false until the same frozen nine-query workload is replayed against a PR image
-containing the correction.
+### First corrected-image replay
+
+The frozen nine-query workload was replayed against PR #25 image
+`sha256:a66a2c72572305efc4ac638f969c8275c9eb9a6e221cb24466136a36b09501f3`.
+The profile was unchanged except for the corrected code and still reported `unit=memory`. The corpus
+was 1,463 drawers rather than 1,462: immediately before deployment, the ADR-024 source-backed memory
+was idempotently replaced with a two-chunk implementation record, a net increase of one. That new
+memory appeared at ranks 6, 4 and 8 for three queries and was absent from the other six; it was not
+the new rank-1 diary competitor described below. The comparison is therefore near-matched, not an
+unchanged-corpus verdict.
+
+| Room | false rank | first true rank | corrected true rank | Corrected median |
+|---|---:|---:|---:|---:|
+| architecture | 1 | 1 | 1 | 1,468 ms |
+| decisions | 2 | 2 | 2 | 1,446 ms |
+| tooling | 1 | 1 | 1 | 1,376 ms |
+| operations | 1 | 2 | **1** | 1,406 ms |
+| technical | 1 | 1 | 1 | 1,406 ms |
+| learnings | 1 | 1 | 1 | 1,465 ms |
+| diary | 1 | 1 | **2** | 1,417 ms |
+| human-decisions | 1 | 2 | **1** | 1,386 ms |
+| llm_ruled_out | 1 | 1 | 1 | 1,436 ms |
+
+| Aggregate metric | false / chunk | first true / memory | corrected true / memory |
+|---|---:|---:|---:|
+| Exact target hit@1 | **8/9** | 6/9 | 7/9 |
+| Exact target MRR | **0.944** | 0.833 | 0.889 |
+| Fully correct semantic top answer | **9/9** | 8/9 | 8/9 |
+| Median client-observed latency | **1,316 ms** | 1,525 ms | 1,406 ms |
+
+The intended operations regression was fixed: its complete four-chunk memory moved from rank 2 to
+rank 1, and human-decisions also moved from 2 to 1. Latency fell by 119 ms relative to the first
+treatment, although it remained 90 ms or 6.8% above control.
+
+The correction did not meet the semantic gate; it moved the failure. The diary target fell from rank
+1 to rank 2 behind a decision memory which answered why the subject is derived but omitted both the
+stale-GitHub verification lesson and the remaining open items. Source tracing showed the remaining
+mechanism: the four evidence passages were still selected by absolute term count. Several distant
+passages repeating the dense first clause could consume all four slots before a lower-density clause
+such as “what remained open” received one.
+
+The next correction makes private reranker selection coverage-aware. Query terms are deduplicated,
+and each next passage is chosen by how many previously uncovered terms it adds; after all reachable
+terms are covered, ordinary score order resumes so repeated occurrences can still combine premise
+and conclusion. Agent-visible `SnippetRegions` remains score-first. A focused fixture with four
+repetitions of the dense clause and one low-density `remained open` passage was red when this wiring
+was removed and green when restored. This second correction still requires the same live replay;
+the shipped default remains false.
 
 ## Alternatives Considered
 

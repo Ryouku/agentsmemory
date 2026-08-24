@@ -335,6 +335,22 @@ func TestMemoryLevelRerankingKeepsEnoughContextToJudgeTheAnswer(t *testing.T) {
 	}
 }
 
+// TestMemoryEvidenceCoversDistinctQuestionClauses reproduces the second live
+// failure: four passages repeating the dense first clause consumed all four
+// evidence slots, so the lower-density "what remained open" clause vanished and
+// an incomplete memory won. A multi-part question needs new vocabulary covered
+// before another occurrence of vocabulary already represented.
+func TestMemoryEvidenceCoversDistinctQuestionClauses(t *testing.T) {
+	dense := "subject field deriving address wing room " + strings.Repeat("amber ", 150)
+	content := strings.Repeat(dense, maxMemoryEvidenceRegions) +
+		"remained open " + strings.Repeat("background ", 18) + "OPEN_REASON " + strings.Repeat("tail ", 30)
+
+	evidence := memoryEvidence(content, "subject field deriving address wing room remained open", content[:ChunkSize])
+	if !strings.Contains(evidence, "OPEN_REASON") {
+		t.Fatalf("evidence omitted the distinct low-density query clause: %q", evidence)
+	}
+}
+
 // TestReassembleMemoryPreservesChunkedText makes the treatment's whole-memory
 // document falsifiable independently of ranking. ChunkText overlaps and trims
 // window edges; removing the wrong overlap silently duplicates or drops prose.

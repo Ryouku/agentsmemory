@@ -213,7 +213,7 @@ const maxMemoryEvidenceRegions = ChunkSize / DefaultSnippetChars
 // search snippet. Region text is verbatim and position ordered; the ellipsis
 // only marks omitted distance between those source slices.
 func memoryEvidence(content, query, fallback string) string {
-	regions := snippetRegions(content, query, ChunkSize, maxMemoryEvidenceRegions)
+	regions := snippetRegions(content, query, ChunkSize, maxMemoryEvidenceRegions, true)
 	matched := false
 	for _, region := range regions {
 		matched = matched || region.Score > 0

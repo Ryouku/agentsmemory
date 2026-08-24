@@ -43,20 +43,24 @@ type Region struct {
 // Position order and not score order: an agent can sort by score itself, and it
 // cannot un-jumble prose.
 func SnippetRegions(content, query string, maxChars int) []Region {
-	return snippetRegions(content, query, maxChars, 0)
+	return snippetRegions(content, query, maxChars, 0, false)
 }
 
 // snippetRegions is SnippetRegions with an optional ceiling on how many
 // passages may share the budget. A zero ceiling preserves the public function's
-// behavior. Ranking uses a ceiling because a cross-encoder needs enough
-// contiguous prose to judge each claim; agent-visible regions still favor
-// maximum coverage of every matching place.
-func snippetRegions(content, query string, maxChars, maxRegions int) []Region {
+// behavior. Ranking also asks for distinct-term coverage because a cross-encoder
+// must receive every clause of a compound question before it receives another
+// passage repeating terms already represented. Agent-visible regions retain
+// their existing score-first behavior.
+func snippetRegions(content, query string, maxChars, maxRegions int, coverTerms bool) []Region {
 	if maxChars <= 0 {
 		maxChars = DefaultSnippetChars
 	}
 	runes := []rune(content)
 	terms := tokenize(query)
+	if coverTerms {
+		terms = distinctTerms(terms)
+	}
 	if len(runes) == 0 {
 		return nil
 	}
@@ -97,30 +101,19 @@ func snippetRegions(content, query string, maxChars, maxRegions int) []Region {
 	})
 
 	var picked []windowCandidate
-	for _, c := range candidates {
-		if c.Terms == 0 {
-			break // nothing below here matched anything; padding with misses helps nobody
-		}
-		if len(picked) >= want {
-			break
-		}
-		// One region per NEIGHBOURHOOD, not simply per non-overlapping span.
-		//
-		// Non-overlap alone is not enough: adjacent windows step by half a window,
-		// so the four highest-scoring candidates are usually four views of the same
-		// paragraph, and the budget goes on one passage while the memory's other
-		// matches — the ones the single-window chooser already could not reach —
-		// stay unshown. Requiring a window's worth of separation makes each region
-		// a different PLACE in the memory, which is the thing being delivered.
-		near := false
-		for _, p := range picked {
-			if c.Start < p.End+size && p.Start < c.End+size {
-				near = true
+	if coverTerms {
+		picked = coverageCandidates(candidates, lower, terms, want, size)
+	} else {
+		for _, c := range candidates {
+			if c.Terms == 0 {
+				break // nothing below here matched anything; padding with misses helps nobody
+			}
+			if len(picked) >= want {
 				break
 			}
-		}
-		if !near {
-			picked = append(picked, c)
+			if !nearRegion(c, picked, size) {
+				picked = append(picked, c)
+			}
 		}
 	}
 	if len(picked) == 0 {
@@ -170,6 +163,73 @@ func snippetRegions(content, query string, maxChars, maxRegions int) []Region {
 		}
 		out = append(out, Region{Text: string(runes[start:end]), Score: p.Terms, Start: start})
 		spent += end - start
+	}
+	return out
+}
+
+// coverageCandidates selects a new query term before another occurrence of a
+// term already represented. Once every term reachable within the budget is
+// covered, score order resumes so repeated occurrences can still contribute
+// separate evidence — important when one subject term introduces several
+// distant premises and conclusions.
+func coverageCandidates(candidates []windowCandidate, lower []rune, terms []string, want, size int) []windowCandidate {
+	picked := make([]windowCandidate, 0, want)
+	covered := make(map[string]bool, len(terms))
+	for len(picked) < want {
+		best := -1
+		bestFresh := -1
+		for i, c := range candidates {
+			if c.Terms == 0 || nearRegion(c, picked, size) {
+				continue
+			}
+			fresh := 0
+			window := string(lower[c.Start:c.End])
+			for _, term := range terms {
+				if !covered[term] && strings.Contains(window, term) {
+					fresh++
+				}
+			}
+			// candidates are already score-first and position-second. Keeping the
+			// first tie preserves those deterministic tie-breakers.
+			if fresh > bestFresh {
+				best, bestFresh = i, fresh
+			}
+		}
+		if best < 0 {
+			break
+		}
+		chosen := candidates[best]
+		picked = append(picked, chosen)
+		window := string(lower[chosen.Start:chosen.End])
+		for _, term := range terms {
+			if strings.Contains(window, term) {
+				covered[term] = true
+			}
+		}
+	}
+	return picked
+}
+
+// nearRegion enforces one region per neighbourhood, not merely non-overlap.
+// Candidate windows advance by much less than their width, so without this the
+// highest-scoring choices are usually several views of one paragraph.
+func nearRegion(candidate windowCandidate, picked []windowCandidate, size int) bool {
+	for _, p := range picked {
+		if candidate.Start < p.End+size && p.Start < candidate.End+size {
+			return true
+		}
+	}
+	return false
+}
+
+func distinctTerms(terms []string) []string {
+	out := make([]string, 0, len(terms))
+	seen := make(map[string]bool, len(terms))
+	for _, term := range terms {
+		if !seen[term] {
+			seen[term] = true
+			out = append(out, term)
+		}
 	}
 	return out
 }
