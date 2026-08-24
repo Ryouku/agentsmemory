@@ -24,7 +24,29 @@ func vectorFor(input string) []float32 {
 // was asked for.
 func echoServer(t *testing.T, batches *[][]string) *httptest.Server {
 	t.Helper()
+	return batchingServer(t, batches, http.StatusOK, maxBatch, nil)
+}
+
+func batchingServer(
+	t *testing.T,
+	batches *[][]string,
+	infoStatus int,
+	reportedLimit int,
+	infoCalls *int,
+) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/info" {
+			if infoCalls != nil {
+				*infoCalls = *infoCalls + 1
+			}
+			if infoStatus != http.StatusOK {
+				w.WriteHeader(infoStatus)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int{"max_client_batch_size": reportedLimit})
+			return
+		}
 		if r.URL.Path != "/embed" {
 			t.Errorf("path = %q, want /embed", r.URL.Path)
 		}
@@ -46,6 +68,94 @@ func echoServer(t *testing.T, batches *[][]string) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
 	}))
+}
+
+// TestEmbedUsesTheServerClientBatchLimit makes batching follow the actual TEI
+// deployment instead of the public default. Production advertises 128 through
+// /info; keeping the client fixed at 32 turns one accepted request into four
+// sequential HTTP round trips without changing a single vector.
+func TestEmbedUsesTheServerClientBatchLimit(t *testing.T) {
+	const serverLimit = 128
+	var batches [][]string
+	infoCalls := 0
+	srv := batchingServer(t, &batches, http.StatusOK, serverLimit, &infoCalls)
+	defer srv.Close()
+
+	inputs := make([]string, 260)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("input-%03d", i)
+	}
+	embedder := New(srv.URL, 5*time.Second)
+	for run := 0; run < 2; run++ {
+		got, err := embedder.Embed(context.Background(), inputs)
+		if err != nil {
+			t.Fatalf("Embed run %d: %v", run, err)
+		}
+		for i, input := range inputs {
+			want := vectorFor(input)
+			if got[i][0] != want[0] || got[i][1] != want[1] {
+				t.Fatalf("run %d vector %d = %v, want %v", run, i, got[i], want)
+			}
+		}
+	}
+	if infoCalls != 1 {
+		t.Fatalf("/info calls = %d, want 1 cached discovery", infoCalls)
+	}
+	wantSizes := []int{serverLimit, serverLimit, 4, serverLimit, serverLimit, 4}
+	if len(batches) != len(wantSizes) {
+		t.Fatalf("made %d requests, want %d: %#v", len(batches), len(wantSizes), batches)
+	}
+	for i, want := range wantSizes {
+		if len(batches[i]) != want {
+			t.Errorf("batch %d carried %d inputs, want %d", i, len(batches[i]), want)
+		}
+	}
+}
+
+func TestEmbedFallsBackToTheTEIDefaultWhenInfoIsUnavailable(t *testing.T) {
+	var batches [][]string
+	srv := batchingServer(t, &batches, http.StatusNotFound, 0, nil)
+	defer srv.Close()
+
+	inputs := make([]string, 70)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("input-%02d", i)
+	}
+	if _, err := New(srv.URL, 5*time.Second).Embed(context.Background(), inputs); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	wantSizes := []int{maxBatch, maxBatch, 70 - 2*maxBatch}
+	if len(batches) != len(wantSizes) {
+		t.Fatalf("made %d requests, want %d", len(batches), len(wantSizes))
+	}
+	for i, want := range wantSizes {
+		if len(batches[i]) != want {
+			t.Errorf("batch %d carried %d inputs, want fallback size %d", i, len(batches[i]), want)
+		}
+	}
+}
+
+func TestEmbedCapsAnExcessiveServerClientBatchLimit(t *testing.T) {
+	var batches [][]string
+	srv := batchingServer(t, &batches, http.StatusOK, 512, nil)
+	defer srv.Close()
+
+	inputs := make([]string, 260)
+	for i := range inputs {
+		inputs[i] = fmt.Sprintf("input-%03d", i)
+	}
+	if _, err := New(srv.URL, 5*time.Second).Embed(context.Background(), inputs); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	wantSizes := []int{maxDiscoveredBatch, maxDiscoveredBatch, 260 - 2*maxDiscoveredBatch}
+	if len(batches) != len(wantSizes) {
+		t.Fatalf("made %d requests, want %d", len(batches), len(wantSizes))
+	}
+	for i, want := range wantSizes {
+		if len(batches[i]) != want {
+			t.Errorf("batch %d carried %d inputs, want capped size %d", i, len(batches[i]), want)
+		}
+	}
 }
 
 func TestEmbedReturnsOneVectorPerInputInOrder(t *testing.T) {

@@ -86,7 +86,9 @@ cross-encoder shortlist it:
 
 1. creates overlapping coherent windows across the reassembled text, including original chunk
    boundaries;
-2. reuses the raw query vector and embeds every candidate window in batches;
+2. reuses the raw query vector and embeds every candidate window in bounded batches of at most 128;
+   the TEI adapter discovers `max_client_batch_size` from `/info` once and splits to the server's
+   actual limit, retaining the standard 32-input fallback when capability discovery is unavailable;
 3. selects the strongest semantic window, then non-near windows which add uncovered query terms or
    passage diversity, up to the same four-region and `ChunkSize` ceilings;
 4. restores source order and cross-encodes the resulting verbatim evidence once for that memory.
@@ -338,6 +340,8 @@ after a verdict is a follow-up change, not part of the experiment.
 - a cross-encoder spy must receive one document per memory and see terms supplied by separate chunks;
 - a semantic-selector spy must receive batched passage embeddings rather than per-window calls, choose
   paraphrased distant regions from the whole reassembled memory, and keep them within `ChunkSize`;
+- a TEI server advertising a 128-input client batch must receive 128-input requests in order, while a
+  missing capability endpoint retains the safe 32-input fallback and excessive limits stay capped;
 - removing the config-to-service selector assignment must make the production reachability test fail;
 - semantic embedding failure must return the lexical evidence order and report fail-open rather than
   failing recall or mixing selectors within one page;

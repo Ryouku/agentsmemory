@@ -1152,10 +1152,13 @@ control. `semantic` reuses the raw query embedding, embeds overlapping windows
 from the whole reassembled long memory, and selects up to four distant passages
 within the same 1600-rune cross-encoder budget. Short memories pass through
 unchanged. Any passage-embedding failure falls back to lexical evidence for the
-whole shortlist. The semantic arm adds embedding latency but no migration; roll
-it back by setting the selector to `lexical`. The resolved profile reports
-`evidence=lexical|semantic`. The process environment can override an `.env`
-file, so that profile—not the file—is the A/B authority.
+whole shortlist. Passage requests stay bounded at 128 inputs. With the TEI
+embedding backend, the client reads `/info.max_client_batch_size` once and uses
+the server's real limit up to that bound; if `/info` is unavailable it retains
+TEI's safe 32-input default. The semantic arm adds embedding latency but no
+migration; roll it back by setting the selector to `lexical`. The resolved
+profile reports `evidence=lexical|semantic`. The process environment can
+override an `.env` file, so that profile—not the file—is the A/B authority.
 
 ### Cross-encoder re-ranking (optional)
 

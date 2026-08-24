@@ -37,7 +37,10 @@ regions by literal query-term coverage. `semantic` reuses the raw query vector,
 batch-embeds overlapping windows from the reassembled long memory, then selects
 several distant high-similarity passages in source order. Short memories bypass
 the extra pass, and any invalid or failed passage batch falls back to lexical
-evidence for the whole shortlist. The profile reports `evidence=lexical|semantic`.
+evidence for the whole shortlist. Semantic batches are bounded at 128 windows;
+the TEI adapter reads `max_client_batch_size` from `/info` once and splits to the
+server's actual limit, falling back to TEI's standard 32 when discovery is not
+available. The profile reports `evidence=lexical|semantic`.
 
 ## Module Map
 

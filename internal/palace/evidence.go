@@ -9,9 +9,11 @@ import (
 )
 
 // semanticEvidenceBatchSize bounds each request without falling back to one
-// network round trip per passage. A pool of long memories can produce thousands
-// of windows, which should not become one unbounded embedding payload.
-const semanticEvidenceBatchSize = 64
+// network round trip per passage. It matches the largest TEI client batch this
+// service will discover; adapters with a lower limit split it further. A pool
+// of long memories can produce thousands of windows, which should not become
+// one unbounded embedding payload.
+const semanticEvidenceBatchSize = 128
 
 type semanticEvidenceWindow struct {
 	doc        int

@@ -34,25 +34,30 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
-// maxBatch is how many inputs may go in ONE request to TEI. It mirrors TEI's
-// --max-client-batch-size default, which rejects a larger array outright with a
-// 422 rather than truncating it.
+// maxBatch is the safe fallback when TEI's /info capability endpoint is not
+// reachable. It mirrors TEI's --max-client-batch-size default, which rejects a
+// larger array outright with a 422 rather than truncating it.
 //
-// It is a constant rather than config for the same reason it is one in
-// internal/rerank/tei: a SMALLER batch is always accepted, so an operator who
-// raises TEI's limit loses only round-trips, never correctness. Splitting is
-// exact here — each input is embedded independently of the others, so how they
-// are grouped into requests cannot change a vector.
+// A deployment may advertise a larger limit through /info. The client uses it
+// up to maxDiscoveredBatch so the production 128-input server needs one request
+// instead of four while payloads remain bounded. Splitting is exact here: each
+// input is embedded independently, so grouping cannot change a vector.
 const maxBatch = 32
+
+const maxDiscoveredBatch = 128
 
 // Embedder is a client for TEI's /embed endpoint. It satisfies the Embedder
 // interface that internal/palace declares at the consumer.
 type Embedder struct {
-	endpoint string
-	http     *http.Client
+	endpoint     string
+	infoEndpoint string
+	http         *http.Client
+	batchOnce    sync.Once
+	batchSize    int
 }
 
 // New constructs an Embedder for the given TEI base URL (e.g.
@@ -63,9 +68,11 @@ type Embedder struct {
 // container's --model-id, so a model field would be a knob the wire cannot
 // carry. This is the same reason internal/config has no RERANK_MODEL.
 func New(baseURL string, timeout time.Duration) *Embedder {
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Embedder{
-		endpoint: strings.TrimRight(baseURL, "/") + "/embed",
-		http:     &http.Client{Timeout: timeout},
+		endpoint:     baseURL + "/embed",
+		infoEndpoint: baseURL + "/info",
+		http:         &http.Client{Timeout: timeout},
 	}
 }
 
@@ -82,15 +89,19 @@ type embedRequest struct {
 // Embed returns one vector per input string, in order. An empty input slice
 // short-circuits to nil so callers need not special-case it.
 //
-// Inputs beyond maxBatch are split across several requests and reassembled in
-// the caller's order.
+// Inputs beyond the server's discovered client limit are split across several
+// requests and reassembled in the caller's order.
 func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
+	batchSize := len(inputs)
+	if len(inputs) > 1 {
+		batchSize = e.clientBatchSize(ctx)
+	}
 	out := make([][]float32, 0, len(inputs))
-	for start := 0; start < len(inputs); start += maxBatch {
-		end := min(start+maxBatch, len(inputs))
+	for start := 0; start < len(inputs); start += batchSize {
+		end := min(start+batchSize, len(inputs))
 		batch, err := e.embedBatch(ctx, inputs[start:end])
 		if err != nil {
 			return nil, err
@@ -100,8 +111,41 @@ func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, err
 	return out, nil
 }
 
-// embedBatch embeds one request's worth of inputs — at most maxBatch of them —
-// and returns the vectors in request order.
+// clientBatchSize reads the server's real client limit once. Capability
+// discovery is an optimisation rather than an availability dependency: a
+// proxy may expose /embed without /info, in which case the public TEI default
+// remains the safe answer.
+func (e *Embedder) clientBatchSize(ctx context.Context) int {
+	e.batchOnce.Do(func() {
+		e.batchSize = e.discoverClientBatchSize(ctx)
+	})
+	return e.batchSize
+}
+
+func (e *Embedder) discoverClientBatchSize(ctx context.Context) int {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.infoEndpoint, nil)
+	if err != nil {
+		return maxBatch
+	}
+	resp, err := e.http.Do(req)
+	if err != nil {
+		return maxBatch
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return maxBatch
+	}
+	var info struct {
+		MaxClientBatchSize int `json:"max_client_batch_size"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.MaxClientBatchSize < 1 {
+		return maxBatch
+	}
+	return min(info.MaxClientBatchSize, maxDiscoveredBatch)
+}
+
+// embedBatch embeds one request's worth of inputs and returns the vectors in
+// request order. Its caller has already bounded the slice to the server limit.
 func (e *Embedder) embedBatch(ctx context.Context, inputs []string) ([][]float32, error) {
 	raw, err := json.Marshal(embedRequest{Inputs: inputs, Truncate: true})
 	if err != nil {
