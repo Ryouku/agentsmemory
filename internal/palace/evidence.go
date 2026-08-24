@@ -23,6 +23,35 @@ const semanticEvidenceBatchSize = 128
 // shortlist at once and turn a client-side wait into a server-side queue.
 const semanticEvidenceConcurrency = 4
 
+// evidenceEmbedSlots bounds evidence batches in flight PROCESS-WIDE, across every
+// concurrent search.
+//
+// semanticEvidenceConcurrency is per request, which stops one search serialising
+// itself and does nothing about C of them: admit() enforces a monthly quota, not
+// a rate limit, so ten concurrent searches meant forty batches — 5,120 passages —
+// on one shared inference server that is also serving every other tenant. The
+// per-request limit made the client feel fast by moving the queue to the server.
+//
+// Twice the per-request limit rather than equal to it: equal would serialise
+// searches behind each other entirely, and the goal is to bound the total, not to
+// make concurrency pointless. Past this the extra work would queue on the
+// embedder regardless — this just makes the wait visible on our side, where it is
+// bounded and cancellable, instead of as unexplained latency on theirs.
+var evidenceEmbedSlots = make(chan struct{}, semanticEvidenceConcurrency*2)
+
+// acquireEvidenceSlot takes a process-wide embedding slot, returning ctx.Err() if
+// the caller gives up first. Releasing is the caller's job.
+func acquireEvidenceSlot(ctx context.Context) error {
+	select {
+	case evidenceEmbedSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseEvidenceSlot() { <-evidenceEmbedSlots }
+
 type semanticEvidenceWindow struct {
 	doc        int
 	region     Region
@@ -74,7 +103,12 @@ func (s *Service) semanticRerankDocuments(
 			for i := range inputs {
 				inputs[i] = windows[from+i].region.Text
 			}
+			// Held across the embed call only — see evidenceEmbedSlots.
+			if err := acquireEvidenceSlot(ctx); err != nil {
+				return err
+			}
 			vectors, err := s.embed.Embed(ctx, inputs)
+			releaseEvidenceSlot()
 			if err != nil {
 				return fmt.Errorf("embed semantic evidence passages: %w", err)
 			}

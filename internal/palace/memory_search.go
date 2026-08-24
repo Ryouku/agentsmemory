@@ -237,7 +237,17 @@ func storedWithoutOverlap(d Drawer) bool {
 
 // reassembleMemory removes the exact overlap chunking added while preserving
 // diary chunks, which were stored without any. It never summarizes or invents
-// prose: the result consists only of stored content in chunk order.
+// prose: the result is stored content in chunk order.
+//
+// ONE character is not stored content, and it is named here rather than left for
+// a reader to find: when two adjacent chunks do not overlap and the join would
+// weld a word to a word, a single SPACE is inserted. Without it "…a wor" and
+// "d then…" reassemble into a token that appears in no chunk, which is worse
+// than a space that appears in none — a fabricated word can be searched for and
+// found, and a reader cannot tell it was fabricated.
+//
+// evidenceFromRegions is scrupulous about declaring its ellipsis as the one
+// non-copied string it emits; this is the same declaration, for the same reason.
 func reassembleMemory(chunks []Drawer) string {
 	if len(chunks) == 0 {
 		return ""

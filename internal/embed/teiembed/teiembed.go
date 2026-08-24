@@ -96,6 +96,31 @@ type Embedder struct {
 	safeEndpoint string
 }
 
+// maxErrorBody bounds how much of an upstream response body is carried into an
+// error. Enough for TEI's {"error":…,"error_type":…} — the only thing that
+// distinguishes "this model cannot do that" (424) from "batch too large" (422) —
+// and not enough to relay a document.
+const maxErrorBody = 256
+
+// boundedBody trims an upstream response body for inclusion in an error.
+//
+// The body is data from ANOTHER server, and this error is logged by the caller
+// (palace's embedOrDefer warns with it). ADR-024 is explicit that logs must not
+// carry passage text, and the passages are exactly what was just sent upstream —
+// so a compromised or merely chatty embed server echoing its input would put
+// memory content into our logs through a path nobody would think to audit.
+//
+// Bounding does not make that impossible, and is not claimed to: it makes the
+// exposure a fixed, small size instead of "however much the other end chose to
+// send", which is the difference between a leak and a whole document.
+func boundedBody(data []byte) string {
+	body := strings.TrimSpace(string(data))
+	if r := []rune(body); len(r) > maxErrorBody {
+		return string(r[:maxErrorBody]) + "… (truncated)"
+	}
+	return body
+}
+
 // redactURL removes userinfo from a URL for logging, returning it otherwise
 // unchanged so the host, port and path stay diagnosable. A redaction that also
 // hid the host would turn a connectivity bug into an unreadable log line, which
@@ -299,7 +324,7 @@ func (e *Embedder) embedBatch(ctx context.Context, inputs []string) ([][]float32
 		// TEI puts the reason in the body ({"error":...,"error_type":...}) and it is
 		// the only thing that distinguishes "this model cannot do that" (424) from
 		// "batch too large" (422), so it is worth carrying into the error.
-		return nil, fmt.Errorf("tei: embed -> %d: %s", resp.StatusCode, string(data))
+		return nil, fmt.Errorf("tei: embed -> %d: %s", resp.StatusCode, boundedBody(data))
 	}
 
 	// TEI answers with a BARE array of vectors, not an object with a field —
