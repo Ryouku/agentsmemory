@@ -101,7 +101,10 @@ and open item live in separate places.
 The semantic selector applies only when memory-level ranking and cross-encoding both run. Short
 memories already fit the model budget and are passed through without another embedding call. If the
 window embedding call fails or returns unusable vectors, search fails open to the lexical evidence
-documents for the entire shortlist; one page never mixes selector arms silently. Startup and
+documents for the entire shortlist; a failure never leaves part of a page on one selector and the
+rest on the other. Passing short memories through is not that case and is not a silent mix: a memory
+inside the model budget is sent whole under either selector, so there is nothing for a window
+embedding to choose. Startup and
 `am_status.ranking` expose `evidence=lexical|semantic`, so measurements identify the resolved arm rather
 than an intended `.env` value.
 
@@ -420,6 +423,57 @@ after a verdict is a follow-up change, not part of the experiment.
 | `am_search.memory_id` | added, logical root | added, logical root |
 | `am_status.ranking` | includes `unit=chunk evidence=…` | includes `unit=memory evidence=lexical|semantic` |
 
+### Cost attribution, and what it does to the measurements above
+
+The comparisons above closed with the cost attribution incomplete: they could report ranks, evidence,
+anchors and client latency, but not how much prefix widening or reranker work the treatment paid for.
+A review of the implementation supplied the mechanism by source tracing and local execution. It did
+not re-run any of the production workloads, so **none of the measured numbers above are revised** —
+but one finding changes how they should be read.
+
+**The largest cost was common-mode, and therefore invisible as a treatment delta.**
+`Repo.MemoryChunksByRoots` was spelled `id IN (...) OR parent_id IN (...)`. No planner seeks both
+sides of a disjunction in one index pass, so it examined every drawer the tenant owned; `parent_id`
+had no index at all, and adding one does not change the plan while the `OR` stands. It ran twice per
+recall in BOTH arms — `hydrateResultMemories` (or `collapseCandidatesToMemories` under the treatment)
+and then `AnchorsForMemories`. On the hosted workspace these measurements were taken against, that is
+roughly 7,361 rows examined per call, twice per search, to return ten memories. `main` did none of it.
+
+Because the control paid it too, it never appeared as a treatment delta; it raised the FLOOR of every
+latency figure in this document. The frozen nine-query suite should be replayed after these fixes
+before its latency numbers are used to compare the arms again — the treatment's measured penalty was
+partly this, not the unit change.
+
+The remaining attribution, all now fixed:
+
+- **the selector's latency was serialisation, not the cross-encoder.** A 5,000-rune memory yields 17
+  windows, so a shortlist is thousands of passages, embedded one batch after another before the
+  reranker started. That is the `592 ms → 7,714 ms` above. Adaptive batching cut the NUMBER of round
+  trips and left them end to end, which is exactly why it bought 17.2% and no more. Batches now run
+  under a bounded errgroup, and the evidence documents are byte-identical, so the selector comparison
+  above remains valid.
+- **adaptive TEI batching was one transient error away from never running.** Discovery used
+  `sync.Once`, which fires whether the probe succeeded or failed, so a still-warming TEI or one
+  disconnected caller pinned the 32-input fallback for the process lifetime, silently. The 17.2%
+  credited above was not guaranteed to be present in any given process.
+- **widening re-read the whole prefix on every doubling**, about twice the final prefix in database
+  work, and had no ceiling but an int-overflow guard. It is incremental and bounded now.
+- **`collapseCandidatesToMemories` was quadratic** in the candidate pool the treatment widens.
+- **semantic windows silently skipped long unbroken tokens** — digests, image refs, URLs, which this
+  corpus is full of — leaving 87% of a measured memory eligible as evidence and admitting a 98-rune
+  stub into a four-slot budget.
+
+One review finding was withdrawn rather than fixed, and is recorded so it is not re-derived: the
+four-passage cap does NOT shred a memory that already fits the cross-encoder budget. Probed at 800,
+1,500 and 1,599 runes, the evidence equals the content — short memories reach the whole-content
+fallback intact. The shredding this ADR describes was real and was already fixed by the correction
+above.
+
+The instrumentation this document still asks for — selected evidence offsets and fail-open state,
+vector-prefix depth, cross-encoder document cost — is unchanged and still wanted. A falsifiable
+prediction to test it against: what remains after these fixes will be dominated by cross-encoder work
+and vector search, not by SQLite row volume or embedding round trips.
+
 ## Verification
 
 - a synthetic vector prefix made only of siblings must widen until another memory becomes rankable;
@@ -436,14 +490,32 @@ after a verdict is a follow-up change, not part of the experiment.
 - an end-to-end MCP search whose child chunk wins must carry the stale root anchor;
 - the real CLI/env binding must move `Config.MemoryLevelRanking`, and the composition-root test must
   observe different `unit=` profiles for false and true;
+- the memory-chunk lookup's QUERY PLAN must show a seek on `id` and a seek on `parent_id`, asserted
+  on the constrained columns rather than the index name — with migration 00024 applied the old `OR`
+  spelling still names `idx_drawers_team_parent` while constraining `team_id` alone, so only the seek
+  columns separate a fix from the defect;
+- reverting either the union or migration 00024 must make that gate red, independently;
+- anchor resolution must issue no whole-row read of `drawers`, asserted from the statements the
+  anchor path ACTUALLY issues rather than from a query built in the test;
+- semantic evidence batches must overlap, observed as a high-water mark of concurrent embed calls so
+  the gate measures concurrency rather than machine speed;
+- a failed TEI capability probe must be retried rather than cached, and a cancelled caller must not
+  decide the process's batch size — the second asserted by whether `/info` was REACHED, because the
+  retry alone would otherwise mask it;
+- candidate widening must not re-request a row it already resolved, on a fixture proven to widen;
+- widening must stop at a written-out bound, not one read from the constant under test;
+- every rune of a memory containing a long unbroken token must fall inside some evidence window;
 - the architecture gate and full Go suite must pass.
 
 ## Consequences
 
 - **Positive:** candidate, score, metadata and page share one logical unit in the treatment.
 - **Positive:** the experiment is reachable from production configuration and identifies itself.
-- **Negative:** a clustered vector prefix may require more than one index query.
+- **Negative:** a clustered vector prefix may require more than one index query, bounded by
+  `maxCandidateWidening` and loaded incrementally so a round pays only for the tail it added.
 - **Negative:** treatment BM25 reads every chunk of each nominated memory, increasing SQLite work.
+  That read is a pair of index seeks rather than a tenant scan (migration 00024 plus the union in
+  `memoryChunkQuery`), and the anchor path takes ids only.
 - **Negative:** semantic evidence selection adds a batched embedding pass over long-memory windows and
   must earn that latency and model load in production comparison.
 - **Neutral:** stored rows, embeddings and ids remain chunk-based and require no migration.
