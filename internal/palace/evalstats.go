@@ -344,8 +344,28 @@ func printSupersessionTable(out io.Writer, report EvalReport) {
 		}
 	}
 	if !measured {
-		fmt.Fprintf(out, "\nsupersession — no temporal cases in this run, so nothing to measure "+
-			"(generate some with --style temporal)\n")
+		// "No temporal cases ran" and "temporal cases ran but none carries a
+		// verified pair" are opposite findings, and this printed one sentence for
+		// both. The first is fixed by generating temporal cases; the second by
+		// regenerating a file whose pairs were never recorded, and telling THAT
+		// operator to run --style temporal sends them to repeat the run that just
+		// failed. One report printed "no temporal cases in this run" while its
+		// closet block counted `temporal · admitted 5` two blocks above.
+		temporal := 0
+		for _, d := range report.Details {
+			if d.Category == CatTemporal {
+				temporal++
+			}
+		}
+		if temporal == 0 {
+			fmt.Fprintf(out, "\nsupersession — no temporal cases in this run, so nothing to measure "+
+				"(generate some with --style temporal)\n")
+			return
+		}
+		fmt.Fprintf(out, "\nsupersession — %d temporal case(s) ran but none carries a verified "+
+			"distractor pair, so there is nothing to measure. The pair is discovered and judged at "+
+			"GENERATION, so a case file written before that existed measures nothing here: regenerate "+
+			"it with --style temporal\n", temporal)
 		return
 	}
 

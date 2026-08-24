@@ -74,7 +74,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.StringFlag{Name: "gen-model", Sources: cli.EnvVars("EVAL_GEN_MODEL"), Value: "qwen2.5-coder:7b", Usage: "model that writes the questions (must be GENERATIVE — an embedder like bge-m3 cannot answer /api/generate)"},
 			&cli.StringFlag{Name: "gen-url", Sources: cli.EnvVars("EVAL_GEN_URL"), Usage: "where the question generator runs; defaults to --ollama-url. A URL containing /v1 is called as an OpenAI-compatible chat API, so a hosted model works here too"},
 			&cli.StringFlag{Name: "gen-api-key", Sources: cli.EnvVars("EVAL_GEN_API_KEY"), Usage: "bearer token for --gen-url; required by hosted providers, ignored by a local one"},
-			&cli.IntFlag{Name: "pool", Value: 50, Usage: "candidates fetched per query; every arm re-orders this same pool"},
+			&cli.IntFlag{Name: "pool", Value: defaultEvalPool, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.BoolFlag{Name: "supersession-gate", Usage: "decide whether the supersession failure is common enough to justify a mechanism against it, from this run's temporal cases. Refuses rather than answering when the evidence is too thin, unhardened, or missing the pre-registered arm"},
 			&cli.Float64Flag{Name: "pair-max-distance", Value: 0.55, Usage: "how close a temporal pair must be before it is offered to the judge (cosine distance; 0 disables the ceiling). Without it, 'nearest older neighbour' is a claim about how sparse the wing is rather than about the two memories"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
@@ -159,7 +159,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	printClosetBlock(out, report)
 	palace.PrintSupersessionTable(out, report)
 	if c.Bool("supersession-gate") {
-		if err := printSupersessionGate(out, report, runMeta, svc.drawers.SupersessionGatedArmFor()); err != nil {
+		if err := printSupersessionGate(out, report, runMeta, svc.drawers.SupersessionGatedArmFor(), c.Int("pool")); err != nil {
 			fmt.Fprintf(out, "\nsupersession gate: REFUSED — %v\n", err)
 		}
 	}
@@ -262,17 +262,22 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 // Distractor read an empty set and the supersession gate could only ever refuse.
 // It is written out here rather than deleted because it is the reasoning a future
 // reader would otherwise reconstruct, and it is wrong.
-func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
+//
+// The returned caseFileMeta carries the pair record — how many candidates were
+// found, how many a judge confirmed, and which model judged them. It is what the
+// supersession gate checks its first precondition against, so it travels with the
+// cases instead of only reaching disk.
+func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, caseFileMeta, error) {
 	wing := c.String("wing")
 	drawers, err := svc.drawers.DatedDrawers(ctx, team.ID, wing, c.Int("n"))
 	if err != nil {
-		return nil, "", fmt.Errorf("list dated drawers: %w", err)
+		return nil, "", caseFileMeta{}, fmt.Errorf("list dated drawers: %w", err)
 	}
 	if len(drawers) == 0 {
 		// The corpus may well have drawers — just none whose chronology is known,
 		// and without a date "was later corrected" cannot be labelled. Name that
 		// distinctly so the reader fixes the dates, not the wing.
-		return nil, "", fmt.Errorf("no drawers with a content date in %s of workspace %q — temporal cases need dated memories (a date in the source name, frontmatter, or first lines), so file some or widen --wing",
+		return nil, "", caseFileMeta{}, fmt.Errorf("no drawers with a content date in %s of workspace %q — temporal cases need dated memories (a date in the source name, frontmatter, or first lines), so file some or widen --wing",
 			corpusLabel(wing), team.Slug)
 	}
 
@@ -300,7 +305,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 			// Pair discovery uses the embedder and the vector store — the same
 			// dependencies the eval itself cannot run without — so a failure here
 			// is a broken setup, not this drawer's fault. Abort rather than skip.
-			return nil, "", fmt.Errorf("find older neighbour: %w", err)
+			return nil, "", caseFileMeta{}, fmt.Errorf("find older neighbour: %w", err)
 		}
 		if !ok {
 			fmt.Fprintf(out, "  [%2d/%2d] skipped: no dated older neighbour for %q (%s) — nothing in the corpus it supersedes\n",
@@ -315,7 +320,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 		// what makes the whole file unusable.
 		switch confirmed, err := verifyPair(ctx, d, older, gen); {
 		case err != nil:
-			return nil, "", fmt.Errorf("verify temporal pair: %w", err)
+			return nil, "", caseFileMeta{}, fmt.Errorf("verify temporal pair: %w", err)
 		case !confirmed:
 			fmt.Fprintf(out, "  [%2d/%2d] skipped: the judge does not read %q as superseding its neighbour\n",
 				i+1, len(drawers), firstLineOf(d.Content, 40))
@@ -325,7 +330,7 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 		q, err := gen.ask(ctx, d.Content)
 		if err != nil {
 			if !proven {
-				return nil, "", fmt.Errorf("question generator failed on the first pair, so it is misconfigured rather than unlucky: %w\n"+
+				return nil, "", caseFileMeta{}, fmt.Errorf("question generator failed on the first pair, so it is misconfigured rather than unlucky: %w\n"+
 					"  check `ollama list` — the model must be a GENERATIVE one (an embedder such as bge-m3 cannot answer /api/generate),\n"+
 					"  pull it with `ollama pull %s`, or name one you already have with --gen-model", err, gen.model)
 			}
@@ -348,24 +353,33 @@ func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, t
 		// Distinct from the generic "no eval cases": every sampled drawer was
 		// dated, yet none had a dated older neighbour — the corpus has chronology
 		// but no supersession to measure, which no --wing change will fix.
-		return nil, "", fmt.Errorf("sampled %d dated drawer(s) but none has a dated older semantic neighbour — temporal cases need at least two dated memories about the same fact; file corrections with dates, or run another --style", len(drawers))
+		return nil, "", caseFileMeta{}, fmt.Errorf("sampled %d dated drawer(s) but none has a dated older semantic neighbour — temporal cases need at least two dated memories about the same fact; file corrections with dates, or run another --style", len(drawers))
 	}
 	fmt.Fprintf(out, "generated %d case(s) in %s\n", len(cases), time.Since(genStart).Round(time.Second))
+	// Built here and RETURNED, rather than built inside the --cases branch and
+	// rebuilt from flags by the caller. The pair record is this run's evidence
+	// that a judge confirmed its pairs, and a run that gates without saving a
+	// file holds exactly the same evidence as one that saves it. While this was
+	// written only to disk, `--style temporal --supersession-gate` in one command
+	// refused on a file it had just written with five verified pairs in it, and
+	// the refusal advised regenerating with the flag the operator had just used.
+	meta := caseFileMeta{
+		Generator: gen.model, Style: "temporal", Wing: wing,
+		Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
+		PairCandidates: pairCandidates,
+		VerifiedPairs:  verifiedPairs,
+		// gen.model, not the flag: the judge is the thing that actually ran, and
+		// verifyPair judged with this generator.
+		Judge: gen.model,
+	}
 	if path := c.String("cases"); path != "" {
-		meta := caseFileMeta{
-			Generator: gen.model, Style: "temporal", Wing: wing,
-			Corpus: len(drawers), Created: time.Now().UTC().Format(time.RFC3339),
-			PairCandidates: pairCandidates,
-			VerifiedPairs:  verifiedPairs,
-			Judge:          c.String("gen-model"),
-		}
 		if err := writeCases(path, cases, meta); err != nil {
 			fmt.Fprintf(out, "  (could not save cases to %s: %v)\n", path, err)
 		} else {
 			fmt.Fprintf(out, "saved %d case(s) to %s\n", len(cases), path)
 		}
 	}
-	return cases, "generated", nil
+	return cases, "generated", meta, nil
 }
 
 // generateRealCases replays queries agents actually ran (from search_events)
@@ -634,8 +648,13 @@ func loadOrGenerateCases(ctx context.Context, c *cli.Command, svc *services, tea
 	// question is written — so the style gets its own generation loop instead of
 	// growing this one a second set of skip reasons.
 	if c.String("style") == "temporal" {
-		cases, from, err := generateTemporalCases(ctx, c, svc, team, out)
-		return caseSource{Cases: cases, Label: from, Meta: generatedMeta(c), Origin: palace.CaseSetGenerated}, err
+		// Meta comes from the generator, NOT from generatedMeta(c): only the
+		// generator knows how many pairs a judge confirmed, and that record is
+		// the supersession gate's first precondition. Rebuilding it from flags
+		// here is what made `--style temporal --supersession-gate` refuse on its
+		// own verified output (#35).
+		cases, from, meta, err := generateTemporalCases(ctx, c, svc, team, out)
+		return caseSource{Cases: cases, Label: from, Meta: meta, Origin: palace.CaseSetGenerated}, err
 	}
 
 	// Sample across the whole corpus rather than its newest slice: on a palace
@@ -1758,17 +1777,45 @@ func readCasesWithMeta(path string) ([]palace.EvalCase, caseFileMeta, error) {
 // Not the generation-time verified_pairs integer — that knows nothing about the
 // pool this run used, so it counts cases whose superseded version never entered
 // the pool and no arm could have ranked.
-func supersessionGateReady(cell palace.SupersessionCell, meta caseFileMeta) error {
+//
+// pool is the run's --pool, never the default: vacuity is a property OF a pool,
+// so a count of vacuous pairs printed beside the wrong pool sends an operator to
+// raise a number they already raised.
+//
+// The four refusals are deliberately separate. They are reached in the order a
+// run fails them, and each names a different action: harden the file, load the
+// right cases, widen the pool, grow the corpus. Collapsing the last three into
+// one sentence — as this did — printed "0 pair(s) present" about a file whose own
+// provenance line read verified_pairs: 5, because the number came from the run's
+// scoreable cells while the sentence was about the file's record.
+func supersessionGateReady(cell palace.SupersessionCell, meta caseFileMeta, pool int) error {
 	if meta.VerifiedPairs == 0 && meta.Judge == "" {
+		// The trailing count is LABELLED as the run's, because the sentence before
+		// it is about the FILE's record and the two are different quantities. This
+		// printed "0 pair(s) present" against a file whose provenance line read
+		// verified_pairs: 5 — one number doing duty for both facts, and the reader
+		// drew the conclusion the harness had made unavailable.
 		return fmt.Errorf("this case file carries no pair-verification record, so its temporal cases "+
 			"may pair unrelated memories — regenerate with --style temporal (pairs are judged at "+
-			"generation) or point --cases at a file that was; %d pair(s) present", cell.Cases+cell.Vacuous)
+			"generation) or point --cases at a file that was. What is missing is the record, not "+
+			"necessarily the cases: this run scored %d pair(s)", cell.Cases+cell.Vacuous)
+	}
+	if cell.Cases+cell.Vacuous == 0 {
+		return fmt.Errorf("the case file records %d judge-verified pair(s) but this run scored none — "+
+			"no case reached the gated arm carrying a distractor, so what ran was not the supersession "+
+			"measurement. Check that the --cases file is the temporal one and that --style did not "+
+			"replace it", meta.VerifiedPairs)
+	}
+	if cell.Cases == 0 {
+		return fmt.Errorf("all %d verified pair(s) are vacuous at --pool %d: the superseded version "+
+			"never entered the candidate pool, so no arm could have ranked it above anything and there "+
+			"is nothing to measure. Raise --pool", cell.Vacuous, pool)
 	}
 	if cell.Cases < palace.SupersessionMinCases() {
 		return fmt.Errorf("only %d verified pair(s) are non-vacuous at --pool %d (%d were vacuous): "+
 			"below %d the interval straddles almost any bar. Grow the dated corpus or raise --pool — "+
 			"the bar is not the thing to change",
-			cell.Cases, defaultEvalPool, cell.Vacuous, palace.SupersessionMinCases())
+			cell.Cases, pool, cell.Vacuous, palace.SupersessionMinCases())
 	}
 	return nil
 }
@@ -1806,9 +1853,14 @@ func gatedArmCell(report palace.EvalReport, want palace.EvalArm) (palace.Superse
 			"do — the constant is stale and must move in the same commit that changed production ranking", want)
 }
 
-// defaultEvalPool mirrors the eval command's --pool default, for the refusal
-// message: vacuity is defined against the pool a run used, so the count the gate
-// refuses on is only interpretable beside it.
+// defaultEvalPool is the --pool flag's default: how many candidates each query
+// fetches before any arm re-orders them.
+//
+// It used to be a second copy of the literal on the flag, kept so the gate's
+// refusal message could name a pool. That made the message wrong on every run
+// that passed --pool: one at --pool 128 reported its vacuous pairs "at --pool 50"
+// and advised raising a number the operator had already raised. The messages now
+// take the run's actual pool, so this is the flag's default and nothing else.
 const defaultEvalPool = 50
 
 // printSupersessionGate renders the pre-registered verdict, or the reason it
@@ -1818,12 +1870,12 @@ const defaultEvalPool = 50
 // floor the interval straddles almost any bar, and a gate that answers anyway
 // teaches people to ignore it. Each refusal names its own cause so an operator
 // can tell a thin corpus from an unhardened case file from a degraded run.
-func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta, want palace.EvalArm) error {
+func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFileMeta, want palace.EvalArm, pool int) error {
 	cell, err := gatedArmCell(report, want)
 	if err != nil {
 		return err
 	}
-	if err := supersessionGateReady(cell, meta); err != nil {
+	if err := supersessionGateReady(cell, meta, pool); err != nil {
 		return err
 	}
 
@@ -1856,7 +1908,7 @@ func printSupersessionGate(out io.Writer, report palace.EvalReport, meta caseFil
 
 	fmt.Fprintf(out, "\nsupersession gate — %s\n", strings.ToUpper(verdict.Status))
 	fmt.Fprintf(out, "  arm %s (pre-registered from the SERVED ranking, never chosen by score), %d verified non-vacuous pair(s) at --pool %d\n",
-		want, cell.Cases, defaultEvalPool)
+		want, cell.Cases, pool)
 	fmt.Fprintf(out, "  stale-above %.1f%% %s against a bar of %.2f; excluding unreachable corrections: %.1f%%\n",
 		100*verdict.Rate, verdict.Interval, palace.SupersessionBar(), 100*verdict.RateReachable)
 	if verdict.Reason != "" {

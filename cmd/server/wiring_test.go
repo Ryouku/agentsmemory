@@ -344,3 +344,48 @@ func TestTheGateAsksTheServiceForItsArm(t *testing.T) {
 			"pre-registration, not the configuration.")
 	}
 }
+
+// TestTheGateReadsTheRunsOwnPairRecord fails when the temporal branch rebuilds
+// its meta from flags instead of taking the generator's.
+//
+// This is the #35 defect, and it is a SELECTION defect of the class this repo
+// keeps shipping: pair verification worked, the pair record was computed, and it
+// was written to disk correctly. The one line that carried it into the run's own
+// meta was never written, so `--style temporal --supersession-gate` in a single
+// command refused on a file it had just written with five verified pairs in it —
+// and advised regenerating with the flag the operator had just used.
+//
+// Every part was tested. Nothing tested the selection, which is why the gate
+// could not answer ADR-004's question by the route anyone would take.
+//
+// Read off the source because loadOrGenerateCases needs a database, an embedder
+// and a generative model. Crude, and it fails when the wire is cut.
+func TestTheGateReadsTheRunsOwnPairRecord(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "server", "eval.go"))
+	if err != nil {
+		t.Fatalf("read eval.go: %v", err)
+	}
+	const marker = `if c.String("style") == "temporal" {`
+	i := strings.Index(string(src), marker)
+	if i < 0 {
+		t.Fatalf("cannot find the temporal branch of loadOrGenerateCases — this gate reads that "+
+			"branch by name and the name changed; re-point it rather than deleting it (looked for %q)", marker)
+	}
+	// The branch is a handful of lines; a window keeps the check on THIS branch
+	// rather than on whatever the file happens to say further down.
+	branch := string(src[i:min(i+700, len(src))])
+
+	if !regexp.MustCompile(`generateTemporalCases\([^)]*\)`).MatchString(branch) {
+		t.Fatal("the temporal branch no longer calls generateTemporalCases")
+	}
+	if regexp.MustCompile(`Meta:\s*generatedMeta\(`).MatchString(branch) {
+		t.Error("the temporal branch builds caseSource.Meta with generatedMeta(c), which reads FLAGS. " +
+			"Only the generator knows how many pairs a judge confirmed, and that record is the " +
+			"supersession gate's first precondition — so the gate refuses on the run's own verified " +
+			"output and ADR-004's question cannot be answered in one command (#35).")
+	}
+	if !regexp.MustCompile(`Meta:\s*meta\b`).MatchString(branch) {
+		t.Error("the temporal branch does not pass the generator's own meta into caseSource. " +
+			"The pair record has to travel with the cases, not only to disk.")
+	}
+}

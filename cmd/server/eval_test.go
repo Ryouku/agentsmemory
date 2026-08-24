@@ -386,7 +386,7 @@ func TestSupersessionGateRefusesUnhardenedCases(t *testing.T) {
 
 	t.Run("too few usable pairs", func(t *testing.T) {
 		thin := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 4, StaleAbove: 3}
-		if err := supersessionGateReady(thin, caseFileMeta{VerifiedPairs: 40}); err == nil {
+		if err := supersessionGateReady(thin, caseFileMeta{VerifiedPairs: 40}, defaultEvalPool); err == nil {
 			t.Error("the gate answered on 4 usable pairs — the floor is on pairs verified AND " +
 				"non-vacuous in this run, not on what the generator once wrote")
 		} else if !strings.Contains(err.Error(), "--pool") && !strings.Contains(err.Error(), "corpus") {
@@ -395,7 +395,7 @@ func TestSupersessionGateRefusesUnhardenedCases(t *testing.T) {
 	})
 
 	t.Run("case file was never hardened", func(t *testing.T) {
-		if err := supersessionGateReady(cell, caseFileMeta{}); err == nil {
+		if err := supersessionGateReady(cell, caseFileMeta{}, defaultEvalPool); err == nil {
 			t.Error("the gate answered on a case file with no verification record")
 		} else if !strings.Contains(err.Error(), "--style temporal") {
 			// The task said to name --verify-pairs. That flag does not exist:
@@ -408,7 +408,7 @@ func TestSupersessionGateRefusesUnhardenedCases(t *testing.T) {
 	})
 
 	t.Run("hardened and sufficient", func(t *testing.T) {
-		if err := supersessionGateReady(cell, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}); err != nil {
+		if err := supersessionGateReady(cell, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}, defaultEvalPool); err != nil {
 			t.Errorf("a hardened file with enough usable pairs must be accepted: %v", err)
 		}
 	})
@@ -641,7 +641,7 @@ func TestSupersessionGateJudgesTheArmItWasGiven(t *testing.T) {
 			{Arm: palace.ArmRRFReranked, Ranks: []int{1, 2, 1}, Supersession: cell},
 		}}
 		var buf strings.Builder
-		if err := printSupersessionGate(&buf, report, meta, arm); err != nil {
+		if err := printSupersessionGate(&buf, report, meta, arm, defaultEvalPool); err != nil {
 			t.Fatalf("arm %q: %v", arm, err)
 		}
 		if !strings.Contains(buf.String(), string(arm)) {
@@ -656,7 +656,7 @@ func TestSupersessionGateJudgesTheArmItWasGiven(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	err := printSupersessionGate(&buf, palace.EvalReport{}, meta, "")
+	err := printSupersessionGate(&buf, palace.EvalReport{}, meta, "", defaultEvalPool)
 	if err == nil {
 		t.Error("the gate produced a verdict for a served ranking no arm reconstructs")
 	}
@@ -963,5 +963,95 @@ func TestTemporalCaseCarriesItsDistractor(t *testing.T) {
 	}
 	if back[0].Distractor != older.ID {
 		t.Fatalf("distractor lost on the write/read round trip: got %q, want %q", back[0].Distractor, older.ID)
+	}
+}
+
+// TestSupersessionRefusalsNameTheirOwnCause pins the four refusal states apart.
+//
+// They used to be two, and the collapse cost an operator a run: a file with five
+// verified pairs was reported as "0 pair(s) present" because the number came
+// from the run's scoreable cells while the sentence was about the file's
+// verification record. Each state names a different action — harden the file,
+// load the right cases, widen the pool, grow the corpus — so a refusal that
+// cannot be told from its neighbour sends the reader to fix the wrong thing.
+func TestSupersessionRefusalsNameTheirOwnCause(t *testing.T) {
+	// Deliberately not defaultEvalPool: every message below must carry the pool
+	// the RUN used, and a test written at the default cannot tell the two apart.
+	const pool = 128
+
+	t.Run("no verification record, and the count is labelled as the run's", func(t *testing.T) {
+		scored := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 3, Vacuous: 2}
+		err := supersessionGateReady(scored, caseFileMeta{}, pool)
+		if err == nil {
+			t.Fatal("the gate answered on a case file with no verification record")
+		}
+		if !strings.Contains(err.Error(), "--style temporal") {
+			t.Errorf("the refusal must name what fixes it: %v", err)
+		}
+		// The run scored 5; the file's record is what is absent. Printing "5"
+		// unlabelled next to a sentence about the record is the original defect.
+		if !strings.Contains(err.Error(), "this run scored 5 pair(s)") {
+			t.Errorf("the run's own count must be present and LABELLED as the run's, so it cannot be "+
+				"read as the file's verification record: %v", err)
+		}
+	})
+
+	t.Run("record present but the run scored nothing", func(t *testing.T) {
+		none := palace.SupersessionCell{Scope: palace.ScopePool}
+		err := supersessionGateReady(none, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}, pool)
+		if err == nil {
+			t.Fatal("the gate answered on a run that scored no pairs at all")
+		}
+		if strings.Contains(err.Error(), "vacuous") {
+			t.Errorf("nothing was scored, so nothing was vacuous — vacuity is a verdict about a pair "+
+				"that entered the pool, and reporting it here sends the operator to raise --pool when "+
+				"the cases never arrived: %v", err)
+		}
+	})
+
+	t.Run("every pair vacuous names the run's pool, not the default", func(t *testing.T) {
+		allVacuous := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 0, Vacuous: 7}
+		err := supersessionGateReady(allVacuous, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}, pool)
+		if err == nil {
+			t.Fatal("the gate answered with every pair vacuous — no arm could have ranked anything")
+		}
+		if !strings.Contains(err.Error(), "--pool 128") {
+			t.Errorf("vacuity is a property OF a pool, so the refusal must name the pool the run "+
+				"used: %v", err)
+		}
+		if strings.Contains(err.Error(), "--pool 50") {
+			t.Errorf("the refusal named the DEFAULT pool on a run that passed --pool 128, and then "+
+				"advised raising a number the operator had already raised: %v", err)
+		}
+	})
+
+	t.Run("below the floor names the run's pool too", func(t *testing.T) {
+		thin := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 4, StaleAbove: 3, Vacuous: 1}
+		err := supersessionGateReady(thin, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"}, pool)
+		if err == nil {
+			t.Fatal("the gate answered on 4 usable pairs")
+		}
+		if !strings.Contains(err.Error(), "--pool 128") {
+			t.Errorf("the floor refusal must name the run's pool: %v", err)
+		}
+	})
+}
+
+// TestSupersessionVerdictNamesTheRunsPool pins that the pool travels into the
+// PASSING path as well. A verdict is quoted long after the run, and "at --pool
+// 50" printed under a run at 128 makes the number unreproducible.
+func TestSupersessionVerdictNamesTheRunsPool(t *testing.T) {
+	const pool = 128
+	cell := palace.SupersessionCell{Scope: palace.ScopePool, Cases: 40, StaleAbove: 30}
+	report := palace.EvalReport{Arms: []palace.EvalMetrics{
+		{Arm: palace.ArmRRFReranked, Ranks: []int{1, 2, 1}, Supersession: cell},
+	}}
+	var buf strings.Builder
+	if err := printSupersessionGate(&buf, report, caseFileMeta{VerifiedPairs: 40, Judge: "qwen"},
+		palace.ArmRRFReranked, pool); err != nil {
+		t.Fatalf("the gate refused a hardened, sufficient run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "--pool 128") {
+		t.Errorf("the verdict does not name the pool the run used:\n%s", buf.String())
 	}
 }
