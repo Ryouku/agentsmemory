@@ -7,6 +7,17 @@ const (
 	ToolPrefix = "am_"
 	// WingHeader binds an MCP registration to its project wing.
 	WingHeader = "X-Agentsmemory-Wing"
+	// TokenEnvVar is the workspace bearer every MCP client presents. The server
+	// CLI, the stdio proxy, and the installer all read this one name.
+	TokenEnvVar = "AGENTSMEMORY_TOKEN"
+	// LocalTokenEnvVar is --local's shared bearer. It is deliberately not
+	// TokenEnvVar: a developer with a hosted workspace key exported would
+	// otherwise find their local server silently demanding it. The installer
+	// reads this same variable, so exporting it once configures both halves.
+	LocalTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+	// WingEnvVar is the process-level default wing a registration or stdio
+	// proxy forwards when the caller did not pass one on the tool call.
+	WingEnvVar = "AGENTSMEMORY_WING"
 	// StarScopeSchemaExtension marks an optional wing property whose "*" value
 	// deliberately widens a registration-scoped read to every visible wing.
 	// Contract-axis adapters discover the class from tools/list through this

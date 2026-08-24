@@ -82,7 +82,7 @@ const (
 	// `bearer_token_env_var` — codex stores the variable NAME and reads the value
 	// from its own environment at launch — and pi has no MCP client at all, so our
 	// bridge extension reads the same variable.
-	tokenEnvVar = "AGENTSMEMORY_TOKEN"
+	tokenEnvVar = mcpprotocol.TokenEnvVar
 
 	// mcpURLEnvVar tells the pi bridge extension which endpoint to talk to. Only
 	// pi needs it: Claude and codex store the URL in their own MCP config, but
@@ -100,7 +100,7 @@ const (
 	// server reads its required token from. The installer reads the same one (it is
 	// the first source behind --token), so exporting it once configures both the
 	// server that demands the credential and the agent that presents it.
-	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
+	localTokenEnvVar = mcpprotocol.LocalTokenEnvVar
 
 	// wingHeader names the project a registration files into. The installer and
 	// server compile against one wire constant, even though they ship in separate

@@ -14,7 +14,13 @@ import (
 func TestWireConstantsHaveOneLiteralOwner(t *testing.T) {
 	root := filepath.Clean("../..")
 	wantOwner := filepath.ToSlash("internal/mcpprotocol/constants.go")
-	literals := map[string]string{ToolPrefix: "ToolPrefix", WingHeader: "WingHeader"}
+	literals := map[string]string{
+		ToolPrefix:       "ToolPrefix",
+		WingHeader:       "WingHeader",
+		TokenEnvVar:      "TokenEnvVar",
+		LocalTokenEnvVar: "LocalTokenEnvVar",
+		WingEnvVar:       "WingEnvVar",
+	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -25,7 +31,7 @@ func TestWireConstantsHaveOneLiteralOwner(t *testing.T) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "_templ.go") {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

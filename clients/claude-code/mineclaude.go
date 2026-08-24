@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/urfave/cli/v3"
@@ -530,25 +531,14 @@ type mineClient interface {
 
 // mineOne files one document via am_mine.
 func mineOne(ctx context.Context, client mineClient, wing, room string, part minePart) error {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = mcpprotocol.ToolPrefix + "mine"
-	req.Params.Arguments = map[string]any{
+	result, err := mcpcli.Call(ctx, client.CallTool, "mine", map[string]any{
 		"wing":    wing,
 		"room":    room,
 		"source":  part.Source,
 		"content": part.Content,
-	}
-	res, err := client.CallTool(ctx, req)
+	})
 	if err != nil {
 		return err
 	}
-	if res.IsError {
-		if len(res.Content) > 0 {
-			if t, ok := mcp.AsTextContent(res.Content[0]); ok {
-				return fmt.Errorf("%s", t.Text)
-			}
-		}
-		return fmt.Errorf("am_mine returned an error")
-	}
-	return nil
+	return mcpcli.Failed("mine", result)
 }

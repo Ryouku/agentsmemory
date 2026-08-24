@@ -4,7 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +64,51 @@ func TestEveryGenericCLIUsesTheSharedRunner(t *testing.T) {
 				t.Errorf("%s calls mcpcli.%s %d time(s) beside Run; policy/parse/render must stay inside the shared runner", functionName, helper, count)
 			}
 		})
+	}
+}
+
+func TestOnlyMCPCLIBuildsCallToolRequests(t *testing.T) {
+	root := filepath.Clean("../..")
+	owner := filepath.ToSlash("internal/mcpcli/mcpcli.go")
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if filepath.ToSlash(rel) == owner {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			lit, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			sel, ok := lit.Type.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "CallToolRequest" {
+				return true
+			}
+			t.Errorf("%s builds mcp.CallToolRequest; use mcpcli.NewCall/Call so every client shares one request constructor", filepath.ToSlash(rel))
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

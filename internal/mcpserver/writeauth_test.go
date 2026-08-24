@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -106,7 +107,7 @@ func registeredWrites(t *testing.T) map[string]bool {
 		registerAll(reg, Deps{Local: local})
 		for _, e := range reg.catalog {
 			if e.Write {
-				out[strings.TrimPrefix(e.Name, "am_")] = true
+				out[strings.TrimPrefix(e.Name, mcpprotocol.ToolPrefix)] = true
 			}
 		}
 	}

@@ -37,6 +37,8 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
@@ -498,7 +500,7 @@ func newStreamWith(gdb *gorm.DB, usageSvc *usage.Service, local bool) (http.Hand
 		// Wing-scoped reads are the production default (config.SearchScope), and
 		// a harness that quietly widened them would prove scoping works while
 		// testing a configuration nobody runs.
-		ScopeSearchToWing: true,
+		ScopeSearchToWing: config.Default().ScopeSearchToWing(),
 		Local:             local,
 	})
 
@@ -651,10 +653,7 @@ func (h *Harness) ListTools(t *testing.T) ([]string, error) {
 func (h *Harness) Call(t *testing.T, name string, args map[string]any) (string, bool, error) {
 	t.Helper()
 	h.called = append(h.called, name)
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-	res, err := h.cli.CallTool(context.Background(), req)
+	res, err := mcpcli.Call(context.Background(), h.cli.CallTool, name, args)
 	if err != nil {
 		return "", false, err
 	}

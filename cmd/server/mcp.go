@@ -19,6 +19,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 
@@ -37,7 +38,7 @@ func mcpCommand(def config.Config) *cli.Command {
 		Usage:     "Invoke a read-only memory tool from the CLI (run with no tool to list them)",
 		ArgsUsage: "[tool] [primary-arg]",
 		Flags: append(dataFlags(def),
-			&cli.StringFlag{Name: "token", Sources: cli.EnvVars("AGENTSMEMORY_TOKEN"), Usage: "API key: resolves the tenant and meters the call (HTTP parity)"},
+			&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.TokenEnvVar), Usage: "API key: resolves the tenant and meters the call (HTTP parity)"},
 			&cli.StringFlag{Name: "team", Usage: "team id: trusted local admin read, no metering (alternative to --token)"},
 			&cli.StringSliceFlag{Name: "arg", Aliases: []string{"a"}, Usage: "tool argument as key=value (repeatable)"},
 			&cli.StringFlag{Name: "wing", Usage: "default wing for this call, like a per-project MCP registration; explicit -a wing= wins and \"*\" searches every wing"},

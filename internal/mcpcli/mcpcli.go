@@ -56,10 +56,7 @@ func Run(ctx context.Context, out io.Writer, endpoint Endpoint, invocation Invoc
 		return fmt.Errorf("%q writes to the palace and is not available from the CLI, which is read-only; ask your agent to call it", name)
 	}
 
-	req := mcp.CallToolRequest{}
-	req.Params.Name = tool.Name
-	req.Params.Arguments = ParseArgs(invocation.ArgFlags, invocation.Tail, tool.InputSchema.Properties, PrimaryArg(tool))
-	result, err := endpoint.CallTool(ctx, req)
+	result, err := Call(ctx, endpoint.CallTool, tool.Name, ParseArgs(invocation.ArgFlags, invocation.Tail, tool.InputSchema.Properties, PrimaryArg(tool)))
 	if err != nil {
 		return fmt.Errorf("call %s: %w", tool.Name, err)
 	}
@@ -70,6 +67,72 @@ func Run(ctx context.Context, out io.Writer, endpoint Endpoint, invocation Invoc
 		return errors.New("the tool reported an error")
 	}
 	return nil
+}
+
+// WireName is the one catalogue name every client sends. Bare and already
+// prefixed names collapse to the same wire name.
+func WireName(name string) string {
+	return mcpprotocol.ToolPrefix + strings.TrimPrefix(name, mcpprotocol.ToolPrefix)
+}
+
+// NewCall builds the one CallToolRequest every production MCP client sends.
+func NewCall(name string, args map[string]any) mcp.CallToolRequest {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = WireName(name)
+	req.Params.Arguments = args
+	return req
+}
+
+// Call invokes a production MCP tool through NewCall. Transport errors are
+// returned; a tool-level IsError stays on the result so a caller that must
+// observe refusals (the test harness, write clients) can do so.
+func Call(ctx context.Context, invoke func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error), name string, args map[string]any) (*mcp.CallToolResult, error) {
+	return invoke(ctx, NewCall(name, args))
+}
+
+// Failed reports a tool-level IsError as a Go error, using the first text
+// block when the server sent one.
+func Failed(name string, result *mcp.CallToolResult) error {
+	if result == nil || !result.IsError {
+		return nil
+	}
+	if text, ok := firstText(result); ok && text != "" {
+		return fmt.Errorf("%s", text)
+	}
+	return fmt.Errorf("%s returned an error", WireName(name))
+}
+
+// DecodeJSON calls a tool and unmarshals its first text content as JSON.
+func DecodeJSON(ctx context.Context, invoke func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error), name string, args map[string]any, out any) error {
+	result, err := Call(ctx, invoke, name, args)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	text, ok := firstText(result)
+	if !ok {
+		if result == nil || len(result.Content) == 0 {
+			return fmt.Errorf("%s: empty response", name)
+		}
+		return fmt.Errorf("%s: unexpected response type", name)
+	}
+	if result.IsError {
+		return fmt.Errorf("%s: %s", name, text)
+	}
+	if err := json.Unmarshal([]byte(text), out); err != nil {
+		return fmt.Errorf("%s: decode response: %w", name, err)
+	}
+	return nil
+}
+
+func firstText(result *mcp.CallToolResult) (string, bool) {
+	if result == nil || len(result.Content) == 0 {
+		return "", false
+	}
+	text, ok := mcp.AsTextContent(result.Content[0])
+	if !ok {
+		return "", false
+	}
+	return text.Text, true
 }
 
 // IsReadOnly reports whether the live tool definition explicitly promises not
@@ -89,7 +152,7 @@ func PrimaryArg(tool mcp.Tool) string {
 
 // FindTool resolves a bare or am_-prefixed name against the live catalogue.
 func FindTool(tools []mcp.Tool, name string) (mcp.Tool, bool) {
-	wireName := mcpprotocol.ToolPrefix + strings.TrimPrefix(name, mcpprotocol.ToolPrefix)
+	wireName := WireName(name)
 	for _, tool := range tools {
 		if tool.Name == wireName {
 			return tool, true

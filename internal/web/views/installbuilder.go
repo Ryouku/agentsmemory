@@ -1,6 +1,10 @@
 package views
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
+)
 
 // The install-command builder, shared by the public landing section and the
 // dashboard's revealed-key block. Both ask the same question — where should the
@@ -151,7 +155,7 @@ func (b installBuilder) launchAgentFlag() string {
 func (b installBuilder) base() string {
 	cmd := "curl -fsSL " + installScriptURL + " | "
 	if b.Token != "" {
-		cmd += `AGENTSMEMORY_TOKEN="` + b.Token + `" `
+		cmd += mcpprotocol.TokenEnvVar + `="` + b.Token + `" `
 	}
 	return cmd + "bash"
 }

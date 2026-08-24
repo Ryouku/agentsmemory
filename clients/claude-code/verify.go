@@ -15,7 +15,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -25,7 +24,7 @@ import (
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/anchorcontract"
-	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/urfave/cli/v3"
 )
@@ -223,7 +222,7 @@ func listAnchors(ctx context.Context, c mcpCaller, wing, repo string) ([]anchor,
 	var payload struct {
 		Anchors []anchor `json:"anchors"`
 	}
-	if err := callJSON(ctx, c, mcpprotocol.ToolPrefix+"list_anchors", args, &payload); err != nil {
+	if err := mcpcli.DecodeJSON(ctx, c.CallTool, "list_anchors", args, &payload); err != nil {
 		return nil, err
 	}
 	return payload.Anchors, nil
@@ -238,7 +237,7 @@ func markAnchors(ctx context.Context, c mcpCaller, verdicts []verdict) (int, err
 	var payload struct {
 		Marked int `json:"marked"`
 	}
-	if err := callJSON(ctx, c, mcpprotocol.ToolPrefix+"mark_anchors", map[string]any{"verdicts": items}, &payload); err != nil {
+	if err := mcpcli.DecodeJSON(ctx, c.CallTool, "mark_anchors", map[string]any{"verdicts": items}, &payload); err != nil {
 		return 0, err
 	}
 	return payload.Marked, nil
@@ -248,31 +247,6 @@ func markAnchors(ctx context.Context, c mcpCaller, verdicts []verdict) (int, err
 // flow is testable against a fake without a server.
 type mcpCaller interface {
 	CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error)
-}
-
-// callJSON calls a tool and decodes its JSON text result into out.
-func callJSON(ctx context.Context, c mcpCaller, tool string, args map[string]any, out any) error {
-	req := mcp.CallToolRequest{}
-	req.Params.Name = tool
-	req.Params.Arguments = args
-	res, err := c.CallTool(ctx, req)
-	if err != nil {
-		return fmt.Errorf("%s: %w", tool, err)
-	}
-	if len(res.Content) == 0 {
-		return fmt.Errorf("%s: empty response", tool)
-	}
-	text, ok := mcp.AsTextContent(res.Content[0])
-	if !ok {
-		return fmt.Errorf("%s: unexpected response type", tool)
-	}
-	if res.IsError {
-		return fmt.Errorf("%s: %s", tool, text.Text)
-	}
-	if err := json.Unmarshal([]byte(text.Text), out); err != nil {
-		return fmt.Errorf("%s: decode response: %w", tool, err)
-	}
-	return nil
 }
 
 // resolveProjectWing finds the wing for a directory the same way `load` does, so

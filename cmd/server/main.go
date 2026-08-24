@@ -33,6 +33,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embed/teiembed"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/embedworker"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/importer"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mergejob"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
@@ -213,20 +214,10 @@ func serveFlags(def config.Config) []cli.Flag {
 		// where to dial, so the pair cannot drift apart.
 		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
 		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
-		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(localTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
+		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.LocalTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
 }
-
-// localTokenEnvVar is the environment variable --local's shared bearer token is
-// read from, and the name the startup hints tell agents to present.
-//
-// Deliberately NOT AGENTSMEMORY_TOKEN: that one is the client half of the pair
-// (mcp-stdio presents it, the installer registers it), and a developer with a
-// hosted workspace key exported would otherwise find their local server silently
-// demanding it. The installer reads this same variable, so exporting it once
-// configures both halves.
-const localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 
 // productionMCPServer is the one composition seam for every in-process MCP
 // surface. The HTTP server and the direct CLI both call it, so neither can
@@ -236,7 +227,7 @@ const localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 func productionMCPServer(svc *services, cfg config.Config, local bool) *server.MCPServer {
 	deps := mcpserver.Deps{
 		Local:             local,
-		ScopeSearchToWing: !strings.EqualFold(strings.TrimSpace(cfg.SearchScope), "workspace"),
+		ScopeSearchToWing: cfg.ScopeSearchToWing(),
 	}
 	if svc != nil {
 		deps.Skills = svc.skills
@@ -582,8 +573,8 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 		// exported it substitutes the real value) without writing the secret down.
 		header := ""
 		if cfg.LocalToken != "" {
-			header = ` --header "Authorization: Bearer $` + localTokenEnvVar + `"`
-			install += ` --token "$` + localTokenEnvVar + `"`
+			header = ` --header "Authorization: Bearer $` + mcpprotocol.LocalTokenEnvVar + `"`
+			install += ` --token "$` + mcpprotocol.LocalTokenEnvVar + `"`
 		}
 		log.Printf("connect an agent:  claude mcp add --transport http agentsmemory %s%s", agentEndpoint(cfg.Addr), header)
 	} else {

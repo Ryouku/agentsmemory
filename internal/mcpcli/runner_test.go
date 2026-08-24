@@ -95,3 +95,15 @@ func TestPrintToolsAndResultsAreSharedAcrossTransports(t *testing.T) {
 		t.Errorf("raw result = %s", raw.String())
 	}
 }
+
+func TestWireNameAndNewCallAreIdempotent(t *testing.T) {
+	for _, name := range []string{"search", "am_search"} {
+		if got := WireName(name); got != "am_search" {
+			t.Errorf("WireName(%q) = %q, want am_search", name, got)
+		}
+		req := NewCall(name, map[string]any{"query": "x"})
+		if req.Params.Name != "am_search" {
+			t.Errorf("NewCall(%q).Name = %q, want am_search", name, req.Params.Name)
+		}
+	}
+}
