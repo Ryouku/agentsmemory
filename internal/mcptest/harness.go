@@ -35,6 +35,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -133,6 +134,18 @@ type Harness struct {
 	called []string
 }
 
+// Hosted is a real hosted MCP edge over a migrated database. Unlike the normal
+// scenario harness it does not synthesize identity headers: clients must present
+// a raw project token or an OAuth access token to cross AuthServer.Gate.
+type Hosted struct {
+	URL     string
+	Tenants *tenant.Repo
+	Usage   *usage.Service
+
+	drawers *palace.Service
+	srv     *httptest.Server
+}
+
 // Called returns the tools this harness invoked, in order. The exhaustiveness
 // gate reads it; a scenario's own assertions do not need it.
 func (h *Harness) Called() []string { return append([]string(nil), h.called...) }
@@ -158,6 +171,49 @@ func NewLocalWithWing(t *testing.T, wing string) *Harness {
 	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
 	srv, drawers := newLocalServer(t, gdb)
 	return newClient(t, srv, drawers, wing)
+}
+
+// NewHosted stands up the production hosted authentication chain: bearer
+// resolution, OAuth challenge/endpoints, MCP HTTP transport, Bridge, admission,
+// and handlers. Tests seed workspaces through Tenants and connect through Client.
+func NewHosted(t *testing.T) *Hosted {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest-hosted.db"))
+	tenants := tenant.NewRepo(gdb, tenant.WithTokenSecret("mcptest-token-at-rest-secret"))
+	usageSvc := usage.NewService(usage.NewRepo(gdb), tenants)
+	stream, drawers := newStreamWith(gdb, usageSvc, false)
+	sealer, err := oauth.NewSealer("mcptest-oauth-signing-secret")
+	if err != nil {
+		t.Fatalf("oauth sealer: %v", err)
+	}
+	var root http.Handler
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		root.ServeHTTP(w, r)
+	}))
+	issuer := "http://" + srv.Listener.Addr().String()
+	authSrv := oauth.NewAuthServer(issuer, sealer, tenants, tenants)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", authSrv.Gate(stream))
+	mux.HandleFunc("/authorize", authSrv.Authorize)
+	mux.HandleFunc("/token", authSrv.Token)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", authSrv.ProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server", authSrv.AuthorizationServerMetadata)
+	root = mux
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return &Hosted{URL: srv.URL, Tenants: tenants, Usage: usageSvc, drawers: drawers, srv: srv}
+}
+
+// Client dials the hosted /mcp endpoint with the supplied bearer and registration
+// wing. Successful construction proves the credential crossed AuthServer.Gate.
+func (h *Hosted) Client(t *testing.T, wing, bearer string) *Harness {
+	t.Helper()
+	headers := map[string]string{"Authorization": "Bearer " + bearer}
+	if wing != "" {
+		headers[auth.WingHeader] = wing
+	}
+	return newClientWithHeaders(t, h.srv, h.URL+"/mcp", h.drawers, wing, "", headers)
 }
 
 // Parties returns one client per wing, all over ONE database, so what one writes
@@ -275,18 +331,24 @@ func newLocalServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Servi
 // newStream constructs the production MCP registration and HTTP bridge shared
 // by the hosted-edge substitute and the real local-mode edge.
 func newStream(gdb *gorm.DB) (http.Handler, *palace.Service) {
+	return newStreamWith(gdb, usage.NewService(usage.NewRepo(gdb), caps{}), true)
+}
+
+// newStreamWith constructs the production MCP registration and HTTP bridge with
+// the deployment's real usage policy and local/hosted surface selection.
+func newStreamWith(gdb *gorm.DB, usageSvc *usage.Service, local bool) (http.Handler, *palace.Service) {
 
 	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
 	mcpSrv := mcpserver.New(mcpserver.Deps{
 		Skills:   skill.NewService(skill.NewRepo(gdb)),
 		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
-		Usage:    usage.NewService(usage.NewRepo(gdb), caps{}),
+		Usage:    usageSvc,
 		Drawers:  drawers,
 		// Wing-scoped reads are the production default (config.SearchScope), and
 		// a harness that quietly widened them would prove scoping works while
 		// testing a configuration nobody runs.
 		ScopeSearchToWing: true,
-		Local:             true,
+		Local:             local,
 	})
 
 	stream := server.NewStreamableHTTPServer(mcpSrv,
@@ -339,8 +401,13 @@ func newClientRole(t *testing.T, srv *httptest.Server, drawers *palace.Service, 
 	if role != "" {
 		headers[roleHeader] = string(role)
 	}
+	return newClientWithHeaders(t, srv, srv.URL, drawers, wing, team, headers)
+}
+
+func newClientWithHeaders(t *testing.T, srv *httptest.Server, endpoint string, drawers *palace.Service, wing, team string, headers map[string]string) *Harness {
+	t.Helper()
 	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
-	cli, err := client.NewStreamableHttpClient(srv.URL, opts...)
+	cli, err := client.NewStreamableHttpClient(endpoint, opts...)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
