@@ -41,9 +41,8 @@ type wingKeyType struct{}
 
 var wingKey = wingKeyType{}
 
-// mcpprotocol.WingHeader and wingQueryParam are the two ways a registration states its wing.
-// The header is the clean one; the query parameter exists because not every MCP
-// client can attach custom headers, and a URL always can.
+// wingQueryParam is the URL alternative to mcpprotocol.WingHeader for clients
+// that cannot attach custom headers to an MCP registration.
 const wingQueryParam = "wing"
 
 // Resolver resolves a plaintext bearer token to a tenant. *tenant.Repo
