@@ -250,10 +250,18 @@ func writeResults(path string, c *cli.Command, report palace.EvalReport, cases [
 
 // generateTemporalCases builds the CatTemporal case set. Each case pairs a dated
 // drawer with its nearest semantic neighbour whose content date is strictly
-// older (OlderNeighbor): the newer drawer is the expected answer, and the older
-// one needs no field of its own — it stays in the corpus as the distractor that
-// ranking must put below the correction. Pair discovery runs BEFORE question
-// generation so no LLM round trip is spent on a drawer with nothing to supersede.
+// older (OlderNeighbor): the newer drawer is the expected answer and the older
+// one is RECORDED on the case as its Distractor, because the metric scores where
+// the superseded version landed, not only where the gold did. Pair discovery runs
+// BEFORE question generation so no LLM round trip is spent on a drawer with
+// nothing to supersede.
+//
+// ⚠This comment used to say the older drawer "needs no field of its own — it
+// stays in the corpus as the distractor". That sentence was the bug: the pair was
+// verified, counted, and then thrown away unrecorded, so every consumer of
+// Distractor read an empty set and the supersession gate could only ever refuse.
+// It is written out here rather than deleted because it is the reasoning a future
+// reader would otherwise reconstruct, and it is wrong.
 func generateTemporalCases(ctx context.Context, c *cli.Command, svc *services, team tenant.Team, out io.Writer) ([]palace.EvalCase, string, error) {
 	wing := c.String("wing")
 	drawers, err := svc.drawers.DatedDrawers(ctx, team.ID, wing, c.Int("n"))
