@@ -138,8 +138,9 @@ The resolved startup ranking profile and `am_status.ranking` include `unit=chunk
 That value is the authority for which arm ran; an `.env` file is only intent and may be overridden by
 Compose or process environment.
 
-The default stays false until production comparison selects a winner. Shipping an unmeasured default
-would contradict ADR-014; shipping an unreachable treatment would contradict ADR-006.
+The production comparisons below selected the control, so the default remains false. Changing it
+later requires new measured evidence. Shipping an unmeasured default would contradict ADR-014;
+shipping an unreachable treatment would contradict ADR-006.
 
 ### Measured production comparison (2026-08-24)
 
@@ -284,8 +285,94 @@ and each next passage is chosen by how many previously uncovered terms it adds; 
 terms are covered, ordinary score order resumes so repeated occurrences can still combine premise
 and conclusion. Agent-visible `SnippetRegions` remains score-first. A focused fixture with four
 repetitions of the dense clause and one low-density `remained open` passage was red when this wiring
-was removed and green when restored. This second correction still requires the same live replay;
-the shipped default remains false.
+was removed and green when restored. The selector and complete-arm replays below close that live
+verification thread; they did not justify changing the default.
+
+### Evidence-selector and TEI replay
+
+The next experiment froze nine queries and their expected 3–4 chunk memories across nine rooms on an
+unchanged 1,487-drawer corpus. Both selector arms used `unit=memory`, target-room filters, `limit=10`,
+`max_distance=1.5`, `snippet_chars=500`, the same context, reranker pool 128 and weight 0.75. Only
+`MEMORY_EVIDENCE_SELECTOR` changed, with one sequential call per query and selector.
+
+| Metric | `lexical` | `semantic` |
+|---|---:|---:|
+| Exact target hit@1 | 9/9 | 9/9 |
+| Exact target MRR | 1.0 | 1.0 |
+| Higher target rerank score | **6/9** | 3/9 |
+| Median client-observed latency | **592 ms** | 7,714 ms |
+| Mean client-observed latency | **640 ms** | 10,256 ms |
+
+The agent-visible display regions were identical in every pair. That is expected: public regions
+remain lexical snippets and do not expose the private document sent to the cross-encoder. It means
+this run observed no rank or displayed-evidence gain from semantic selection, not that both selectors
+necessarily sent the same cross-encoder text. Q9 had only one distinct candidate and therefore tested
+evidence construction and score, not ordering.
+
+Moving passage embeddings from Ollama to TEI reduced the two semantic latency tails without changing
+their target ranks, scores or displayed regions. Adaptive client batching then cached
+`/info.max_client_batch_size=128` and raised the evidence caller's request cap from 64 to 128:
+
+| Passage embedding path | Q2 decisions | Q7 diary | Two-query mean |
+|---|---:|---:|---:|
+| Ollama semantic | 20,147 ms | 32,197 ms | 26,172 ms |
+| TEI semantic before adaptive batching | 3,450 ms | 5,123 ms | 4,287 ms |
+| TEI semantic after adaptive batching | **2,881 ms** | **4,216 ms** | **3,549 ms** |
+| TEI lexical control | 1,122 ms | 1,240 ms | **1,181 ms** |
+
+Adaptive batching improved those semantic calls by 17.2% together, but optimized semantic remained
+about 3.0 times slower than lexical. This validates capability negotiation as an execution
+improvement, not a selection-quality improvement. The selector verdict is therefore to keep
+`MEMORY_EVIDENCE_SELECTOR=lexical` as the production default and retain `semantic` as a reachable
+A/B arm.
+
+### Final frozen complete-arm replay
+
+The final replay compared the complete served protocols on an unchanged 1,499-drawer corpus. The
+same frozen nine queries ran twice sequentially per arm with the same room filters and search/rerank
+settings. `MEMORY_EVIDENCE_SELECTOR=semantic` remained configured throughout: it was active under
+`MEMORY_LEVEL_RANKING=true` / `unit=memory` and intentionally inert under `false` / `unit=chunk`.
+This answers whether the deployable arms return the same ranks; it is not an isolated selector test.
+
+| Room | Target rank, true runs 1 / 2 | Target rank, false runs 1 / 2 | Median latency, true → false |
+|---|---:|---:|---:|
+| architecture | 1 / 1 | 1 / 1 | 1,584 → 1,337 ms |
+| decisions | 1 / 1 | 1 / 1 | 3,767 → 1,513 ms |
+| tooling | 1 / 1 | 1 / 1 | 1,735 → 1,153 ms |
+| operations | 1 / 1 | 1 / 1 | 1,176 → 806 ms |
+| technical | 1 / 1 | 1 / 1 | 699 → 489 ms |
+| learnings | 1 / 1 | 1 / 1 | 1,633 → 957 ms |
+| diary | 1 / 1 | 1 / 1 | 5,896 → 1,115 ms |
+| human-decisions | 1 / 1 | 1 / 1 | 861 → 391 ms |
+| llm_ruled_out | 1 / 1 | 1 / 1 | 304 → 438 ms |
+
+| Aggregate metric, 18 calls per arm | true / memory + semantic | false / chunk |
+|---|---:|---:|
+| Exact target hit@1 | 18/18 | 18/18 |
+| Exact target MRR | 1.0 | 1.0 |
+| Top-memory-id disagreements | 0/18 | 0/18 |
+| Target-rank disagreements | 0/18 | 0/18 |
+| Median client-observed latency | 1,548 ms | **956.5 ms** |
+| Mean client-observed latency | 1,961 ms | **911 ms** |
+
+Rerank scores differed because the arms deliberately sent different cross-encoder documents; those
+scores are not directly comparable across protocols. None of the score changes altered ordering.
+The diary target did expose the treatment's structural effect: all three chunks matched under the
+memory arm and two under the chunk arm, while the target stayed rank 1 in all four calls.
+
+**Final verdict:** keep `MEMORY_LEVEL_RANKING=false` and
+`MEMORY_EVIDENCE_SELECTOR=lexical` as the production defaults. The treatment repairs the candidate,
+evidence and anchor granularity invariants in adversarial tests and can expose broader evidence, but
+these frozen production replays found no ordering or answer-quality gain and a material latency cost:
+memory plus semantic was 61.8% slower at the median and 2.15 times slower at the mean. Retain both
+treatments for future experiments; retain adaptive TEI batching because it improved execution without
+changing results.
+
+This final run is a deterministic room-filtered comparison, not a population latency estimate: it has
+two sequential calls per arm, and Q9 has one distinct candidate. Before reconsidering either default,
+expose selected evidence offsets and fail-open state, vector-prefix depth and cross-encoder document
+cost; add a wing-wide unfiltered competition suite and a larger real-query population with multi-answer
+or human-judged relevance.
 
 ## Alternatives Considered
 
