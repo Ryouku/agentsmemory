@@ -15,7 +15,11 @@ import (
 type Scenario struct {
 	Name  string
 	Tools []string
-	Run   func(t *testing.T, h *Harness)
+	// NewHarness selects an alternate production edge when the scenario needs
+	// one, such as a declared default wing or local-mode authentication. Nil uses
+	// the normal hosted-edge substitute.
+	NewHarness func(t *testing.T) *Harness
+	Run        func(t *testing.T, h *Harness)
 }
 
 // ExemptionReasons are the external dependencies that make a tool genuinely

@@ -149,6 +149,17 @@ func NewWithWing(t *testing.T, wing string) *Harness {
 	return newOn(t, openDB(t, filepath.Join(t.TempDir(), "mcptest.db")), wing)
 }
 
+// NewLocalWithWing returns a harness mounted behind the production local-mode
+// tenant middleware. Use it for local-only tools: setting Deps.Local registers
+// those tools, while this constructor additionally proves the HTTP edge injects
+// the fixed local administrator that makes their handlers reachable.
+func NewLocalWithWing(t *testing.T, wing string) *Harness {
+	t.Helper()
+	gdb := openDB(t, filepath.Join(t.TempDir(), "mcptest.db"))
+	srv, drawers := newLocalServer(t, gdb)
+	return newClient(t, srv, drawers, wing)
+}
+
 // Parties returns one client per wing, all over ONE database, so what one writes
 // the others can be asked to find.
 //
@@ -221,24 +232,7 @@ func newOn(t *testing.T, gdb *gorm.DB, wing string) *Harness {
 // newServer builds one MCP server over one palace, exactly as the process does.
 func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 	t.Helper()
-
-	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
-	mcpSrv := mcpserver.New(mcpserver.Deps{
-		Skills:   skill.NewService(skill.NewRepo(gdb)),
-		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
-		Usage:    usage.NewService(usage.NewRepo(gdb), caps{}),
-		Drawers:  drawers,
-		// Wing-scoped reads are the production default (config.SearchScope), and
-		// a harness that quietly widened them would prove scoping works while
-		// testing a configuration nobody runs.
-		ScopeSearchToWing: true,
-		Local:             true,
-	})
-
-	stream := server.NewStreamableHTTPServer(mcpSrv,
-		server.WithHTTPContextFunc(auth.Bridge),
-		server.WithStateLess(true),
-	)
+	stream, drawers := newStream(gdb)
 
 	// The OAuth gate's job, minus OAuth: put a resolved tenant on the request
 	// context so auth.Bridge can forward it. Token validation is exercised by
@@ -263,6 +257,43 @@ func newServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
 	}))
 	t.Cleanup(srv.Close)
 	return srv, drawers
+}
+
+// newLocalServer mounts the same MCP stream behind the production local tenant
+// middleware, including its credential-free loopback semantics.
+func newLocalServer(t *testing.T, gdb *gorm.DB) (*httptest.Server, *palace.Service) {
+	t.Helper()
+	stream, drawers := newStream(gdb)
+	local := auth.LocalTenant(tenant.Tenant{
+		TeamID: TeamID, UserID: "user-mcptest-local", Role: tenant.RoleAdmin,
+	}, "")(stream)
+	srv := httptest.NewServer(local)
+	t.Cleanup(srv.Close)
+	return srv, drawers
+}
+
+// newStream constructs the production MCP registration and HTTP bridge shared
+// by the hosted-edge substitute and the real local-mode edge.
+func newStream(gdb *gorm.DB) (http.Handler, *palace.Service) {
+
+	drawers := palace.NewService(palace.NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim)
+	mcpSrv := mcpserver.New(mcpserver.Deps{
+		Skills:   skill.NewService(skill.NewRepo(gdb)),
+		Skillset: skillset.NewService(skillset.NewRepo(gdb)),
+		Usage:    usage.NewService(usage.NewRepo(gdb), caps{}),
+		Drawers:  drawers,
+		// Wing-scoped reads are the production default (config.SearchScope), and
+		// a harness that quietly widened them would prove scoping works while
+		// testing a configuration nobody runs.
+		ScopeSearchToWing: true,
+		Local:             true,
+	})
+
+	stream := server.NewStreamableHTTPServer(mcpSrv,
+		server.WithHTTPContextFunc(auth.Bridge),
+		server.WithStateLess(true),
+	)
+	return stream, drawers
 }
 
 // AsRole stands up a server and dials it as a registration whose caller holds the
