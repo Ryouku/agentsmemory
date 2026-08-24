@@ -203,13 +203,14 @@ seam stops being a seam.
 | Which flag fills which field | `configFromCmd` | every flag | `cmd/server/flagbinding_test.go` `TestEveryFlagFillsTheFieldItNamesRunsTheRealCLI` |
 | Documented environment variables | the compose files and README | what the program reads | `cmd/server/envreach_test.go` `TestDocumentedEnvVarsAreRead`, `TestReadEnvVarsAreDocumented` |
 | Eval arms | `EvalArm` constants | `evalArms()` registry | `internal/palace/armreach_test.go` `TestEveryDeclaredArmIsRegistered` |
-| The read/write split | `CatalogEntry.Write` | `readOnlyTools()` (CLI), `readOnlyRemoteTools` (client) | none — three hand-kept mirrors `(deferred: docs/adr/BACKLOG.md)` |
+| The read/write split | `registrar.add` / `addWrite`, published as `readOnlyHint` and `CatalogEntry.Write` | write guard, `tools/list`, `am_skillset`, both CLIs | `TestLiveToolMetadataMatchesRegistrationPolicy`, `TestDirectCLIReadSurfaceComesFromLiveAnnotations`, `TestIsReadOnlyTool` |
 
 ## Composition Root
 
 | Root | Constructs | Check |
 |------|------------|-------|
 | `cmd/server/main.go` `buildServices` | the database, vector store, embedder, every domain service | `cmd/server/wiring_test.go` `TestEveryConfigFieldIsPopulatedAndRead` |
+| `cmd/server/main.go` `productionMCPServer` | the one MCP handler graph used by HTTP and the direct CLI | `cmd/server/mcp_test.go` `TestProductionMCPConstructionHasOneChokepoint` |
 | `cmd/server/main.go` `configureRanking` | the ranking configuration and the reranker | `cmd/server/configureranking_test.go` `TestRerankSurvivesEveryFusionMode` |
 | `internal/mcpserver` `registerAll` | every MCP tool, via `add` / `addWrite` | `internal/mcptest/exhaustive_test.go` `TestEveryToolIsExercisedEndToEnd` |
 

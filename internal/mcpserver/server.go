@@ -317,6 +317,22 @@ func searchWingFor(ctx context.Context, passed string, scoped bool) (string, err
 	return "", nil
 }
 
+type unmeteredLocalOperatorKey struct{}
+
+// WithUnmeteredLocalOperator marks an already-authenticated in-process call as
+// trusted local operator access. The direct server CLI uses this for --team:
+// it opens the operator's own database and historically did not consume hosted
+// request quota. No HTTP adapter copies this private context value, so a remote
+// caller cannot request the bypass over the wire.
+func WithUnmeteredLocalOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unmeteredLocalOperatorKey{}, true)
+}
+
+func isUnmeteredLocalOperator(ctx context.Context) bool {
+	on, _ := ctx.Value(unmeteredLocalOperatorKey{}).(bool)
+	return on
+}
+
 // admit resolves the tenant and meters one request against the workspace's
 // monthly cap. It returns the tenant on success, or a ready-to-return error
 // result (and ok=false) when the caller is unauthenticated, the meter fails, or
@@ -325,6 +341,9 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 	t, ok := auth.TenantFrom(ctx)
 	if !ok {
 		return tenant.Tenant{}, mcp.NewToolResultError("unauthenticated: present a valid Bearer token"), false
+	}
+	if isUnmeteredLocalOperator(ctx) {
+		return t, nil, true
 	}
 	st, err := usageSvc.Allow(ctx, t.TeamID)
 	if err != nil {
