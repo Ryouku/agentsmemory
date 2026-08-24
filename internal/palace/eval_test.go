@@ -1492,3 +1492,47 @@ func TestDistanceShapeIsAvailableWithoutAReranker(t *testing.T) {
 		t.Errorf("DistSpread is %v on a page with clearly unequal distances", d.DistSpread)
 	}
 }
+
+// TestSupersessionTableTellsAbsentCasesFromUnpairedOnes pins the two zeroes
+// apart: no temporal cases ran, versus temporal cases ran carrying no verified
+// pair. They need opposite actions and this printed one sentence for both.
+//
+// The second is what an unhardened case file looks like from inside the report,
+// and calling it "no temporal cases in this run" reads as a fact about the
+// CORPUS — as though the palace held no dated contradictions. One run printed it
+// while its own closet block counted `temporal · admitted 5` two blocks above.
+func TestSupersessionTableTellsAbsentCasesFromUnpairedOnes(t *testing.T) {
+	// An arm always carries a scope, so an empty measurement reaches the same
+	// branch either way; only Details can say which of the two happened.
+	empty := EvalMetrics{Arm: ArmHybrid, Supersession: SupersessionCell{Scope: ScopePool}}
+
+	t.Run("no temporal cases at all", func(t *testing.T) {
+		var buf strings.Builder
+		printSupersessionTable(&buf, EvalReport{
+			Arms:    []EvalMetrics{empty},
+			Details: []EvalCaseResult{{Query: "a paraphrase", Category: CatSingle}},
+		})
+		if !strings.Contains(buf.String(), "no temporal cases in this run") {
+			t.Errorf("a run with no temporal case must say so:\n%s", buf.String())
+		}
+	})
+
+	t.Run("temporal cases ran but none carries a pair", func(t *testing.T) {
+		var buf strings.Builder
+		printSupersessionTable(&buf, EvalReport{
+			Arms: []EvalMetrics{empty},
+			Details: []EvalCaseResult{
+				{Query: "what superseded what", Category: CatTemporal},
+				{Query: "and again", Category: CatTemporal},
+			},
+		})
+		got := buf.String()
+		if strings.Contains(got, "no temporal cases in this run") {
+			t.Errorf("two temporal cases ran; reporting their absence blames the corpus for an "+
+				"unhardened case file:\n%s", got)
+		}
+		if !strings.Contains(got, "2 temporal case(s) ran") {
+			t.Errorf("the message must count the temporal cases that DID run:\n%s", got)
+		}
+	})
+}
