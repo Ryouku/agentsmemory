@@ -75,6 +75,7 @@ type registrar struct {
 // mutating tool here is the same mistake as forgetting the check, and
 // TestEveryMutatingToolIsRegisteredAsAWrite fails when it happens.
 func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	tool = classifyTool(tool, false)
 	r.srv.AddTool(tool, handler)
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: false})
 }
@@ -92,8 +93,21 @@ func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 //
 // Role resolution is unchanged; this is the consumer that was missing.
 func (r *registrar) addWrite(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	tool = classifyTool(tool, true)
 	r.srv.AddTool(tool, writeGuard(tool.Name, handler))
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: true})
+}
+
+// classifyTool makes the execution policy visible on the wire at the same
+// chokepoint that enforces it. MCP clients can therefore fail closed from the
+// live tools/list response instead of maintaining a second read/write list that
+// drifts from the handlers actually registered here.
+func classifyTool(tool mcp.Tool, write bool) mcp.Tool {
+	tool.Annotations.ReadOnlyHint = mcp.ToBoolPtr(!write)
+	if !write {
+		tool.Annotations.DestructiveHint = mcp.ToBoolPtr(false)
+	}
+	return tool
 }
 
 // writeGuard refuses a call whose role may not change stored memory, before the

@@ -84,31 +84,29 @@ func TestParseToolArgsWithoutPrimaryDropsPositional(t *testing.T) {
 }
 
 func TestIsReadOnlyTool(t *testing.T) {
-	// The read subset mirrored from cmd/server/mcp.go, plus the get_/list_
-	// convention that lets a future read tool work against this binary.
+	// Classification comes from the live MCP contract, so non-list verbs such as
+	// recall_stats and newly added reads require no client release.
 	for _, name := range []string{
-		"status", "search", "get_drawer", "list_drawers", "check_duplicate",
-		"get_taxonomy", "list_wings", "list_rooms", "get_aaak_spec", "list_skills",
-		"load_skill", "skillset", "diary_read", "list_tunnels", "find_tunnels",
-		"follow_tunnels", "list_hallways", "traverse", "graph_stats", "kg_query",
-		"kg_stats", "kg_timeline", "memories_filed_away", "get_something_new",
-		"list_something_new",
+		"am_status", "am_search", "am_recall_stats", "am_list_anchors",
 	} {
-		if !isReadOnlyTool(name) {
+		tool := mcp.NewTool(name, mcp.WithReadOnlyHintAnnotation(true))
+		if !isReadOnlyTool(tool) {
 			t.Errorf("isReadOnlyTool(%q) = false, want true", name)
 		}
 	}
 
-	// Everything that mutates the palace, including the tools that only look
-	// read-ish (mine chunks text into drawers; reconnect re-readies the store).
+	// Names cannot grant authority: even a list_* tool is refused when the server
+	// classifies it as a write.
 	for _, name := range []string{
-		"add_drawer", "update_drawer", "delete_drawer", "update_skill", "mine",
-		"diary_write", "kg_add", "kg_invalidate", "create_tunnel", "delete_tunnel",
-		"delete_hallway", "recompute_graph", "merge_wing", "reconnect",
+		"am_add_drawer", "am_mine", "am_list_destroy_everything",
 	} {
-		if isReadOnlyTool(name) {
+		tool := mcp.NewTool(name, mcp.WithReadOnlyHintAnnotation(false))
+		if isReadOnlyTool(tool) {
 			t.Errorf("isReadOnlyTool(%q) = true, want false — the CLI must never write", name)
 		}
+	}
+	if isReadOnlyTool(mcp.Tool{Name: "am_unclassified"}) {
+		t.Error("tool without readOnlyHint was accepted; missing policy must fail closed")
 	}
 }
 
@@ -204,9 +202,9 @@ func TestTokenFromConfigDirPrefersTheEnvFile(t *testing.T) {
 
 func TestPrintRemoteToolsListsOnlyCallableTools(t *testing.T) {
 	tools := []mcp.Tool{
-		{Name: "am_search", Description: "Semantically recall drawers.", InputSchema: mcp.ToolInputSchema{Required: []string{"query"}}},
-		{Name: "am_status", Description: "Wake-up call."},
-		{Name: "am_add_drawer", Description: "File a verbatim memory.", InputSchema: mcp.ToolInputSchema{Required: []string{"content"}}},
+		mcp.NewTool("am_search", mcp.WithDescription("Semantically recall drawers."), mcp.WithString("query", mcp.Required()), mcp.WithReadOnlyHintAnnotation(true)),
+		mcp.NewTool("am_status", mcp.WithDescription("Wake-up call."), mcp.WithReadOnlyHintAnnotation(true)),
+		mcp.NewTool("am_add_drawer", mcp.WithDescription("File a verbatim memory."), mcp.WithString("content", mcp.Required()), mcp.WithReadOnlyHintAnnotation(false)),
 	}
 	var out bytes.Buffer
 	if err := printRemoteTools(&out, tools, false); err != nil {
