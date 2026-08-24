@@ -62,9 +62,11 @@ jobs:
               exit 1
             fi
           fi
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "pr_number=$pr_number"
+            echo "ref=$ref"
+            echo "expected_sha=$expected_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         with:
@@ -86,8 +88,10 @@ jobs:
           # Preview versions live in a separate package, so their seven-day
           # cleanup has no API path to the release package that owns `latest`.
           image="ghcr.io/${GITHUB_REPOSITORY,,}-pr"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo "source_sha=$source_sha"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v5
         with:
@@ -149,9 +153,11 @@ jobs:
             --format '{{json .Manifest}}' | jq -r '.digest')"
           test "$tag_digest" = "$digest"
           canonical="${image}@${digest}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "tagged=${image}:${tag}" >> "$GITHUB_OUTPUT"
-          echo "canonical=$canonical" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "tagged=${image}:${tag}"
+            echo "canonical=$canonical"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish deployment instructions
         shell: bash

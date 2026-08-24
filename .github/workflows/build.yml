@@ -148,7 +148,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS.txt
+          sha256sum -- * > SHA256SUMS.txt
 
       # softprops creates the Release if the tag has none yet (a pushed tag does
       # not auto-create one) and uploads the assets. The `check` gate only admits
