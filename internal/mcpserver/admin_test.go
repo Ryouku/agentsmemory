@@ -1,9 +1,19 @@
 package mcpserver
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
+
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -42,5 +52,86 @@ func TestDeleteWingIsLocalOnly(t *testing.T) {
 
 	if !adminCatalog(true)[deleteWing] {
 		t.Fatalf("%s must be exposed in local mode — it is the only way to delete a wing there", deleteWing)
+	}
+}
+
+// recordingMerger is the palace, reduced to the two calls merge_wing makes and
+// the ORDER it makes them in. A double rather than a database because the
+// question here is sequencing, not storage.
+type recordingMerger struct {
+	calls        []string
+	recomputeErr error
+}
+
+func (m *recordingMerger) MergeWing(_ context.Context, teamID string, sources []string, target string) (palace.MergeWingResult, error) {
+	m.calls = append(m.calls, fmt.Sprintf("MergeWing(team=%s,sources=%v,target=%s)", teamID, sources, target))
+	return palace.MergeWingResult{Sources: sources, Target: target, Drawers: 5, Closets: 2}, nil
+}
+
+func (m *recordingMerger) RecomputeGraph(_ context.Context, teamID, wing string, prune bool) (palace.RecomputeResult, error) {
+	m.calls = append(m.calls, fmt.Sprintf("RecomputeGraph(team=%s,wing=%q,prune=%v)", teamID, wing, prune))
+	return palace.RecomputeResult{}, m.recomputeErr
+}
+
+// mergeWingCall drives the real handler as an unmetered local operator, which is
+// what lets the usage service be nil: admit returns before it is touched.
+func mergeWingCall(t *testing.T, merger *recordingMerger) *mcp.CallToolResult {
+	t.Helper()
+	ctx := WithUnmeteredLocalOperator(auth.WithTenant(context.Background(),
+		tenant.Tenant{TeamID: "team-1", Role: tenant.RoleAdmin}))
+	res, err := mergeWingHandler(merger, nil)(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      mcpprotocol.ToolPrefix + "merge_wing",
+			Arguments: map[string]any{"sources": []any{"wing_a"}, "target": "wing_b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge_wing: %v", err)
+	}
+	return res
+}
+
+// TestMergeWingRelabelsBeforeRebuildingTheGraph pins the ORDER, which is the
+// half a call-counting check cannot see.
+//
+// RecomputeGraph derives hallways and tunnels from the drawer rows MergeWing
+// relabels. Run it first and it rebuilds the graph from rows the merge has not
+// touched yet, leaving precisely the stale layout the pair exists to prevent —
+// and that inversion compiles, returns success, and satisfies any assertion that
+// merely counts the two calls. The wing argument is empty and prune is on
+// because a merge moves drawers ACROSS wings, so the rebuild cannot be narrowed
+// to one of them; mergejob.Worker passes the same pair.
+func TestMergeWingRelabelsBeforeRebuildingTheGraph(t *testing.T) {
+	merger := &recordingMerger{}
+	res := mergeWingCall(t, merger)
+
+	if res.IsError {
+		t.Fatalf("merge_wing reported an error: %s", errText(res))
+	}
+	want := []string{
+		"MergeWing(team=team-1,sources=[wing_a],target=wing_b)",
+		`RecomputeGraph(team=team-1,wing="",prune=true)`,
+	}
+	if !slices.Equal(merger.calls, want) {
+		t.Fatalf("merge_wing palace calls:\n got %v\nwant %v", merger.calls, want)
+	}
+}
+
+// TestMergeWingReportsWhatSurvivedAFailedRebuild covers the state the ordering
+// creates: the relabel has committed and the rebuild has not, so the caller must
+// learn both that their merge happened and that the graph is stale, or they will
+// retry a merge that already succeeded.
+func TestMergeWingReportsWhatSurvivedAFailedRebuild(t *testing.T) {
+	merger := &recordingMerger{recomputeErr: errors.New("graph boom")}
+	res := mergeWingCall(t, merger)
+
+	if !res.IsError {
+		t.Fatal("a failed graph rebuild must not report success — the merge is only half done")
+	}
+	body := errText(res)
+	for _, want := range []string{"5", "2", "graph boom", "recompute_graph"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rebuild-failure message is missing %q, so the caller cannot tell what landed:\n%s", want, body)
+		}
 	}
 }

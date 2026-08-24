@@ -9,6 +9,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // registerAnchors wires the two halves of staleness detection: list_anchors hands
@@ -211,11 +212,26 @@ func registerDeleteWing(reg *registrar, drawers *palace.Service, usageSvc *usage
 	})
 }
 
+// wingMerger is the palace work merge_wing performs, declared here at the
+// consumer so a test can drive the real handler against a recording double
+// instead of a database. *palace.Service satisfies it, as does mergejob.Merger's
+// implementation — the two interfaces are deliberately separate because each
+// belongs to the package that calls it.
+type wingMerger interface {
+	MergeWing(ctx context.Context, teamID string, sources []string, target string) (palace.MergeWingResult, error)
+	RecomputeGraph(ctx context.Context, teamID, wing string, prune bool) (palace.RecomputeResult, error)
+}
+
 // registerMergeWing: fold one or more source wings into a target, relabeling every
-// drawer and closet, then rebuild the derived graph. The dashboard enqueues the
-// same palace work asynchronously; this tool waits. Both must call MergeWing and
-// RecomputeGraph — a merge that leaves stale hallways is half done.
-func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+// drawer and closet, then rebuild the derived graph.
+//
+// Synchronous by decision (M, 2026-08-24), superseding the 2026-06-29 call that
+// put merge+rebuild in a durable background job because the rebuild is slow.
+// That decision still governs the DASHBOARD, which enqueues a mergejob and shows
+// progress; an agent calling this tool has no such queue to watch, and a merge
+// that returns before the graph is rebuilt hands back a palace whose hallways
+// describe a layout that no longer holds.
+func registerMergeWing(reg *registrar, drawers wingMerger, usageSvc *usage.Service) {
 	tool := newTool("merge_wing",
 		mcp.WithDescription("Merge one or more source wings into a target wing, relabeling every drawer and closet in place, then rebuild hallways/tunnels. If the graph rebuild fails after the relabel, re-run am_recompute_graph."),
 		mcp.WithArray("sources", mcp.Required(),
@@ -224,7 +240,20 @@ func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		),
 		mcp.WithString("target", mcp.Required(), mcp.Description("The wing to merge the sources into (created if new).")),
 	)
-	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	reg.addWrite(tool, mergeWingHandler(drawers, usageSvc))
+}
+
+// mergeWingHandler is the merge_wing body, named rather than inlined into the
+// registration for the same reason writeGuard is: a test can then drive the real
+// handler, and a re-implemented handler in a test proves the test.
+//
+// ⚠ORDER IS THE CONTRACT. MergeWing relabels the rows; RecomputeGraph derives
+// hallways and tunnels FROM those rows. Rebuilding first and relabeling second
+// compiles, passes a call-counting check, and leaves exactly the stale graph this
+// pair exists to prevent — so the ordering is asserted behaviourally, not by
+// counting calls in the source.
+func mergeWingHandler(drawers wingMerger, usageSvc *usage.Service) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -247,7 +276,7 @@ func registerMergeWing(reg *registrar, drawers *palace.Service, usageSvc *usage.
 				res.Drawers, res.Closets, err)), nil
 		}
 		return jsonResult(res), nil
-	})
+	}
 }
 
 // registerMemoriesFiledAway: a quick summary of what the team has filed.
