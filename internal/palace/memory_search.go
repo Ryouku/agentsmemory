@@ -225,6 +225,13 @@ func memoryEvidence(content, query, fallback string) string {
 		}
 		return string(runes)
 	}
+	return evidenceFromRegions(regions)
+}
+
+// evidenceFromRegions joins verbatim, source-ordered passages inside the
+// existing cross-encoder budget. The ellipsis marks omitted source text; it is
+// the only text not copied from the memory itself.
+func evidenceFromRegions(regions []Region) string {
 	var b strings.Builder
 	remaining := ChunkSize
 	for i, region := range regions {

@@ -98,6 +98,16 @@ func TestMemoryLevelRankingEnvironmentReachesConfig(t *testing.T) {
 	}
 }
 
+// TestMemoryEvidenceSelectorEnvironmentReachesConfig executes the production
+// .env path for the nested A/B arm rather than proving only the CLI spelling.
+func TestMemoryEvidenceSelectorEnvironmentReachesConfig(t *testing.T) {
+	t.Setenv("MEMORY_EVIDENCE_SELECTOR", "semantic")
+	got := parseThroughCLI(t, config.Default())
+	if got.MemoryEvidenceSelector != "semantic" {
+		t.Fatalf("MEMORY_EVIDENCE_SELECTOR=semantic reached Config.MemoryEvidenceSelector as %q", got.MemoryEvidenceSelector)
+	}
+}
+
 // TestFlagAliasesAreNecessary keeps the alias table from becoming the hole. An
 // alias is admissible only for a flag with no mechanical counterpart: if the
 // flag name already normalises onto a real Config field, an alias pointing it

@@ -6,7 +6,7 @@
 **Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
 **Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
 **Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
-**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories, BM25 and the cross-encoder score one combined evidence document per memory, and `am_search` carries memory-level identity, regions and anchor staleness. The unset/false control keeps the existing chunk-ranked path for production A/B comparison.
+**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories, BM25 and the cross-encoder score one combined evidence document per memory, and `am_search` carries memory-level identity, regions and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The unset/false memory-level control keeps the existing chunk-ranked path for production A/B comparison.
 
 ## Context
 
@@ -73,6 +73,42 @@ chunks are de-overlapped; diary chunks, which never overlap, are concatenated ex
 - closet boost is applied once per memory;
 - `ChunksMatched` remains the count of that memory's chunks present in the vector prefix.
 
+### Evidence selector A/B
+
+The reranker input budget remains `ChunkSize`; “search the whole memory” means the whole reassembled
+text is the passage-selection universe, not that the whole text is sent to the cross-encoder or reduced
+to one pooled vector.
+
+`MEMORY_EVIDENCE_SELECTOR=lexical` preserves the current selector: distinct raw-query terms choose at
+most four coherent regions, and previously unseen terms are covered before repeated vocabulary spends
+another slot. `MEMORY_EVIDENCE_SELECTOR=semantic` is the new treatment. For long memories in the
+cross-encoder shortlist it:
+
+1. creates overlapping coherent windows across the reassembled text, including original chunk
+   boundaries;
+2. reuses the raw query vector and embeds every candidate window in batches;
+3. selects the strongest semantic window, then non-near windows which add uncovered query terms or
+   passage diversity, up to the same four-region and `ChunkSize` ceilings;
+4. restores source order and cross-encodes the resulting verbatim evidence once for that memory.
+
+Window similarity selects evidence only. It is not blended into the final memory score: summing or
+maxing every window would give a long memory more chances to win merely because it is long. A single
+best window is also insufficient, because it recreates the original defect when a premise, conclusion
+and open item live in separate places.
+
+The semantic selector applies only when memory-level ranking and cross-encoding both run. Short
+memories already fit the model budget and are passed through without another embedding call. If the
+window embedding call fails or returns unusable vectors, search fails open to the lexical evidence
+documents for the entire shortlist; one page never mixes selector arms silently. Startup and
+`am_status.ranking` expose `evidence=lexical|semantic`, so measurements identify the resolved arm rather
+than an intended `.env` value.
+
+This is deliberately a served-path experiment, not a storage migration or a passage score added to
+fusion. Its principal cost is an additional batched embedding pass over long-memory windows. Production
+comparison must record the resolved selector and end-to-end recall latency; selector failures are named
+in logs. Per-window counters are a follow-up only if aggregate latency cannot explain the comparison,
+and must not use raw query or memory content as metric labels.
+
 The representative drawer id remains on the wire for compatibility. A new always-present
 `memory_id` states the logical identity explicitly. Snippets, identity, regions, content length and
 coverage are computed against the reassembled memory rather than the representative chunk. With
@@ -89,6 +125,12 @@ no migration, and a child hit cannot lose a root's stale verdict.
 `MEMORY_LEVEL_RANKING=false` (the default) is the legacy control.
 `MEMORY_LEVEL_RANKING=true` is the treatment. The same setting is exposed as
 `--memory-level-ranking` so CLI and environment go through one binding.
+
+Within the memory treatment, `MEMORY_EVIDENCE_SELECTOR=lexical` (the default) is the measured selector
+control and `semantic` is the query-time passage-embedding treatment. The same setting is exposed as
+`--memory-evidence-selector`. Selecting `semantic` while memory-level ranking or the cross-encoder is
+off is observable but inert; the resolved profile still reports it so an operator does not mistake
+intent for execution.
 
 The resolved startup ranking profile and `am_status.ranking` include `unit=chunk` or `unit=memory`.
 That value is the authority for which arm ran; an `.env` file is only intent and may be overridden by
@@ -256,6 +298,13 @@ the shipped default remains false.
 - **Send the entire memory to the cross-encoder.** Rejected. The current chunk size is already chosen
   around the model's useful passage budget; a long concatenation is truncated by the model and silently
   recreates the child-chunk problem at its input boundary.
+- **Embed the entire memory once and use that vector as its fragment selector.** Rejected. One pooled
+  vector averages unrelated sections and yields no source span, so it cannot identify the text the
+  cross-encoder should read.
+- **Use only the single best semantic fragment.** Rejected. It cannot combine separated premise,
+  conclusion and remaining-work evidence, which is the structural failure this ADR exists to remove.
+- **Add every window similarity to the memory score.** Rejected. A long memory receives more scoring
+  opportunities and therefore a length prior. Semantic similarity chooses bounded evidence only.
 - **Turn the treatment on by default immediately.** Rejected for this PR. The user explicitly asked for
   production A/B, and ADR-014 requires the shipped default to be the measured one.
 
@@ -276,16 +325,22 @@ after a verdict is a follow-up change, not part of the experiment.
 | vector candidate target | chunks | distinct memories |
 | BM25 document | one chunk | one reassembled memory |
 | reranker document | one chunk | bounded cross-chunk regions from one memory |
+| memory evidence selector | inert | `lexical` or query-time `semantic`, resolved in profile |
 | page collapse | after ranking | unnecessary; candidates are already memories |
 | anchor lookup | every sibling under `memory_id` | every sibling under `memory_id` |
 | `am_search.memory_id` | added, logical root | added, logical root |
-| `am_status.ranking` | includes `unit=chunk` | includes `unit=memory` |
+| `am_status.ranking` | includes `unit=chunk evidence=…` | includes `unit=memory evidence=lexical|semantic` |
 
 ## Verification
 
 - a synthetic vector prefix made only of siblings must widen until another memory becomes rankable;
 - removing that widening must make the test red;
 - a cross-encoder spy must receive one document per memory and see terms supplied by separate chunks;
+- a semantic-selector spy must receive batched passage embeddings rather than per-window calls, choose
+  paraphrased distant regions from the whole reassembled memory, and keep them within `ChunkSize`;
+- removing the config-to-service selector assignment must make the production reachability test fail;
+- semantic embedding failure must return the lexical evidence order and report fail-open rather than
+  failing recall or mixing selectors within one page;
 - the same fixture under the control must still receive chunk documents;
 - an end-to-end MCP search whose child chunk wins must carry the stale root anchor;
 - the real CLI/env binding must move `Config.MemoryLevelRanking`, and the composition-root test must
@@ -298,10 +353,14 @@ after a verdict is a follow-up change, not part of the experiment.
 - **Positive:** the experiment is reachable from production configuration and identifies itself.
 - **Negative:** a clustered vector prefix may require more than one index query.
 - **Negative:** treatment BM25 reads every chunk of each nominated memory, increasing SQLite work.
+- **Negative:** semantic evidence selection adds a batched embedding pass over long-memory windows and
+  must earn that latency and model load in production comparison.
 - **Neutral:** stored rows, embeddings and ids remain chunk-based and require no migration.
 
 ## Rollback
 
-Set `MEMORY_LEVEL_RANKING=false` and restart. The control path is retained intact; no data has changed.
+Set `MEMORY_EVIDENCE_SELECTOR=lexical` to roll back only semantic passage selection, or set
+`MEMORY_LEVEL_RANKING=false` to restore chunk-level ranking, then restart. Both controls are retained
+intact; no data has changed.
 Reverting the implementation removes the treatment, flag and additive `memory_id` field without a
 schema rollback.

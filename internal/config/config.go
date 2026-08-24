@@ -209,6 +209,12 @@ type Config struct {
 	// is an immediate rollback.
 	MemoryLevelRanking bool
 
+	// MemoryEvidenceSelector selects which bounded passages from a reassembled
+	// logical memory reach the cross-encoder: "lexical" (the default/control) or
+	// "semantic" (query-time passage embeddings). It changes behavior only when
+	// memory-level ranking and reranking are both active.
+	MemoryEvidenceSelector string
+
 	// LexNorm selects how raw BM25 scores are normalised before fusion:
 	// "page-max" (the default and what production has always done), "ceiling", or
 	// "saturating". The anchored transforms measure a candidate's lexical score
@@ -313,21 +319,22 @@ func ParseSuperAdminEmails(raw string) []string {
 // Flag and env resolution in cmd/server overlays user-supplied values on top.
 func Default() Config {
 	return Config{
-		Addr:               ":8080",
-		DBPath:             "agentsmemory.db",
-		VectorBackend:      VectorBackendSQLite,
-		QdrantURL:          "http://localhost:6333",
-		EmbedBackend:       "ollama",
-		SearchScope:        "wing",
-		OllamaURL:          "http://localhost:11434",
-		OllamaEmbedModel:   "bge-m3",
-		HTTPTimeout:        30 * time.Second,
-		BM25Weight:         "auto",
-		RerankPool:         10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
-		RerankWeight:       0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
-		ClosetBoost:        0,
-		Fusion:             "rrf",
-		MemoryLevelRanking: false,
+		Addr:                   ":8080",
+		DBPath:                 "agentsmemory.db",
+		VectorBackend:          VectorBackendSQLite,
+		QdrantURL:              "http://localhost:6333",
+		EmbedBackend:           "ollama",
+		SearchScope:            "wing",
+		OllamaURL:              "http://localhost:11434",
+		OllamaEmbedModel:       "bge-m3",
+		HTTPTimeout:            30 * time.Second,
+		BM25Weight:             "auto",
+		RerankPool:             10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankWeight:           0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		ClosetBoost:            0,
+		Fusion:                 "rrf",
+		MemoryLevelRanking:     false,
+		MemoryEvidenceSelector: "lexical",
 		// Spelled here rather than imported: config must not depend on the domain.
 		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the
 		// two spellings cannot drift into two different defaults.

@@ -483,9 +483,10 @@ func mentions(text, flag string) bool {
 // rather than passing unnoticed, which is how a setting joins the wiring and
 // nobody ever measures whether it does anything.
 var unobservableKnobs = map[string]string{
-	"RerankURL":     "selects a live cross-encoder service; with none reachable the sweep measures the absence, not the setting",
-	"RerankTimeout": "bounds a call the sweep never makes, so every value produces the same ordering in-process",
-	"HTTPTimeout":   "bounds outbound calls to the vector and embedding backends, which the fixture serves locally",
+	"RerankURL":              "selects a live cross-encoder service; with none reachable the sweep measures the absence, not the setting",
+	"RerankTimeout":          "bounds a call the sweep never makes, so every value produces the same ordering in-process",
+	"HTTPTimeout":            "bounds outbound calls to the vector and embedding backends, which the fixture serves locally",
+	"MemoryEvidenceSelector": "changes cross-encoder documents only for long memories; the ordering sweep has no live reranker, while evidence_test observes those documents directly",
 }
 
 // TestEveryKnobIsSweptOrNamed: every config field the ranking wiring READS is

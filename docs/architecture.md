@@ -31,6 +31,14 @@ staleness verdict. The startup and `am_status` ranking profile ends in `unit=chu
 the live-arm authority because process environment may override an `.env` file. ADR-024 owns the
 experiment and its rollback.
 
+Within `unit=memory`, `MEMORY_EVIDENCE_SELECTOR` / `--memory-evidence-selector`
+selects the bounded cross-encoder document. `lexical` (default/control) chooses
+regions by literal query-term coverage. `semantic` reuses the raw query vector,
+batch-embeds overlapping windows from the reassembled long memory, then selects
+several distant high-similarity passages in source order. Short memories bypass
+the extra pass, and any invalid or failed passage batch falls back to lexical
+evidence for the whole shortlist. The profile reports `evidence=lexical|semantic`.
+
 ## Module Map
 
 One row per module, one reason to change per module. `In use` says what selects it in a running

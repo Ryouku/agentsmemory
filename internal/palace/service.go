@@ -170,6 +170,10 @@ type Service struct {
 	// chunk to a logical memory. It is opt-in while production compares the two
 	// arms; chunk storage and embeddings remain unchanged in both.
 	memoryLevelRanking bool
+	// memoryEvidenceSelector chooses the bounded document the optional
+	// cross-encoder receives for a reassembled memory. The lexical control uses
+	// literal query coverage; the semantic arm embeds windows at query time.
+	memoryEvidenceSelector string
 
 	// lexNorm is how the raw BM25 scores are normalised before fusion, and
 	// lexNormName is the operator-facing spelling of it.
@@ -221,6 +225,7 @@ func NewService(repo *Repo, embed Embedder, vectors store.VectorStore, dim int) 
 		// on identifier queries.
 		bm25Auto: true, bm25Base: hybridBM25Weight,
 		lexNorm: lexNormPageMax, lexNormName: DefaultLexNorm,
+		memoryEvidenceSelector: DefaultMemoryEvidenceSelector,
 		// Pointers, not values: the eval's degraded path shallow-copies the
 		// service to drop the reranker, and a copied sync.Map is a vet error and
 		// a real hazard — the copy must SHARE these locks, it guards the same
@@ -266,6 +271,33 @@ func (s *Service) WithFusion(mode string) *Service {
 func (s *Service) WithMemoryLevelRanking(on bool) *Service {
 	s.memoryLevelRanking = on
 	return s
+}
+
+// DefaultMemoryEvidenceSelector is the control arm: bounded passages selected
+// by literal query-term coverage, with no extra embedding call.
+const DefaultMemoryEvidenceSelector = "lexical"
+
+const semanticMemoryEvidenceSelector = "semantic"
+
+// WithMemoryEvidenceSelector selects how a reassembled memory is reduced to the
+// cross-encoder budget. Unknown values keep the current selector. Call it before
+// sharing the service across goroutines, like the other post-construction setters.
+func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", DefaultMemoryEvidenceSelector:
+		s.memoryEvidenceSelector = DefaultMemoryEvidenceSelector
+	case semanticMemoryEvidenceSelector:
+		s.memoryEvidenceSelector = semanticMemoryEvidenceSelector
+	}
+	return s
+}
+
+// MemoryEvidenceSelectorName reports the resolved operator-facing selector.
+func (s *Service) MemoryEvidenceSelectorName() string {
+	if s.memoryEvidenceSelector == semanticMemoryEvidenceSelector {
+		return semanticMemoryEvidenceSelector
+	}
+	return DefaultMemoryEvidenceSelector
 }
 
 // Clone returns a shallow copy, so a caller can configure one Service several
@@ -387,8 +419,8 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=%s",
-		fusion, lex, s.lexNormName, s.closetBoostScale, rerank, unit)
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=%s evidence=%s",
+		fusion, lex, s.lexNormName, s.closetBoostScale, rerank, unit, s.MemoryEvidenceSelectorName())
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -907,7 +939,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), query, survivors, ranked)
+	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
 
 	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
 	// query, so without this they cluster and crowd each other out: measured on a
@@ -1012,8 +1044,8 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
-	return s.applyRerankWith(ctx, rerankQuery, evidenceQuery, survivors, ranked, s.rerankWeight)
+func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
+	return s.applyRerankWith(ctx, rerankQuery, evidenceQuery, queryVector, survivors, ranked, s.rerankWeight)
 }
 
 // applyRerankWith is applyRerank at an explicit blend weight, so the eval can
@@ -1023,7 +1055,7 @@ func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery st
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
+func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
 		return ranked, false
 	}
@@ -1032,6 +1064,14 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 	for i := range docs {
 		hit := survivors[ranked[i].Index]
 		docs[i] = hit.rankingContent(evidenceQuery, hit.MemoryContent != "")
+	}
+	if s.memoryLevelRanking && s.MemoryEvidenceSelectorName() == semanticMemoryEvidenceSelector {
+		semanticDocs, err := s.semanticRerankDocuments(ctx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
+		if err != nil {
+			slog.Warn("semantic evidence selection failed, falling back to lexical evidence", "error", err, "candidates", pool)
+		} else {
+			docs = semanticDocs
+		}
 	}
 
 	scores, err := s.rerank.Rerank(ctx, rerankQuery, docs)

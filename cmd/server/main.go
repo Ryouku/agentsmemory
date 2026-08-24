@@ -123,29 +123,30 @@ func rootCommand(def config.Config) *cli.Command {
 // both there — harmless, because only the serve path reads them.
 func configFromCmd(c *cli.Command, def config.Config) config.Config {
 	cfg := config.Config{
-		Addr:               c.String("addr"),
-		SocketPath:         c.String("socket"),
-		DBPath:             c.String("db"),
-		VectorBackend:      c.String("vector-backend"),
-		QdrantURL:          c.String("qdrant-url"),
-		QdrantAPIKey:       c.String("qdrant-api-key"),
-		OllamaURL:          c.String("ollama-url"),
-		OllamaEmbedModel:   c.String("ollama-model"),
-		RerankURL:          strings.TrimSpace(c.String("rerank-url")),
-		RerankPool:         c.Int("rerank-pool"),
-		BM25Weight:         strings.TrimSpace(c.String("bm25-weight")),
-		EmbedBackend:       strings.TrimSpace(c.String("embed-backend")),
-		SearchScope:        strings.TrimSpace(c.String("search-scope")),
-		EmbedURL:           strings.TrimSpace(c.String("embed-url")),
-		ClosetBoost:        c.Float("closet-boost"),
-		Fusion:             strings.TrimSpace(c.String("fusion")),
-		MemoryLevelRanking: c.Bool("memory-level-ranking"),
-		LexNorm:            strings.TrimSpace(c.String("lex-norm")),
-		RerankWeight:       c.Float("rerank-weight"),
-		RerankTimeout:      c.Duration("rerank-timeout"),
-		HTTPTimeout:        c.Duration("http-timeout"),
-		Debug:              c.Bool("debug"),
-		Local:              c.Bool("local"),
+		Addr:                   c.String("addr"),
+		SocketPath:             c.String("socket"),
+		DBPath:                 c.String("db"),
+		VectorBackend:          c.String("vector-backend"),
+		QdrantURL:              c.String("qdrant-url"),
+		QdrantAPIKey:           c.String("qdrant-api-key"),
+		OllamaURL:              c.String("ollama-url"),
+		OllamaEmbedModel:       c.String("ollama-model"),
+		RerankURL:              strings.TrimSpace(c.String("rerank-url")),
+		RerankPool:             c.Int("rerank-pool"),
+		BM25Weight:             strings.TrimSpace(c.String("bm25-weight")),
+		EmbedBackend:           strings.TrimSpace(c.String("embed-backend")),
+		SearchScope:            strings.TrimSpace(c.String("search-scope")),
+		EmbedURL:               strings.TrimSpace(c.String("embed-url")),
+		ClosetBoost:            c.Float("closet-boost"),
+		Fusion:                 strings.TrimSpace(c.String("fusion")),
+		MemoryLevelRanking:     c.Bool("memory-level-ranking"),
+		MemoryEvidenceSelector: strings.TrimSpace(c.String("memory-evidence-selector")),
+		LexNorm:                strings.TrimSpace(c.String("lex-norm")),
+		RerankWeight:           c.Float("rerank-weight"),
+		RerankTimeout:          c.Duration("rerank-timeout"),
+		HTTPTimeout:            c.Duration("http-timeout"),
+		Debug:                  c.Bool("debug"),
+		Local:                  c.Bool("local"),
 		// Trimmed because the presented credential is: auth.bearerToken strips the
 		// space around the value it parses out of the header, so a configured token
 		// with a stray newline or trailing space — which a .env file or a copy-paste
@@ -197,6 +198,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
 		&cli.BoolFlag{Name: "memory-level-ranking", Sources: cli.EnvVars("MEMORY_LEVEL_RANKING"), Value: def.MemoryLevelRanking, Usage: "rank distinct logical memories instead of stored chunks (A/B treatment; default false keeps the legacy control)"},
+		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder under memory-level ranking: lexical (default/control) or semantic (query-time passage embeddings across the whole memory)"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
@@ -818,6 +820,12 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	say := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	drawers := svc
 	drawers = drawers.WithMemoryLevelRanking(cfg.MemoryLevelRanking)
+	requestedEvidence := strings.TrimSpace(cfg.MemoryEvidenceSelector)
+	beforeEvidence := drawers.MemoryEvidenceSelectorName()
+	drawers = drawers.WithMemoryEvidenceSelector(requestedEvidence)
+	if requestedEvidence != "" && !strings.EqualFold(requestedEvidence, drawers.MemoryEvidenceSelectorName()) {
+		say("memory evidence selector: %q is not 'lexical' or 'semantic'; keeping %s", requestedEvidence, beforeEvidence)
+	}
 
 	// Applied unconditionally: the service's own zero value is the FULL prior, so
 	// a config default of 0 that was only applied "when it differs from 1" would
