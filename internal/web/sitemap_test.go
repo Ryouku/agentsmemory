@@ -439,3 +439,42 @@ func frontmatterValue(front, key string) string {
 	}
 	return ""
 }
+
+// TestEveryContentPageIsRouted closes the gap between what the sitemap PROMISES
+// and what the server ANSWERS.
+//
+// TestPagesSitemapCoversContentPagesOnly proves the sitemap matches
+// contentPages(); it cannot prove any of those URLs is wired to a handler. The
+// per-guide tests call their handler directly, so they prove the handler works
+// and say nothing about reachability. Between them a route can be deleted while
+// the whole suite stays green — and the observable result is a URL advertised to
+// every crawler and answer engine that 404s.
+//
+// It asserts REGISTRATION rather than a response, by walking chi's own route
+// table: serving "/" needs a session store and a live tenant repo, and a gate
+// that required real dependencies would be skipped rather than fixed. Walking
+// the router also derives the answer from the thing that decides it.
+//
+// The universe comes from contentPages(), so a page added to the sitemap is
+// covered here without anyone remembering to extend this test. Deleting any
+// content route turns it red.
+func TestEveryContentPageIsRouted(t *testing.T) {
+	r := chi.NewRouter()
+	(&Server{}).Routes(r)
+
+	registered := map[string]bool{}
+	if err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if method == http.MethodGet {
+			registered[strings.TrimSuffix(route, "/")] = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk routes: %v", err)
+	}
+
+	for _, page := range contentPages() {
+		if !registered[strings.TrimSuffix(page, "/")] {
+			t.Errorf("%s is advertised in the pages sitemap but no GET route serves it", page)
+		}
+	}
+}

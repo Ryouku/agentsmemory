@@ -136,6 +136,9 @@ func (s *Server) Routes(r chi.Router) {
 	// Its sibling for the clients the CLI installer cannot reach — Windows, VS Code,
 	// Cursor, Claude Desktop — which connect to the remote MCP directly instead.
 	r.Get("/windows-guide", s.handleWindowsGuide)
+	// The memory-model handoff document. Not an install guide — it starts from a
+	// connected MCP and covers what the team builds inside the palace.
+	r.Get("/bootstrap-memory", s.handleBootstrapMemory)
 	// Public per-agent sandbox guide (Claude Code, Codex, pi). Marketing content
 	// like the landing page, so it sits here rather than behind a session.
 	r.Get("/sandboxes", s.handleSandboxes)
