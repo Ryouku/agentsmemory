@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -68,7 +69,15 @@ func TestUpdateRefusesContentTheEmbedderWouldSilentlyTruncate(t *testing.T) {
 		t.Fatalf("refusal must be ErrInvalidInput so the MCP layer reports it as a bad request, got %v", err)
 	} else {
 		// The caller cannot act on "too long" without both numbers and a way out.
-		for _, want := range []string{"4001", "4000", "add_drawer"} {
+		// Derived from the constant, never spelled: hard-coding "4000" here made a
+		// legitimate change to the bound fail as a complaint about MESSAGE WORDING,
+		// which sends the reader to the wrong place. The one test that should fail
+		// on a changed bound is the one below, deliberately.
+		for _, want := range []string{
+			strconv.Itoa(MaxEmbedRunes + 1),
+			strconv.Itoa(MaxEmbedRunes),
+			"add_drawer",
+		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal does not mention %q, so the caller cannot tell what to do: %v", want, err)
 			}
@@ -103,25 +112,32 @@ func TestUpdateRefusesContentTheEmbedderWouldSilentlyTruncate(t *testing.T) {
 	}
 }
 
-// TestMaxEmbedRunesIsSmallerThanTheSmallestBackend pins the reasoning rather than
-// the number. The bound was first written from bge-m3's 8192-token window, which
-// is the LARGEST backend; agentsmemory also embeds through ollama, whose models
-// commonly run a far smaller context, and an operator chooses at deploy time. A
-// limit only the roomiest backend satisfies does not bound anything — it moves
-// the silent truncation to whoever configured the other one.
+// TestMaxEmbedRunesStaysConservativeAcrossBackends pins the REASONING rather than
+// the number, and its name is deliberately not "…IsSmallerThanTheSmallestBackend":
+// nothing in this repository measures any model's window, so no test here can
+// honestly claim that.
 //
-// So this asserts headroom, not equality: raising MaxEmbedRunes towards a
-// specific model's window should have to argue with a failing test first.
-func TestMaxEmbedRunesIsSmallerThanTheSmallestBackend(t *testing.T) {
-	// A deliberately conservative floor on what any supported embedding model
-	// holds, expressed in characters because the palace cannot ask a tokenizer
-	// and the chars-per-token ratio is script-dependent.
-	const smallestSupportedWindowRunes = 4096
+// What it does assert is that the bound stays far below the model actually in
+// front of us. Both shipped backends run bge-m3 — TEI's is fixed by --model-id,
+// and config.Default() sets OllamaEmbedModel to "bge-m3" — so 8192 tokens is
+// today's real ceiling and 4000 characters is nowhere near it. The margin exists
+// for the model an operator SWAPS IN, not for the one that ships.
+//
+// So: raising MaxEmbedRunes toward a specific model's window should have to argue
+// with a failing test first, and the argument owed is about what the smallest
+// model anyone might configure can hold — not about bge-m3.
+func TestMaxEmbedRunesStaysConservativeAcrossBackends(t *testing.T) {
+	// A deliberately conservative figure for what a modest embedding model holds,
+	// in characters because the palace cannot ask a tokenizer and the
+	// chars-per-token ratio is script-dependent. It is a policy line, not a
+	// measurement, and it is written here so that moving it is a visible decision.
+	const conservativeWindowRunes = 4096
 
-	if MaxEmbedRunes > smallestSupportedWindowRunes {
-		t.Fatalf("MaxEmbedRunes is %d, above the %d this repo is willing to assume of every "+
-			"configurable backend. Raising it needs evidence about ollama, not only about bge-m3",
-			MaxEmbedRunes, smallestSupportedWindowRunes)
+	if MaxEmbedRunes > conservativeWindowRunes {
+		t.Fatalf("MaxEmbedRunes is %d, above the %d this repo is willing to assume of a backend "+
+			"nobody has measured. Raising it needs evidence about the smallest model an operator "+
+			"can configure, not about bge-m3 — which both shipped backends happen to run",
+			MaxEmbedRunes, conservativeWindowRunes)
 	}
 	if MaxEmbedRunes <= ChunkSize {
 		t.Fatalf("MaxEmbedRunes (%d) is at or below ChunkSize (%d), which would make every "+

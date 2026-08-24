@@ -80,12 +80,15 @@ func New(baseURL string, timeout time.Duration) *Embedder {
 // re-embeds a whole memory with EmbedOne and never chunks it. Nothing on that path
 // was bounded, so an oversized update got a prefix vector and a 200, and the tail
 // of the memory became unfindable while still reading back whole. The caller is
-// what fixes this: palace.MaxEmbedRunes refuses before the request is built, and
-// it is deliberately set from the SMALLEST backend agentsmemory can be pointed at
-// rather than from bge-m3 — an operator may be running ollama instead, and a
-// limit only this client satisfies would just move the silent truncation there.
-// Truncation here remains the batch's protection against the one input nobody
-// bounded, and if it ever fires, something upstream stopped checking.
+// what fixes this: palace.MaxEmbedRunes now refuses before the request is built,
+// set well below any shipped model's window so that swapping the model stays
+// survivable rather than sized to the one in front of us.
+//
+// ⚠Truncation here is therefore still REACHABLE, and not only through a bug:
+// palace.CheckDuplicate embeds caller-supplied content through EmbedOne with no
+// bound of its own, because a wrong duplicate verdict is a read-only answer and
+// stores no vector. So treat this flag as the batch's protection against inputs
+// nobody bounded — not as proof that none exist.
 type embedRequest struct {
 	Inputs   []string `json:"inputs"`
 	Truncate bool     `json:"truncate"`

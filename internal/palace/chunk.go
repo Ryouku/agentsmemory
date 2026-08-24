@@ -33,13 +33,21 @@ const (
 	// tail stays stored, still comes back from am_get_drawer, and is simply
 	// unfindable. Silent, and only on this path.
 	//
-	// ⚠THE BOUND IS THE SMALLEST BACKEND, NOT THE BIGGEST. bge-m3 behind TEI holds
-	// 8192 tokens, and reasoning from that number alone is how this constant was
-	// first set four times too high: agentsmemory also embeds through OLLAMA
-	// (internal/embed/ollama), whose embedding models commonly run a far smaller
-	// context, and an operator picks the backend at deploy time. A limit that only
-	// the roomiest backend satisfies is not a limit — it just moves the silent
-	// truncation to whoever configured the other one.
+	// ⚠IT IS CONSERVATIVE HEADROOM, NOT A MEASURED CEILING, and saying so matters
+	// because the obvious reading is wrong. Both shipped backends run bge-m3 —
+	// TEI's is fixed by --model-id and config.Default() sets OllamaEmbedModel to
+	// "bge-m3" too — so the model in front of us holds 8192 tokens either way, and
+	// 4000 characters is far below that. The bound is not sized to today's model.
+	//
+	// It is sized so that SWAPPING the model stays survivable. An operator may
+	// point EMBED_BACKEND or OLLAMA_EMBED_MODEL at something much smaller, and
+	// nothing in this repository measures any model's window or would notice. A
+	// limit computed from bge-m3 alone would be a limit only bge-m3 satisfies.
+	//
+	// ⚠It does NOT make every model safe, and the name of the test guarding it
+	// should not be read as claiming so: a 512-token model such as
+	// mxbai-embed-large tops out around 2k characters and 4000 would still cut it.
+	// This is a floor that removes the unbounded case, chosen by M, not a proof.
 	//
 	// Characters rather than tokens because the palace cannot ask the tokenizer,
 	// and the ratio is script-dependent (~4 chars/token for English, far worse for

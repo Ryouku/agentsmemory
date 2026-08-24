@@ -735,7 +735,8 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 			"%w: updated content is %d characters and the embedder takes at most %d in one piece, "+
 				"so the text past that point would be stored but never findable. "+
 				"Delete this memory and file it again with add_drawer, which splits long content into "+
-				"chunks that each embed in full",
+				"chunks that each embed in full — note that re-filing mints new ids, so any anchor, "+
+				"tunnel or knowledge-graph fact pointing at this drawer must be re-pointed",
 			ErrInvalidInput, n, MaxEmbedRunes)
 	}
 
