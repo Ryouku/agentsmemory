@@ -227,6 +227,26 @@ func serveFlags(def config.Config) []cli.Flag {
 // configures both halves.
 const localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 
+// productionMCPServer is the one composition seam for every in-process MCP
+// surface. The HTTP server and the direct CLI both call it, so neither can
+// silently omit a service, change the search-scope policy, or construct a
+// different set of handlers. A nil services value is registration-only: it is
+// used by the CLI to inspect tools/list without opening or migrating a database.
+func productionMCPServer(svc *services, cfg config.Config, local bool) *server.MCPServer {
+	deps := mcpserver.Deps{
+		Local:             local,
+		ScopeSearchToWing: !strings.EqualFold(strings.TrimSpace(cfg.SearchScope), "workspace"),
+	}
+	if svc != nil {
+		deps.Skills = svc.skills
+		deps.Skillset = svc.skillsets
+		deps.Usage = svc.usage
+		deps.Drawers = svc.drawers
+		deps.Workspaces = svc.tenants
+	}
+	return mcpserver.New(deps)
+}
+
 // run opens the database, migrates, wires dependencies, and serves until error.
 func run(ctx context.Context, cfg config.Config) error {
 	// --token is a local-mode concept: the multi-tenant path resolves real
@@ -288,7 +308,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	// per request, turning the Bearer token into a tenant on the context the
 	// tools read — this is the only place auth touches the transport. Tools
 	// meter each call against the workspace's monthly cap via usageSvc.
-	mcpSrv := mcpserver.New(mcpserver.Deps{Skills: skills, Skillset: svc.skillsets, Usage: usageSvc, Drawers: drawers, Workspaces: svc.tenants, Local: cfg.Local, ScopeSearchToWing: !strings.EqualFold(strings.TrimSpace(cfg.SearchScope), "workspace")})
+	mcpSrv := productionMCPServer(svc, cfg, cfg.Local)
 
 	// OAuth 2.1 authorization server (stateless), validating client credentials
 	// against our own api_keys (the merged authcounterapi role). It guards /mcp

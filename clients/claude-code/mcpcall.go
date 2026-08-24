@@ -4,11 +4,10 @@
 // `aiagentmemory mcp search "auth bug" -a limit=3`.
 //
 // It is the customer-side twin of the server's `agentsmemory mcp` CLI
-// (cmd/server/mcp.go), and deliberately differs in the one way that matters: the
-// server CLI calls the palace services against its own SQLite, while this one is
-// a Streamable-HTTP MCP client authed by the workspace bearer token — the same
-// endpoint, transport and credential the installer wires into the agents. What
-// you see here is therefore what the agent sees.
+// (cmd/server/mcp.go). Both consume the production tools/list contract and call
+// the production handlers; only the transport differs. The server CLI connects
+// in process to its own SQLite-backed server, while this one uses Streamable
+// HTTP with the workspace bearer token the installer wires into agents.
 //
 // Two properties shape the design:
 //
@@ -30,9 +29,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpcli"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -51,7 +51,7 @@ const toolPrefix = "am_"
 // security boundary, and a future mutating list_* tool must not become callable
 // merely because its verb looks harmless.
 func isReadOnlyTool(tool mcp.Tool) bool {
-	return tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint
+	return mcpcli.IsReadOnly(tool)
 }
 
 // mcpCommand builds the `mcp` subcommand. With no tool it prints the catalogue;
@@ -218,10 +218,7 @@ func findRemoteTool(tools []mcp.Tool, name string) (mcp.Tool, bool) {
 // binary knowing anything about either tool. A tool with no required input (like
 // status) has no primary, and a positional passed to it is simply dropped.
 func primaryArg(t mcp.Tool) string {
-	if len(t.InputSchema.Required) == 0 {
-		return ""
-	}
-	return t.InputSchema.Required[0]
+	return mcpcli.PrimaryArg(t)
 }
 
 // tailArgs returns the positional tokens after the tool name. parseToolArgs
@@ -241,72 +238,12 @@ func tailArgs(c *cli.Command) []string {
 // marker) becomes the primary positional, folded under primaryKey unless an
 // explicit -a already set it.
 //
-// Coercion is what makes this differ from the server CLI's string-map
-// equivalent: these arguments cross the wire as JSON, so `-a limit=3` has to
-// arrive as the number 3 — a tool reading limit with GetInt would silently fall
-// back to its default on the string "3". Only properties the schema calls
-// number/integer/boolean are converted, so a hex drawer id stays the string it
-// is. A value that does not parse is passed through unchanged, letting the
-// server report the type error rather than the CLI guessing.
+// Both CLIs share this coercion because their arguments enter an MCP request:
+// `-a limit=3` has to arrive as the number 3 or GetInt silently uses its default.
+// Only schema-declared number/integer/boolean values are converted, so a hex id
+// stays a string. Unparsable input stays raw for the server to reject.
 func parseToolArgs(argFlags, rawTail []string, props map[string]any, primaryKey string) map[string]any {
-	raw := map[string]string{}
-	add := func(kv string) {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			raw[strings.TrimSpace(k)] = v
-		}
-	}
-	for _, kv := range argFlags {
-		add(kv)
-	}
-
-	var positional string
-	for i := 0; i < len(rawTail); i++ {
-		tok := rawTail[i]
-		switch {
-		case tok == "-a" || tok == "--arg":
-			if i+1 < len(rawTail) {
-				add(rawTail[i+1])
-				i++
-			}
-		case strings.Contains(tok, "="):
-			add(tok)
-		case positional == "":
-			positional = tok
-		}
-	}
-
-	if positional != "" && primaryKey != "" {
-		if _, exists := raw[primaryKey]; !exists {
-			raw[primaryKey] = positional
-		}
-	}
-
-	args := make(map[string]any, len(raw))
-	for k, v := range raw {
-		args[k] = coerceArg(props[k], v)
-	}
-	return args
-}
-
-// coerceArg converts one raw value according to its JSON Schema entry, leaving
-// it a string when the schema says string, says nothing, or the value does not
-// parse as the declared type.
-func coerceArg(spec any, value string) any {
-	obj, ok := spec.(map[string]any)
-	if !ok {
-		return value
-	}
-	switch obj["type"] {
-	case "number", "integer":
-		if n, err := strconv.ParseFloat(value, 64); err == nil {
-			return n
-		}
-	case "boolean":
-		if b, err := strconv.ParseBool(value); err == nil {
-			return b
-		}
-	}
-	return value
+	return mcpcli.ParseArgs(argFlags, rawTail, props, primaryKey)
 }
 
 // printCallResult writes what the tool returned. By default that is the text
@@ -318,23 +255,7 @@ func printCallResult(out io.Writer, res *mcp.CallToolResult, raw bool) error {
 	if raw {
 		return writeJSON(out, res)
 	}
-	for _, content := range res.Content {
-		text, ok := mcp.AsTextContent(content)
-		if !ok {
-			// Non-text blocks (images, embedded resources) have no shell
-			// rendering; --raw is the way to see them.
-			continue
-		}
-		var parsed any
-		if err := json.Unmarshal([]byte(text.Text), &parsed); err != nil {
-			fmt.Fprintln(out, text.Text)
-			continue
-		}
-		if err := writeJSON(out, parsed); err != nil {
-			return err
-		}
-	}
-	return nil
+	return mcpcli.PrintResult(out, res)
 }
 
 // printRemoteTools prints the live catalogue, listing only the tools this CLI
