@@ -311,12 +311,20 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 }
 
 // registerUpdateDrawer: edit a drawer's content/wing/room in place. Only the
-// fields actually supplied are changed; a changed drawer is re-embedded.
+// fields actually supplied are changed, and EVERY accepted update re-embeds the
+// whole memory — a wing/room move included, because the vector is rewritten
+// unconditionally rather than when the content differs.
 func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("update_drawer",
 		mcp.WithDescription("Update a drawer's content, wing, or room in place (its id is unchanged). Only supplied fields are modified."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to update.")),
-		mcp.WithString("content", mcp.Description("New verbatim content (re-embedded on change).")),
+		mcp.WithString("content", mcp.Description(fmt.Sprintf(
+			"New verbatim content, at most %d characters — longer is REFUSED, not truncated. Update never "+
+				"re-chunks, so whatever you send becomes ONE vector, and the embedder shortens an oversized "+
+				"input instead of failing: the tail would read back whole from get_drawer while being "+
+				"unfindable by search. File long content with add_drawer, which chunks it so every part "+
+				"embeds in full. Note that any accepted update re-embeds the whole memory, including a "+
+				"wing/room move that leaves the content untouched.", palace.MaxEmbedRunes))),
 		mcp.WithString("wing", mcp.Description("Move the drawer to this wing.")),
 		mcp.WithString("room", mcp.Description("Move the drawer to this room.")),
 		mcp.WithArray("code_anchors", mcp.Description(
