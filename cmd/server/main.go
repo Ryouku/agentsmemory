@@ -90,10 +90,11 @@ func rootCommand(def config.Config) *cli.Command {
 	// `serve` and the read-only `mcp` CLI. Flag builders return fresh slices so
 	// the root and the `serve` subcommand never share mutable flag state.
 	cmd := &cli.Command{
-		Name:   "agentsmemory",
-		Usage:  "Remote MCP memory server (Qdrant + Ollama, multi-tenant)",
-		Flags:  serveFlags(def),
-		Action: serveAction, // no subcommand → serve (bare run + Docker CMD)
+		Name:    "agentsmemory",
+		Usage:   "Remote MCP memory server (Qdrant + Ollama, multi-tenant)",
+		Version: version,
+		Flags:   serveFlags(def),
+		Action:  serveAction, // no subcommand → serve (bare run + Docker CMD)
 		Commands: []*cli.Command{
 			{
 				Name:   "serve",

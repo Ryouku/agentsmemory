@@ -98,7 +98,7 @@ jobs:
           bin=agentsmemory
           [ "${{ matrix.goos }}" = windows ] && bin=agentsmemory.exe
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags='-s -w' -o "$bin" ./cmd/server
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o "$bin" ./cmd/server
 
       # Conventional archives: tar.gz for unix, zip for windows. The archive name
       # is version-free — the Actions run (or the release tag) supplies the
