@@ -34,24 +34,29 @@ func TestLandingPageLinksClaudeGuide(t *testing.T) {
 	}
 }
 
-// TestLandingPageLinksWindowsGuide is the sibling guard for the no-CLI route.
+// TestLandingPageLinksInstallGuide is the sibling guard for the no-CLI route.
 // Every visitor on Windows, or in VS Code / Cursor / Claude Desktop anywhere, has
 // no installer to run, so losing this block silently strands them on a page whose
 // every other path is a bash one-liner. The signal assertion is the real risk:
 // datastar signals are global to the page, so reusing _copiedPrompt here would
 // make one Copy button flash both blocks.
-func TestLandingPageLinksWindowsGuide(t *testing.T) {
+func TestLandingPageLinksInstallGuide(t *testing.T) {
 	var buf bytes.Buffer
 	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `href="/windows-guide"`) {
-		t.Error("landing page has no link to /windows-guide")
+	if !strings.Contains(html, `href="/install-memory-mcp"`) {
+		t.Error("landing page has no link to /install-memory-mcp")
 	}
-	if !strings.Contains(html, windowsGuideURL) {
-		t.Errorf("prompt does not reference the guide URL %q", windowsGuideURL)
+	if !strings.Contains(html, installMCPURL) {
+		t.Errorf("prompt does not reference the guide URL %q", installMCPURL)
+	}
+	// The prompt outlives the page it was copied from, so it must not point at a
+	// URL that only works because something redirects it.
+	if strings.Contains(html, "https://aiagentmemory.dev/windows-guide") {
+		t.Error("prompt still names the absorbed /windows-guide URL; it should name the destination")
 	}
 	if !strings.Contains(html, "_copiedNoCLI") {
 		t.Error("no-CLI copy button is missing its independent _copiedNoCLI signal")

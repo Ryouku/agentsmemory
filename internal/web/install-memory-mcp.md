@@ -106,12 +106,108 @@ Most MCP clients accept this shape. Names differ — some call the top-level key
 **Merge into the existing file. Do not replace it** — it almost certainly holds
 other servers the human depends on.
 
-| Host | Where it goes | Status |
-|---|---|---|
-| **VS Code** (Copilot Chat) | `%APPDATA%\Code\User\mcp.json`, or Command Palette → *MCP: Open User Configuration* | **Verified.** Use the `${input:}` form in [/windows-guide]({{BASE_URL}}/windows-guide) so the token goes to the OS credential vault instead of plaintext. |
-| **Cursor** | see [/windows-guide]({{BASE_URL}}/windows-guide) | **Verified** |
-| **Claude Desktop** | see [/windows-guide]({{BASE_URL}}/windows-guide) | **Verified**, including the OAuth connector route |
-| **Windsurf, Zed, and other MCP clients** | your host's own MCP settings | **Not verified by us.** The shape above is standard; the file location is not. Check your host's current documentation, and confirm the path with the human before writing. |
+#### VS Code (GitHub Copilot Chat)
+
+User config on Windows: `%APPDATA%\Code\User\mcp.json`. Easiest route: Command
+Palette (`Ctrl+Shift+P`) → **MCP: Open User Configuration**, which opens the right
+file and creates it if missing.
+
+Prefer this form — VS Code prompts for the token and stores it in the **OS
+credential vault**, so it never lands in plaintext on disk:
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "agentsmemory-token",
+      "description": "agentsmemory workspace token", "password": true }
+  ],
+  "servers": {
+    "agentsmemory": {
+      "type": "http",
+      "url": "{{BASE_URL}}/mcp",
+      "headers": { "Authorization": "Bearer ${input:agentsmemory-token}" }
+    }
+  }
+}
+```
+
+With this form you do **not** write the token into the file at all. Hand it back to
+the human and tell them to paste it at the prompt. Merge into existing `inputs` /
+`servers` rather than replacing them.
+
+#### Cursor
+
+User config on Windows: `%USERPROFILE%\.cursor\mcp.json`. Cursor uses the
+`mcpServers` key and has **no** prompt-for-secret mechanism, so the token goes in
+the file:
+
+```json
+{
+  "mcpServers": {
+    "agentsmemory": {
+      "url": "{{BASE_URL}}/mcp",
+      "headers": { "Authorization": "Bearer PASTE_TOKEN_HERE" }
+    }
+  }
+}
+```
+
+**Tell the human this file now holds a secret in plaintext and must not be
+committed.**
+
+#### Claude Desktop
+
+Two routes. **Try the connector first** — it stores no secret on disk and needs no
+Node.js.
+
+**Route 1 — Custom connector (preferred).** Settings → Connectors → **Add custom
+connector**, URL `{{BASE_URL}}/mcp`. If it asks for OAuth credentials under
+advanced settings, both come from the same reveal panel: Client ID is the **OAuth
+Client ID**, Client Secret is the **API key** itself. Custom connectors are not on
+every Claude plan; if the option is missing, use route 2.
+
+**Route 2 — `mcp-remote` bridge.** Claude Desktop's config speaks to local
+processes, so a remote server needs a bridge. This requires **Node.js** — check
+`node --version` before recommending it. Config on Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`.
+
+```json
+{
+  "mcpServers": {
+    "agentsmemory": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "{{BASE_URL}}/mcp",
+               "--header", "Authorization:Bearer PASTE_TOKEN_HERE"]
+    }
+  }
+}
+```
+
+If `npx` is not found when Claude Desktop starts the server, set
+`"command": "cmd"` and put `"/c", "npx"` at the front of `args`.
+
+**A SELF-HOSTED server needs neither route.** agentsmemory ships its own bridge in
+the server binary, so there is no Node.js and no connector:
+
+```json
+{
+  "mcpServers": {
+    "agentsmemory": {
+      "command": "C:\\path\\to\\aiagentmemory-server.exe",
+      "args": ["mcp-stdio", "--url", "http://localhost:8080/mcp", "--wing", "wing_acme"]
+    }
+  }
+}
+```
+
+`aiagentmemory install --agent claude-desktop --wing wing_acme` writes exactly that.
+
+#### Any other MCP client
+
+**Windsurf, Zed and the rest are not verified by us.** The server object above is
+standard; the file location is not. Check your host's current documentation and
+**confirm the path with the human before writing** — inventing a config location is
+the failure this page is most able to cause.
 
 If the human uses more than one client, repeat this for each. They share one token.
 
@@ -130,10 +226,27 @@ instead: `{{BASE_URL}}/mcp?wing=wing_<project>`.
 Skip this if you are unsure — an unscoped registration searches every project,
 which is noisier but never wrong.
 
+### 2d. Where the memory protocol goes (per-client)
+
+The MCP gives the tools; the **protocol** is what makes an agent use them — recall
+before working, persist before stopping. Install it where the client loads standing
+instructions automatically:
+
+| Client | Where the protocol goes |
+|---|---|
+| VS Code (Copilot) | `.github/copilot-instructions.md` in the repository |
+| Cursor | `.cursor/rules/agentsmemory.mdc` in the repository |
+| Claude Desktop | Project instructions, or Settings → personal preferences |
+
+**Say the asymmetry out loud to the human:** the MCP is **global**, but for VS Code
+and Cursor the protocol is **per-repository** — it must be added to each project
+they want memory-backed work in. Claude Desktop has no repository, so its protocol
+goes in the profile or a project's instructions.
+
 ## 3. Restart, then verify
 
-MCP config is read at startup. **Have the human fully restart the client** — not
-reload the window.
+MCP config is read at startup. **Have the human fully restart the client** — for VS
+Code and Cursor that means closing every window, not reloading one.
 
 Then call `am_status` and read the answer:
 
@@ -175,6 +288,10 @@ palace with the same token.
 macOS and Linux only): the end-of-turn checkpoint hook that reminds an agent to
 persist before it stops, the slash commands, or the auto-loaded protocol file. On
 a host with no hook mechanism nothing is being skipped — there is nothing to skip.
-Put the memory protocol wherever that host reads standing instructions
-(`AGENTS.md`, `CLAUDE.md`, a custom-instructions box), which
-[/bootstrap-memory]({{BASE_URL}}/bootstrap-memory) covers in its auto-load section.
+§2d has the per-client protocol locations, and
+[/bootstrap-memory]({{BASE_URL}}/bootstrap-memory) covers the auto-load question in
+general.
+
+**If the human wants the CLI-only parts on Windows**, the kit installs and runs
+normally inside **WSL** (Windows Subsystem for Linux): the bash installer at
+[/claude-guide]({{BASE_URL}}/claude-guide) works there untouched.

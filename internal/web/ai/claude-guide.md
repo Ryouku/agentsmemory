@@ -38,7 +38,7 @@ stopping to ask you for the one thing it must not invent.
 
 **Applies to:** macOS and Linux, where the bash installer and the binary can
 run. On Windows, or in VS Code / Cursor / Claude Desktop, use
-[Setup without the CLI](./windows-guide.md) instead.
+[Connect any agent (MCP install)](./install-memory-mcp.md) instead.
 
 # Examples
 
@@ -60,6 +60,6 @@ curl -fsSL https://raw.githubusercontent.com/atvirokodosprendimai/agentsmemory/m
 
 - [What AI Agent Memory is](./landing.md)
 - [Sandboxed installs](./sandboxes.md)
-- [Setup without the CLI](./windows-guide.md)
+- [Connect any agent (MCP install)](./install-memory-mcp.md)
 
 [^guide]: Install agentsmemory into Claude Code (full guide, Markdown)
