@@ -17,8 +17,8 @@
 //     a tool added server-side is callable without shipping a new binary.
 //   - Read-only by construction. The remote endpoint exposes writes too, but a
 //     mistyped shell command must never mutate team memory, so calls are gated by
-//     readOnlyRemoteTools below (the server publishes no read-only annotation to
-//     gate on — see isReadOnlyTool).
+//     the readOnlyHint on the live tools/list entry. A missing or false hint is
+//     refused, so an unclassified server tool cannot become writable by accident.
 package main
 
 import (
@@ -46,52 +46,12 @@ import (
 // prefixed form on the wire.
 const toolPrefix = "am_"
 
-// readOnlyRemoteTools is the set of tools this CLI may call: the read subset of
-// the MCP surface, mirroring readOnlyTools() in cmd/server/mcp.go.
-//
-// It is a hand-kept allowlist because the server publishes no read-only hint on
-// its tools — mcp-go supports mcp.WithReadOnlyHintAnnotation, but the tools are
-// registered without it, so tools/list carries nothing to classify by. An
-// allowlist fails safe: a tool nobody has classified is refused rather than
-// called, so the worst outcome of drift is "run it through your agent instead",
-// never an accidental write. isReadOnlyTool additionally admits the get_/list_
-// naming convention so future reads work without a client release.
-var readOnlyRemoteTools = map[string]bool{
-	"status":              true,
-	"search":              true,
-	"get_drawer":          true,
-	"list_drawers":        true,
-	"check_duplicate":     true,
-	"get_taxonomy":        true,
-	"list_wings":          true,
-	"list_rooms":          true,
-	"get_aaak_spec":       true,
-	"list_skills":         true,
-	"load_skill":          true,
-	"skillset":            true,
-	"diary_read":          true,
-	"list_tunnels":        true,
-	"find_tunnels":        true,
-	"follow_tunnels":      true,
-	"list_hallways":       true,
-	"traverse":            true,
-	"graph_stats":         true,
-	"kg_query":            true,
-	"kg_stats":            true,
-	"kg_timeline":         true,
-	"memories_filed_away": true,
-}
-
-// isReadOnlyTool reports whether bare (unprefixed) name may be called. The
-// allowlist is the authority; the get_/list_ prefixes are admitted on top of it
-// so a read tool added server-side under the existing naming convention works
-// against an older binary. Every other verb — add_, update_, delete_, create_,
-// merge_, mine, recompute_, *_write, kg_add — falls through to false.
-func isReadOnlyTool(name string) bool {
-	if readOnlyRemoteTools[name] {
-		return true
-	}
-	return strings.HasPrefix(name, "get_") || strings.HasPrefix(name, "list_")
+// isReadOnlyTool reports whether the exact live tool definition says the call
+// cannot modify its environment. Missing metadata fails closed: names are not a
+// security boundary, and a future mutating list_* tool must not become callable
+// merely because its verb looks harmless.
+func isReadOnlyTool(tool mcp.Tool) bool {
+	return tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint
 }
 
 // mcpCommand builds the `mcp` subcommand. With no tool it prints the catalogue;
@@ -189,7 +149,7 @@ func runRemoteMCP(ctx context.Context, c *cli.Command, out io.Writer) error {
 	if !ok {
 		return fmt.Errorf("unknown tool %q; run `aiagentmemory mcp` to list the available tools", name)
 	}
-	if !isReadOnlyTool(name) {
+	if !isReadOnlyTool(tool) {
 		// A write tool exists on the endpoint but is out of bounds here: the
 		// shell is for looking, the agent is for writing.
 		return fmt.Errorf("%q writes to the palace and is not available from the CLI, which is read-only; ask your agent to call it", name)
@@ -390,7 +350,7 @@ func printRemoteTools(out io.Writer, tools []mcp.Tool, raw bool) error {
 
 	var readable []mcp.Tool
 	for _, t := range sorted {
-		if isReadOnlyTool(strings.TrimPrefix(t.Name, toolPrefix)) {
+		if isReadOnlyTool(t) {
 			readable = append(readable, t)
 		}
 	}

@@ -1,12 +1,15 @@
 package mcpserver
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -21,6 +24,34 @@ func fullCatalog(local bool) []string {
 		names = append(names, e.Name)
 	}
 	return names
+}
+
+// liveSurface returns both sides of the registration contract: the catalogue
+// accumulated at the registrar and the tools a real MCP client receives from
+// tools/list. Keeping the client call here prevents catalogue-only tests from
+// blessing metadata that was never published on the wire.
+func liveSurface(t *testing.T, local bool) ([]CatalogEntry, []mcp.Tool) {
+	t.Helper()
+	srv := server.NewMCPServer("test", "0.0.0", server.WithToolCapabilities(true))
+	reg := &registrar{srv: srv}
+	registerAll(reg, Deps{Local: local})
+
+	cli, err := client.NewInProcessClient(srv)
+	if err != nil {
+		t.Fatalf("new in-process client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	if err := cli.Start(t.Context()); err != nil {
+		t.Fatalf("start in-process client: %v", err)
+	}
+	if _, err := cli.Initialize(t.Context(), mcp.InitializeRequest{}); err != nil {
+		t.Fatalf("initialize in-process client: %v", err)
+	}
+	res, err := cli.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("list live tools: %v", err)
+	}
+	return reg.catalog, res.Tools
 }
 
 // TestCatalogSizeIsWhatTheReadmeClaims makes the tool count a gate instead of a
@@ -89,9 +120,74 @@ func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 func TestEveryToolNameIsUniqueAndPrefixed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, name := range fullCatalog(true) {
+		if !strings.HasPrefix(name, toolPrefix) {
+			t.Errorf("tool %q is missing the %q namespace prefix", name, toolPrefix)
+		}
 		if seen[name] {
 			t.Errorf("tool %q is registered twice", name)
 		}
 		seen[name] = true
+	}
+}
+
+func TestLiveToolMetadataMatchesRegistrationPolicy(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		name := "hosted"
+		if local {
+			name = "local"
+		}
+		t.Run(name, func(t *testing.T) {
+			catalog, tools := liveSurface(t, local)
+			if len(tools) != len(catalog) {
+				t.Fatalf("tools/list returned %d tools, registrar catalogued %d", len(tools), len(catalog))
+			}
+
+			byName := make(map[string]CatalogEntry, len(catalog))
+			for _, entry := range catalog {
+				byName[entry.Name] = entry
+			}
+			for _, tool := range tools {
+				entry, ok := byName[tool.Name]
+				if !ok {
+					t.Errorf("tools/list exposes %q but the registrar did not catalogue it", tool.Name)
+					continue
+				}
+				delete(byName, tool.Name)
+				if tool.Description != entry.Description {
+					t.Errorf("%s description differs between tools/list and catalogue", tool.Name)
+				}
+				if tool.Annotations.ReadOnlyHint == nil {
+					t.Errorf("%s omits readOnlyHint; clients cannot classify it safely", tool.Name)
+					continue
+				}
+				if got := *tool.Annotations.ReadOnlyHint; got == entry.Write {
+					t.Errorf("%s readOnlyHint=%t, catalogue write=%t", tool.Name, got, entry.Write)
+				}
+				if !entry.Write && (tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint) {
+					t.Errorf("read-only tool %s is advertised as destructive", tool.Name)
+				}
+			}
+			for name := range byName {
+				t.Errorf("catalogue contains %q but tools/list does not expose it", name)
+			}
+		})
+	}
+}
+
+func TestLocalCatalogAddsOnlyDeleteWing(t *testing.T) {
+	_, hosted := liveSurface(t, false)
+	_, local := liveSurface(t, true)
+	hostedNames := make(map[string]bool, len(hosted))
+	for _, tool := range hosted {
+		hostedNames[tool.Name] = true
+	}
+	var extra []string
+	for _, tool := range local {
+		if !hostedNames[tool.Name] {
+			extra = append(extra, tool.Name)
+		}
+	}
+	if len(extra) != 1 || extra[0] != "am_delete_wing" {
+		t.Fatalf("local-only tools = %v, want [am_delete_wing]", extra)
 	}
 }
