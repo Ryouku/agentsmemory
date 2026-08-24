@@ -122,7 +122,7 @@ func TestDirectCLIReadSurfaceComesFromLiveAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleteWing, ok := findMCPTool(definitions, "delete_wing")
+	deleteWing, ok := mcpcli.FindTool(definitions, "delete_wing")
 	if !ok {
 		t.Fatal("local production surface does not expose am_delete_wing")
 	}

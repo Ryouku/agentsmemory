@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 )
 
 // upstreamTo builds an upstream pointed at a test server, so the proxy tests
@@ -204,7 +204,7 @@ func TestStdioCommandForwardsRegistrationWing(t *testing.T) {
 	const wing = "wing_acme"
 	var seen string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Header.Get(auth.WingHeader)
+		seen = r.Header.Get(mcpprotocol.WingHeader)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
 	}))
@@ -220,7 +220,7 @@ func TestStdioCommandForwardsRegistrationWing(t *testing.T) {
 		t.Fatalf("mcp-stdio: %v", err)
 	}
 	if seen != wing {
-		t.Fatalf("%s = %q, want %q", auth.WingHeader, seen, wing)
+		t.Fatalf("%s = %q, want %q", mcpprotocol.WingHeader, seen, wing)
 	}
 }
 

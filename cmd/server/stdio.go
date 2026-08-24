@@ -27,8 +27,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 
 	"github.com/urfave/cli/v3"
 )
@@ -148,7 +148,7 @@ func (u *upstream) post(ctx context.Context, payload []byte) (*http.Response, er
 		req.Header.Set("Authorization", "Bearer "+u.token)
 	}
 	if u.wing != "" {
-		req.Header.Set(auth.WingHeader, u.wing)
+		req.Header.Set(mcpprotocol.WingHeader, u.wing)
 	}
 	return u.client.Do(req)
 }

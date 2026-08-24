@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/urfave/cli/v3"
 )
 
@@ -101,10 +102,10 @@ const (
 	// server that demands the credential and the agent that presents it.
 	localTokenEnvVar = "AGENTSMEMORY_LOCAL_TOKEN"
 
-	// wingHeader names the project a registration files into. It mirrors
-	// auth.WingHeader on the server; duplicating the string keeps this installer
-	// binary independent of the server package it configures.
-	wingHeader = "X-Agentsmemory-Wing"
+	// wingHeader names the project a registration files into. The installer and
+	// server compile against one wire constant, even though they ship in separate
+	// binaries.
+	wingHeader = mcpprotocol.WingHeader
 
 	// tokenFile is where we persist that token (0600) inside the agent's config
 	// dir, so `aiagentmemory run` can export it without the user wiring up a shell

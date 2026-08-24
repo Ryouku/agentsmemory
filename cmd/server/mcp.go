@@ -15,9 +15,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"sort"
-	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
@@ -30,8 +27,6 @@ import (
 	mcptransport "github.com/mark3labs/mcp-go/server"
 	"github.com/urfave/cli/v3"
 )
-
-const mcpToolPrefix = "am_"
 
 // mcpCommand builds the `mcp` subcommand. It reuses dataFlags (the storage/embed
 // flags) so it opens the same database as serve, and adds the auth selectors
@@ -59,67 +54,46 @@ func mcpCommand(def config.Config) *cli.Command {
 func runMCP(ctx context.Context, c *cli.Command, def config.Config) error {
 	cfg := configFromCmd(c, def)
 	local := c.String("team") != "" && c.String("token") == ""
-	definitions, err := listMCPTools(ctx, productionMCPServer(nil, cfg, local))
-	if err != nil {
-		return err
-	}
+	endpoint := mcpcli.Endpoint{
+		ListTools: func(callCtx context.Context) ([]mcp.Tool, error) {
+			return listMCPTools(callCtx, productionMCPServer(nil, cfg, local))
+		},
+		CallTool: func(callCtx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			svc, err := buildServices(cfg)
+			if err != nil {
+				return nil, err
+			}
+			sqlDB, err := svc.gdb.DB()
+			if err != nil {
+				return nil, fmt.Errorf("open SQL handle: %w", err)
+			}
+			defer sqlDB.Close()
 
-	name := strings.TrimPrefix(c.Args().First(), mcpToolPrefix)
-	if name == "" {
-		return printMCPTools(c.Writer, definitions)
-	}
-	tool, ok := findMCPTool(definitions, name)
-	if !ok {
-		return fmt.Errorf("unknown tool %q; run `agentsmemory mcp` to list the available read-only tools", name)
-	}
-	if !mcpcli.IsReadOnly(tool) {
-		return fmt.Errorf("%q writes to the palace and is not available from the CLI, which is read-only; ask your agent to call it", name)
-	}
+			resolved, unmetered, err := resolveTenant(callCtx, svc, c)
+			if err != nil {
+				return nil, err
+			}
+			callCtx = auth.WithTenant(callCtx, resolved)
+			if wing := c.String("wing"); wing != "" {
+				callCtx = auth.WithDefaultWing(callCtx, wing)
+			}
+			if unmetered {
+				callCtx = mcpserver.WithUnmeteredLocalOperator(callCtx)
+			}
 
-	svc, err := buildServices(cfg)
-	if err != nil {
-		return err
+			session, err := newInProcessMCPClient(callCtx, productionMCPServer(svc, cfg, local))
+			if err != nil {
+				return nil, err
+			}
+			defer session.Close()
+			return session.CallTool(callCtx, req)
+		},
 	}
-	sqlDB, err := svc.gdb.DB()
-	if err != nil {
-		return fmt.Errorf("open SQL handle: %w", err)
-	}
-	defer sqlDB.Close()
-	resolved, unmetered, err := resolveTenant(ctx, svc, c)
-	if err != nil {
-		return err
-	}
-
-	callCtx := auth.WithTenant(ctx, resolved)
-	if wing := c.String("wing"); wing != "" {
-		callCtx = auth.WithDefaultWing(callCtx, wing)
-	}
-	if unmetered {
-		callCtx = mcpserver.WithUnmeteredLocalOperator(callCtx)
-	}
-
-	session, err := newInProcessMCPClient(ctx, productionMCPServer(svc, cfg, local))
-	if err != nil {
-		return err
-	}
-	defer session.Close()
-
-	req := mcp.CallToolRequest{}
-	req.Params.Name = tool.Name
-	req.Params.Arguments = mcpcli.ParseArgs(
-		c.StringSlice("arg"), tailArgs(c), tool.InputSchema.Properties, mcpcli.PrimaryArg(tool),
-	)
-	res, err := session.CallTool(callCtx, req)
-	if err != nil {
-		return fmt.Errorf("call %s: %w", tool.Name, err)
-	}
-	if err := mcpcli.PrintResult(c.Writer, res); err != nil {
-		return err
-	}
-	if res.IsError {
-		return errors.New("the tool reported an error")
-	}
-	return nil
+	return mcpcli.Run(ctx, c.Writer, endpoint, mcpcli.Invocation{
+		Tool:     c.Args().First(),
+		ArgFlags: c.StringSlice("arg"),
+		Tail:     mcpcli.TailArgs(c.Args().Slice()),
+	})
 }
 
 // resolveTenant picks the tenant the call acts as. --token resolves the full
@@ -175,57 +149,4 @@ func listMCPTools(ctx context.Context, srv *mcptransport.MCPServer) ([]mcp.Tool,
 		return nil, fmt.Errorf("list MCP tools: %w", err)
 	}
 	return res.Tools, nil
-}
-
-// tailArgs returns the positional tokens after the tool name. parseArgs scans
-// them so the hybrid syntax (`mcp search "q" -a limit=5`) works regardless of
-// whether urfave/cli consumed the interspersed -a into its flag slice.
-func tailArgs(c *cli.Command) []string {
-	all := c.Args().Slice()
-	if len(all) <= 1 {
-		return nil
-	}
-	return all[1:]
-}
-
-func findMCPTool(tools []mcp.Tool, bareName string) (mcp.Tool, bool) {
-	wireName := mcpToolPrefix + bareName
-	for _, tool := range tools {
-		if tool.Name == wireName {
-			return tool, true
-		}
-	}
-	return mcp.Tool{}, false
-}
-
-// printMCPTools renders only the read tools the CLI can call. Descriptions and
-// primary arguments come from the actual wire definitions.
-func printMCPTools(out io.Writer, tools []mcp.Tool) error {
-	readable := make([]mcp.Tool, 0, len(tools))
-	for _, tool := range tools {
-		if mcpcli.IsReadOnly(tool) {
-			readable = append(readable, tool)
-		}
-	}
-	sort.Slice(readable, func(i, j int) bool { return readable[i].Name < readable[j].Name })
-
-	fmt.Fprintf(out, "%d read-only memory tools (of %d on the production MCP surface):\n\n", len(readable), len(tools))
-	for _, tool := range readable {
-		usage := strings.TrimPrefix(tool.Name, mcpToolPrefix)
-		if primary := mcpcli.PrimaryArg(tool); primary != "" {
-			usage += " <" + primary + ">"
-		}
-		fmt.Fprintf(out, "  %s\n      %s\n", usage, firstMCPLine(tool.Description, 96))
-	}
-	fmt.Fprintln(out, "\nCalls: agentsmemory mcp <tool> [primary-arg] -a key=value")
-	fmt.Fprintln(out, "Auth: --token meters in the production handler; --team <id> is trusted local operator access.")
-	return nil
-}
-
-func firstMCPLine(text string, max int) string {
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
-	if len(text) <= max {
-		return text
-	}
-	return strings.TrimSpace(text[:max]) + "…"
 }

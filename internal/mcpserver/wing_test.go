@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 )
 
 // TestWingForPrefersTheCaller: an argument is a decision, a registration default
@@ -50,7 +51,7 @@ func TestWingForWithoutAnyWing(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when neither the call nor the registration names a wing")
 	}
-	for _, want := range []string{"wing is required", auth.WingHeader} {
+	for _, want := range []string{"wing is required", mcpprotocol.WingHeader} {
 		if !contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}

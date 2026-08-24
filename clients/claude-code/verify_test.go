@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/anchorcontract"
 )
 
 // TestFindSurvivesReformatting is the line between a useful flag and noise: a
@@ -76,7 +78,7 @@ func readSourceFrom(content string) *sourceFile {
 	lines := strings.Split(content, "\n")
 	norm := make([]string, len(lines))
 	for i, l := range lines {
-		norm[i] = normalizeSnippet(l)
+		norm[i] = anchorcontract.NormalizeSnippet(l)
 	}
 	return &sourceFile{exists: true, lines: lines, normalized: norm}
 }

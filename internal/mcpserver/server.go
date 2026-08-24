@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
@@ -28,19 +29,11 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// toolPrefix namespaces every agentsmemory MCP tool (am_status, am_search,
-// am_list_wings, …). It exists so this server can run alongside other memory
-// MCPs — notably mempalace, which exposes same-named tools (search, add_drawer,
-// list_wings, diary_write, kg_add) — without the client seeing two tools of the
-// same name. The prefix is applied in exactly one place (newTool), so every
-// registration site keeps the bare, readable name.
-const toolPrefix = "am_"
-
 // newTool builds a tool with the agentsmemory prefix applied to its name: callers
 // pass the bare name and the wire name becomes am_<name>. This is the single
 // chokepoint that guarantees every registered tool is prefixed.
 func newTool(name string, opts ...mcp.ToolOption) mcp.Tool {
-	return mcp.NewTool(toolPrefix+name, opts...)
+	return mcp.NewTool(mcpprotocol.ToolPrefix+name, opts...)
 }
 
 // CatalogEntry is one registered tool's wire metadata: its prefixed name and the
@@ -123,7 +116,7 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 		if !ok {
 			return mcp.NewToolResultError("unauthenticated: present a valid Bearer token"), nil
 		}
-		if !canWrite(t.Role) {
+		if !tenant.CanWrite(t.Role) {
 			return mcp.NewToolResultError(fmt.Sprintf(
 				"%s changes stored memory and your role on this workspace is %q, which is read-only. "+
 					"An admin can grant you the writer role; every read tool remains available.",
@@ -131,12 +124,6 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 		}
 		return handler(ctx, req)
 	}
-}
-
-// canWrite is the one definition of "may change stored memory", so the MCP
-// surface and the dashboard cannot drift into two different policies.
-func canWrite(role tenant.Role) bool {
-	return role == tenant.RoleWriter || role == tenant.RoleAdmin
 }
 
 // WorkspaceLookup resolves the workspace a session is scoped to. It is declared
@@ -269,7 +256,7 @@ func registerAll(reg *registrar, deps Deps) {
 //
 // The fallback is what keeps projects apart without depending on an agent
 // remembering a convention. A per-project registration states its wing once (see
-// auth.WingHeader) and every write from that project lands there; an agent that
+// mcpprotocol.WingHeader) and every write from that project lands there; an agent that
 // does name a wing still wins, because an explicit argument is a decision and a
 // default is only a default.
 //
@@ -281,7 +268,7 @@ func wingFor(ctx context.Context, passed string) (string, error) {
 			return palace.SanitizeName(def, "wing")
 		}
 		return "", fmt.Errorf("wing is required: pass one, or register this MCP with a default wing "+
-			"(header %s) so every write from this project files itself", auth.WingHeader)
+			"(header %s) so every write from this project files itself", mcpprotocol.WingHeader)
 	}
 	return palace.SanitizeName(passed, "wing")
 }

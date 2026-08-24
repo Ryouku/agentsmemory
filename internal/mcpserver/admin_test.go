@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"testing"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -25,7 +26,7 @@ func adminCatalog(local bool) map[string]bool {
 // cannot be undone, which is exactly the kind of line that gets flipped by
 // accident during an unrelated refactor.
 func TestDeleteWingIsLocalOnly(t *testing.T) {
-	const deleteWing = toolPrefix + "delete_wing"
+	const deleteWing = mcpprotocol.ToolPrefix + "delete_wing"
 
 	saas := adminCatalog(false)
 	if saas[deleteWing] {
@@ -33,7 +34,7 @@ func TestDeleteWingIsLocalOnly(t *testing.T) {
 	}
 	// The neighbours prove the catalogue was actually populated, so an empty map
 	// cannot pass the check above by accident.
-	for _, want := range []string{toolPrefix + "merge_wing", toolPrefix + "memories_filed_away"} {
+	for _, want := range []string{mcpprotocol.ToolPrefix + "merge_wing", mcpprotocol.ToolPrefix + "memories_filed_away"} {
 		if !saas[want] {
 			t.Fatalf("expected %s in the admin catalogue, got %v", want, saas)
 		}

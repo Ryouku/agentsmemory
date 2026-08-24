@@ -34,6 +34,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/oauth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
@@ -150,6 +151,11 @@ type Hosted struct {
 // gate reads it; a scenario's own assertions do not need it.
 func (h *Harness) Called() []string { return append([]string(nil), h.called...) }
 
+// Endpoint returns the live MCP URL used by this harness. It lets a command
+// test dial through its own production transport code instead of borrowing the
+// harness's private client.
+func (h *Harness) Endpoint() string { return h.srv.URL }
+
 // New returns a harness whose client authenticates as TeamID with no default
 // wing, mirroring a registration that named no project.
 func New(t *testing.T) *Harness { return NewWithWing(t, "") }
@@ -211,7 +217,7 @@ func (h *Hosted) Client(t *testing.T, wing, bearer string) *Harness {
 	t.Helper()
 	headers := map[string]string{"Authorization": "Bearer " + bearer}
 	if wing != "" {
-		headers[auth.WingHeader] = wing
+		headers[mcpprotocol.WingHeader] = wing
 	}
 	return newClientWithHeaders(t, h.srv, h.URL+"/mcp", h.drawers, wing, "", headers)
 }
@@ -390,13 +396,13 @@ func newClientRole(t *testing.T, srv *httptest.Server, drawers *palace.Service, 
 	t.Helper()
 
 	// The wing rides on the registration as a header, exactly as `install` writes
-	// it — see auth.WingHeader. A harness that stored the wing without sending it
+	// it — see mcpprotocol.WingHeader. A harness that stored the wing without sending it
 	// would show every registration as unscoped, and the first version of this
 	// file did: the positive half of the scoping pair passed and the negative half
 	// caught it, which is why the pair exists.
 	headers := map[string]string{teamHeader: team}
 	if wing != "" {
-		headers[auth.WingHeader] = wing
+		headers[mcpprotocol.WingHeader] = wing
 	}
 	if role != "" {
 		headers[roleHeader] = string(role)
