@@ -36,6 +36,14 @@ func newTool(name string, opts ...mcp.ToolOption) mcp.Tool {
 	return mcp.NewTool(mcpprotocol.ToolPrefix+name, opts...)
 }
 
+// searchWingProperty marks the wing argument consumed by searchWingFor.
+// Registrations still spell mcp.WithString("wing", ...) directly so the
+// production argument-reachability audit sees the declared argument; this
+// option adds the machine-readable star contract without a test-side manifest.
+func searchWingProperty() mcp.PropertyOption {
+	return mcpprotocol.StarScopeProperty
+}
+
 // CatalogEntry is one registered tool's wire metadata: its prefixed name and the
 // one-line description an agent reads to decide whether to call it. It is the unit
 // am_skillset returns so a waking agent sees the live tool surface.
