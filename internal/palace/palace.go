@@ -123,6 +123,15 @@ type Tunnel struct {
 // distance from the query.
 type SearchHit struct {
 	Drawer Drawer
+	// MemoryID is the stable identity shared by the root and every child chunk.
+	// Drawer.ID remains the best matching passage for compatibility; callers that
+	// reason about, fetch, or annotate the whole memory use this field instead.
+	MemoryID string
+	// MemoryContent is the whole logical memory, reconstructed from its stored
+	// chunks. Ranking uses it only in the memory-level A/B arm, while the MCP wire
+	// uses it in both arms so snippets, regions, identity, and staleness all describe
+	// the same unit.
+	MemoryContent string
 	// ChunksMatched is how many chunks of this memory were in the ranked pool: 1
 	// for a memory that was never split, N when N of its chunks matched. It exists
 	// because collapsing a page to one hit per memory would otherwise destroy the

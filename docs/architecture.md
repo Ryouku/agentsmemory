@@ -16,6 +16,21 @@ recalls what its team already decided, does the work, and writes back what it le
 retrieval half has to be good enough that recall beats re-deriving from source; the tenancy half
 has to be strict enough that one team's decisions never surface in another's session.
 
+## Retrieval unit A/B
+
+SQLite remains the durable source of truth and vectors remain indexed per chunk. The served ranking
+unit is selected at the composition root by `MEMORY_LEVEL_RANKING` / `--memory-level-ranking`:
+
+- `false` (control) retrieves and ranks chunks, then collapses the page to distinct memories;
+- `true` (treatment) widens the ordered vector prefix to distinct memory roots, hydrates their
+  chunks, and applies BM25, closet boost and cross-encoding once per memory.
+
+Both arms expose the stable root as `am_search.memory_id`, present snippets/regions against the
+reassembled memory, and resolve anchors across every sibling so a child passage cannot lose a root
+staleness verdict. The startup and `am_status` ranking profile ends in `unit=chunk|memory`; this is
+the live-arm authority because process environment may override an `.env` file. ADR-024 owns the
+experiment and its rollback.
+
 ## Module Map
 
 One row per module, one reason to change per module. `In use` says what selects it in a running
@@ -210,7 +225,7 @@ seam stops being a seam.
 | Root | Constructs | Check |
 |------|------------|-------|
 | `cmd/server/main.go` `buildServices` | the database, vector store, embedder, every domain service | `cmd/server/wiring_test.go` `TestEveryConfigFieldIsPopulatedAndRead` |
-| `cmd/server/main.go` `configureRanking` | the ranking configuration and the reranker | `cmd/server/configureranking_test.go` `TestRerankSurvivesEveryFusionMode` |
+| `cmd/server/main.go` `configureRanking` | the ranking configuration, retrieval unit and the reranker | `cmd/server/configureranking_test.go` `TestConfigureRankingSelectsTheReportedUnit`, `TestRerankSurvivesEveryFusionMode` |
 | `internal/mcpserver` `registerAll` | every MCP tool, via `add` / `addWrite` | `internal/mcptest/exhaustive_test.go` `TestEveryToolIsExercisedEndToEnd` |
 
 ## Test Doubles

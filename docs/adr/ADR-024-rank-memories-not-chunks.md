@@ -1,0 +1,158 @@
+# ADR-024: Rank memories, not chunks
+
+**Status:** Accepted
+**Date:** 2026-08-24
+**Owner:** Mindaugas
+**Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
+**Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
+**Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
+**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories, BM25 and the cross-encoder score one combined evidence document per memory, and `am_search` carries memory-level identity, regions and anchor staleness. The unset/false control keeps the existing chunk-ranked path for production A/B comparison.
+
+## Context
+
+SQLite is the durable source of truth and stores one row per chunk. That is not the binding problem.
+The served search path uses that storage row as its ranking unit too:
+
+1. vector search returns chunks;
+2. BM25 scores chunks;
+3. the cross-encoder scores chunks;
+4. only after every rank has been decided does `Search` collapse siblings onto `ParentID`.
+
+That ordering creates three structural failures which tuning cannot remove.
+
+**A long memory can spend the candidate pool on itself.** `candidateK` counts chunks. If six sibling
+chunks occupy a six-candidate prefix, the next memory is unreachable to BM25 and the cross-encoder,
+however relevant it would have been. Raising the pool changes how often this happens and never changes
+the unit that causes it.
+
+**Evidence cannot combine across chunks.** A memory whose premise is in chunk 0 and conclusion in
+chunk 1 is presented to every ranker as two unrelated documents. `ChunksMatched` reports the loss
+afterward; no score consumes it.
+
+**Staleness can disappear.** `am_add_drawer` attaches supplied code anchors to chunk 0. ADR-013 keeps
+the best-ranked chunk, deliberately, so a child can win. The MCP adapter then asks for anchors by the
+winning child id only. A stale root anchor therefore vanishes from precisely the search result whose
+memory it is meant to qualify.
+
+ADR-013 fixed the page unit and explicitly deferred merging evidence until usage justified the cost.
+This feedback is the missing evidence: the defect is before the page, at candidate and score
+granularity. ADR-019 improved what the agent can inspect after retrieval; it cannot recover a memory
+which sibling chunks kept outside the pool.
+
+## Decision
+
+**Chunk remains the storage and embedding unit. Memory becomes the optional retrieval and ranking
+unit.** No migration rewrites ids, vectors, tunnels or knowledge-graph pointers.
+
+### Candidate pool
+
+The treatment interprets `candidateK` as a target number of distinct memory roots. It asks the vector
+index for a prefix, resolves each hit to `ParentID` (or its own id when unchunked), and widens the
+prefix until either:
+
+- the target number of distinct in-scope memories is present;
+- the index returns fewer rows than requested; or
+- the cosine-distance boundary proves every later row would be rejected too.
+
+This preserves chunk embeddings — the best passage still nominates its memory — while preventing one
+memory's siblings from consuming another memory's candidate slot. The widening has no new tuning
+constant: it doubles only while the declared memory target has not been met.
+
+### Memory evidence and scores
+
+Every nominated root is hydrated with all of its chunks in `chunk_index` order. Overlapping add-drawer
+chunks are de-overlapped; diary chunks, which never overlap, are concatenated exactly.
+
+- vector distance is the best (smallest) distance among the memory's retrieved chunks;
+- BM25 sees the reassembled memory once, so terms in separate chunks contribute to one score;
+- the cross-encoder sees one bounded evidence document per memory, assembled from matching regions
+  across the memory within the existing `ChunkSize` budget;
+- closet boost is applied once per memory;
+- `ChunksMatched` remains the count of that memory's chunks present in the vector prefix.
+
+The representative drawer id remains on the wire for compatibility. A new always-present
+`memory_id` states the logical identity explicitly. Snippets, identity, regions, content length and
+coverage are computed against the reassembled memory rather than the representative chunk. With
+`snippet_chars=0`, `content` is the whole reassembled memory, matching the tool's existing promise.
+
+### Anchors
+
+Anchors are reported at memory granularity. Given any representative chunk, the read path resolves
+its memory root and returns anchors attached to any sibling. Existing root anchors therefore require
+no migration, and a child hit cannot lose a root's stale verdict.
+
+### Production A/B
+
+`MEMORY_LEVEL_RANKING=false` (the default) is the legacy control.
+`MEMORY_LEVEL_RANKING=true` is the treatment. The same setting is exposed as
+`--memory-level-ranking` so CLI and environment go through one binding.
+
+The resolved startup ranking profile and `am_status.ranking` include `unit=chunk` or `unit=memory`.
+That value is the authority for which arm ran; an `.env` file is only intent and may be overridden by
+Compose or process environment.
+
+The default stays false until production comparison selects a winner. Shipping an unmeasured default
+would contradict ADR-014; shipping an unreachable treatment would contradict ADR-006.
+
+## Alternatives Considered
+
+- **Change the durable schema to one row and one vector per memory.** Rejected. It removes passage-level
+  vector recall, rewrites ids and invalidates references. SQLite durability is not the defect.
+- **Only move collapse before BM25/rerank.** Rejected. A long memory has already consumed the vector
+  prefix, so memories outside it remain unreachable.
+- **Raise the candidate or rerank pool.** Rejected as the fix. It reduces frequency without changing
+  granularity, and makes latency the price of an invariant.
+- **Score every chunk and add the scores.** Rejected. Long memories receive more chances and therefore
+  a length prior; a memory with ten weak chunks can beat one strong short memory because it is long.
+- **Send the entire memory to the cross-encoder.** Rejected. The current chunk size is already chosen
+  around the model's useful passage budget; a long concatenation is truncated by the model and silently
+  recreates the child-chunk problem at its input boundary.
+- **Turn the treatment on by default immediately.** Rejected for this PR. The user explicitly asked for
+  production A/B, and ADR-014 requires the shipped default to be the measured one.
+
+## Component / Boundary Impact
+
+`internal/palace` owns candidate aggregation, memory reassembly and memory-level ranking.
+`internal/mcpserver` owns the additive wire field and presentation against whole-memory text.
+`cmd/server` owns the A/B selection and its observable resolved profile. Storage interfaces and
+backends do not change.
+
+`docs/architecture.md` records both served paths while the experiment exists. Removing the control
+after a verdict is a follow-up change, not part of the experiment.
+
+## Wiring & Contract Changes
+
+| Surface | Control (`false`) | Treatment (`true`) |
+|---|---|---|
+| vector candidate target | chunks | distinct memories |
+| BM25 document | one chunk | one reassembled memory |
+| reranker document | one chunk | bounded cross-chunk regions from one memory |
+| page collapse | after ranking | unnecessary; candidates are already memories |
+| anchor lookup | every sibling under `memory_id` | every sibling under `memory_id` |
+| `am_search.memory_id` | added, logical root | added, logical root |
+| `am_status.ranking` | includes `unit=chunk` | includes `unit=memory` |
+
+## Verification
+
+- a synthetic vector prefix made only of siblings must widen until another memory becomes rankable;
+- removing that widening must make the test red;
+- a cross-encoder spy must receive one document per memory and see terms supplied by separate chunks;
+- the same fixture under the control must still receive chunk documents;
+- an end-to-end MCP search whose child chunk wins must carry the stale root anchor;
+- the real CLI/env binding must move `Config.MemoryLevelRanking`, and the composition-root test must
+  observe different `unit=` profiles for false and true;
+- the architecture gate and full Go suite must pass.
+
+## Consequences
+
+- **Positive:** candidate, score, metadata and page share one logical unit in the treatment.
+- **Positive:** the experiment is reachable from production configuration and identifies itself.
+- **Negative:** a clustered vector prefix may require more than one index query.
+- **Negative:** treatment BM25 reads every chunk of each nominated memory, increasing SQLite work.
+- **Neutral:** stored rows, embeddings and ids remain chunk-based and require no migration.
+
+## Rollback
+
+Set `MEMORY_LEVEL_RANKING=false` and restart. The control path is retained intact; no data has changed.
+Reverting the implementation removes the treatment, flag and additive `memory_id` field without a
+schema rollback.

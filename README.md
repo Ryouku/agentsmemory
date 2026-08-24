@@ -566,12 +566,13 @@ which is the only thing that says the overlay applied:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.full.yml logs agentsmemory | grep 'ranking:'
-# ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50)
+# ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=chunk
 ```
 
 `rerank=on(...)` is the line to look for. If it says `rerank=off`, the overlay did
 not apply — you almost certainly dropped one of the two `-f` flags, which starts
-a *valid* base stack rather than failing.
+a *valid* base stack rather than failing. For the retrieval A/B, the same line's
+`unit=chunk|memory` is the live value of `MEMORY_LEVEL_RANKING`.
 
 **Redeploying after a change**, including proving the running binary carries it:
 
@@ -1130,6 +1131,20 @@ All flags have sensible local defaults:
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
 | `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
 | `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
+| `--memory-level-ranking` | `false` | `MEMORY_LEVEL_RANKING` — production A/B treatment: fill and rank a distinct-memory pool instead of a chunk pool |
+
+### Memory-level ranking A/B
+
+Set `MEMORY_LEVEL_RANKING=true` to make vector candidate capacity, BM25 and the
+optional cross-encoder operate once per logical memory. Chunk storage and chunk
+embeddings remain unchanged: the best passage nominates a memory, the vector
+prefix widens until it holds the target number of distinct memories, and ranking
+uses reassembled memory evidence. `false` is the legacy chunk-ranked control.
+
+Changing the arm needs only a restart—there is no data migration. Verify what is
+actually live in the startup `ranking:` line or `am_status.ranking`: it ends in
+`unit=chunk` for control and `unit=memory` for treatment. The process environment
+can override an `.env` file, so that resolved profile is the A/B authority.
 
 ### Cross-encoder re-ranking (optional)
 

@@ -166,6 +166,10 @@ type Service struct {
 	// existing palace returns. FUSION=rrf turns it on for the corpora where the
 	// eval says it should be.
 	fusionRRF bool
+	// memoryLevelRanking changes the candidate and scoring unit from a stored
+	// chunk to a logical memory. It is opt-in while production compares the two
+	// arms; chunk storage and embeddings remain unchanged in both.
+	memoryLevelRanking bool
 
 	// lexNorm is how the raw BM25 scores are normalised before fusion, and
 	// lexNormName is the operator-facing spelling of it.
@@ -252,6 +256,15 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 // is shared across goroutines.
 func (s *Service) WithFusion(mode string) *Service {
 	s.fusionRRF = strings.EqualFold(strings.TrimSpace(mode), "rrf")
+	return s
+}
+
+// WithMemoryLevelRanking selects the treatment arm where candidate capacity,
+// BM25, closet boost, and cross-encoding operate once per logical memory. False
+// keeps the legacy chunk-ranked control. Call it before sharing the service
+// across goroutines, like the other post-construction setters.
+func (s *Service) WithMemoryLevelRanking(on bool) *Service {
+	s.memoryLevelRanking = on
 	return s
 }
 
@@ -355,6 +368,10 @@ func (s *Service) fusionRanker() func(query string, docs []string, dists, boosts
 // corresponds to. A measurement that cannot be tied to a configuration is a
 // number about nothing.
 func (s *Service) RankingProfile() string {
+	unit := "chunk"
+	if s.memoryLevelRanking {
+		unit = "memory"
+	}
 	fusion := "linear"
 	if s.fusionRRF {
 		fusion = "rrf"
@@ -370,8 +387,8 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s",
-		fusion, lex, s.lexNormName, s.closetBoostScale, rerank)
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=%s",
+		fusion, lex, s.lexNormName, s.closetBoostScale, rerank, unit)
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -855,43 +872,16 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
 	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
-	hits, err := s.vectors.Search(ctx, teamID, vec, candidateK, searchFilter(q))
+	survivors, candidateCount, err := s.searchCandidates(ctx, teamID, q, vec, candidateK)
 	if err != nil {
-		return nil, fmt.Errorf("vector search: %w", err)
+		return nil, err
 	}
-
-	// Resolve candidate ids to rows in one query.
-	ids := make([]string, len(hits))
-	for i, h := range hits {
-		ids[i] = h.ID
-	}
-	rows, err := s.repo.GetMany(ctx, teamID, ids)
-	if err != nil {
-		return nil, fmt.Errorf("load drawer rows: %w", err)
-	}
-
-	// Keep the survivors that pass the wing/room/max-distance filters, in vector
-	// order, carrying content (for BM25) and distance (for vector similarity).
-	// The wing/room comparisons are redundant when the index honoured the filter
-	// above, and deliberately kept: the drawer row is the truth about where a
-	// drawer lives, and a stale index must never surface another wing's memory.
-	survivors := make([]SearchHit, 0, len(hits))
-	for _, h := range hits {
-		d, ok := rows[h.ID]
-		if !ok {
-			continue // orphan vector (row deleted) — skip
+	if s.memoryLevelRanking {
+		survivors, err = s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+		if err != nil {
+			return nil, err
 		}
-		if q.Wing != "" && d.Wing != q.Wing {
-			continue
-		}
-		if q.Room != "" && d.Room != q.Room {
-			continue
-		}
-		distance := distanceFromScore(h.Score)
-		if q.MaxDistance > 0 && distance > q.MaxDistance {
-			continue
-		}
-		survivors = append(survivors, SearchHit{Drawer: d, Distance: distance})
+		candidateCount = len(survivors)
 	}
 
 	// Closet boost: search the team's closets with the same query and let the
@@ -905,7 +895,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	dists := make([]float64, len(survivors))
 	boosts := make([]float64, len(survivors))
 	for i, h := range survivors {
-		docs[i] = h.Drawer.Content
+		docs[i] = h.rankingContent(query, false)
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 	}
@@ -937,7 +927,10 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	slotOf := make(map[string]int, limit)
 	for _, r := range ranked {
 		hit := survivors[r.Index]
-		mem := memoryOf(hit.Drawer)
+		mem := hit.MemoryID
+		if mem == "" {
+			mem = memoryOf(hit.Drawer)
+		}
 		if i, seen := slotOf[mem]; seen {
 			results[i].ChunksMatched++
 			continue
@@ -949,9 +942,14 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
 		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
-		hit.ChunksMatched = 1
+		if hit.ChunksMatched == 0 {
+			hit.ChunksMatched = 1
+		}
 		slotOf[mem] = len(results)
 		results = append(results, hit)
+	}
+	if err := s.hydrateResultMemories(ctx, teamID, results); err != nil {
+		return nil, err
 	}
 
 	// Record what this recall found. Best-effort by construction: measurement must
@@ -966,7 +964,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// applyRerankWith returns before scoring anything — every event claimed a
 		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
 		// threshold from these rows.
-		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
+		Candidates: candidateCount, Hits: len(results), Reranked: boolToInt(reranked),
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
@@ -1032,7 +1030,8 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 	pool := min(s.rerankPool, len(ranked))
 	docs := make([]string, pool)
 	for i := range docs {
-		docs[i] = survivors[ranked[i].Index].Drawer.Content
+		hit := survivors[ranked[i].Index]
+		docs[i] = hit.rankingContent(query, hit.MemoryContent != "")
 	}
 
 	scores, err := s.rerank.Rerank(ctx, query, docs)

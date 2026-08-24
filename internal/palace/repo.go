@@ -252,6 +252,29 @@ func (r *Repo) GetMany(ctx context.Context, teamID string, ids []string) (map[st
 	return out, nil
 }
 
+// MemoryChunksByRoots loads every stored chunk for the requested logical memory
+// roots in one query, keyed by root id and ordered by chunk index. Missing roots
+// are absent from the map.
+func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []string) (map[string][]Drawer, error) {
+	out := make(map[string][]Drawer, len(roots))
+	if len(roots) == 0 {
+		return out, nil
+	}
+	var rows []drawerRow
+	if err := r.db.WithContext(ctx).
+		Where("team_id = ? AND (id IN ? OR parent_id IN ?)", teamID, roots, roots).
+		Order("chunk_index ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		d := fromRow(row)
+		root := memoryOf(d)
+		out[root] = append(out[root], d)
+	}
+	return out, nil
+}
+
 // DrawerPatch carries the optional fields update_drawer may change. A nil field
 // means "leave unchanged", distinguishing "set to empty" from "not provided".
 type DrawerPatch struct {

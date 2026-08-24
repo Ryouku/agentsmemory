@@ -250,6 +250,35 @@ func (s *Service) AnchorsForDrawers(ctx context.Context, teamID string, ids []st
 	return out, nil
 }
 
+// AnchorsForMemories returns anchors attached to any chunk of each logical
+// memory, keyed by memory root. Add currently pins chunk zero, but retrieval may
+// select a child; resolving siblings here keeps staleness attached to the memory
+// instead of to whichever chunk happened to win.
+func (s *Service) AnchorsForMemories(ctx context.Context, teamID string, memoryIDs []string) (map[string][]Anchor, error) {
+	out := make(map[string][]Anchor, len(memoryIDs))
+	chunks, err := s.repo.MemoryChunksByRoots(ctx, teamID, memoryIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load memory chunks for anchors: %w", err)
+	}
+	var ids []string
+	rootOf := make(map[string]string)
+	for root, siblings := range chunks {
+		for _, d := range siblings {
+			ids = append(ids, d.ID)
+			rootOf[d.ID] = root
+		}
+	}
+	byDrawer, err := s.AnchorsForDrawers(ctx, teamID, ids)
+	if err != nil {
+		return nil, err
+	}
+	for drawerID, anchors := range byDrawer {
+		root := rootOf[drawerID]
+		out[root] = append(out[root], anchors...)
+	}
+	return out, nil
+}
+
 // ReplaceAnchors swaps a drawer's anchors for a new set, returning how many were
 // written.
 //

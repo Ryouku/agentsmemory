@@ -166,3 +166,50 @@ func TestScenarioCoverageIsOneWhenNothingWasCut(t *testing.T) {
 			"shown almost none of it, and fetches a memory it already has", c)
 	}
 }
+
+// TestScenarioChildChunkCarriesRootAnchor pins the protocol-level staleness
+// defect through the real MCP transport. Anchors are written on chunk zero, but
+// the matching passage deliberately lives only in a child chunk. Whichever A/B
+// ranking arm serves the hit, staleness belongs to the memory and must travel.
+func TestScenarioChildChunkCarriesRootAnchor(t *testing.T) {
+	h := mcptest.NewWithWing(t, "wing_acme")
+	const marker = "CHILD-ANCHOR-MARKER"
+	added := h.MustCall(t, "am_add_drawer", map[string]any{
+		"room": "decisions", "content": filler(2400) + marker + " the retry rule changed",
+		"code_anchors": []any{map[string]any{
+			"path": "internal/retry/retry.go", "snippet": "func retryChanged()",
+		}},
+	})
+	if got := drawerCount(t, h, added); got < 2 {
+		t.Fatalf("fixture produced %d chunk(s), so a child cannot win:\n%s", got, added)
+	}
+
+	listed := h.MustCall(t, "am_list_anchors", map[string]any{"wing": "wing_acme"})
+	id := firstAnchorID(t, h, listed)
+	h.MustCall(t, "am_mark_anchors", map[string]any{
+		"verdicts": []any{map[string]any{"id": id, "status": "drifted", "line": 17}},
+	})
+
+	out := h.MustCall(t, "am_search", map[string]any{
+		"query": marker, "wing": "wing_acme", "snippet_chars": 200,
+	})
+	hit := hitsOf(t, out)[0]
+	chunkIndex, _ := hit["chunk_index"].(float64)
+	if chunkIndex < 1 {
+		t.Fatalf("chunk zero won, so the fixture did not exercise the defect:\n%s", out)
+	}
+	if memoryID, _ := hit["memory_id"].(string); memoryID == "" {
+		t.Fatalf("the hit has no stable memory identity:\n%s", out)
+	}
+	if stale, _ := hit["stale"].(bool); !stale {
+		t.Fatalf("the child hit lost its root chunk's drifted anchor:\n%s", out)
+	}
+	anchors, _ := hit["code_anchors"].([]any)
+	if len(anchors) == 0 {
+		t.Fatalf("the child hit carries stale=true but no anchor evidence:\n%s", out)
+	}
+	anchor, _ := anchors[0].(map[string]any)
+	if status, _ := anchor["status"].(string); status != "drifted" {
+		t.Fatalf("anchor status = %q, want drifted:\n%s", status, out)
+	}
+}

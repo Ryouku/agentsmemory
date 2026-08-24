@@ -430,6 +430,9 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 // searchHitView is one ranked search result: the drawer plus its scores.
 type searchHitView struct {
 	drawerView
+	// MemoryID is the stable logical-memory handle. ID above remains the best
+	// matching stored passage for compatibility and may be a child chunk.
+	MemoryID    string  `json:"memory_id"`
 	Score       float64 `json:"score"`        // fused hybrid rank (vector + BM25 + closet boost), higher is better
 	BM25        float64 `json:"bm25_score"`   // raw lexical BM25 component, for transparency
 	ClosetBoost float64 `json:"closet_boost"` // closet rank boost folded into score, for transparency
@@ -512,7 +515,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
-		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse, 1-100 (default 5).")),
+		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour.")),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
 		mcp.WithNumber("max_distance", mcp.Description("Drop results farther than this cosine distance (0-2, default 1.5; 0 disables).")),
@@ -550,18 +553,23 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
-			ids[i] = h.Drawer.ID
+			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
+			ids[i] = h.MemoryID
+			fullContent := h.MemoryContent
+			if fullContent == "" {
+				fullContent = h.Drawer.Content
+			}
+			views[i].Content = fullContent
+			views[i].Identity = palace.MemoryIdentity(fullContent)
 			if snippetChars > 0 {
 				// The window is centred on the query's own terms, so what comes
-				// back is the part that matched rather than the memory's heading.
-				// chunk 0 (and an unsplit memory) carries the identity line, so its
-				// opening is preserved even when the match is further down.
-				isHead := h.Drawer.ChunkIndex == 0
-				if snippet := palace.SnippetWithHead(h.Drawer.Content, query, snippetChars, isHead); snippet != h.Drawer.Content {
+				// back is the part that matched rather than only the memory's
+				// heading. The input is the whole memory, so the authored opening is
+				// available even when a child chunk nominated the result.
+				if snippet := palace.SnippetWithHead(fullContent, query, snippetChars, true); snippet != fullContent {
 					views[i].Content = snippet
 					views[i].Truncated = true
-					views[i].FullLength = len([]rune(h.Drawer.Content))
+					views[i].FullLength = len([]rune(fullContent))
 
 					// Every OTHER place this memory matched, and the line its author
 					// wrote to say what it is.
@@ -579,7 +587,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 					// 98% of hits, which is why it cannot be acted on: an agent cannot
 					// fetch five whole memories and nothing told it which one hid the
 					// answer. These fields are what let it choose.
-					regions := palace.SnippetRegions(h.Drawer.Content, query, snippetChars)
+					regions := palace.SnippetRegions(fullContent, query, snippetChars)
 					if len(regions) > 1 {
 						// One region is what content already is; repeating it would spend
 						// the page on a duplicate and teach a reader to skip the field.
@@ -589,21 +597,15 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 							})
 						}
 					}
-					views[i].Identity = palace.MemoryIdentity(h.Drawer.Content)
 				}
-				// Coverage is set for EVERY hit, truncated or not.
-				//
-				// Setting it only when the snippet cut something left a hit that
-				// shows the WHOLE memory reporting 0 — which reads as "you see none
-				// of this", the exact opposite of the truth, and is worse than the
-				// uninformative flag it replaces. Found by a mutant that made
-				// coverage a constant and still passed, because the wrong zero on the
-				// untruncated hit supplied the variation the test was looking for.
-				if full := len([]rune(h.Drawer.Content)); full > 0 {
-					views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
-					if views[i].Coverage > 1 {
-						views[i].Coverage = 1 // the head join adds runes the memory does not have
-					}
+			}
+			// Coverage is set for EVERY hit, including snippet_chars=0. Otherwise
+			// "the caller requested and received the whole memory" reports the same
+			// zero as "the caller saw none of it".
+			if full := len([]rune(fullContent)); full > 0 {
+				views[i].Coverage = float64(len([]rune(views[i].Content))) / float64(full)
+				if views[i].Coverage > 1 {
+					views[i].Coverage = 1 // the head join adds runes the memory does not have
 				}
 			}
 		}
@@ -611,7 +613,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// has since changed is the one failure mode a confident agent cannot catch
 		// on its own — it reads as knowledge either way.
 		stale := 0
-		if anchors, err := drawers.AnchorsForDrawers(ctx, t.TeamID, ids); err == nil {
+		if anchors, err := drawers.AnchorsForMemories(ctx, t.TeamID, ids); err == nil {
 			for i := range views {
 				for _, a := range anchors[ids[i]] {
 					views[i].Anchors = append(views[i].Anchors, anchorView{

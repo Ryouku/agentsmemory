@@ -31,7 +31,7 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 	}{
 		{"a default configuration still announces the profile it resolved",
 			func(c config.Config) config.Config { return c },
-			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off"}},
+			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off unit=chunk"}},
 		{"the shipped default announces that the lexical knobs do not apply",
 			func(c config.Config) config.Config { return c },
 			[]string{"fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)"}},
@@ -74,6 +74,30 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 				t.Errorf("a default configuration announced %d line(s):\n%s", len(lines), joined)
 			}
 		})
+	}
+}
+
+// TestConfigureRankingSelectsTheReportedUnit proves the production composition
+// root applies the A/B arm. A Config field and a palace setter tested separately
+// would still permit the one missing line that makes a finished feature
+// unreachable.
+func TestConfigureRankingSelectsTheReportedUnit(t *testing.T) {
+	for _, tc := range []struct {
+		enabled bool
+		unit    string
+	}{
+		{enabled: false, unit: "chunk"},
+		{enabled: true, unit: "memory"},
+	} {
+		cfg := config.Default()
+		cfg.MemoryLevelRanking = tc.enabled
+		svc, lines := configureRanking(bareService(), cfg, noReranker)
+		if got := svc.RankingProfile(); !strings.Contains(got, "unit="+tc.unit) {
+			t.Errorf("enabled=%v profile = %q, want unit=%s", tc.enabled, got, tc.unit)
+		}
+		if got := strings.Join(lines, "\n"); !strings.Contains(got, "unit="+tc.unit) {
+			t.Errorf("enabled=%v startup did not expose the A/B arm:\n%s", tc.enabled, got)
+		}
 	}
 }
 
