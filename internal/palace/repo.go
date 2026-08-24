@@ -272,6 +272,37 @@ func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []s
 	return out, nil
 }
 
+// MemoryChunkIDsByRoots is MemoryChunksByRoots reduced to identity. Anchor
+// resolution needs only which chunk ids belong to which memory, and loading
+// whole memories to build a list of ids moves every chunk's content across the
+// wire for nothing — on a page of long memories that is the largest read in the
+// request.
+func (r *Repo) MemoryChunkIDsByRoots(ctx context.Context, teamID string, roots []string) (map[string][]string, error) {
+	out := make(map[string][]string, len(roots))
+	if len(roots) == 0 {
+		return out, nil
+	}
+	// chunk_index is selected because a compound SELECT can only order by a
+	// column it returns. It costs an int; content and entities — the columns
+	// this projection exists to avoid — stay on the server.
+	var rows []struct {
+		ID         string
+		ParentID   string
+		ChunkIndex int
+	}
+	if err := r.memoryChunkQuery(ctx, teamID, roots, "id, parent_id, chunk_index").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		root := row.ParentID
+		if root == "" {
+			root = row.ID
+		}
+		out[root] = append(out[root], row.ID)
+	}
+	return out, nil
+}
+
 // memoryChunkQuery selects a memory's chunks as a UNION of two single-column
 // lookups rather than `id IN (...) OR parent_id IN (...)`.
 //

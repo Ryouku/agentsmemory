@@ -3,9 +3,12 @@ package palace
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // TestMemoryChunkLookupSeeksRatherThanScansTheTenant is a gate on an access
@@ -58,6 +61,104 @@ func TestMemoryChunkLookupSeeksRatherThanScansTheTenant(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAnchorChunkLookupDoesNotLoadContent pins the projection, because nothing
+// about the RESULT can.
+//
+// Anchor resolution needs a list of chunk ids. Asking for whole memories
+// produces exactly the same anchors, so a behavioural test passes either way
+// while the request drags every chunk's content across on every search — right
+// after the caller loaded those same memories in full. The only observable
+// difference is the columns asked for, so that is what this asserts.
+func TestAnchorChunkLookupDoesNotLoadContent(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	added, err := svc.Add(ctx, "team-proj", AddInput{
+		Wing: "wing_proj", Room: "decisions",
+		Content: strings.Repeat("a memory long enough to be chunked into siblings ", 80),
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	root := added.Drawers[0].ID
+
+	// Same ids as the whole-memory load: the projection must not change WHICH
+	// chunks belong to the memory, only how much of each is read.
+	ids, err := svc.repo.MemoryChunkIDsByRoots(ctx, "team-proj", []string{root})
+	if err != nil {
+		t.Fatalf("MemoryChunkIDsByRoots: %v", err)
+	}
+	full, err := svc.repo.MemoryChunksByRoots(ctx, "team-proj", []string{root})
+	if err != nil {
+		t.Fatalf("MemoryChunksByRoots: %v", err)
+	}
+	if len(ids[root]) != len(full[root]) || len(ids[root]) < 2 {
+		t.Fatalf("projected lookup returned %d chunks, whole-memory lookup %d (want equal, and >1 so siblings are covered)",
+			len(ids[root]), len(full[root]))
+	}
+	for i, d := range full[root] {
+		if ids[root][i] != d.ID {
+			t.Fatalf("chunk %d: projected id %q != whole-memory id %q", i, ids[root][i], d.ID)
+		}
+	}
+
+	// Now the part that matters: what AnchorsForMemories ACTUALLY issues.
+	//
+	// Asserting that a projected query exists proves nothing about whether the
+	// anchor path selects it — that is the "component tested, selection not
+	// tested" gap this repo keeps shipping. So the statements are recorded off
+	// the real call.
+	if _, err := svc.AddAnchors(ctx, "team-proj", root, []AnchorInput{
+		{Path: "internal/palace/repo.go", Snippet: "memoryChunkQuery"},
+	}); err != nil {
+		t.Fatalf("add anchor: %v", err)
+	}
+
+	rec := &sqlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
+	svc.repo.db = svc.repo.db.Session(&gorm.Session{Logger: rec})
+
+	anchors, err := svc.AnchorsForMemories(ctx, "team-proj", []string{root})
+	if err != nil {
+		t.Fatalf("AnchorsForMemories: %v", err)
+	}
+	if len(anchors[root]) != 1 {
+		t.Fatalf("AnchorsForMemories returned %d anchors for the memory; want the 1 that was filed", len(anchors[root]))
+	}
+	issued := rec.statements()
+	if len(issued) == 0 {
+		t.Fatal("no statements recorded; the recorder is not recording and this gate proves nothing")
+	}
+	for _, sql := range issued {
+		// `SELECT *` is the tell. A whole-row read never spells "content", so
+		// searching for the column name would pass on exactly the query this
+		// test exists to reject.
+		if strings.Contains(sql, "SELECT * FROM `drawers`") {
+			t.Fatalf("resolving anchors reads whole drawer rows to build a list of ids:\n%s", sql)
+		}
+	}
+}
+
+// sqlRecorder captures every statement GORM issues, so a test can assert on the
+// query a code path CHOSE rather than on a query it could have chosen.
+type sqlRecorder struct {
+	logger.Interface
+	mu   sync.Mutex
+	sqls []string
+}
+
+func (r *sqlRecorder) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
+	sql, _ := fc()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sqls = append(r.sqls, sql)
+}
+
+func (r *sqlRecorder) statements() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.sqls...)
 }
 
 // memoryChunkQueryPlan returns SQLite's plan for the REAL query the repo issues,

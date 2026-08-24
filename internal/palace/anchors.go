@@ -256,16 +256,20 @@ func (s *Service) AnchorsForDrawers(ctx context.Context, teamID string, ids []st
 // instead of to whichever chunk happened to win.
 func (s *Service) AnchorsForMemories(ctx context.Context, teamID string, memoryIDs []string) (map[string][]Anchor, error) {
 	out := make(map[string][]Anchor, len(memoryIDs))
-	chunks, err := s.repo.MemoryChunksByRoots(ctx, teamID, memoryIDs)
+	// Identity only. This runs on every search, right after the caller has
+	// already loaded these same memories in full, and all it needs is which
+	// chunk ids belong to which root — fetching the content again would make
+	// anchor resolution the largest read in the request for nothing.
+	chunks, err := s.repo.MemoryChunkIDsByRoots(ctx, teamID, memoryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load memory chunks for anchors: %w", err)
 	}
 	var ids []string
 	rootOf := make(map[string]string)
 	for root, siblings := range chunks {
-		for _, d := range siblings {
-			ids = append(ids, d.ID)
-			rootOf[d.ID] = root
+		for _, id := range siblings {
+			ids = append(ids, id)
+			rootOf[id] = root
 		}
 	}
 	byDrawer, err := s.AnchorsForDrawers(ctx, teamID, ids)
