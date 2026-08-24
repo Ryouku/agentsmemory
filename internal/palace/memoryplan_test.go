@@ -2,6 +2,8 @@ package palace
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -193,4 +195,60 @@ func memoryChunkQueryPlan(t *testing.T, svc *Service, ctx context.Context, teamI
 		t.Fatalf("EXPLAIN QUERY PLAN returned no rows for %s", sql)
 	}
 	return strings.Join(out, "\n")
+}
+
+// TestAnchorsForMemoriesReturnStableOrder pins ordering that reaches the agent.
+//
+// AnchorsForMemories assembled its result by ranging two maps, so a memory with
+// anchors on several chunks got them in a different order on every call. That
+// order is user-visible: internal/mcpserver/drawers.go appends the slice
+// straight into the search response, so two identical recalls disagreed. The
+// repo already returns chunks in chunk_index order — the map round-trip was
+// throwing that away.
+func TestAnchorsForMemoriesReturnStableOrder(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	added, err := svc.Add(ctx, "team-order", AddInput{
+		Wing: "wing_alpha", Room: "decisions",
+		Content: strings.Repeat("a memory long enough to be chunked into several siblings ", 120),
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(added.Drawers) < 4 {
+		t.Fatalf("fixture produced %d chunks; ordering needs several anchored chunks", len(added.Drawers))
+	}
+	root := added.Drawers[0].ID
+
+	// One anchor per chunk, so the result has something to shuffle.
+	for i, d := range added.Drawers {
+		if _, err := svc.AddAnchors(ctx, "team-order", d.ID, []AnchorInput{
+			{Path: fmt.Sprintf("internal/palace/file%02d.go", i), Snippet: fmt.Sprintf("marker %02d", i)},
+		}); err != nil {
+			t.Fatalf("anchor chunk %d: %v", i, err)
+		}
+	}
+
+	var first []string
+	for call := range 40 {
+		got, err := svc.AnchorsForMemories(ctx, "team-order", []string{root})
+		if err != nil {
+			t.Fatalf("AnchorsForMemories: %v", err)
+		}
+		paths := make([]string, 0, len(got[root]))
+		for _, a := range got[root] {
+			paths = append(paths, a.Path)
+		}
+		if len(paths) != len(added.Drawers) {
+			t.Fatalf("call %d returned %d anchors; want one per chunk (%d)", call, len(paths), len(added.Drawers))
+		}
+		if first == nil {
+			first = paths
+			continue
+		}
+		if !slices.Equal(paths, first) {
+			t.Fatalf("call %d returned anchors in a different order:\n first: %v\n  this: %v", call, first, paths)
+		}
+	}
 }

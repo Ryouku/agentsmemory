@@ -264,10 +264,20 @@ func (s *Service) AnchorsForMemories(ctx context.Context, teamID string, memoryI
 	if err != nil {
 		return nil, fmt.Errorf("load memory chunks for anchors: %w", err)
 	}
-	var ids []string
-	rootOf := make(map[string]string)
-	for root, siblings := range chunks {
-		for _, id := range siblings {
+	// Walk the CALLER's roots, and each root's chunks in the chunk order the
+	// repo returned. Ranging the maps instead put a memory's anchors in a
+	// different order on every call, and that order is user-visible — the MCP
+	// search response appends them straight through, so an agent diffing two
+	// identical recalls saw its anchors move.
+	ids := make([]string, 0, len(memoryIDs))
+	rootOf := make(map[string]string, len(memoryIDs))
+	seen := make(map[string]bool, len(memoryIDs))
+	for _, root := range memoryIDs {
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		for _, id := range chunks[root] {
 			ids = append(ids, id)
 			rootOf[id] = root
 		}
@@ -276,9 +286,10 @@ func (s *Service) AnchorsForMemories(ctx context.Context, teamID string, memoryI
 	if err != nil {
 		return nil, err
 	}
-	for drawerID, anchors := range byDrawer {
-		root := rootOf[drawerID]
-		out[root] = append(out[root], anchors...)
+	for _, id := range ids {
+		if anchors := byDrawer[id]; len(anchors) > 0 {
+			out[rootOf[id]] = append(out[rootOf[id]], anchors...)
+		}
 	}
 	return out, nil
 }
