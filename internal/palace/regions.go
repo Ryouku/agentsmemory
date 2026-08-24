@@ -173,19 +173,39 @@ func snippetRegions(content, query string, maxChars, maxRegions int, coverTerms 
 // separate evidence — important when one subject term introduces several
 // distant premises and conclusions.
 func coverageCandidates(candidates []windowCandidate, lower []rune, terms []string, want, size int) []windowCandidate {
+	// Which terms each window contains, computed ONCE.
+	//
+	// This loop runs up to `want` times and previously rebuilt every candidate's
+	// window text on each pass — string(lower[start:end]) for ~2,500 candidates,
+	// then a Contains scan per term, repeated per round. The membership cannot
+	// change between rounds, only `covered` does, so the scanning was pure repeat
+	// work: measured at 22.4ms/6.2MB/12,400 allocs on a 100k-rune memory against
+	// 5.1ms/2.1MB with coverage off, per document, ten documents per search.
+	has := make([][]bool, len(candidates))
+	for i, c := range candidates {
+		if c.Terms == 0 {
+			continue // never selectable; skip the scan entirely
+		}
+		window := string(lower[c.Start:c.End])
+		row := make([]bool, len(terms))
+		for j, term := range terms {
+			row[j] = strings.Contains(window, term)
+		}
+		has[i] = row
+	}
+
 	picked := make([]windowCandidate, 0, want)
-	covered := make(map[string]bool, len(terms))
+	covered := make([]bool, len(terms))
 	for len(picked) < want {
 		best := -1
 		bestFresh := -1
 		for i, c := range candidates {
-			if c.Terms == 0 || nearRegion(c, picked, size) {
+			if has[i] == nil || nearRegion(c, picked, size) {
 				continue
 			}
 			fresh := 0
-			window := string(lower[c.Start:c.End])
-			for _, term := range terms {
-				if !covered[term] && strings.Contains(window, term) {
+			for j := range terms {
+				if !covered[j] && has[i][j] {
 					fresh++
 				}
 			}
@@ -198,12 +218,10 @@ func coverageCandidates(candidates []windowCandidate, lower []rune, terms []stri
 		if best < 0 {
 			break
 		}
-		chosen := candidates[best]
-		picked = append(picked, chosen)
-		window := string(lower[chosen.Start:chosen.End])
-		for _, term := range terms {
-			if strings.Contains(window, term) {
-				covered[term] = true
+		picked = append(picked, candidates[best])
+		for j := range terms {
+			if has[best][j] {
+				covered[j] = true
 			}
 		}
 	}
