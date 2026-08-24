@@ -87,14 +87,17 @@ const (
 	// mcpURLEnvVar tells the pi bridge extension which endpoint to talk to. Only
 	// pi needs it: Claude and codex store the URL in their own MCP config, but
 	// the extension has no config of its own to read.
-	mcpURLEnvVar = "AGENTSMEMORY_MCP_URL"
+	mcpURLEnvVar = mcpprotocol.MCPURLEnvVar
 
 	// localEnvVar tells the pi bridge extension that the endpoint is a self-hosted
 	// `agentsmemory --local` server, so a missing token means "this server wants
 	// none" rather than "the user skipped it". The extension needs the difference:
 	// without a token it must stay silent against the hosted service (where it
 	// would only 401), but connect anyway against a local one.
-	localEnvVar = "AGENTSMEMORY_LOCAL"
+	localEnvVar = mcpprotocol.LocalEnvVar
+
+	// socketEnvVar is the Unix socket serve and the installer share.
+	socketEnvVar = mcpprotocol.SocketEnvVar
 
 	// localTokenEnvVar is the variable a self-hosted `agentsmemory --local --token`
 	// server reads its required token from. The installer reads the same one (it is

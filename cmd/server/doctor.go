@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/urfave/cli/v3"
@@ -44,7 +45,7 @@ func doctorCommand(def config.Config) *cli.Command {
 			// and a self-hosted operator who started the server with it and then
 			// ran `doctor --index` was having a bare SQLite store inspected while
 			// chromem served every query. The check exited 0 on a broken palace.
-			&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Usage: "self-hosted single-workspace mode — must match how the server was started, or a different backend is checked"},
+			&cli.BoolFlag{Name: "local", Sources: cli.EnvVars(mcpprotocol.LocalEnvVar), Usage: "self-hosted single-workspace mode — must match how the server was started, or a different backend is checked"},
 			&cli.StringFlag{Name: "project", Value: "local", Usage: "workspace slug to check"},
 			&cli.BoolFlag{Name: "index", Usage: "check that every stored point's wing matches its drawer's"},
 			&cli.BoolFlag{Name: "graph", Usage: "report what the derived graph WOULD hold if every drawer were run through the entity extractor now (read-only)"},

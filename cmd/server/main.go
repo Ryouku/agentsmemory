@@ -212,8 +212,8 @@ func serveFlags(def config.Config) []cli.Flag {
 		// AGENTSMEMORY_SOCKET is shared with the mcp-stdio proxy on purpose: one
 		// exported variable points the server at a socket and tells the proxy
 		// where to dial, so the pair cannot drift apart.
-		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
-		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars("AGENTSMEMORY_LOCAL"), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
+		&cli.StringFlag{Name: "socket", Sources: cli.EnvVars(mcpprotocol.SocketEnvVar), Value: def.SocketPath, Usage: "listen on this Unix socket (mode 0600) instead of --addr; pair it with 'mcp-stdio --socket' to reach the server over stdio"},
+		&cli.BoolFlag{Name: "local", Sources: cli.EnvVars(mcpprotocol.LocalEnvVar), Value: def.Local, Usage: "self-hosted single-workspace mode: one \"local\" workspace, unauthenticated /mcp, no dashboard (defaults to " + config.LocalAddr + ")"},
 		&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.LocalTokenEnvVar), Usage: "require this bearer token on --local's /mcp and /import, so the server can safely bind a LAN address (e.g. --addr 0.0.0.0:8080); omit for a credential-free loopback or --socket install"},
 		&cli.StringFlag{Name: "superadmin-emails", Sources: cli.EnvVars("SUPERADMIN_EMAILS"), Usage: "comma-separated emails allowed to edit the global am_skillset playbook"},
 	}, dataFlags(def)...)
@@ -236,7 +236,7 @@ func productionMCPServer(svc *services, cfg config.Config, local bool) *server.M
 		deps.Drawers = svc.drawers
 		deps.Workspaces = svc.tenants
 	}
-	return mcpserver.New(deps)
+	return mcpserver.Compose(deps)
 }
 
 // run opens the database, migrates, wires dependencies, and serves until error.

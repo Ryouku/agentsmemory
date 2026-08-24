@@ -294,23 +294,22 @@ func TestGatedArmReconstructsTheServedRanking(t *testing.T) {
 			continue
 		}
 		named++
-		ranker := fusionRankerFor(arm, hybridBM25Weight)
+		armSvc := tc.svc.serviceForArm(arm)
+		if armSvc == nil {
+			t.Errorf("%s: gate names %q but serviceForArm returned nil", tc.name, arm)
+			continue
+		}
 		for i, f := range fixtures {
-			boosts := f.closet
+			servedBoosts := f.closet
 			if tc.svc.closetBoostScale == 0 {
-				boosts = make([]float64, len(f.closet))
+				servedBoosts = make([]float64, len(f.closet))
 			}
-			served := orderOf(tc.svc.fusionRanker()(f.query, f.docs, f.dists, boosts))
-
-			var got []int
-			switch {
-			case ranker != nil:
-				got = orderOf(ranker(f.query, f.docs, f.dists, armBoosts(arm, f.closet)))
-			case arm == ArmRRF:
-				got = orderOf(rankRRF(f.query, f.docs, f.dists, armBoosts(arm, f.closet)))
-			default:
-				continue // a reranked arm: needs a live cross-encoder, covered elsewhere
+			armBoosts := f.closet
+			if armSvc.closetBoostScale == 0 {
+				armBoosts = make([]float64, len(f.closet))
 			}
+			served := orderOf(tc.svc.fusionRanker()(f.query, f.docs, f.dists, servedBoosts))
+			got := orderOf(armSvc.fusionRanker()(f.query, f.docs, f.dists, armBoosts))
 			if !same(got, served) {
 				t.Errorf("%s / fixture %d: the gate names %q, but that arm orders %v while production "+
 					"orders %v — the gate would judge a pipeline nobody runs", tc.name, i, arm, got, served)

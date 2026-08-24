@@ -192,6 +192,13 @@ type Service struct {
 	// it over the mined gold. The operator knows which palace theirs is.
 	closetBoostScale float64
 
+	// recencyBand is the fused-score window inside which a newer content date
+	// may swap two adjacent candidates. Zero (the default, and the only value
+	// Search's composition root ever sets) leaves the fused order untouched.
+	// Eval recency arms set it on a Clone so they rank through rankRetrieved
+	// rather than a second reorder beside it. ADR-004 keeps production off.
+	recencyBand float64
+
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -312,6 +319,17 @@ func (s *Service) WithLexNorm(name string) *Service {
 	if n, ok := lexNormByName(name); ok {
 		s.lexNorm, s.lexNormName = n, name
 	}
+	return s
+}
+
+// WithRecencyBand sets the fused-score window for a date-preference reorder.
+// Zero or negative turns it off. Production never calls this; eval recency
+// arms do, so the reorder runs inside rankRetrieved instead of beside it.
+func (s *Service) WithRecencyBand(band float64) *Service {
+	if band < 0 {
+		band = 0
+	}
+	s.recencyBand = band
 	return s
 }
 
@@ -870,6 +888,43 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		return nil, fmt.Errorf("load drawer rows: %w", err)
 	}
 
+	q.Limit = limit
+	results, reranked, err := s.rankRetrieved(ctx, teamID, query, q, vec, hits, rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record what this recall found. Best-effort by construction: measurement must
+	// never be able to fail the thing it measures.
+	if q.SkipTelemetry {
+		return results, nil
+	}
+	ev := searchEventRow{
+		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
+		// Whether reranking HAPPENED, not whether a reranker exists. The previous
+		// value was boolToInt(s.rerank != nil), so at weight 0 — where
+		// applyRerankWith returns before scoring anything — every event claimed a
+		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
+		// threshold from these rows.
+		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
+	}
+	if len(results) > 0 {
+		ev.TopScore = results[0].Score
+	}
+	s.repo.recordSearch(ctx, ev)
+
+	return results, nil
+}
+
+// rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
+// Eval arms that reconstruct a served configuration call it on a Clone rather
+// than reimplementing fusion, closet boost, recency, rerank, or collapse.
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultSearchLimit
+	}
+
 	// Keep the survivors that pass the wing/room/max-distance filters, in vector
 	// order, carrying content (for BM25) and distance (for vector similarity).
 	// The wing/room comparisons are redundant when the index honoured the filter
@@ -900,16 +955,20 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// failed or empty closet search simply yields no boosts and search proceeds.
 	closetBoostBySource := s.closetBoosts(ctx, teamID, vec)
 
-	// Hybrid re-rank the survivors by content + distance + closet boost, then page.
 	docs := make([]string, len(survivors))
 	dists := make([]float64, len(survivors))
 	boosts := make([]float64, len(survivors))
+	dates := make([]string, len(survivors))
 	for i, h := range survivors {
 		docs[i] = h.Drawer.Content
 		dists[i] = h.Distance
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
+		dates[i] = h.Drawer.ContentDate
 	}
 	ranked := s.fusionRanker()(query, docs, dists, boosts)
+	if s.recencyBand > 0 {
+		ranked = reorderByRecency(ranked, dates, s.recencyBand)
+	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
 	// from a query vector and term overlap; a cross-encoder reads the query and
@@ -953,27 +1012,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
-
-	// Record what this recall found. Best-effort by construction: measurement must
-	// never be able to fail the thing it measures.
-	if q.SkipTelemetry {
-		return results, nil
-	}
-	ev := searchEventRow{
-		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
-		// Whether reranking HAPPENED, not whether a reranker exists. The previous
-		// value was boolToInt(s.rerank != nil), so at weight 0 — where
-		// applyRerankWith returns before scoring anything — every event claimed a
-		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
-		// threshold from these rows.
-		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
-	}
-	if len(results) > 0 {
-		ev.TopScore = results[0].Score
-	}
-	s.repo.recordSearch(ctx, ev)
-
-	return results, nil
+	return results, reranked, nil
 }
 
 // candidateKFor is how many vector neighbours a search fetches.

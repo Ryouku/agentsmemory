@@ -6,6 +6,13 @@
 **Spec:** None — no spec stage
 **Cross-references:** ADR-006 (operator knobs must have an effect), ADR-008 (the MCP surface must be exercised end to end), ADR-012 (write authority), ADR-014 (the shipped default is the measured one), ADR-015 (stored rows and the index must agree), ADR-017 (installed hooks must actually fire), `docs/architecture.md` (concept ownership and composition roots), `docs/adr/BACKLOG.md` “The product is a runtime quality control plane” (profile identity, stage outcomes and search identity)
 **Invalidates:** none — this generalises the existing reachability gates and preserves their decisions
+
+**Number collision:** pull request #25 proposes a different document that also
+uses ADR-024 (`ADR-024-rank-memories-not-chunks.md`). This executable-contract-axes
+document is the 024 already in this tree. The ranking ADR must take the next free
+number before merge; ranking itself must consume `Service.Search` / `rankRetrieved`,
+not add a selector only one path reads.
+
 **Served-path change:** None in T1. Later tasks change production only when an executable axis exposes a concrete residual; every such fix lands with the observation and mutant that proved the gap.
 
 ## Context

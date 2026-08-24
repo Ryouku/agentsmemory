@@ -18,6 +18,18 @@ const (
 	// WingEnvVar is the process-level default wing a registration or stdio
 	// proxy forwards when the caller did not pass one on the tool call.
 	WingEnvVar = "AGENTSMEMORY_WING"
+	// LocalEnvVar is the self-hosted single-workspace switch. The server CLI,
+	// doctor, and the installer/extension all read this one name.
+	LocalEnvVar = "AGENTSMEMORY_LOCAL"
+	// SocketEnvVar is the Unix socket the server listens on and the stdio
+	// proxy / installer dial. One name, both halves.
+	SocketEnvVar = "AGENTSMEMORY_SOCKET"
+	// MCPURLEnvVar is the MCP endpoint a client or bridge talks to.
+	MCPURLEnvVar = "AGENTSMEMORY_MCP_URL"
+	// ProxyURLEnvVar is the HTTP origin the stdio proxy dials when it is not
+	// using a socket. It is not MCPURLEnvVar: the proxy speaks to the server's
+	// listen address, which may not be the public MCP URL a remote client uses.
+	ProxyURLEnvVar = "AGENTSMEMORY_URL"
 	// StarScopeSchemaExtension marks an optional wing property whose "*" value
 	// deliberately widens a registration-scoped read to every visible wing.
 	// Contract-axis adapters discover the class from tools/list through this

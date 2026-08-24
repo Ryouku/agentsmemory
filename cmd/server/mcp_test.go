@@ -42,7 +42,7 @@ func TestProductionMCPConstructionHasOneChokepoint(t *testing.T) {
 				}
 				switch target := call.Fun.(type) {
 				case *ast.SelectorExpr:
-					if pkg, ok := target.X.(*ast.Ident); ok && pkg.Name == "mcpserver" && target.Sel.Name == "New" {
+					if pkg, ok := target.X.(*ast.Ident); ok && pkg.Name == "mcpserver" && target.Sel.Name == "Compose" {
 						found.constructor++
 					}
 				case *ast.Ident:
@@ -60,11 +60,11 @@ func TestProductionMCPConstructionHasOneChokepoint(t *testing.T) {
 	for name, found := range byFunction {
 		constructors += found.constructor
 		if found.constructor > 0 && name != "productionMCPServer" {
-			t.Errorf("%s calls mcpserver.New directly; HTTP and CLI must share productionMCPServer", name)
+			t.Errorf("%s calls mcpserver.Compose directly; HTTP and CLI must share productionMCPServer", name)
 		}
 	}
 	if constructors != 1 {
-		t.Errorf("mcpserver.New call sites = %d, want one production composition chokepoint", constructors)
+		t.Errorf("mcpserver.Compose call sites = %d, want one production composition chokepoint", constructors)
 	}
 	for _, name := range []string{"run", "runMCP"} {
 		if byFunction[name].shared == 0 {

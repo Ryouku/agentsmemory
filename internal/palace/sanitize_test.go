@@ -75,3 +75,26 @@ func TestSanitizeContent(t *testing.T) {
 		})
 	}
 }
+
+func TestDeriveWingNamePassesSanitizeName(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"acme", "wing_acme"},
+		{".claude", "wing_claude"},
+		{"acme laravel", "wing_acme_laravel"},
+		{"acme_", "wing_acme"},
+		{"_acme", "wing_acme"},
+		{"---", "wing_project"},
+		{"", "wing_project"},
+	}
+	for _, tc := range cases {
+		got := DeriveWingName(tc.in)
+		if got != tc.want {
+			t.Errorf("DeriveWingName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if _, err := SanitizeName(got, "wing"); err != nil {
+			t.Errorf("DeriveWingName(%q) = %q, which SanitizeName rejects: %v", tc.in, got, err)
+		}
+	}
+}

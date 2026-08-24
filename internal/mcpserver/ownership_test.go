@@ -55,6 +55,12 @@ func TestProductionMCPRegistryHasOneOwner(t *testing.T) {
 				if !ok {
 					return true
 				}
+				if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "New" && rel == "internal/mcpserver/server.go" {
+					if function.Name.Name != "Compose" {
+						t.Errorf("%s calls New in %s; only Compose may construct the MCP server", function.Name.Name, rel)
+					}
+					return true
+				}
 				selector, ok := call.Fun.(*ast.SelectorExpr)
 				if !ok {
 					return true
@@ -74,10 +80,12 @@ func TestProductionMCPRegistryHasOneOwner(t *testing.T) {
 						t.Errorf("%s.%s owns MCP registration in %s; only internal/mcpserver/server.go may construct/register tools", function.Name.Name, selector.Sel.Name, rel)
 					}
 				case selector.Sel.Name == "New" && pkg != nil && pkg.Name == memoryServerPackage:
+					t.Errorf("%s calls mcpserver.New from %s; production and the harness must use Compose", function.Name.Name, rel)
+				case selector.Sel.Name == "Compose" && pkg != nil && pkg.Name == memoryServerPackage:
 					productionSeam := rel == "cmd/server/main.go" && function.Name.Name == "productionMCPServer"
 					testHarness := rel == "internal/mcptest/harness.go"
 					if !productionSeam && !testHarness {
-						t.Errorf("%s calls mcpserver.New from %s; production must use productionMCPServer", function.Name.Name, rel)
+						t.Errorf("%s calls mcpserver.Compose from %s; only productionMCPServer and the harness may", function.Name.Name, rel)
 					}
 				}
 				return true
@@ -293,4 +301,100 @@ func importedAs(file *ast.File, importPath, fallback string) string {
 		return fallback
 	}
 	return ""
+}
+
+func TestProductionAndHarnessAssignEveryDepsField(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := depsFieldNames(file)
+	if len(fields) == 0 {
+		t.Fatal("Deps struct not found")
+	}
+	sites := []struct{ path, fn string }{
+		{"../../cmd/server/main.go", "productionMCPServer"},
+		{"../../internal/mcptest/harness.go", "newStreamWith"},
+	}
+	for _, site := range sites {
+		assigned := depsFieldsAssignedIn(t, site.path, site.fn)
+		for _, name := range fields {
+			if !assigned[name] {
+				t.Errorf("%s does not assign Deps.%s; a new collaborator would be omitted on one path", site.fn, name)
+			}
+		}
+	}
+}
+
+func depsFieldNames(file *ast.File) []string {
+	var fields []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != "Deps" {
+			return true
+		}
+		st, ok := spec.Type.(*ast.StructType)
+		if !ok {
+			return true
+		}
+		for _, field := range st.Fields.List {
+			for _, name := range field.Names {
+				fields = append(fields, name.Name)
+			}
+		}
+		return true
+	})
+	return fields
+}
+
+func depsFieldsAssignedIn(t *testing.T, path, fn string) map[string]bool {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := map[string]bool{}
+	for _, decl := range file.Decls {
+		function, ok := decl.(*ast.FuncDecl)
+		if !ok || function.Name.Name != fn || function.Body == nil {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.CompositeLit:
+				if !isDepsLiteral(n) {
+					return true
+				}
+				for _, elt := range n.Elts {
+					kv, ok := elt.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					if ident, ok := kv.Key.(*ast.Ident); ok {
+						assigned[ident.Name] = true
+					}
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range n.Lhs {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok {
+						continue
+					}
+					assigned[sel.Sel.Name] = true
+				}
+			}
+			return true
+		})
+	}
+	return assigned
+}
+
+func isDepsLiteral(lit *ast.CompositeLit) bool {
+	switch t := lit.Type.(type) {
+	case *ast.Ident:
+		return t.Name == "Deps"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "Deps"
+	}
+	return false
 }

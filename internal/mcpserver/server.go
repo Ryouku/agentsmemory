@@ -185,6 +185,14 @@ func New(deps Deps) *server.MCPServer {
 	return srv
 }
 
+// Compose is the one assembly of MCP collaborators. The HTTP process, the
+// in-process CLI, and the contract harness all call it, so a new Deps field
+// cannot be wired on one path and omitted on another. New remains the
+// constructor Compose calls.
+func Compose(deps Deps) *server.MCPServer {
+	return New(deps)
+}
+
 // serverInstructions is returned to every client in the MCP initialize response.
 //
 // It exists because it is the ONLY channel that reaches a client with nowhere to

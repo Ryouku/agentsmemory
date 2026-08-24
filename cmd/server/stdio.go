@@ -76,8 +76,8 @@ func stdioCommandWithIO(def config.Config, stdin io.Reader, stdout io.Writer) *c
 		Flags: []cli.Flag{
 			// Shares AGENTSMEMORY_SOCKET with serve so one exported variable
 			// configures both halves of the pair.
-			&cli.StringFlag{Name: "socket", Sources: cli.EnvVars("AGENTSMEMORY_SOCKET"), Usage: "Unix socket the server is listening on (takes precedence over --url)"},
-			&cli.StringFlag{Name: "url", Sources: cli.EnvVars("AGENTSMEMORY_URL"), Value: defaultProxyURL, Usage: "MCP endpoint URL when not using a socket"},
+			&cli.StringFlag{Name: "socket", Sources: cli.EnvVars(mcpprotocol.SocketEnvVar), Usage: "Unix socket the server is listening on (takes precedence over --url)"},
+			&cli.StringFlag{Name: "url", Sources: cli.EnvVars(mcpprotocol.ProxyURLEnvVar), Value: defaultProxyURL, Usage: "MCP endpoint URL when not using a socket"},
 			&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.TokenEnvVar), Usage: "API key forwarded as a Bearer token (multi-tenant servers; --local needs none)"},
 			&cli.StringFlag{Name: "wing", Sources: cli.EnvVars(mcpprotocol.WingEnvVar), Usage: "registration wing forwarded on every request (omit for workspace scope; use a tool argument of \"*\" for deliberate cross-wing calls)"},
 		},

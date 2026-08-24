@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,6 +21,10 @@ func TestWireConstantsHaveOneLiteralOwner(t *testing.T) {
 		TokenEnvVar:      "TokenEnvVar",
 		LocalTokenEnvVar: "LocalTokenEnvVar",
 		WingEnvVar:       "WingEnvVar",
+		LocalEnvVar:      "LocalEnvVar",
+		SocketEnvVar:     "SocketEnvVar",
+		MCPURLEnvVar:     "MCPURLEnvVar",
+		ProxyURLEnvVar:   "ProxyURLEnvVar",
 	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -63,5 +68,27 @@ func TestWireConstantsHaveOneLiteralOwner(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNonGoClientsUseProtocolEnvNames(t *testing.T) {
+	root := filepath.Clean("../..")
+	for _, tc := range []struct {
+		rel   string
+		names []string
+	}{
+		{"clients/claude-code/extensions/agentsmemory.ts", []string{TokenEnvVar, LocalEnvVar, MCPURLEnvVar}},
+		{"clients/claude-code/hooks/agentsmemory-verify-hook.sh", []string{MCPURLEnvVar}},
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, tc.rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(raw)
+		for _, name := range tc.names {
+			if !strings.Contains(body, name) {
+				t.Errorf("%s does not mention %s; renaming the protocol env would leave this client on the old name", tc.rel, name)
+			}
+		}
 	}
 }
