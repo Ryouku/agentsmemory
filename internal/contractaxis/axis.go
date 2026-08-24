@@ -2,7 +2,9 @@ package contractaxis
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -59,32 +61,70 @@ func (o *Observation) RecordPositive() { o.positive = true }
 // RecordNegative records that the forbidden outer effect was observed absent.
 func (o *Observation) RecordNegative() { o.negative = true }
 
-// Probe observes one item through the production selector and outer surface.
-type Probe func(ctx context.Context, item string, observation *Observation) error
+// Probe observes one item case through the production selector and outer surface.
+type Probe func(ctx context.Context, item, caseID string, observation *Observation) error
 
 // Universe enumerates the authoritative production item identifiers.
 type Universe func(ctx context.Context) ([]string, error)
 
+// Cases enumerates the distinct production paths that must be observed for one item.
+type Cases func(ctx context.Context, item string) ([]string, error)
+
 // MutantEvidence records one disposable mutation run.
 type MutantEvidence struct {
-	id        string
-	assertion string
-	applied   bool
-	compiled  bool
-	killed    bool
-	restored  bool
-	detail    string
+	id              string
+	axis            string
+	item            string
+	caseID          string
+	target          MutationTarget
+	patchDigest     string
+	paths           []string
+	compile         string
+	assertion       string
+	expectedFailure string
+	applied         bool
+	compiled        bool
+	killed          bool
+	restored        bool
+	detail          string
 }
 
 // ID returns the mutation's stable identifier.
 func (m MutantEvidence) ID() string { return m.id }
 
+// Axis returns the axis whose production wire the mutation targets.
+func (m MutantEvidence) Axis() string { return m.axis }
+
+// Item returns the item targeted by the mutation, or "*" for an axis mutant.
+func (m MutantEvidence) Item() string { return m.item }
+
+// Case returns the case targeted by the mutation, or "*" for an axis mutant.
+func (m MutantEvidence) Case() string { return m.caseID }
+
+// Target returns the immutable repository and HEAD identity used for the run.
+func (m MutantEvidence) Target() MutationTarget { return m.target }
+
+// PatchDigest returns the SHA-256 digest of the applied patch.
+func (m MutantEvidence) PatchDigest() string { return m.patchDigest }
+
+// Paths returns the repository-relative paths changed by the mutation.
+func (m MutantEvidence) Paths() []string { return append([]string(nil), m.paths...) }
+
+// Compile returns the declared compile fence command.
+func (m MutantEvidence) Compile() string { return m.compile }
+
 // Assertion returns the command that the mutant made fail.
 func (m MutantEvidence) Assertion() string { return m.assertion }
 
+// ExpectedFailure returns the semantic failure text attested with the runner nonce.
+func (m MutantEvidence) ExpectedFailure() string { return m.expectedFailure }
+
 // Verified reports whether the patch applied, compiled, was killed, and restored cleanly.
 func (m MutantEvidence) Verified() bool {
-	return m.applied && m.compiled && m.killed && m.restored && strings.TrimSpace(m.assertion) != ""
+	return m.target.valid() && strings.TrimSpace(m.axis) != "" && strings.TrimSpace(m.item) != "" &&
+		strings.TrimSpace(m.caseID) != "" && strings.TrimSpace(m.patchDigest) != "" && len(m.paths) > 0 &&
+		strings.TrimSpace(m.compile) != "" && strings.TrimSpace(m.assertion) != "" &&
+		strings.TrimSpace(m.expectedFailure) != "" && m.applied && m.compiled && m.killed && m.restored
 }
 
 // Detail returns bounded diagnostic evidence from the mutation run.
@@ -108,12 +148,18 @@ const (
 type ResidualKey struct {
 	Axis     string
 	Item     string
+	Case     string
 	Contract Contract
 }
 
-// String returns the stable axis/item/contract identity used by ratchets.
+// String returns the stable escaped axis/item/case/contract identity used by ratchets.
 func (k ResidualKey) String() string {
-	return fmt.Sprintf("%s/%s/%s", k.Axis, k.Item, k.Contract)
+	return strings.Join([]string{
+		escapeResidualSegment(k.Axis),
+		escapeResidualSegment(k.Item),
+		escapeResidualSegment(k.Case),
+		escapeResidualSegment(string(k.Contract)),
+	}, "/")
 }
 
 // Exception owns one residual until it can be closed.
@@ -138,13 +184,16 @@ type RatchetObligation struct {
 
 // Axis binds one derived universe to its production observations.
 type Axis struct {
-	ID         string
-	Maturity   Maturity
-	Universe   Universe
-	Probe      Probe
-	Mutants    []MutantEvidence
-	Exceptions []Exception
-	Ratchet    []RatchetObligation
+	ID             string
+	Maturity       Maturity
+	Universe       Universe
+	Cases          Cases
+	Probe          Probe
+	MutationTarget MutationTarget
+	MutationError  error
+	Mutants        []MutantEvidence
+	Exceptions     []Exception
+	Ratchet        []RatchetObligation
 }
 
 // Residual describes one unmet contract and whether a valid exception owns it.
@@ -176,6 +225,8 @@ type AxisReport struct {
 	Maturity  Maturity
 	Status    Status
 	Universe  int
+	Cases     int
+	Mutants   []MutantEvidence
 	Residuals []Residual
 }
 
@@ -201,9 +252,17 @@ func Evaluate(ctx context.Context, now time.Time, axes ...Axis) Report {
 			Maturity: Enforced,
 			Status:   Fail,
 			Residuals: []Residual{{
-				Key:    ResidualKey{Axis: "<registry>", Item: "*", Contract: UniverseContract},
+				Key:    ResidualKey{Axis: "<registry>", Item: "*", Case: "*", Contract: UniverseContract},
 				Detail: "no contract axes are registered",
 			}},
+		}}
+		return report
+	}
+	registryResiduals := validateAxisRegistry(axes)
+	if len(registryResiduals) > 0 {
+		report.Status = Fail
+		report.Axes = []AxisReport{{
+			Axis: "<registry>", Maturity: Enforced, Status: Fail, Residuals: registryResiduals,
 		}}
 		return report
 	}
@@ -216,82 +275,178 @@ func Evaluate(ctx context.Context, now time.Time, axes ...Axis) Report {
 	return report
 }
 
+func validateAxisRegistry(axes []Axis) []Residual {
+	seen := map[string]bool{}
+	var residuals []Residual
+	for i, axis := range axes {
+		id := strings.TrimSpace(axis.ID)
+		switch {
+		case id == "":
+			residuals = append(residuals, Residual{
+				Key: ResidualKey{
+					Axis: "<registry>", Item: fmt.Sprintf("axis-%d", i+1), Case: "*", Contract: UniverseContract,
+				},
+				Detail: "axis identifier is empty",
+			})
+		case isReservedContractIdentifier(id):
+			residuals = append(residuals, Residual{
+				Key:    ResidualKey{Axis: "<registry>", Item: fmt.Sprintf("axis-%d", i+1), Case: "*", Contract: UniverseContract},
+				Detail: fmt.Sprintf("axis identifier %q is reserved for structural residuals", id),
+			})
+		case seen[id]:
+			residuals = append(residuals, Residual{
+				Key:    ResidualKey{Axis: "<registry>", Item: id, Case: "*", Contract: UniverseContract},
+				Detail: "axis identifier is duplicated",
+			})
+		default:
+			seen[id] = true
+		}
+	}
+	sort.Slice(residuals, func(i, j int) bool {
+		return lessResidualKey(residuals[i].Key, residuals[j].Key)
+	})
+	return residuals
+}
+
 func evaluateAxis(ctx context.Context, now time.Time, axis Axis) AxisReport {
 	id := strings.TrimSpace(axis.ID)
-	if id == "" {
-		id = "<unnamed>"
-	}
 	ar := AxisReport{Axis: id, Maturity: axis.Maturity}
 	residuals := map[ResidualKey]Residual{}
-	add := func(item string, contract Contract, detail string) {
-		key := ResidualKey{Axis: id, Item: item, Contract: contract}
+	add := func(item, caseID string, contract Contract, detail string) {
+		key := ResidualKey{Axis: id, Item: item, Case: caseID, Contract: contract}
 		if _, exists := residuals[key]; !exists {
 			residuals[key] = Residual{Key: key, Detail: detail}
 		}
 	}
 
 	if axis.Maturity != Enforced && axis.Maturity != Ratchet && axis.Maturity != Advisory {
-		add("*", UniverseContract, fmt.Sprintf("unknown maturity %q", axis.Maturity))
+		add("*", "*", UniverseContract, fmt.Sprintf("unknown maturity %q", axis.Maturity))
 	}
 	if axis.Universe == nil {
-		add("*", UniverseContract, "universe callback is nil")
+		add("*", "*", UniverseContract, "universe callback is nil")
 	} else {
 		items, err := axis.Universe(ctx)
 		if err != nil {
-			add("*", UniverseContract, "enumerate universe: "+err.Error())
+			add("*", "*", UniverseContract, "enumerate universe: "+err.Error())
 		} else {
 			seen := map[string]bool{}
 			for _, raw := range items {
 				item := strings.TrimSpace(raw)
 				if item == "" {
-					add("<empty>", UniverseContract, "universe contains an empty item identifier")
+					add("<empty>", "*", UniverseContract, "universe contains an empty item identifier")
+					continue
+				}
+				if isReservedContractIdentifier(item) {
+					add(item, "*", UniverseContract, "universe item identifier is reserved for structural residuals")
 					continue
 				}
 				if seen[item] {
-					add(item, UniverseContract, "universe contains the item more than once")
+					add(item, "*", UniverseContract, "universe contains the item more than once")
 					continue
 				}
 				seen[item] = true
 			}
 			ar.Universe = len(seen)
 			if len(seen) == 0 {
-				add("*", UniverseContract, "production universe is empty")
+				add("*", "*", UniverseContract, "production universe is empty")
 			}
 			for _, item := range sortedKeys(seen) {
-				if axis.Probe == nil {
-					add(item, ProbeContract, "probe callback is nil")
+				if axis.Cases == nil {
+					add(item, "*", UniverseContract, "case callback is nil")
 					continue
 				}
-				observation := &Observation{}
-				probeErr := axis.Probe(ctx, item, observation)
-				if probeErr != nil {
-					add(item, ProbeContract, probeErr.Error())
+				caseIDs, caseErr := axis.Cases(ctx, item)
+				if caseErr != nil {
+					add(item, "*", UniverseContract, "enumerate cases: "+caseErr.Error())
 					continue
 				}
-				if !observation.bound {
-					add(item, BindingContract, "item is not bound to a production selector")
+				cases := map[string]bool{}
+				for _, raw := range caseIDs {
+					caseID := strings.TrimSpace(raw)
+					if caseID == "" {
+						add(item, "<empty>", UniverseContract, "case universe contains an empty identifier")
+						continue
+					}
+					if isReservedContractIdentifier(caseID) {
+						add(item, caseID, UniverseContract, "case identifier is reserved for structural residuals")
+						continue
+					}
+					if cases[caseID] {
+						add(item, caseID, UniverseContract, "case universe contains the case more than once")
+						continue
+					}
+					cases[caseID] = true
 				}
-				if !observation.positive {
-					add(item, PositiveContract, "promised outer effect was not observed")
+				ar.Cases += len(cases)
+				if len(cases) == 0 {
+					add(item, "*", UniverseContract, "case universe is empty")
 				}
-				if !observation.negative {
-					add(item, NegativeContract, "forbidden outer effect was not observed absent")
+				for _, caseID := range sortedKeys(cases) {
+					if axis.Probe == nil {
+						add(item, caseID, ProbeContract, "probe callback is nil")
+						continue
+					}
+					observation := &Observation{}
+					probeErr := axis.Probe(ctx, item, caseID, observation)
+					if probeErr != nil {
+						add(item, caseID, ProbeContract, probeErr.Error())
+						continue
+					}
+					if !observation.bound {
+						add(item, caseID, BindingContract, "item case is not bound to a production selector")
+					}
+					if !observation.positive {
+						add(item, caseID, PositiveContract, "promised outer effect was not observed")
+					}
+					if !observation.negative {
+						add(item, caseID, NegativeContract, "forbidden outer effect was not observed absent")
+					}
 				}
 			}
 		}
 	}
 
-	if len(axis.Mutants) == 0 {
-		add("*", MutantContract, "axis has no mutation evidence")
+	if axis.MutationError != nil {
+		add("*", "*", MutantContract, "mutation execution: "+axis.MutationError.Error())
+	} else if len(axis.Mutants) == 0 {
+		add("*", "*", MutantContract, "axis has no mutation evidence")
 	}
+	if !axis.MutationTarget.valid() {
+		add("*", "*", MutantContract, "axis has no resolved mutation target")
+	}
+	axisMutant := false
+	seenMutants := map[string]bool{}
 	for i, mutant := range axis.Mutants {
 		item := strings.TrimSpace(mutant.id)
 		if item == "" {
 			item = fmt.Sprintf("<mutant-%d>", i+1)
 		}
 		var missing []string
+		if seenMutants[item] {
+			missing = append(missing, "unique mutation id")
+		}
+		seenMutants[item] = true
 		if strings.TrimSpace(mutant.assertion) == "" {
 			missing = append(missing, "named assertion")
+		}
+		if strings.TrimSpace(mutant.axis) == "" || strings.TrimSpace(mutant.item) == "" || strings.TrimSpace(mutant.caseID) == "" {
+			missing = append(missing, "axis/item/case target")
+		} else if mutant.axis != id {
+			missing = append(missing, "matching axis identity")
+		}
+		if !mutant.target.valid() {
+			missing = append(missing, "resolved repository target")
+		} else if mutant.target != axis.MutationTarget {
+			missing = append(missing, "matching repository HEAD")
+		}
+		if strings.TrimSpace(mutant.patchDigest) == "" || len(mutant.paths) == 0 {
+			missing = append(missing, "patch digest and paths")
+		}
+		if strings.TrimSpace(mutant.compile) == "" {
+			missing = append(missing, "declared compile fence")
+		}
+		if strings.TrimSpace(mutant.expectedFailure) == "" {
+			missing = append(missing, "nonce-attested failure")
 		}
 		if !mutant.applied {
 			missing = append(missing, "applied patch")
@@ -305,16 +460,24 @@ func evaluateAxis(ctx context.Context, now time.Time, axis Axis) AxisReport {
 		if !mutant.restored {
 			missing = append(missing, "clean restoration")
 		}
+		if len(missing) == 0 && mutant.item == "*" && mutant.caseID == "*" {
+			axisMutant = true
+		}
 		if len(missing) > 0 {
 			detail := "missing " + strings.Join(missing, ", ")
 			if mutant.detail != "" {
 				detail += ": " + mutant.detail
 			}
-			add(item, MutantContract, detail)
+			add(item, "*", MutantContract, detail)
 		}
 	}
+	if len(axis.Mutants) > 0 && !axisMutant {
+		add("*", "*", MutantContract, "axis has no verified axis-wide selector mutant")
+	}
+	ar.Mutants = append([]MutantEvidence(nil), axis.Mutants...)
+	sort.Slice(ar.Mutants, func(i, j int) bool { return ar.Mutants[i].id < ar.Mutants[j].id })
 
-	applyExceptions(now, id, residuals, axis.Exceptions, add)
+	applyExceptions(now, id, residuals, axis.Exceptions, axis, add)
 	applyRatchet(now, id, axis, residuals, add)
 	ar.Residuals = residualSlice(residuals)
 	ar.Status = statusFor(axis, ar.Residuals, add)
@@ -324,13 +487,13 @@ func evaluateAxis(ctx context.Context, now time.Time, axis Axis) AxisReport {
 	return ar
 }
 
-func applyExceptions(now time.Time, axis string, residuals map[ResidualKey]Residual, exceptions []Exception, add func(string, Contract, string)) {
+func applyExceptions(now time.Time, axis string, residuals map[ResidualKey]Residual, exceptions []Exception, definition Axis, add func(string, string, Contract, string)) {
 	base := residualKeys(residuals)
 	var valid []int
 	seen := map[ResidualKey]bool{}
 	for i := range exceptions {
 		ex := exceptions[i]
-		problem := validateException(now, axis, ex)
+		problem := validateException(now, axis, ex, definition)
 		if problem == "" && seen[ex.Key] {
 			problem = "exception is duplicated"
 		}
@@ -340,7 +503,7 @@ func applyExceptions(now time.Time, axis string, residuals map[ResidualKey]Resid
 			problem = "exception is stale because its residual is absent"
 		}
 		if problem != "" {
-			add(ex.Key.String(), ExceptionContract, problem)
+			add(ex.Key.String(), "*", ExceptionContract, problem)
 			continue
 		}
 		valid = append(valid, i)
@@ -354,12 +517,24 @@ func applyExceptions(now time.Time, axis string, residuals map[ResidualKey]Resid
 	}
 }
 
-func validateException(now time.Time, axis string, ex Exception) string {
-	if ex.Key.Axis != axis || strings.TrimSpace(ex.Key.Item) == "" || ex.Key.Contract == "" {
+func validateException(now time.Time, axis string, ex Exception, definition Axis) string {
+	if ex.Key.Axis != axis || strings.TrimSpace(ex.Key.Item) == "" || strings.TrimSpace(ex.Key.Case) == "" || ex.Key.Contract == "" {
 		return "exception key does not name a residual on this axis"
 	}
-	if ex.Key.Contract == ExceptionContract || ex.Key.Contract == RatchetContract {
-		return "exception cannot target validation residuals"
+	switch ex.Key.Contract {
+	case BindingContract, PositiveContract, NegativeContract:
+		if ex.Key.Case == "*" {
+			return "observation exception must name a concrete case"
+		}
+	case MutantContract:
+		if ex.Key.Item != "*" || ex.Key.Case != "*" || ex.Kind != UnsupportedPlatform ||
+			!errors.Is(definition.MutationError, ErrMutationUnsupported) || !definition.MutationTarget.valid() || len(definition.Mutants) != 0 {
+			return "mutation exception requires typed ErrMutationUnsupported and unsupported_platform"
+		}
+	case UniverseContract, ProbeContract, ExceptionContract, RatchetContract:
+		return "exception cannot target an instrument failure"
+	default:
+		return fmt.Sprintf("exception targets unknown contract %q", ex.Key.Contract)
 	}
 	switch ex.Kind {
 	case ExternalDependency, PolicyUndecided, UnsupportedPlatform, NonProduction:
@@ -386,18 +561,18 @@ func validateException(now time.Time, axis string, ex Exception) string {
 	return ""
 }
 
-func applyRatchet(now time.Time, axis string, definition Axis, residuals map[ResidualKey]Residual, add func(string, Contract, string)) {
+func applyRatchet(now time.Time, axis string, definition Axis, residuals map[ResidualKey]Residual, add func(string, string, Contract, string)) {
 	if definition.Maturity != Ratchet {
 		if len(definition.Ratchet) > 0 {
-			add("*", RatchetContract, "ratchet obligations require ratchet maturity")
+			add("*", "*", RatchetContract, "ratchet obligations require ratchet maturity")
 		}
 		return
 	}
 	if len(definition.Exceptions) > 0 {
-		add("*", RatchetContract, "ratchet axes cannot also declare exceptions")
+		add("*", "*", RatchetContract, "ratchet axes cannot also declare exceptions")
 	}
 	if len(definition.Ratchet) == 0 {
-		add("*", RatchetContract, "ratchet has no owned residual obligations")
+		add("*", "*", RatchetContract, "ratchet has no owned residual obligations")
 		return
 	}
 
@@ -417,7 +592,7 @@ func applyRatchet(now time.Time, axis string, definition Axis, residuals map[Res
 			}
 		}
 		if problem != "" {
-			add(obligation.Key.String(), RatchetContract, problem)
+			add(obligation.Key.String(), "*", RatchetContract, problem)
 			continue
 		}
 		valid = append(valid, i)
@@ -431,11 +606,18 @@ func applyRatchet(now time.Time, axis string, definition Axis, residuals map[Res
 }
 
 func validateRatchetObligation(now time.Time, axis string, obligation RatchetObligation) string {
-	if obligation.Key.Axis != axis || strings.TrimSpace(obligation.Key.Item) == "" || obligation.Key.Contract == "" {
+	if obligation.Key.Axis != axis || strings.TrimSpace(obligation.Key.Item) == "" || strings.TrimSpace(obligation.Key.Case) == "" || obligation.Key.Contract == "" {
 		return "ratchet key does not name a residual on this axis"
 	}
-	if obligation.Key.Contract == ExceptionContract || obligation.Key.Contract == RatchetContract {
-		return "ratchet cannot own validation residuals"
+	switch obligation.Key.Contract {
+	case BindingContract, PositiveContract, NegativeContract:
+		if obligation.Key.Case == "*" {
+			return "ratchet observation must name a concrete case"
+		}
+	case UniverseContract, ProbeContract, MutantContract, ExceptionContract, RatchetContract:
+		return "ratchet cannot own an instrument failure"
+	default:
+		return fmt.Sprintf("ratchet targets unknown contract %q", obligation.Key.Contract)
 	}
 	if strings.TrimSpace(obligation.Owner) == "" {
 		return "ratchet obligation has no owner"
@@ -452,7 +634,7 @@ func validateRatchetObligation(now time.Time, axis string, obligation RatchetObl
 	return ""
 }
 
-func statusFor(axis Axis, residuals []Residual, add func(string, Contract, string)) Status {
+func statusFor(axis Axis, residuals []Residual, add func(string, string, Contract, string)) Status {
 	var open []ResidualKey
 	var excepted bool
 	for _, residual := range residuals {
@@ -468,14 +650,15 @@ func statusFor(axis Axis, residuals []Residual, add func(string, Contract, strin
 	case Advisory:
 		for _, key := range open {
 			switch key.Contract {
-			case UniverseContract, ProbeContract, ExceptionContract, RatchetContract:
+			case UniverseContract, ProbeContract, MutantContract, ExceptionContract, RatchetContract:
 				return Fail
 			}
 		}
 		return Advice
 	case Ratchet:
 		for _, key := range open {
-			if key.Contract == ExceptionContract || key.Contract == RatchetContract {
+			switch key.Contract {
+			case UniverseContract, ProbeContract, MutantContract, ExceptionContract, RatchetContract:
 				return Fail
 			}
 		}
@@ -491,7 +674,7 @@ func statusFor(axis Axis, residuals []Residual, add func(string, Contract, strin
 			}
 		}
 		if len(expected) == 0 || !sameResidualKeys(actual, expected) {
-			add("*", RatchetContract, fmt.Sprintf("actual residuals %v differ from expected %v", keyStrings(actual), keyStrings(expected)))
+			add("*", "*", RatchetContract, fmt.Sprintf("actual residuals %v differ from expected %v", keyStrings(actual), keyStrings(expected)))
 			return Fail
 		}
 		return Partial
@@ -545,7 +728,26 @@ func lessResidualKey(a, b ResidualKey) bool {
 	if a.Item != b.Item {
 		return a.Item < b.Item
 	}
+	if a.Case != b.Case {
+		return a.Case < b.Case
+	}
 	return a.Contract < b.Contract
+}
+
+func escapeResidualSegment(value string) string {
+	if value == "*" {
+		return value
+	}
+	return url.PathEscape(value)
+}
+
+func isReservedContractIdentifier(value string) bool {
+	switch value {
+	case "*", "<empty>", "<registry>":
+		return true
+	default:
+		return false
+	}
 }
 
 func sameResidualKeys(a, b []ResidualKey) bool {
