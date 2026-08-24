@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -353,6 +354,7 @@ func TestCapabilityDiscoveryRetriesAfterAFailedProbe(t *testing.T) {
 	defer srv.Close()
 
 	e := New(srv.URL, 5*time.Second)
+	e.retryAfter = 0 // this test is about retrying at all, not about the backoff
 	if _, err := e.Embed(context.Background(), []string{"a", "b"}); err != nil {
 		t.Fatalf("first embed: %v", err)
 	}
@@ -403,5 +405,99 @@ func TestCallerCancellationDoesNotDecideTheProcessBatchSize(t *testing.T) {
 	}
 	if e.batchSize != maxDiscoveredBatch {
 		t.Fatalf("probe under a cancelled caller left batchSize=%d; want %d discovered on that same call", e.batchSize, maxDiscoveredBatch)
+	}
+}
+
+// TestCapabilityProbeDoesNotSerialiseEmbedding is the regression gate for a fix
+// that was worse than the defect it replaced.
+//
+// Caching only a successful probe is right, but the first version did the probe
+// while holding the mutex that guards the cached value. Every concurrent embed
+// in the process then queued behind one /info, so a proxy that black-holes the
+// path — or a TEI still loading — turned the entire write path into a queue one
+// timeout wide, shared across tenants. Measured at 8 callers x 300ms = 2.4s with
+// a maximum of ONE concurrent /embed.
+//
+// Discovery is an optimisation, so no caller should ever wait for it.
+func TestCapabilityProbeDoesNotSerialiseEmbedding(t *testing.T) {
+	var mu sync.Mutex
+	var inFlight, peakEmbed int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/info" {
+			time.Sleep(200 * time.Millisecond) // a slow, failing probe
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		mu.Lock()
+		inFlight++
+		peakEmbed = max(peakEmbed, inFlight)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+
+		var req embedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		out := make([][]float32, len(req.Inputs))
+		for i := range out {
+			out[i] = []float32{1, 0}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+	const callers = 8
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = e.Embed(context.Background(), []string{"a", "b"})
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	peak := peakEmbed
+	mu.Unlock()
+	if peak < 2 {
+		t.Fatalf("peak concurrent /embed = %d; capability discovery is serialising the embed path", peak)
+	}
+}
+
+// TestFailedCapabilityProbeBacksOff pins the other half. Not caching a failure
+// must not mean re-asking on every call: a deployment that exposes /embed
+// without /info is supported, and it should cost one probe per backoff window
+// rather than one per embed — each of which can burn the full info timeout.
+func TestFailedCapabilityProbeBacksOff(t *testing.T) {
+	var mu sync.Mutex
+	infoHits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/info" {
+			mu.Lock()
+			infoHits++
+			mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`[[1,0]]`))
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+	for range 5 {
+		if got := e.clientBatchSize(context.Background()); got != maxBatch {
+			t.Fatalf("batch size without /info = %d; want the %d fallback", got, maxBatch)
+		}
+	}
+
+	mu.Lock()
+	hits := infoHits
+	mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("/info probed %d times across 5 calls inside one backoff window; want 1", hits)
 	}
 }

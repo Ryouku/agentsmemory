@@ -56,6 +56,12 @@ const maxDiscoveredBatch = 128
 // critical path of the embed that triggered it.
 const infoTimeout = 5 * time.Second
 
+// defaultProbeRetry is how long a failed capability probe is left alone. Long
+// enough that a permanently /info-less deployment costs one request a minute
+// rather than one per embed, short enough that a TEI still loading its model is
+// picked up well within a warm-up.
+const defaultProbeRetry = 30 * time.Second
+
 // Embedder is a client for TEI's /embed endpoint. It satisfies the Embedder
 // interface that internal/palace declares at the consumer.
 type Embedder struct {
@@ -63,11 +69,19 @@ type Embedder struct {
 	infoEndpoint string
 	http         *http.Client
 
-	// batchMu guards the discovered limit. It is a mutex and not a sync.Once
-	// because Once fires whether the probe succeeded or FAILED, which pinned a
-	// transient error to the whole process lifetime.
+	// retryAfter is how long a failed probe suppresses the next one. Unexported
+	// and injectable so a test can drive the policy without sleeping; it is not
+	// an operator knob.
+	retryAfter time.Duration
+
+	// batchMu guards the fields below. It is a mutex and not a sync.Once because
+	// Once fires whether the probe succeeded or FAILED, which pinned a transient
+	// error to the whole process lifetime. The mutex is NEVER held across the
+	// probe itself — see clientBatchSize.
 	batchMu     sync.Mutex
 	batchSize   int
+	probing     bool
+	nextProbe   time.Time
 	batchWarned bool
 }
 
@@ -84,6 +98,7 @@ func New(baseURL string, timeout time.Duration) *Embedder {
 		endpoint:     baseURL + "/embed",
 		infoEndpoint: baseURL + "/info",
 		http:         &http.Client{Timeout: timeout},
+		retryAfter:   defaultProbeRetry,
 	}
 }
 
@@ -135,24 +150,47 @@ func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, err
 // the lifetime of the server, four times the round trips, with nothing said.
 func (e *Embedder) clientBatchSize(ctx context.Context) int {
 	e.batchMu.Lock()
-	defer e.batchMu.Unlock()
 	if e.batchSize > 0 {
-		return e.batchSize
+		size := e.batchSize
+		e.batchMu.Unlock()
+		return size
 	}
+	// Do not queue behind someone else's probe, and do not re-ask a server that
+	// just refused. Either way the safe default is the right answer for THIS
+	// call: discovery is an optimisation, so waiting for it is always worse than
+	// proceeding without it.
+	if e.probing || time.Now().Before(e.nextProbe) {
+		e.batchMu.Unlock()
+		return maxBatch
+	}
+	e.probing = true
+	e.batchMu.Unlock()
+
+	// Deliberately OUTSIDE the lock. Holding it across a network call made every
+	// embed in the process wait on one /info, so a proxy that black-holes the
+	// path turned the whole write path — add_drawer chunking, mining, the
+	// backfill worker, every tenant — into a queue one timeout wide.
 	size, err := e.discoverClientBatchSize(ctx)
+
+	e.batchMu.Lock()
+	e.probing = false
 	if err != nil {
+		e.nextProbe = time.Now().Add(e.retryAfter)
+		warn := !e.batchWarned
+		e.batchWarned = true
+		e.batchMu.Unlock()
 		// Said once, not per call: a warning on every embed would bury the log
 		// of a server whose /info is permanently absent, which is a supported
 		// deployment rather than a fault.
-		if !e.batchWarned {
-			e.batchWarned = true
+		if warn {
 			slog.Warn("TEI capability discovery failed; using the default client batch size and will retry",
 				"endpoint", e.infoEndpoint, "batch", maxBatch, "error", err)
 		}
 		return maxBatch
 	}
 	e.batchSize = size
-	return e.batchSize
+	e.batchMu.Unlock()
+	return size
 }
 
 // discoverClientBatchSize asks TEI what it will accept.
