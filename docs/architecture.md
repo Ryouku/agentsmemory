@@ -38,7 +38,9 @@ batch-embeds overlapping windows from the reassembled long memory, then selects
 several distant high-similarity passages in source order. Short memories bypass
 the extra pass, and any invalid or failed passage batch falls back to lexical
 evidence for the whole shortlist. Semantic batches are bounded at 128 windows;
-the TEI adapter reads `max_client_batch_size` from `/info` once and splits to the
+the TEI adapter reads `max_client_batch_size` from `/info` — caching only a successful
+answer, retried after a backoff otherwise, and never probed under the lock that
+guards it — then splits to the
 server's actual limit, falling back to TEI's standard 32 when discovery is not
 available. The profile reports `evidence=lexical|semantic`.
 

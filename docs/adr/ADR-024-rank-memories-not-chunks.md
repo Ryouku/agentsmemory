@@ -6,7 +6,7 @@
 **Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
 **Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
 **Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
-**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories, BM25 and the cross-encoder score one combined evidence document per memory, and `am_search` carries memory-level identity, regions and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The unset/false memory-level control keeps the existing chunk-ranked path for production A/B comparison.
+**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. Independently of the flag and therefore in BOTH arms, `am_search` carries memory-level identity, regions, coverage and anchor staleness — the wire-level fix is not part of the experiment, and the Wiring table below states it per column. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The unset/false memory-level control keeps the existing chunk-ranked path for production A/B comparison.
 
 ## Context
 
@@ -51,12 +51,20 @@ index for a prefix, resolves each hit to `ParentID` (or its own id when unchunke
 prefix until either:
 
 - the target number of distinct in-scope memories is present;
-- the index returns fewer rows than requested; or
-- the cosine-distance boundary proves every later row would be rejected too.
+- the index returns fewer rows than requested;
+- the cosine-distance boundary proves every later row would be rejected too; or
+- the prefix reaches `maxCandidateWidening` times `candidateK`.
 
 This preserves chunk embeddings — the best passage still nominates its memory — while preventing one
-memory's siblings from consuming another memory's candidate slot. The widening has no new tuning
-constant: it doubles only while the declared memory target has not been met.
+memory's siblings from consuming another memory's candidate slot.
+
+That fourth stop is a safety bound rather than a tuning knob, and it is deliberately not an operator
+setting. Every one of the first three assumes the index honoured the scope filter, and the loop does
+not rely on that — the durable row is the authority. When the two disagree nothing in a prefix
+survives filtering, the distinct count never advances, "the backend ran out" never becomes true, and
+the widening walks the corpus a doubling at a time. At the ceiling the arm ranks the memories it did
+find, exactly as it would when the backend runs out. Rows already resolved by a narrower prefix are
+carried across rounds, so a doubling pays only for the tail it adds.
 
 ### Memory evidence and scores
 
@@ -87,8 +95,11 @@ cross-encoder shortlist it:
 1. creates overlapping coherent windows across the reassembled text, including original chunk
    boundaries;
 2. reuses the raw query vector and embeds every candidate window in bounded batches of at most 128;
-   the TEI adapter discovers `max_client_batch_size` from `/info` once and splits to the server's
-   actual limit, retaining the standard 32-input fallback when capability discovery is unavailable;
+   the TEI adapter discovers `max_client_batch_size` from `/info` and splits to the server's actual
+   limit, retaining the standard 32-input fallback when capability discovery is unavailable. Only a
+   SUCCESSFUL probe is cached: a failure falls back for that call and is retried after a backoff, and
+   the probe never runs while holding the lock that guards the cached value, so no embed ever waits
+   on it;
 3. selects the strongest semantic window, then non-near windows which add uncovered query terms or
    passage diversity, up to the same four-region and `ChunkSize` ceilings;
 4. restores source order and cross-encodes the resulting verbatim evidence once for that memory.
@@ -518,7 +529,9 @@ and vector search, not by SQLite row volume or embedding round trips.
   `memoryChunkQuery`), and the anchor path takes ids only.
 - **Negative:** semantic evidence selection adds a batched embedding pass over long-memory windows and
   must earn that latency and model load in production comparison.
-- **Neutral:** stored rows, embeddings and ids remain chunk-based and require no migration.
+- **Neutral:** stored rows, embeddings and ids remain chunk-based and require no DATA migration.
+  Migration 00024 adds an index and moves nothing, so rollback stays a restart rather than a
+  schema reversal.
 
 ## Rollback
 

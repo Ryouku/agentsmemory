@@ -1153,7 +1153,8 @@ from the whole reassembled long memory, and selects up to four distant passages
 within the same 1600-rune cross-encoder budget. Short memories pass through
 unchanged. Any passage-embedding failure falls back to lexical evidence for the
 whole shortlist. Passage requests stay bounded at 128 inputs. With the TEI
-embedding backend, the client reads `/info.max_client_batch_size` once and uses
+embedding backend, the client reads `/info.max_client_batch_size` (caching only a
+successful probe, and retrying after a backoff otherwise) and uses
 the server's real limit up to that bound; if `/info` is unavailable it retains
 TEI's safe 32-input default. The semantic arm adds embedding latency but no
 migration; roll it back by setting the selector to `lexical`. The resolved
