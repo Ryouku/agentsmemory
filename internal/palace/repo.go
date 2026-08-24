@@ -261,10 +261,7 @@ func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []s
 		return out, nil
 	}
 	var rows []drawerRow
-	if err := r.db.WithContext(ctx).
-		Where("team_id = ? AND (id IN ? OR parent_id IN ?)", teamID, roots, roots).
-		Order("chunk_index ASC").
-		Find(&rows).Error; err != nil {
+	if err := r.memoryChunkQuery(ctx, teamID, roots, "*").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
@@ -273,6 +270,34 @@ func (r *Repo) MemoryChunksByRoots(ctx context.Context, teamID string, roots []s
 		out[root] = append(out[root], d)
 	}
 	return out, nil
+}
+
+// memoryChunkQuery selects a memory's chunks as a UNION of two single-column
+// lookups rather than `id IN (...) OR parent_id IN (...)`.
+//
+// The OR spelling is the readable one and it is why this was a full scan: no
+// planner can seek both sides of a disjunction in one index pass, so it
+// degrades to examining every row of the tenant however the table is indexed —
+// adding the parent_id index alone leaves the plan unchanged. Split into a
+// union, each branch seeks its own index (the primary key for roots,
+// idx_drawers_team_parent from migration 00024 for children).
+//
+// UNION ALL rather than UNION, and that is load-bearing rather than a
+// micro-optimisation. Deduplicating forces the compound to produce sorted
+// inputs, and at least one SQLite build answers that by merging on the primary
+// key — which puts the child branch back on a tenant-wide scan and quietly
+// undoes the fix. The branches cannot overlap anyway: a root is stored with an
+// empty parent_id, so `id IN roots` matches only roots and `parent_id IN roots`
+// only their children.
+func (r *Repo) memoryChunkQuery(ctx context.Context, teamID string, roots []string, columns string) *gorm.DB {
+	db := r.db.WithContext(ctx)
+	byID := db.Select(columns).Table("drawers").Where("team_id = ? AND id IN ?", teamID, roots)
+	byParent := db.Select(columns).Table("drawers").Where("team_id = ? AND parent_id IN ?", teamID, roots)
+	// Ordering belongs on the compound result: sorting inside a branch is not
+	// guaranteed to survive the union. SQLite rejects parenthesised operands
+	// around UNION ALL, so the branches are spliced bare and only the compound
+	// is wrapped.
+	return db.Table("(? UNION ALL ?) AS memory_chunks", byID, byParent).Order("chunk_index ASC")
 }
 
 // DrawerPatch carries the optional fields update_drawer may change. A nil field
