@@ -14,11 +14,13 @@ type keywordReranker struct {
 	keyword  string
 	calls    int
 	gotQuery string
+	gotDocs  []string
 }
 
 func (r *keywordReranker) Rerank(_ context.Context, query string, docs []string) ([]float64, error) {
 	r.calls++
 	r.gotQuery = query
+	r.gotDocs = append([]string(nil), docs...)
 	scores := make([]float64, len(docs))
 	for i, d := range docs {
 		if strings.Contains(strings.ToLower(d), r.keyword) {
@@ -157,22 +159,50 @@ func TestSearchRerankPoolBoundsTheCall(t *testing.T) {
 // retrieval already embedded.
 func TestSearchRerankContextFeedsOnlyTheCrossEncoder(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t)
+	svc := newTestService(t).WithMemoryLevelRanking(true)
 	const team = "team-ctx"
 	seedRerankCorpus(t, svc, ctx, team)
+	if _, err := svc.Add(ctx, team, AddInput{
+		Wing: "w", Room: "decisions",
+		Content: "migrations evidence must stay selected by the user query " +
+			strings.Repeat("neutral material with no query vocabulary. ", 55) +
+			" AUDIT_CONTEXT_MARKER belongs to caller background, not evidence selection",
+	}); err != nil {
+		t.Fatalf("seed long memory: %v", err)
+	}
 
 	rr := &keywordReranker{keyword: "closet"}
 	svc.WithReranker(rr, 10)
+	if _, err := svc.Search(ctx, team, SearchQuery{Query: "migrations", Limit: 2}); err != nil {
+		t.Fatalf("Search without context: %v", err)
+	}
+	withoutContext := documentContaining(t, rr.gotDocs, "migrations evidence must stay selected")
+
 	if _, err := svc.Search(ctx, team, SearchQuery{
 		Query:   "migrations",
-		Context: "I am auditing the ranking pipeline",
+		Context: "AUDIT_CONTEXT_MARKER",
 		Limit:   2,
 	}); err != nil {
-		t.Fatalf("Search: %v", err)
+		t.Fatalf("Search with context: %v", err)
 	}
-	if !strings.Contains(rr.gotQuery, "migrations") || !strings.Contains(rr.gotQuery, "auditing the ranking pipeline") {
+	if !strings.Contains(rr.gotQuery, "migrations") || !strings.Contains(rr.gotQuery, "AUDIT_CONTEXT_MARKER") {
 		t.Errorf("rerank query = %q, want the query and the context", rr.gotQuery)
 	}
+	withContext := documentContaining(t, rr.gotDocs, "migrations evidence must stay selected")
+	if withContext != withoutContext {
+		t.Errorf("Context changed the memory evidence document:\nwithout: %q\nwith:    %q", withoutContext, withContext)
+	}
+}
+
+func documentContaining(t *testing.T, docs []string, marker string) string {
+	t.Helper()
+	for _, doc := range docs {
+		if strings.Contains(doc, marker) {
+			return doc
+		}
+	}
+	t.Fatalf("no reranker document contains %q: %#v", marker, docs)
+	return ""
 }
 
 // rerankFunc adapts a plain function to Reranker for tests that only care about

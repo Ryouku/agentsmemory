@@ -65,8 +65,10 @@ chunks are de-overlapped; diary chunks, which never overlap, are concatenated ex
 
 - vector distance is the best (smallest) distance among the memory's retrieved chunks;
 - BM25 sees the reassembled memory once, so terms in separate chunks contribute to one score;
-- the cross-encoder sees one bounded evidence document per memory, assembled from matching regions
-  across the memory within the existing `ChunkSize` budget;
+- the cross-encoder sees one bounded evidence document per memory, assembled from at most four
+  coherent 400-rune matching passages within the existing `ChunkSize` budget;
+- only the raw user query selects those passages; optional `SearchQuery.Context` is appended to the
+  cross-encoder query but cannot change which source text the model receives;
 - closet boost is applied once per memory;
 - `ChunksMatched` remains the count of that memory's chunks present in the vector prefix.
 
@@ -138,6 +140,62 @@ cost. A later decision to change the default needs a larger real-query populatio
 relevance (`ExpectAny` or human judgement), an unchanged corpus or crossover replay, and exposed
 candidate/reranker cost. The treatment remains available for that experiment; the control is not
 removed.
+
+### Unchanged-corpus long-memory comparison
+
+A second comparison held the corpus fixed at 1,462 drawers and selected one 3–5 chunk target from
+each of the nine rooms containing such memories. The query set was frozen under `unit=chunk` and
+replayed unchanged under `unit=memory`: nine queries requiring separated evidence, three sequential
+runs per arm, `limit=10`, `max_distance=1.5`, `snippet_chars=500`, and identical rerank context.
+
+| Room | Chunks | Target rank false → true | Median latency false → true |
+|---|---:|---:|---:|
+| architecture | 5 | 1 → 1 | 1,316 → 1,568 ms |
+| decisions | 3 | 2 → 2 | 1,354 → 1,556 ms |
+| tooling | 4 | 1 → 1 | 1,276 → 1,525 ms |
+| operations | 4 | **1 → 2** | 1,355 → 1,441 ms |
+| technical | 4 | 1 → 1 | 1,304 → 1,668 ms |
+| learnings | 3 | 1 → 1 | 1,299 → 1,572 ms |
+| diary | 3 | 1 → 1 | 1,290 → 1,460 ms |
+| human-decisions | 3 | **1 → 2** | 1,348 → 1,533 ms |
+| llm_ruled_out | 3 | 1 → 1 | 1,327 → 1,376 ms |
+
+| Aggregate metric | false / chunk | true / memory |
+|---|---:|---:|
+| Exact target hit@1 | **8/9** | 6/9 |
+| Exact target hit@10 | 9/9 | 9/9 |
+| Exact target MRR | **0.944** | 0.833 |
+| Fully correct semantic top answer | **9/9** | 8/9 |
+| Median client-observed latency, 27 calls | **1,316 ms** | 1,525 ms |
+| Latency delta | — | **+209 ms / +15.9%** |
+
+The treatment was active rather than silently unwired: it aggregated 4/4 chunks for the operations
+target where the control carried 3/4. Nevertheless, that complete memory fell to rank 2 behind a
+shorter diary which omitted why recomputation cannot restore old entities. This was the one semantic
+top-answer regression; the decisions and human-decisions rank changes had fully correct alternate
+memories.
+
+### Algorithm correction after the long-memory comparison
+
+Source tracing found two coupled evidence-document defects in the first treatment implementation.
+`Search` passed `query + Context` both as the cross-encoder question and as the selector for source
+regions. That violated the existing `SearchQuery.Context` contract: neutral experiment context could
+replace or dilute passages selected by the user's question. Separately, `SnippetRegions` divided a
+1,600-rune reranker budget into as many as sixteen 100-rune fragments. This maximized match coverage
+but often removed the explanation following each matched term, giving a short partial note more
+usable prose than a complete long memory.
+
+The treatment now separates the two inputs. The raw query alone selects evidence, while Context still
+reaches the cross-encoder as intended. Reranker evidence is capped at four passages, retaining about
+400 contiguous runes per selected place; the public agent-visible `SnippetRegions` behavior is
+unchanged. A served-path regression fixture reproduces the production shape: the control still ranks
+a two-reason short diary first, while the corrected memory arm exposes all three separated reasons
+and ranks the complete memory first. A second test proves adding Context changes the model query but
+not its evidence documents.
+
+This correction is a hypothesis supported by a falsifiable reproduction, not a production verdict.
+The default remains false until the same frozen nine-query workload is replayed against a PR image
+containing the correction.
 
 ## Alternatives Considered
 

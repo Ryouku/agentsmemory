@@ -43,6 +43,15 @@ type Region struct {
 // Position order and not score order: an agent can sort by score itself, and it
 // cannot un-jumble prose.
 func SnippetRegions(content, query string, maxChars int) []Region {
+	return snippetRegions(content, query, maxChars, 0)
+}
+
+// snippetRegions is SnippetRegions with an optional ceiling on how many
+// passages may share the budget. A zero ceiling preserves the public function's
+// behavior. Ranking uses a ceiling because a cross-encoder needs enough
+// contiguous prose to judge each claim; agent-visible regions still favor
+// maximum coverage of every matching place.
+func snippetRegions(content, query string, maxChars, maxRegions int) []Region {
 	if maxChars <= 0 {
 		maxChars = DefaultSnippetChars
 	}
@@ -71,14 +80,11 @@ func SnippetRegions(content, query string, maxChars int) []Region {
 	// only way a region grows past its size is the word-boundary extension below,
 	// and that checks the remaining budget before taking it. A clamp here would be
 	// a branch no input reaches, which reads as a guard and is not one.
-	size := maxChars
-	want := 1
-	for n := maxChars / minRegionRunes; n > 1; n-- {
-		if maxChars/n >= minRegionRunes {
-			want, size = n, maxChars/n
-			break
-		}
+	want := max(maxChars/minRegionRunes, 1)
+	if maxRegions > 0 {
+		want = min(want, maxRegions)
 	}
+	size := maxChars / want
 
 	candidates := snippetCandidates(runes, lower, terms, size)
 	// Best first, and among equals the earliest — so the selection is

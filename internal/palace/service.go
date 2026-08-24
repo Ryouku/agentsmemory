@@ -907,7 +907,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), survivors, ranked)
+	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), query, survivors, ranked)
 
 	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
 	// query, so without this they cluster and crowd each other out: measured on a
@@ -1012,8 +1012,8 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
-	return s.applyRerankWith(ctx, query, survivors, ranked, s.rerankWeight)
+func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
+	return s.applyRerankWith(ctx, rerankQuery, evidenceQuery, survivors, ranked, s.rerankWeight)
 }
 
 // applyRerankWith is applyRerank at an explicit blend weight, so the eval can
@@ -1023,7 +1023,7 @@ func (s *Service) applyRerank(ctx context.Context, query string, survivors []Sea
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, query string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
+func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
 		return ranked, false
 	}
@@ -1031,10 +1031,10 @@ func (s *Service) applyRerankWith(ctx context.Context, query string, survivors [
 	docs := make([]string, pool)
 	for i := range docs {
 		hit := survivors[ranked[i].Index]
-		docs[i] = hit.rankingContent(query, hit.MemoryContent != "")
+		docs[i] = hit.rankingContent(evidenceQuery, hit.MemoryContent != "")
 	}
 
-	scores, err := s.rerank.Rerank(ctx, query, docs)
+	scores, err := s.rerank.Rerank(ctx, rerankQuery, docs)
 	if err != nil {
 		// A degraded reranker returns FALSE, deliberately. It failed open and the
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass

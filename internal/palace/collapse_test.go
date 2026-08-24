@@ -270,6 +270,71 @@ func TestMemoryLevelRerankingCombinesCrossChunkEvidence(t *testing.T) {
 	}
 }
 
+// TestMemoryLevelRerankingKeepsEnoughContextToJudgeTheAnswer reproduces the
+// live failure where a complete long memory lost to a shorter, partial diary.
+// The query term occurs in three distant passages and each answer follows it by
+// more than 100 runes: fragmenting the model's 1600-rune budget into sixteen
+// tiny slices hides all three reasons, while a few coherent passages expose the
+// complete answer to the cross-encoder.
+func TestMemoryLevelRerankingKeepsEnoughContextToJudgeTheAnswer(t *testing.T) {
+	ctx := context.Background()
+	base := newTestService(t)
+	const team = "team-memory-reasoning"
+
+	section := func(reason string, fill string) string {
+		return "constraint " + strings.Repeat("background ", 18) + reason + " " + strings.Repeat(fill+" ", 260)
+	}
+	complete, err := base.Add(ctx, team, AddInput{
+		Wing: "w", Room: "operations",
+		Content: section("CAUSE_ALPHA", "amber") + section("CAUSE_BETA", "birch") + section("CAUSE_GAMMA", "cedar"),
+	})
+	if err != nil {
+		t.Fatalf("add complete memory: %v", err)
+	}
+	if len(complete.Drawers) < 3 {
+		t.Fatalf("fixture produced %d chunks, want at least 3", len(complete.Drawers))
+	}
+	partial := mustAddOne(t, base, team, AddInput{
+		Wing: "w", Room: "operations", Content: "constraint short diary mentions CAUSE_ALPHA and CAUSE_BETA only",
+	})
+
+	ordered := make([]store.Hit, 0, len(complete.Drawers)+1)
+	for i, d := range append(append([]Drawer(nil), complete.Drawers...), partial) {
+		ordered = append(ordered, store.Hit{ID: d.ID, Score: float32(1 - float64(i)/100)})
+	}
+	reranker := rerankFunc(func(_ context.Context, _ string, docs []string) ([]float64, error) {
+		scores := make([]float64, len(docs))
+		for i, doc := range docs {
+			for _, reason := range []string{"CAUSE_ALPHA", "CAUSE_BETA", "CAUSE_GAMMA"} {
+				if strings.Contains(doc, reason) {
+					scores[i]++
+				}
+			}
+		}
+		return scores, nil
+	})
+
+	control := base.Clone().WithMemoryLevelRanking(false).WithReranker(reranker, 10).WithRerankWeight(1)
+	control.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	controlHits, err := control.Search(ctx, team, SearchQuery{Query: "constraint", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("control search: %v", err)
+	}
+	if len(controlHits) == 0 || controlHits[0].MemoryID != partial.ID {
+		t.Fatalf("control top memory = %+v, want the short partial diary; the fixture no longer distinguishes the arms", controlHits)
+	}
+
+	treatment := base.Clone().WithMemoryLevelRanking(true).WithReranker(reranker, 10).WithRerankWeight(1)
+	treatment.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	treatmentHits, err := treatment.Search(ctx, team, SearchQuery{Query: "constraint", Limit: 2, SkipTelemetry: true})
+	if err != nil {
+		t.Fatalf("treatment search: %v", err)
+	}
+	if len(treatmentHits) == 0 || treatmentHits[0].MemoryID != complete.Drawers[0].ID {
+		t.Fatalf("treatment top memory = %+v, want the complete cross-chunk answer", treatmentHits)
+	}
+}
+
 // TestReassembleMemoryPreservesChunkedText makes the treatment's whole-memory
 // document falsifiable independently of ranking. ChunkText overlaps and trims
 // window edges; removing the wrong overlap silently duplicates or drops prose.

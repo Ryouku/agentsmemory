@@ -201,11 +201,19 @@ func exactOverlap(left, right string, maxRunes int) int {
 	return 0
 }
 
-// memoryEvidence gives the cross-encoder several matching regions within one
-// existing chunk-sized budget. Region text is verbatim and position ordered;
-// the ellipsis only marks omitted distance between those source slices.
+// maxMemoryEvidenceRegions keeps each cross-encoder passage at least as large as
+// the measured agent-visible snippet size. More, smaller fragments cover extra
+// term occurrences but hide the reasoning that follows them — the live failure
+// this limit fixes presented sixteen 100-rune shards from a 1600-rune budget.
+const maxMemoryEvidenceRegions = ChunkSize / DefaultSnippetChars
+
+// memoryEvidence gives the cross-encoder a few coherent matching regions within
+// one existing chunk-sized budget. At most four places share that budget, so
+// each selected passage carries the same 400-rune reasoning context as a normal
+// search snippet. Region text is verbatim and position ordered; the ellipsis
+// only marks omitted distance between those source slices.
 func memoryEvidence(content, query, fallback string) string {
-	regions := SnippetRegions(content, query, ChunkSize)
+	regions := snippetRegions(content, query, ChunkSize, maxMemoryEvidenceRegions)
 	matched := false
 	for _, region := range regions {
 		matched = matched || region.Score > 0
