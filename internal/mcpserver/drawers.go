@@ -276,6 +276,7 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
 		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
+		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is accepted and not yet recorded — pass it and nothing changes today, which is what lets clients adopt it before the recording lands.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -286,6 +287,13 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		// Read and deliberately unconsumed. Recording the join is its own task,
+		// with its own trigger; accepting the argument first is what lets a client
+		// start sending it before anything reads it. Inert by design, not by
+		// omission — and an unrecognised value must never fail the fetch, because a
+		// memory readable only when quoting a valid recall would be a regression
+		// introduced by a field that does nothing yet.
+		_ = req.GetString("search_id", "")
 		// A chunked memory had no read path that could return it whole: the query
 		// existed (repo.MemoryChunks) and was called only by update and delete.
 		// An agent handed one chunk of a long note had no second call to complete
@@ -565,7 +573,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		hits, err := drawers.Search(ctx, t.TeamID, palace.SearchQuery{
+		page, err := drawers.SearchPage(ctx, t.TeamID, palace.SearchQuery{
 			Query:       query,
 			Wing:        wing,
 			Room:        req.GetString("room", ""),
@@ -576,6 +584,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		hits := page.Hits
 		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
 		// spent/overBudget bound the WHOLE-memory expansion. See wholeMemoryBudget.
 		spent, overBudget := 0, 0
@@ -670,7 +679,10 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 				}
 			}
 		}
-		out := map[string]any{"hits": views, "count": len(views)}
+		// search_id is page-level and present even when count is 0: a recall that
+		// found nothing still ran and still wrote its row, and that is the page
+		// most worth tracing. It is the primary key of the search_events row.
+		out := map[string]any{"hits": views, "count": len(views), "search_id": page.SearchID}
 		// Say it, rather than letting the caller infer it from a truncation flag on
 		// hits it did not ask to have truncated. A silent cap on a "give me
 		// everything" request is the shape that teaches an agent the palace is

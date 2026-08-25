@@ -959,10 +959,10 @@ func searchFilter(q SearchQuery) store.Filter {
 // Telemetry never changes ranking: a collector that is down drops observability,
 // not results. SkipTelemetry skips only the SQLite write (eval); OTEL spans
 // still run and hit the noop provider when Setup was not called.
-func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
+func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) (SearchResult, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" {
-		return nil, fmt.Errorf("%w: query is required", ErrInvalidInput)
+		return SearchResult{}, fmt.Errorf("%w: query is required", ErrInvalidInput)
 	}
 	// Cap by runes, not bytes: the contract caps queries at 250 characters, and a
 	// byte slice could split a multibyte rune into invalid UTF-8 before it reaches
@@ -998,7 +998,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// unlike filing this fails. Name the cause, because the same outage lets
 		// writes succeed (queued), and an agent seeing one work and the other not
 		// will otherwise conclude the memory itself is broken.
-		return nil, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
+		return SearchResult{}, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
 	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
 
@@ -1019,20 +1019,20 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
-		return nil, err
+		return SearchResult{}, err
 	}
 	q.Limit = limit
 	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
-		return nil, err
+		return SearchResult{}, err
 	}
 
 	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
 		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
 		parent.Set(attribute.Int("am.count", len(results)))
-		return results, nil
+		return SearchResult{SearchID: searchID, Hits: results}, nil
 	}
 	ev := searchEventRow{
 		ID: searchID, TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
@@ -1050,7 +1050,21 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))
 	parent.Set(attribute.Int("am.count", len(results)))
 
-	return results, nil
+	return SearchResult{SearchID: searchID, Hits: results}, nil
+}
+
+// Search is SearchPage's hits without the page's identity, kept because most
+// callers want exactly that and because widening every one of them — 66 test
+// call sites among them — would have been a large mechanical diff for a
+// page-level field two of them need.
+//
+// It is a projection of SearchPage, not a second implementation: there is one
+// ranking path, no flag selects between them, and this function cannot diverge
+// because it does nothing but drop a field. Reach for SearchPage when the caller
+// needs to name the recall it just ran.
+func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
+	page, err := s.SearchPage(ctx, teamID, q)
+	return page.Hits, err
 }
 
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.

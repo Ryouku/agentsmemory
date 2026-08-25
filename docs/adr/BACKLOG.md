@@ -114,6 +114,14 @@ running memory service has to answer:
 
 Three primitives unlock all of it, in dependency order.
 
+**Status, 2026-08-25.** Two of the three landed with the OpenTelemetry work (#52, merged as
+`26f6531`), and the third is now ADR-028. **#2 is delivered in full**: 25 semantic stages report
+`ran | bypassed | failed_open | failed_closed` with 15 reasons, and `scripts/redeploy.sh` fails a
+deploy whose smoke search leaves no span. **#1 is delivered on the SPAN** (`am.profile_id` in
+`searchAttrs`) and not on the durable `search_events` row, which is a migration and is deferred
+below. **#3 is ADR-028** — the paragraph below is the brief it was written from, kept because the
+argument for why this signal is the one that scales is not restated in the ADR.
+
 **1. Profile identity on every event.** A `profile_id` covering candidate-pool configuration,
 fusion mode, lexical normaliser and weight, closet scale, rerank model/backend/blend, and index
 version. Without it no drift signal is interpretable and no calibration can state what it is valid
@@ -883,3 +891,27 @@ Two smaller ones from the same review:
   different instrument from the in-process axis runner: an axis proves a selection is reachable,
   where this would prove an external boundary still behaves. Deferred from ADR-025's Out of Scope
   on 2026-08-25, when the disposition was given a receipt it had been missing.
+
+## From ADR-028 (return the identifier and the score a recall was decided by)
+
+ADR-028 ships the two halves that cross the tool boundary — `search_id` returned by `am_search` and
+accepted by `am_get_drawer`, and `blended_score` on every hit. These three are what it deliberately
+did not ship, each with the reason it was held back rather than the intention to get to it.
+
+- **Record the fetch against the recall, and report the ratio.** The consuming half of primitive #3:
+  a fetch that names a `search_id` is a relevance click, and the ratio of recalls followed by a fetch
+  is the first usage signal this palace has ever had. Held back because the precondition does not
+  exist yet — nothing sends an id until ADR-028 T1 ships and a client adopts it, and a report built
+  first would be measuring an empty set. **Trigger: the first week `am_get_drawer` receives a
+  non-empty `search_id` from a client that is not a test.** If a year passes and no id ever arrives,
+  the honest outcome is to REMOVE the argument, and that result is worth as much as the report.
+
+- **`profile_id` on the durable `search_events` row.** Primitive #1's other half. It is on the span
+  today, which makes a sampled trace interpretable, and absent from the durable row, which makes a
+  ratio uninterpretable — "38% of recalls were followed by a fetch" means nothing without knowing
+  which ranking profile produced them. A column addition, so it is a migration and belongs with the
+  recording task above rather than with ADR-028's surface changes.
+
+- **A relevance metric derived from the fetch signal.** Deliberately last. The signal has to exist
+  and be observed before anything is derived from it; deriving a metric from a signal nobody has
+  seen is how the eval acquired arms that measured configurations nobody ran.

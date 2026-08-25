@@ -116,6 +116,18 @@ type Tunnel struct {
 	Dynamics
 }
 
+// SearchResult is one page of recall together with the identity it was recorded
+// under.
+//
+// SearchID is the same value `search_events` holds as that row's primary key,
+// so a page and its durable record join on it with no extra state anywhere. It
+// is present even when Hits is empty: a recall that found nothing still ran,
+// still wrote a row, and is the page an operator most often wants to trace.
+type SearchResult struct {
+	SearchID string
+	Hits     []SearchHit
+}
+
 // SearchHit is one ranked result from hybrid search. Score is the fused rank — a
 // convex blend of vector similarity and lexical BM25, as the Python searcher did
 // (closet boost joins once mining builds closets). BM25 is the raw lexical score
