@@ -10,6 +10,20 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// kgQueryDefaultStatus is the endedness kg_query applies when the caller names
+// none. It is ONE literal in ONE place on purpose: ADR-026 flips it from "all" to
+// "current" as a separate, revertible commit, and reverting must be this line and
+// nothing else. Anything that needs to branch on the default is a sign the filter
+// logic leaked out of palace.KGQuery, where it belongs.
+const kgQueryDefaultStatus = palace.KGStatusCurrent
+
+// kgStatusParamDescription is BUILT from the palace constants rather than
+// restating them, so a status the service accepts can never drift from the list
+// the agent is told about.
+var kgStatusParamDescription = fmt.Sprintf(
+	"Which half of a fact's life to return: %q (open-ended, not retracted), %q (retracted — the audit direction), or %q. Default %q. This is filtered SERVER-SIDE, so what it removes never reaches your context; it selects on whether a fact was ever ended, which is a different question from as_of's \"was it in effect at that moment\", and the two compose.",
+	palace.KGStatusCurrent, palace.KGStatusEnded, palace.KGStatusAll, kgQueryDefaultStatus)
+
 // registerKG wires the temporal knowledge-graph tools: kg_add / kg_invalidate
 // (write facts and end them), kg_query / kg_timeline (read, optionally as-of a
 // point in time), and kg_stats. All are tenant-scoped via admit.
@@ -95,28 +109,55 @@ func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usa
 
 func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_query",
-		mcp.WithDescription("Query an entity's relationships in the knowledge graph, optionally as of a point in time and in a chosen direction. Facts are workspace-wide: this returns facts filed by any project in the workspace, not only this registration's."),
-		mcp.WithString("entity", mcp.Required(), mcp.Description("The entity to look up.")),
+		mcp.WithDescription("Query the knowledge graph by entity, by predicate, or both — optionally as of a point in time, in a chosen direction, and restricted to facts that are still current. Give at least one of entity/predicate. Facts are workspace-wide: this returns facts filed by any project in the workspace, not only this registration's."),
+		mcp.WithString("entity", mcp.Description("The entity to look up. Optional when predicate is given.")),
+		mcp.WithString("predicate", mcp.Description("Only facts with this relation. Given WITHOUT an entity it is an entry point in its own right, answering \"every fact of this relation\" — how you audit a whole relation type, e.g. every retracts edge. Given WITH an entity it narrows that entity's facts.")),
 		mcp.WithString("as_of", mcp.Description("Only facts in effect at this instant (YYYY-MM-DD or datetime).")),
-		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default).")),
+		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default). Ignored without an entity: with predicate alone there is no queried endpoint for a fact to be incoming or outgoing of.")),
+		mcp.WithString("status", mcp.Description(kgStatusParamDescription)),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
 		}
-		entity, err := req.RequireString("entity")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		asOf := req.GetString("as_of", "")
-		facts, ent, err := drawers.KGQuery(ctx, t.TeamID, entity, asOf, req.GetString("direction", "both"))
+		res, err := drawers.KGQuery(ctx, t.TeamID, palace.KGQueryInput{
+			Entity:    req.GetString("entity", ""),
+			Predicate: req.GetString("predicate", ""),
+			AsOf:      asOf,
+			Direction: req.GetString("direction", "both"),
+			Status:    req.GetString("status", kgQueryDefaultStatus),
+		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out := map[string]any{"entity": ent, "facts": facts, "count": len(facts)}
+		out := map[string]any{
+			"facts": res.Facts, "count": len(res.Facts), "status": res.Status,
+		}
+		// Each entry point is echoed only when it was used, so the response says
+		// which question was asked rather than carrying an empty key for the one
+		// that was not.
+		if res.Entity != "" {
+			out["entity"] = res.Entity
+		}
+		if res.Predicate != "" {
+			out["predicate"] = res.Predicate
+		}
 		if asOf != "" {
 			out["as_of"] = asOf
+		}
+		// A filtered page must say what it filtered rather than presenting itself
+		// as the whole. ADR-010's argument is the reason this is never silent: a
+		// session about to redo a rejected thing does not know to ask for history
+		// — that is precisely what it does not know. So the keys appear only when
+		// something was actually removed, which makes their presence informative,
+		// and the hint names the parameter that brings it back.
+		if res.Withheld > 0 {
+			out["withheld"] = map[string]int64{res.WithheldStatus: res.Withheld}
+			out["hint"] = fmt.Sprintf(
+				"%d %s fact(s) not shown — pass status:%q to see them, or status:%q for both.",
+				res.Withheld, res.WithheldStatus, res.WithheldStatus, palace.KGStatusAll)
 		}
 		return jsonResult(out), nil
 	})

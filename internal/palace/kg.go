@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -219,17 +220,123 @@ func (r *Repo) InvalidateKGTriples(ctx context.Context, teamID, subject, predica
 	return res.RowsAffected, res.Error
 }
 
-// KGTriplesBySubject / KGTriplesByObject load a team's triples on one endpoint.
-func (r *Repo) KGTriplesBySubject(ctx context.Context, teamID, subject string) ([]kgTripleRow, error) {
+// kgStatusScope narrows a triple query to one half of a fact's life, or leaves it
+// whole for KGStatusAll. It is a REFINEMENT of a more selective entry point —
+// a subject, object or predicate — never the term that finds the rows.
+//
+// Both directions are exact comparisons against the empty string, which is this
+// schema's "not yet ended" sentinel (00010_kg.sql chose it over NULL so a Go string
+// column never has to scan NULL). That exactness is why the endedness test is safe
+// to index at all: it never compares two temporal values, so the mixed date-only
+// and datetime formats KGAdd stores verbatim cannot affect the result. A *range*
+// over valid_to has no such protection — see ADR-026 §2b, and do not push one
+// into SQL.
+//
+// ⚠ The unary + on valid_to is load-bearing, and MEASURED rather than assumed. It
+// makes the term unusable by an index (SQLite's documented meaning) while leaving
+// the value untouched. Without it, idx_kg_triples_team_valid_to CAPTURES this
+// query: nothing in this repo runs ANALYZE, so with no stats the planner preferred
+// the newest usable index and resolved an entity lookup through valid_to instead
+// of through subject. An empty valid_to matches ~96% of a tenant's rows and a subject
+// matches a handful, so the index added to make the default path cheaper made it
+// read almost the whole tenant. The plan still printed
+// `SEARCH … USING INDEX … (team_id=? AND valid_to=?)` throughout — an index, on
+// the column being filtered, and still the wrong one. See TestStatusFilterRefines
+// TheEntryPointRatherThanReplacingIt, which is what stops this regressing.
+func kgStatusScope(db *gorm.DB, status string) *gorm.DB {
+	switch status {
+	case KGStatusCurrent:
+		return db.Where("+valid_to = ''")
+	case KGStatusEnded:
+		return db.Where("valid_to <> ''")
+	}
+	return db
+}
+
+// kgTripleFilter is what narrows a triple lookup. The distinction it draws is the
+// one the query planner cares about: column/value is the ENTRY POINT, the term
+// meant to find the rows through an index, while status and predicate are
+// REFINEMENTS that shrink what the entry point found.
+//
+// column is interpolated into the SQL, so it takes only the package-internal
+// literals its exported wrappers pass; it is never reachable from a caller's input.
+// predicate is left empty when predicate IS the entry point, so the same term is
+// never both.
+type kgTripleFilter struct {
+	column    string
+	value     string
+	status    string
+	predicate string
+}
+
+// kgTripleQuery builds the statement every triple lookup issues. It is a builder
+// rather than inline SQL so a test can render the SHIPPED statement through a
+// dry-run session and read its query plan, instead of asserting against a
+// hand-copied echo that can drift.
+func (r *Repo) kgTripleQuery(ctx context.Context, teamID string, f kgTripleFilter) *gorm.DB {
+	q := r.db.WithContext(ctx).Model(&kgTripleRow{}).
+		Where("team_id = ? AND "+f.column+" = ?", teamID, f.value)
+	if f.predicate != "" {
+		// No unary + here, unlike the status scope: with ~one distinct predicate
+		// per fact in this corpus, predicate is often MORE selective than the
+		// entity, so either index is a good entry point and the planner should be
+		// free to pick. The endedness test is the opposite case — it matches
+		// almost every row — which is why only that one is held back.
+		q = q.Where("predicate = ?", f.predicate)
+	}
+	return kgStatusScope(q, f.status)
+}
+
+// kgTriples loads a team's triples matching a filter.
+func (r *Repo) kgTriples(ctx context.Context, teamID string, f kgTripleFilter) ([]kgTripleRow, error) {
 	var rows []kgTripleRow
-	err := r.db.WithContext(ctx).Where("team_id = ? AND subject = ?", teamID, subject).Find(&rows).Error
+	err := r.kgTripleQuery(ctx, teamID, f).Find(&rows).Error
 	return rows, err
 }
 
-func (r *Repo) KGTriplesByObject(ctx context.Context, teamID, object string) ([]kgTripleRow, error) {
-	var rows []kgTripleRow
-	err := r.db.WithContext(ctx).Where("team_id = ? AND object = ?", teamID, object).Find(&rows).Error
-	return rows, err
+// kgTriplesCount counts the same shape kgTriples loads, without reading the rows.
+// It is how a filtered response reports what it withheld: the caller runs it once
+// with the complement status rather than re-filtering rows it deliberately never
+// fetched.
+func (r *Repo) kgTriplesCount(ctx context.Context, teamID string, f kgTripleFilter) (int64, error) {
+	var n int64
+	err := r.kgTripleQuery(ctx, teamID, f).Count(&n).Error
+	return n, err
+}
+
+// KGTriplesBySubject / KGTriplesByObject / KGTriplesByPredicate load a team's
+// triples on one entry point, narrowed by status and optionally by predicate.
+//
+// KGTriplesByPredicate is the entry point ADR-026 T5 opens. idx_kg_triples_team_predicate
+// has existed since 00010_kg.sql and no query ever used it: the schema was built
+// for predicate lookups and the query layer never arrived. So this costs no
+// migration, and it makes selectable the one dimension the graph is built from —
+// "show me every retracts edge" is how you audit what the team changed its mind
+// about, and it was a scan by eye.
+func (r *Repo) KGTriplesBySubject(ctx context.Context, teamID, subject, status, predicate string) ([]kgTripleRow, error) {
+	return r.kgTriples(ctx, teamID, kgTripleFilter{column: "subject", value: subject, status: status, predicate: predicate})
+}
+
+func (r *Repo) KGTriplesByObject(ctx context.Context, teamID, object, status, predicate string) ([]kgTripleRow, error) {
+	return r.kgTriples(ctx, teamID, kgTripleFilter{column: "object", value: object, status: status, predicate: predicate})
+}
+
+func (r *Repo) KGTriplesByPredicate(ctx context.Context, teamID, predicate, status string) ([]kgTripleRow, error) {
+	return r.kgTriples(ctx, teamID, kgTripleFilter{column: "predicate", value: predicate, status: status})
+}
+
+// KGTriplesBySubjectCount / KGTriplesByObjectCount / KGTriplesByPredicateCount
+// count one entry point's triples at a given status, for the withheld tally.
+func (r *Repo) KGTriplesBySubjectCount(ctx context.Context, teamID, subject, status, predicate string) (int64, error) {
+	return r.kgTriplesCount(ctx, teamID, kgTripleFilter{column: "subject", value: subject, status: status, predicate: predicate})
+}
+
+func (r *Repo) KGTriplesByObjectCount(ctx context.Context, teamID, object, status, predicate string) (int64, error) {
+	return r.kgTriplesCount(ctx, teamID, kgTripleFilter{column: "object", value: object, status: status, predicate: predicate})
+}
+
+func (r *Repo) KGTriplesByPredicateCount(ctx context.Context, teamID, predicate, status string) (int64, error) {
+	return r.kgTriplesCount(ctx, teamID, kgTripleFilter{column: "predicate", value: predicate, status: status})
 }
 
 // KGEntityNames resolves entity ids to their display names for a team.
@@ -264,6 +371,17 @@ func (r *Repo) KGTimeline(ctx context.Context, teamID, eid string) ([]kgTripleRo
 	return rows, nil
 }
 
+// kgCurrentQuery is the team-wide "which facts are still true" statement: the
+// tenant plus endedness, with no more selective term to lean on.
+//
+// This is the shape idx_kg_triples_team_valid_to exists to serve, and the ONLY one
+// — so unlike kgStatusScope it writes valid_to plainly, without the unary + that
+// keeps the endedness test from driving an index. The two spellings encode which
+// term is meant to find the rows, and TestStatusCurrentIsIndexed pins this half.
+func (r *Repo) kgCurrentQuery(ctx context.Context, teamID string) *gorm.DB {
+	return r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ? AND valid_to = ''", teamID)
+}
+
 // KGCounts returns the entity count, total triples, and current (not-ended) triple
 // count for a team — the numeric half of kg_stats.
 func (r *Repo) KGCounts(ctx context.Context, teamID string) (entities, triples, current int64, err error) {
@@ -273,7 +391,7 @@ func (r *Repo) KGCounts(ctx context.Context, teamID string) (entities, triples, 
 	if err = r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ?", teamID).Count(&triples).Error; err != nil {
 		return
 	}
-	err = r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ? AND valid_to = ''", teamID).Count(&current).Error
+	err = r.kgCurrentQuery(ctx, teamID).Count(&current).Error
 	return
 }
 
@@ -287,18 +405,97 @@ func (r *Repo) KGPredicates(ctx context.Context, teamID string) ([]string, error
 
 // --- service --------------------------------------------------------------
 
+// The statuses a graph query can ask for. They select on ENDEDNESS — whether a
+// fact has been retracted — which is a different question from as_of's "was this
+// in effect at that moment", and the two compose rather than overlap.
+//
+// KGStatusCurrent is named for the wire field it filters on (KGFact.Current), but
+// both mean OPEN-ENDED: a fact whose valid_to is future-dated is still current by
+// this test. KGAdd can write such a fact and nothing does today.
+const (
+	KGStatusCurrent = "current"
+	KGStatusEnded   = "ended"
+	KGStatusAll     = "all"
+)
+
+// KGQueryInput is what a graph query can ask for. It is a struct rather than a
+// parameter list because ADR-026 grows it twice more — the predicate entry point,
+// then the default flip — and each of those must be a one-line change at the call
+// site rather than a re-typing of every caller.
+//
+// Status empty means KGStatusAll. The DEFAULT lives at the MCP registration, not
+// here, so flipping it is one string literal in one place (ADR-026 §Rollback).
+//
+// Entity and Predicate are each an entry point, and at least one is required.
+// With both, Predicate refines the entity's facts; with Predicate alone the query
+// answers "every fact of this relation", which is how you audit a whole relation
+// type; with Entity alone it behaves exactly as it always has.
+type KGQueryInput struct {
+	Entity    string
+	Predicate string
+	AsOf      string
+	Direction string
+	Status    string
+}
+
+// KGQueryResult is a graph query's answer together with what it did not return.
+//
+// Withheld is the count the status filter removed, taken from the store rather
+// than recomputed from the rows — a filtered query never fetches what it dropped,
+// so re-deriving the number would mean re-running the filter with the opposite
+// answer and would be a second place to be wrong. WithheldStatus names what those
+// rows are, so the surface reporting them does not have to re-derive the
+// complement and risk disagreeing with the count beside it.
+type KGQueryResult struct {
+	Entity         string
+	Predicate      string
+	Facts          []KGFact
+	Status         string
+	Withheld       int64
+	WithheldStatus string
+}
+
 // KGFact is one fact a query/timeline returns, with display names resolved and the
 // current flag computed.
+//
+// Current means OPEN-ENDED — valid_to is empty — not "true right now". The two
+// differ for a future-dated valid_to, which KGAdd can write and nothing does. The
+// field is not renamed to open_ended because it is a live contract agents read;
+// this comment is the correction ADR-026 chose instead.
+//
+// RecordedAt is TRANSACTION time, not validity time, and the pair is what makes
+// the graph bitemporal: as_of answers "what was true on D" and recorded_at answers
+// "what did we KNOW on D". It has been half-bitemporal since it was built and
+// unable to say so, because the column was written on every fact and returned by
+// nothing.
 type KGFact struct {
-	Direction    string  `json:"direction,omitempty"`
-	Subject      string  `json:"subject"`
-	Predicate    string  `json:"predicate"`
-	Object       string  `json:"object"`
-	ValidFrom    string  `json:"valid_from,omitempty"`
-	ValidTo      string  `json:"valid_to,omitempty"`
-	Confidence   float64 `json:"confidence,omitempty"`
-	SourceCloset string  `json:"source_closet,omitempty"`
-	Current      bool    `json:"current"`
+	Direction      string  `json:"direction,omitempty"`
+	Subject        string  `json:"subject"`
+	Predicate      string  `json:"predicate"`
+	Object         string  `json:"object"`
+	ValidFrom      string  `json:"valid_from,omitempty"`
+	ValidTo        string  `json:"valid_to,omitempty"`
+	Confidence     float64 `json:"confidence,omitempty"`
+	SourceCloset   string  `json:"source_closet,omitempty"`
+	SourceFile     string  `json:"source_file,omitempty"`
+	SourceDrawerID string  `json:"source_drawer_id,omitempty"`
+	RecordedAt     string  `json:"recorded_at,omitempty"`
+	Current        bool    `json:"current"`
+}
+
+// kgRowFieldRenames maps a kgTripleRow field to the KGFact field that returns it,
+// for the one pair not spelled the same. extracted_at is surfaced as recorded_at
+// because "extracted" describes how kg-extract produced a fact and says nothing to
+// an agent asking when the graph learned it.
+var kgRowFieldRenames = map[string]string{"ExtractedAt": "RecordedAt"}
+
+// kgRowFieldsExcluded names every stored column deliberately NOT returned, each
+// with the reason it is withheld. A column absent from both this map and KGFact is
+// a column written and invisible, which is what TestEveryStoredTripleColumnIsReturnedOrExcluded
+// refuses — three such columns are exactly what ADR-026 T6 was fixing.
+var kgRowFieldsExcluded = map[string]string{
+	"TeamID": "tenancy comes from the session; a caller-supplied team is a hole, not a field",
+	"ID":     "fetch-by-triple-id is a different tool's shape, and no read path takes one",
 }
 
 // KGAddResult / KGStatsResult are the structured tool returns.
@@ -412,61 +609,149 @@ func (s *Service) KGInvalidate(ctx context.Context, teamID, subject, predicate, 
 	return subj + " → " + p + " → " + obj, e, nil
 }
 
-// KGQuery returns an entity's facts, optionally only those in effect at as_of and
-// in a chosen direction (outgoing where it is the subject, incoming where it is the
-// object, or both). Display names are resolved from the entity table.
-func (s *Service) KGQuery(ctx context.Context, teamID, entity, asOf, direction string) ([]KGFact, string, error) {
-	ent, err := sanitizeKGValue(entity, "entity")
-	if err != nil {
-		return nil, "", err
+// kgComplementStatus returns the status a withheld tally must count: what a query
+// at this status deliberately did not fetch. KGStatusAll withholds nothing, and
+// returning "" for it is what lets the caller skip the count query entirely — so
+// the pre-ADR-026 default path costs exactly what it did before.
+func kgComplementStatus(status string) string {
+	switch status {
+	case KGStatusCurrent:
+		return KGStatusEnded
+	case KGStatusEnded:
+		return KGStatusCurrent
 	}
-	ao, err := sanitizeISOTemporal(asOf, "as_of")
-	if err != nil {
-		return nil, "", err
+	return ""
+}
+
+// KGQuery returns facts from one of two entry points — an entity, a predicate, or
+// both — optionally only those in effect at as_of, in a chosen direction, and only
+// those at a given endedness. Display names are resolved from the entity table.
+//
+// The status and predicate filters run in SQL rather than over the returned rows.
+// That is the point of them: a fact filtered in the client has already crossed the
+// wire and entered the agent's context window, which is the cost being removed
+// (ADR-026).
+func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (KGQueryResult, error) {
+	// Exactly one of the two entry points is required, not both, because either
+	// alone finds rows through an index. Neither would mean "every fact this team
+	// owns", which is a table dump wearing a query's clothes.
+	if strings.TrimSpace(in.Entity) == "" && strings.TrimSpace(in.Predicate) == "" {
+		return KGQueryResult{}, fmt.Errorf("%w: give an entity, a predicate, or both", ErrInvalidInput)
 	}
+	var ent string
+	if strings.TrimSpace(in.Entity) != "" {
+		var err error
+		if ent, err = sanitizeKGValue(in.Entity, "entity"); err != nil {
+			return KGQueryResult{}, err
+		}
+	}
+	var pred string
+	if strings.TrimSpace(in.Predicate) != "" {
+		valid, err := SanitizeName(in.Predicate, "predicate")
+		if err != nil {
+			return KGQueryResult{}, err
+		}
+		pred = normalizePredicate(valid)
+	}
+	ao, err := sanitizeISOTemporal(in.AsOf, "as_of")
+	if err != nil {
+		return KGQueryResult{}, err
+	}
+	direction := in.Direction
 	if direction == "" {
 		direction = "both"
 	}
 	if direction != "outgoing" && direction != "incoming" && direction != "both" {
-		return nil, "", fmt.Errorf("%w: direction must be 'outgoing', 'incoming', or 'both'", ErrInvalidInput)
+		return KGQueryResult{}, fmt.Errorf("%w: direction must be 'outgoing', 'incoming', or 'both'", ErrInvalidInput)
 	}
-	eid := normalizeEntityID(ent)
+	status := in.Status
+	if status == "" {
+		status = KGStatusAll
+	}
+	if status != KGStatusCurrent && status != KGStatusEnded && status != KGStatusAll {
+		return KGQueryResult{}, fmt.Errorf("%w: status must be 'current', 'ended', or 'all'", ErrInvalidInput)
+	}
 	asOfKey := temporalStartKey(ao)
+	dropped := kgComplementStatus(status)
+	out := KGQueryResult{Entity: ent, Predicate: pred, Status: status, WithheldStatus: dropped}
 
-	var facts []KGFact
-	if direction == "outgoing" || direction == "both" {
-		rows, err := s.repo.KGTriplesBySubject(ctx, teamID, eid)
+	// With no entity, the predicate IS the entry point and direction has nothing to
+	// be relative to — there is no queried endpoint for a fact to be incoming or
+	// outgoing OF — so both endpoints are resolved and the facts carry no direction,
+	// the same shape KGTimeline returns.
+	if ent == "" {
+		rows, err := s.repo.KGTriplesByPredicate(ctx, teamID, pred, status)
 		if err != nil {
-			return nil, "", err
+			return KGQueryResult{}, err
+		}
+		names, err := s.repo.KGEntityNames(ctx, teamID, append(otherIDs(rows, true), otherIDs(rows, false)...))
+		if err != nil {
+			return KGQueryResult{}, err
+		}
+		for _, row := range rows {
+			if !inEffectAt(row, asOfKey) {
+				continue
+			}
+			out.Facts = append(out.Facts, kgFact("", names[row.Subject], row.Predicate, names[row.Object], row))
+		}
+		if dropped != "" {
+			n, err := s.repo.KGTriplesByPredicateCount(ctx, teamID, pred, dropped)
+			if err != nil {
+				return KGQueryResult{}, err
+			}
+			out.Withheld += n
+		}
+		return out, nil
+	}
+
+	eid := normalizeEntityID(ent)
+	if direction == "outgoing" || direction == "both" {
+		rows, err := s.repo.KGTriplesBySubject(ctx, teamID, eid, status, pred)
+		if err != nil {
+			return KGQueryResult{}, err
 		}
 		names, err := s.repo.KGEntityNames(ctx, teamID, otherIDs(rows, true))
 		if err != nil {
-			return nil, "", err
+			return KGQueryResult{}, err
 		}
 		for _, row := range rows {
 			if !inEffectAt(row, asOfKey) {
 				continue
 			}
-			facts = append(facts, kgFact("outgoing", ent, row.Predicate, names[row.Object], row))
+			out.Facts = append(out.Facts, kgFact("outgoing", ent, row.Predicate, names[row.Object], row))
+		}
+		if dropped != "" {
+			n, err := s.repo.KGTriplesBySubjectCount(ctx, teamID, eid, dropped, pred)
+			if err != nil {
+				return KGQueryResult{}, err
+			}
+			out.Withheld += n
 		}
 	}
 	if direction == "incoming" || direction == "both" {
-		rows, err := s.repo.KGTriplesByObject(ctx, teamID, eid)
+		rows, err := s.repo.KGTriplesByObject(ctx, teamID, eid, status, pred)
 		if err != nil {
-			return nil, "", err
+			return KGQueryResult{}, err
 		}
 		names, err := s.repo.KGEntityNames(ctx, teamID, otherIDs(rows, false))
 		if err != nil {
-			return nil, "", err
+			return KGQueryResult{}, err
 		}
 		for _, row := range rows {
 			if !inEffectAt(row, asOfKey) {
 				continue
 			}
-			facts = append(facts, kgFact("incoming", names[row.Subject], row.Predicate, ent, row))
+			out.Facts = append(out.Facts, kgFact("incoming", names[row.Subject], row.Predicate, ent, row))
+		}
+		if dropped != "" {
+			n, err := s.repo.KGTriplesByObjectCount(ctx, teamID, eid, dropped, pred)
+			if err != nil {
+				return KGQueryResult{}, err
+			}
+			out.Withheld += n
 		}
 	}
-	return facts, ent, nil
+	return out, nil
 }
 
 // KGStats summarizes the team's graph: entity and triple totals, current vs
@@ -529,7 +814,9 @@ func kgFact(direction, subject, predicate, object string, row kgTripleRow) KGFac
 	return KGFact{
 		Direction: direction, Subject: subject, Predicate: predicate, Object: object,
 		ValidFrom: row.ValidFrom, ValidTo: row.ValidTo, Confidence: row.Confidence,
-		SourceCloset: row.SourceCloset, Current: row.ValidTo == "",
+		SourceCloset: row.SourceCloset, SourceFile: row.SourceFile,
+		SourceDrawerID: row.SourceDrawerID, RecordedAt: row.ExtractedAt,
+		Current: row.ValidTo == "",
 	}
 }
 
