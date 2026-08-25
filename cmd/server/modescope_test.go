@@ -427,6 +427,12 @@ func TestStartupDoesNotContradictItself(t *testing.T) {
 		t.Errorf("startup says the bm25 weight does not apply and then reports one:\n%s\n"+
 			"A reader believes whichever line they read second.", joined)
 	}
+	if strings.Contains(joined, "lex-weight=auto") || strings.Contains(joined, "lex-weight=auto-idf") {
+		t.Errorf("resolved profile still claims a lexical weight under rrf:\n%s", joined)
+	}
+	if !strings.Contains(joined, "lex-weight=n/a") {
+		t.Errorf("resolved profile did not mark the lexical weight as n/a under rrf:\n%s", joined)
+	}
 }
 
 // parsePair splits "--knob is inert when --gate=value" into its two flag names.
