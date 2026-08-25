@@ -242,6 +242,18 @@ func (s *Store) PointsByIDs(ctx context.Context, namespace string, ids []string)
 	return points, nil
 }
 
+// Count returns how many vectors the namespace currently holds, for the coverage
+// check against the index half. It is a COUNT, not a load: the check compares
+// population, and loading every vector to count them is the cost the primitive
+// exists to avoid.
+func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
+	var n int64
+	if err := s.db.WithContext(ctx).Model(&vectorRow{}).Where("namespace = ?", namespace).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // rows loads all rows for a namespace — the shared read path for Search and
 // AllPoints.
 func (s *Store) rows(ctx context.Context, namespace string) ([]vectorRow, error) {

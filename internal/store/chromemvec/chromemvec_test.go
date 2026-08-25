@@ -64,7 +64,7 @@ func TestOpenDiscardsAnOlderIndexLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fourth open: %v", err)
 	}
-	if n, err := again.Count("team1"); err != nil || n != 1 {
+	if n, err := again.Count(context.Background(), "team1"); err != nil || n != 1 {
 		t.Errorf("reopen lost the index: count=%d err=%v", n, err)
 	}
 }
@@ -164,7 +164,7 @@ func TestOpenExistingNeverInitializesOrReplacesTheIndex(t *testing.T) {
 		if err != nil || len(points) != 0 {
 			t.Errorf("read missing namespace: points=%v err=%v", points, err)
 		}
-		if n, err := again.Count("missing-team"); err != nil || n != 0 {
+		if n, err := again.Count(context.Background(), "missing-team"); err != nil || n != 0 {
 			t.Errorf("count missing namespace: count=%d err=%v", n, err)
 		}
 		if collections := again.db.ListCollections(); len(collections) != 1 || collections["team1"] == nil {
@@ -273,7 +273,7 @@ func TestUpsertReplacesByID(t *testing.T) {
 		t.Fatalf("second upsert: %v", err)
 	}
 
-	n, err := idx.Count(ns)
+	n, err := idx.Count(ctx, ns)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("delete with no ids must be a no-op: %v", err)
 	}
 
-	n, err := idx.Count(ns)
+	n, err := idx.Count(ctx, ns)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}

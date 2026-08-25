@@ -126,6 +126,24 @@ func (c *Client) Search(ctx context.Context, namespace string, vector []float32,
 	return store.SearchResult{H: hits}, nil
 }
 
+// Count returns how many points the namespace's collection holds, exact for the
+// unfiltered shape this client uses (count_points is exact without a filter;
+// exact:true is the accuracy/cost lever under one). The coverage check compares
+// counts, so an approximate answer would feed a false trigger or mask a real
+// deficit.
+func (c *Client) Count(ctx context.Context, namespace string) (int, error) {
+	var resp struct {
+		Result struct {
+			Count int `json:"count"`
+		} `json:"result"`
+	}
+	path := "/collections/" + CollectionName(namespace) + "/points/count"
+	if err := c.do(ctx, http.MethodPost, path, map[string]any{"exact": true}, &resp); err != nil {
+		return 0, err
+	}
+	return resp.Result.Count, nil
+}
+
 // matchFilter renders a payload filter as Qdrant's must-match clause, or nil when
 // there is nothing to filter on. Keys are sorted so the request body is stable —
 // which makes it comparable in tests and readable in a proxy log.

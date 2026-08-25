@@ -216,11 +216,13 @@ func TestBuildServicesStillPreparesThePalace(t *testing.T) {
 		t.Fatalf("prepared vector store = %T, want *store.Hybrid", svc.vectors)
 	}
 	_, index := hybrid.Halves()
-	counter, ok := index.(interface{ Count(string) (int, error) })
+	counter, ok := index.(interface {
+		Count(context.Context, string) (int, error)
+	})
 	if !ok {
 		t.Fatalf("prepared index = %T, want a countable Chromem index", index)
 	}
-	if n, err := counter.Count("team-local"); err != nil || n != 1 {
+	if n, err := counter.Count(ctx, "team-local"); err != nil || n != 1 {
 		t.Errorf("ordinary preparation rebuilt %d point(s), want 1 (err=%v)", n, err)
 	}
 }

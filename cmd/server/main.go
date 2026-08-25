@@ -1287,7 +1287,7 @@ func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chrom
 		return fmt.Errorf("list source-of-truth namespaces: %w", err)
 	}
 	for _, ns := range namespaces {
-		indexed, err := index.Count(ns)
+		indexed, err := index.Count(ctx, ns)
 		if err != nil {
 			return fmt.Errorf("count chromem namespace %q: %w", ns, err)
 		}

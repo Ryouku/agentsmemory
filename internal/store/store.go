@@ -55,6 +55,14 @@ type SearchResult struct {
 	StaleIndex bool
 }
 
+// ExactCountCap is the largest namespace a coverage check counts exactly. Exact
+// counts on a large namespace are the accuracy/cost lever of the backing
+// stores; above the cap the check may use an approximate count, flagged as
+// sampled (the raw fields' count_quality), and an approximate count ALONE never
+// triggers a rebuild (ADR-027) — the corroborating signal is the index-ingested
+// watermark.
+const ExactCountCap = 100_000
+
 // Filter narrows a search to points whose payload matches every entry, compared
 // as strings. An empty (or nil) Filter matches everything.
 //
@@ -94,6 +102,14 @@ type VectorStore interface {
 	// and always reports false; only Hybrid, which can compare the two halves,
 	// may set it.
 	Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) (SearchResult, error)
+
+	// Count returns how many points the namespace currently holds, for the
+	// coverage check: comparing the two halves tells a caller whether the index
+	// ingested everything the source of truth holds. The count is exact for an
+	// unfiltered namespace — the only shape this check uses; a driver is not
+	// asked to be exact under a filter, because the caller never filters a
+	// count.
+	Count(ctx context.Context, namespace string) (int, error)
 
 	// Delete removes points by ID. IDs that are not present are ignored; an
 	// empty slice is a no-op.

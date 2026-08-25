@@ -388,11 +388,11 @@ func (i *Index) Delete(ctx context.Context, namespace string, ids []string) erro
 
 // Count reports how many points the namespace's index holds.
 //
-// It exists for the boot-time reconcile in cmd/server: an index that is empty
+// It exists for the boot-time reconcile in cmd/server (an index that is empty
 // while the source of truth is not is the state a fresh chromem directory is in
-// after an existing install switches to this backend, and the fix is to replay
-// SQLite into it.
-func (i *Index) Count(namespace string) (int, error) {
+// after an existing install switches to this backend) and for the coverage
+// check against the source of truth.
+func (i *Index) Count(ctx context.Context, namespace string) (int, error) {
 	col, err := i.collection(namespace)
 	if err != nil {
 		return 0, err

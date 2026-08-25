@@ -67,6 +67,13 @@ func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32,
 	return h.index.Search(ctx, namespace, vector, k, filter)
 }
 
+// Count reports the serving population: what the INDEX holds. Hybrid searches
+// from the index, so the count that matters to a black-box caller is the index
+// half's; the coverage check compares the halves itself via Halves().
+func (h *Hybrid) Count(ctx context.Context, namespace string) (int, error) {
+	return h.index.Count(ctx, namespace)
+}
+
 // Halves exposes the two stores a Hybrid pairs, for a caller that must compare
 // them rather than use them.
 //

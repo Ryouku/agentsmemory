@@ -36,6 +36,8 @@ func (f *fakeSoT) Search(_ context.Context, _ string, _ []float32, _ int, _ stor
 	return store.SearchResult{}, errors.New("source of truth should not serve search")
 }
 
+func (f *fakeSoT) Count(_ context.Context, ns string) (int, error) { return len(f.points[ns]), nil }
+
 func (f *fakeSoT) Delete(_ context.Context, ns string, ids []string) error {
 	f.deletes++
 	keep := f.points[ns][:0]
@@ -106,6 +108,8 @@ func (f *fakeIndex) Upsert(_ context.Context, ns string, pts []store.Point) erro
 func (f *fakeIndex) Search(_ context.Context, _ string, _ []float32, _ int, _ store.Filter) (store.SearchResult, error) {
 	return store.SearchResult{H: f.searchHits}, nil
 }
+
+func (f *fakeIndex) Count(_ context.Context, ns string) (int, error) { return len(f.upserted[ns]), nil }
 
 func (f *fakeIndex) Delete(_ context.Context, _ string, _ []string) error {
 	f.deletes++
