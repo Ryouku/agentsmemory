@@ -202,17 +202,10 @@ type Config struct {
 	// is why it ships. Run `agentsmemory eval` on your own corpus before changing it.
 	Fusion string
 
-	// MemoryLevelRanking selects the production A/B treatment where retrieval
-	// capacity and every ranking signal operate once per logical memory instead of
-	// once per stored chunk. False keeps the legacy chunk-ranked control. Storage
-	// remains chunked in both arms, so changing this value needs no migration and
-	// is an immediate rollback.
-	MemoryLevelRanking bool
-
 	// MemoryEvidenceSelector selects which bounded passages from a reassembled
 	// logical memory reach the cross-encoder: "lexical" (the default/control) or
 	// "semantic" (query-time passage embeddings). It changes behavior only when
-	// memory-level ranking and reranking are both active.
+	// reranking is active. Ranking itself is always per logical memory.
 	MemoryEvidenceSelector string
 
 	// LexNorm selects how raw BM25 scores are normalised before fusion:
@@ -342,7 +335,6 @@ func Default() Config {
 		RerankWeight:           0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		ClosetBoost:            0,
 		Fusion:                 "rrf",
-		MemoryLevelRanking:     false,
 		MemoryEvidenceSelector: "lexical",
 		// Spelled here rather than imported: config must not depend on the domain.
 		// cmd/server/wiring_test.go asserts this equals palace.DefaultLexNorm, so the

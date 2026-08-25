@@ -36,7 +36,7 @@ func TestProductionCodeDoesNotReimplementCanWrite(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 			return nil

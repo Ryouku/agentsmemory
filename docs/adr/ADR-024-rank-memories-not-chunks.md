@@ -6,7 +6,13 @@
 **Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
 **Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
 **Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
-**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. Independently of the flag and therefore in BOTH arms, `am_search` carries memory-level identity, regions, coverage and anchor staleness — the wire-level fix is not part of the experiment, and the Wiring table below states it per column. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The unset/false memory-level control keeps the existing chunk-ranked path for production A/B comparison.
+**Served-path change (2026-08-25):** Memory is the only ranking unit. Vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. `am_search` carries memory-level identity, regions, coverage and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The chunk-ranked control and `MEMORY_LEVEL_RANKING` were deleted.
+
+**2026-08-25 retirement:** This is a reachability wipe, not a quality overturn of the 2026-08-24 bake-offs below, and it **supersedes the Final verdict's "retain both treatments" clause**. Both comparisons found equivalent answer quality; neither found a rank difference. They disagree on cost, and both numbers belong here rather than the smaller one alone: the six-query run put the treatment ~15.5% slower at the median, and the frozen nine-query run — the one that carries the Final verdict — put it 61.8% slower at the median and 2.15 times slower at the mean.
+
+Neither figure is a clean read on the unit change, and "Cost attribution" below says why: `Repo.MemoryChunksByRoots` examined every drawer the tenant owned, twice per recall, in BOTH arms, so it raised the latency FLOOR of every measurement in this document. That section asks for the frozen suite to be replayed after the fix before its numbers compare the arms again. **That replay has not been run**, so the retirement is decided on reachability, not on latency.
+
+Collapsing anyway for two reasons. A flag that still selects chunk ranking is a second production `Search`, and this repository's recurring defect is a path that exists without being reachable. And `false` had already stopped being a clean control: whole-memory hydration ran unconditionally in `rankRetrieved`, so every caller received memory-shaped results with no flag set. Every consumer of `rankRetrieved` already collapsed when the flag was on; the leftover was the `if` that skipped it. `am_status.ranking` always reports `unit=memory`. ADR-014's measured default was `MEMORY_LEVEL_RANKING=false`; restoring chunk ranking is now a revert of this retirement, not a flag, and the tables below stay as history.
 
 ## Context
 
@@ -382,6 +388,12 @@ memory plus semantic was 61.8% slower at the median and 2.15 times slower at the
 treatments for future experiments; retain adaptive TEI batching because it improved execution without
 changing results.
 
+> ⚠ **Partly superseded on 2026-08-25 — see the retirement note at the top of this ADR.** The
+> chunk-ranked arm was deleted for reachability, so "keep `MEMORY_LEVEL_RANKING=false`" and "retain
+> both treatments" no longer describe the code. The latency figures in this section were never
+> replayed after the common-mode floor named in "Cost attribution" was fixed. The
+> `MEMORY_EVIDENCE_SELECTOR=lexical` default is unchanged and still stands.
+
 This final run is a deterministic room-filtered comparison, not a population latency estimate: it has
 two sequential calls per arm, and Q9 has one distinct candidate. Before reconsidering either default,
 expose selected evidence offsets and fail-open state, vector-prefix depth and cross-encoder document
@@ -535,8 +547,6 @@ and vector search, not by SQLite row volume or embedding round trips.
 
 ## Rollback
 
-Set `MEMORY_EVIDENCE_SELECTOR=lexical` to roll back only semantic passage selection, or set
-`MEMORY_LEVEL_RANKING=false` to restore chunk-level ranking, then restart. Both controls are retained
-intact; no data has changed.
-Reverting the implementation removes the treatment, flag and additive `memory_id` field without a
-schema rollback.
+Set `MEMORY_EVIDENCE_SELECTOR=lexical` to roll back only semantic passage selection, then restart.
+Chunk-level ranking is no longer selectable; restoring it is a revert of the 2026-08-25 retirement,
+not a flag. No data has changed.

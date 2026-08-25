@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 	"github.com/urfave/cli/v3"
 )
 
@@ -19,7 +20,7 @@ const (
 	// defaultMCPURL is the agentsmemory remote MCP endpoint the installer wires
 	// up. It is a stateless Streamable-HTTP MCP server authed by a per-workspace
 	// bearer token (see the README "Connect the MCP" section).
-	defaultMCPURL = "https://aiagentmemory.dev/mcp"
+	defaultMCPURL = mcpprotocol.HostedMCPURL
 
 	// localMCPURL is the endpoint --local wires up instead: a self-hosted server
 	// running `agentsmemory --local`, which serves one workspace over an

@@ -166,13 +166,11 @@ type Service struct {
 	// existing palace returns. FUSION=rrf turns it on for the corpora where the
 	// eval says it should be.
 	fusionRRF bool
-	// memoryLevelRanking changes the candidate and scoring unit from a stored
-	// chunk to a logical memory. It is opt-in while production compares the two
-	// arms; chunk storage and embeddings remain unchanged in both.
-	memoryLevelRanking bool
 	// memoryEvidenceSelector chooses the bounded document the optional
 	// cross-encoder receives for a reassembled memory. The lexical control uses
 	// literal query coverage; the semantic arm embeds windows at query time.
+	// Ranking itself is always per logical memory; this selector is the nested
+	// A/B that remains after the chunk-ranked unit was retired.
 	memoryEvidenceSelector string
 
 	// lexNorm is how the raw BM25 scores are normalised before fusion, and
@@ -268,15 +266,6 @@ func (s *Service) WithReranker(r Reranker, pool int) *Service {
 // is shared across goroutines.
 func (s *Service) WithFusion(mode string) *Service {
 	s.fusionRRF = strings.EqualFold(strings.TrimSpace(mode), "rrf")
-	return s
-}
-
-// WithMemoryLevelRanking selects the treatment arm where candidate capacity,
-// BM25, closet boost, and cross-encoding operate once per logical memory. False
-// keeps the legacy chunk-ranked control. Call it before sharing the service
-// across goroutines, like the other post-construction setters.
-func (s *Service) WithMemoryLevelRanking(on bool) *Service {
-	s.memoryLevelRanking = on
 	return s
 }
 
@@ -418,10 +407,6 @@ func (s *Service) fusionRanker() func(query string, docs []string, dists, boosts
 // corresponds to. A measurement that cannot be tied to a configuration is a
 // number about nothing.
 func (s *Service) RankingProfile() string {
-	unit := "chunk"
-	if s.memoryLevelRanking {
-		unit = "memory"
-	}
 	fusion := "linear"
 	if s.fusionRRF {
 		fusion = "rrf"
@@ -445,8 +430,8 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=%s evidence=%s",
-		fusion, lex, lexNorm, s.closetBoostScale, rerank, unit, s.MemoryEvidenceSelectorName())
+	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
+		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -908,14 +893,10 @@ func searchFilter(q SearchQuery) store.Filter {
 	return f
 }
 
-// Search recalls drawers by hybrid relevance to a query. It embeds the query and
-// over-fetches a pool of nearest vector neighbours, applies the wing/room and
-// max-distance filters, then RE-RANKS the survivors by a convex blend of vector
-// similarity and lexical Okapi-BM25 (rankHybrid) before returning the top page.
-// The blend matches the frozen searcher — vector finds the semantically near,
-// BM25 rewards literal term overlap — and beats either alone. Closet boost (the
-// third frozen signal) arrives with the mining phase that builds closets; until
-// then Score is the vector+BM25 fusion and Distance the raw cosine distance.
+// Search recalls memories by hybrid relevance to a query. It embeds the query,
+// widens a vector prefix until it holds a pool of distinct logical memories, then
+// ranks those memories through rankRetrieved. Storage stays chunked; the ranking
+// unit is the memory.
 func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" {
@@ -1008,18 +989,15 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// stale one survives, so both paths call survivorsFrom instead.
 	survivors, _ := survivorsFrom(hits, rows, q)
 
-	// The unit being ranked is a MEMORY, not a chunk, when memory-level ranking is
-	// on — so the collapse happens HERE, before scoring, and every consumer of
-	// rankRetrieved gets it. That includes the eval arms, which call this on a
-	// Clone: an arm reconstructing the served configuration has to collapse the
-	// same way or it is measuring a pipeline nobody runs.
-	if s.memoryLevelRanking {
-		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
-		if err != nil {
-			return nil, false, err
-		}
-		survivors = collapsed
+	// Collapse HERE, before scoring, so every consumer of rankRetrieved ranks
+	// memories. Eval pool arms call this on a Clone: an arm reconstructing the
+	// served configuration has to collapse the same way or it is measuring a
+	// pipeline nobody runs.
+	collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+	if err != nil {
+		return nil, false, err
 	}
+	survivors = collapsed
 
 	// Closet boost: search the team's closets with the same query and let the
 	// best-matching closets lift the rank of the drawers from their source. Closets
@@ -1089,12 +1067,6 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		slotOf[mem] = len(results)
 		results = append(results, hit)
 	}
-	// Whole-memory hydration is the last step of RANKING, not of Search, so every
-	// caller of rankRetrieved — including the eval arms that reconstruct a served
-	// configuration on a Clone — gets the same shaped hit the wire does.
-	if err := s.hydrateResultMemories(ctx, teamID, results); err != nil {
-		return nil, false, err
-	}
 
 	return results, reranked, nil
 }
@@ -1158,7 +1130,7 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		hit := survivors[ranked[i].Index]
 		docs[i] = hit.rankingContent(evidenceQuery, hit.MemoryContent != "")
 	}
-	if s.memoryLevelRanking && s.MemoryEvidenceSelectorName() == semanticMemoryEvidenceSelector {
+	if s.MemoryEvidenceSelectorName() == semanticMemoryEvidenceSelector {
 		semanticDocs, err := s.semanticRerankDocuments(ctx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
 		if err != nil {
 			slog.Warn("semantic evidence selection failed, falling back to lexical evidence", "error", err, "candidates", pool)

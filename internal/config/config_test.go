@@ -34,6 +34,12 @@ func TestScopeSearchToWing(t *testing.T) {
 	}
 }
 
+func TestConfigHasNoMemoryLevelRankingField(t *testing.T) {
+	if _, ok := reflect.TypeOf(Config{}).FieldByName("MemoryLevelRanking"); ok {
+		t.Fatal("MemoryLevelRanking is back; a flag that selects chunk ranking is a second production Search")
+	}
+}
+
 func TestScopeSearchToWingIsTheProductionSelector(t *testing.T) {
 	files := []string{
 		filepath.Clean("../../cmd/server/main.go"),

@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // initializeResult drives ONE real initialize through the same transport
@@ -25,7 +23,7 @@ func initializeResult(t *testing.T) map[string]any {
 	t.Helper()
 	// A real server with nil deps: registration only builds tools and closures,
 	// and initialize touches none of them.
-	srv := httptest.NewServer(server.NewStreamableHTTPServer(New(Deps{}), server.WithStateLess(true)))
+	srv := httptest.NewServer(StreamHTTP(New(Deps{})))
 	t.Cleanup(srv.Close)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":` +

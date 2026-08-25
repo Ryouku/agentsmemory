@@ -566,14 +566,13 @@ which is the only thing that says the overlay applied:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.full.yml logs agentsmemory | grep 'ranking:'
-# ranking: fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=chunk evidence=lexical
+# ranking: fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=memory evidence=lexical
 ```
 
 `rerank=on(...)` is the line to look for. If it says `rerank=off`, the overlay did
 not apply — you almost certainly dropped one of the two `-f` flags, which starts
-a *valid* base stack rather than failing. For the retrieval A/B, the same line's
-`unit=chunk|memory` is the live value of `MEMORY_LEVEL_RANKING`; under the memory
-arm, `evidence=lexical|semantic` is the resolved `MEMORY_EVIDENCE_SELECTOR`.
+a *valid* base stack rather than failing. `unit=memory` is the served ranking
+unit. `evidence=lexical|semantic` is the resolved `MEMORY_EVIDENCE_SELECTOR`.
 
 **Redeploying after a change**, including proving the running binary carries it:
 
@@ -1154,34 +1153,29 @@ All flags have sensible local defaults:
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
 | `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
 | `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
-| `--memory-level-ranking` | `false` | `MEMORY_LEVEL_RANKING` — production A/B treatment: fill and rank a distinct-memory pool instead of a chunk pool |
-| `--memory-evidence-selector` | `lexical` | `MEMORY_EVIDENCE_SELECTOR` — bounded reranker evidence under memory-level ranking: literal query coverage or query-time semantic passage selection |
+| `--memory-evidence-selector` | `lexical` | `MEMORY_EVIDENCE_SELECTOR` — bounded reranker evidence: literal query coverage or query-time semantic passage selection |
 
-### Memory-level ranking A/B
+### Memory-level ranking
 
-Set `MEMORY_LEVEL_RANKING=true` to make vector candidate capacity, BM25 and the
-optional cross-encoder operate once per logical memory. Chunk storage and chunk
-embeddings remain unchanged: the best passage nominates a memory, the vector
-prefix widens until it holds the target number of distinct memories, and ranking
-uses reassembled memory evidence. `false` is the legacy chunk-ranked control.
+Vector candidate capacity, BM25 and the optional cross-encoder operate once per
+logical memory. Chunk storage and chunk embeddings remain unchanged: the best
+passage nominates a memory, the vector prefix widens until it holds the target
+number of distinct memories, and ranking uses reassembled memory evidence.
 
-Changing the arm needs only a restart—there is no data migration. Verify what is
-actually live in the startup `ranking:` line or `am_status.ranking`: it ends in
-`unit=chunk` for control and `unit=memory` for treatment.
-
-Inside the memory treatment, `MEMORY_EVIDENCE_SELECTOR=lexical` is the default
-control. `semantic` reuses the raw query embedding, embeds overlapping windows
-from the whole reassembled long memory, and selects up to four distant passages
-within the same 1600-rune cross-encoder budget. Short memories pass through
-unchanged. Any passage-embedding failure falls back to lexical evidence for the
-whole shortlist. Passage requests stay bounded at 128 inputs. With the TEI
-embedding backend, the client reads `/info.max_client_batch_size` (caching only a
-successful probe, and retrying after a backoff otherwise) and uses
-the server's real limit up to that bound; if `/info` is unavailable it retains
-TEI's safe 32-input default. The semantic arm adds embedding latency but no
-migration; roll it back by setting the selector to `lexical`. The resolved
-profile reports `evidence=lexical|semantic`. The process environment can
-override an `.env` file, so that profile—not the file—is the A/B authority.
+`MEMORY_EVIDENCE_SELECTOR=lexical` is the default control. `semantic` reuses the
+raw query embedding, embeds overlapping windows from the whole reassembled long
+memory, and selects up to four distant passages within the same 1600-rune
+cross-encoder budget. Short memories pass through unchanged. Any
+passage-embedding failure falls back to lexical evidence for the whole
+shortlist. Passage requests stay bounded at 128 inputs. With the TEI embedding
+backend, the client reads `/info.max_client_batch_size` (caching only a
+successful probe, and retrying after a backoff otherwise) and uses the server's
+real limit up to that bound; if `/info` is unavailable it retains TEI's safe
+32-input default. The semantic arm adds embedding latency but no migration;
+roll it back by setting the selector to `lexical`. It is inert unless
+`RERANK_URL` is set. The resolved profile reports `unit=memory` and
+`evidence=lexical|semantic`. The process environment can override an `.env`
+file, so that profile—not the file—is the authority.
 
 ### Cross-encoder re-ranking (optional)
 

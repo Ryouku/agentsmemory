@@ -159,7 +159,7 @@ func TestSearchRerankPoolBoundsTheCall(t *testing.T) {
 // retrieval already embedded.
 func TestSearchRerankContextFeedsOnlyTheCrossEncoder(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t).WithMemoryLevelRanking(true)
+	svc := newTestService(t)
 	const team = "team-ctx"
 	seedRerankCorpus(t, svc, ctx, team)
 	if _, err := svc.Add(ctx, team, AddInput{

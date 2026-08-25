@@ -30,6 +30,13 @@ const (
 	// using a socket. It is not MCPURLEnvVar: the proxy speaks to the server's
 	// listen address, which may not be the public MCP URL a remote client uses.
 	ProxyURLEnvVar = "AGENTSMEMORY_URL"
+	// HostedOrigin is the public production origin (dashboard, canonical URLs,
+	// passkeys).
+	HostedOrigin = "https://aiagentmemory.dev"
+	// HostedMCPURL is the Streamable HTTP MCP endpoint on HostedOrigin. The
+	// path is derived so a client cannot point at /mcp on a different site
+	// than the one the landing page advertises.
+	HostedMCPURL = HostedOrigin + "/mcp"
 	// StarScopeSchemaExtension marks an optional wing property whose "*" value
 	// deliberately widens a registration-scoped read to every visible wing.
 	// Contract-axis adapters discover the class from tools/list through this

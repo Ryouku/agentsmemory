@@ -25,13 +25,17 @@ func TestWireConstantsHaveOneLiteralOwner(t *testing.T) {
 		SocketEnvVar:     "SocketEnvVar",
 		MCPURLEnvVar:     "MCPURLEnvVar",
 		ProxyURLEnvVar:   "ProxyURLEnvVar",
+		HostedOrigin:     "HostedOrigin",
+		HostedMCPURL:     "HostedMCPURL",
 	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			// .claude holds agent worktrees — copies of this repo whose
+			// literals would be reported twice.
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -77,11 +81,12 @@ func TestNonGoClientsUseProtocolEnvNames(t *testing.T) {
 		rel   string
 		names []string
 	}{
-		{"clients/claude-code/extensions/agentsmemory.ts", []string{TokenEnvVar, LocalEnvVar, MCPURLEnvVar}},
+		{"clients/claude-code/extensions/agentsmemory.ts", []string{TokenEnvVar, LocalEnvVar, MCPURLEnvVar, HostedMCPURL}},
 		{"clients/claude-code/hooks/agentsmemory-verify-hook.sh", []string{MCPURLEnvVar}},
 		{"clients/claude-code/hooks/agentsmemory-stop-hook.sh", []string{MCPURLEnvVar}},
 		{"clients/claude-code/hooks/agentsmemory-session-end-hook.sh", []string{MCPURLEnvVar}},
 		{"clients/claude-code/hooks/agentsmemory-stats.sh", []string{MCPURLEnvVar}},
+		{"internal/web/claude-guide.md", []string{HostedMCPURL}},
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, tc.rel))
 		if err != nil {
@@ -90,8 +95,55 @@ func TestNonGoClientsUseProtocolEnvNames(t *testing.T) {
 		body := string(raw)
 		for _, name := range tc.names {
 			if !strings.Contains(body, name) {
-				t.Errorf("%s does not mention %s; renaming the protocol env would leave this client on the old name", tc.rel, name)
+				t.Errorf("%s does not mention %s; renaming the protocol constant would leave this client on the old value", tc.rel, name)
 			}
 		}
+	}
+}
+
+func TestPiExtensionDefaultsToHostedMCPURL(t *testing.T) {
+	root := filepath.Clean("../..")
+	raw, err := os.ReadFile(filepath.Join(root, "clients/claude-code/extensions/agentsmemory.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `const DEFAULT_MCP_URL = "` + HostedMCPURL + `";`
+	if !strings.Contains(string(raw), want) {
+		t.Errorf("pi extension default is not mcpprotocol.HostedMCPURL (%s); TypeScript cannot import the Go constant, so this assignment is the one allowed copy", HostedMCPURL)
+	}
+}
+
+func TestTemplatesDoNotHardcodeHostedOrigin(t *testing.T) {
+	root := filepath.Clean("../..")
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			// .claude holds agent worktrees — copies of this repo whose
+			// literals would be reported twice.
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".claude" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".templ") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		body := string(raw)
+		rel, _ := filepath.Rel(root, path)
+		for _, lit := range []string{HostedOrigin, HostedMCPURL} {
+			if strings.Contains(body, lit) {
+				t.Errorf("%s hardcodes %s; use mcpprotocol.HostedOrigin / siteURL", filepath.ToSlash(rel), lit)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
