@@ -38,8 +38,14 @@ write a line of code, confirm the `am_*` MCP tools are actually reachable:
    and a `workspace` block carrying its `slug` and `name`. **That** is what
    proves you are home — a global registration carrying another project's token
    answers every probe happily, and only the workspace it names tells you whose
-   palace you just opened. Working on your own machine expects
-   `mode: "local"`; a hosted session expects your team's workspace slug.
+   palace you just opened.
+
+   ⚠ **`mode` tells you WHICH SERVER answered, not where you are sitting, and it
+   is NOT the identity check.** A local checkout pointed at the hosted palace —
+   this repo's ordinary development setup — returns `mode: "hosted"`, and that is
+   correct rather than a warning. **The `workspace` slug is the identity check:**
+   compare it against the one this team uses. `mode` only tells you whether that
+   workspace lives on the SaaS or on a server you run.
 
    A workspace you do not recognise is worse than a connection error: you would
    recall another project's decisions as if they were this team's, and every
@@ -271,11 +277,23 @@ Normal operation. Recall before you act, persist before you stop.
    ⚠ **`llm_init` is the one room small enough to list.** `am_list_drawers` caps at
    ~22-25 chunks and silently spills the rest to a file that never enters your
    context, so it is never how you load anything else.
-4. `am_search(<task>)` — past decisions and rationale for the work in front of you.
-   This is the *only* source of cross-session *why*; don't reconstruct from code
-   what memory explains. ⚠ Search the **task**, never the **entry point**: the root
-   is reached by the address in step 3, and a note that quotes a query outranks the
-   thing it describes.
+4. `am_search(<task>, wing: "wing_agentmemories")` — past decisions and rationale
+   for the work in front of you. This is the *only* source of cross-session *why*;
+   don't reconstruct from code what memory explains.
+
+   ⚠ **Pass the wing explicitly.** `am_status` reports `default_wing: ""` for the
+   registrations used here, and an unscoped recall then spans EVERY wing in the
+   workspace — thousands of drawers from unrelated projects. They do not remove
+   your answer; they add competitors ahead of it.
+
+   ⚠ Search the **task**, never the **entry point**: the root is reached by the
+   address in step 3, and a note that quotes a query outranks the thing it
+   describes.
+
+   ⚠ **Silence here proves nothing about `docs/adr/`.** ADRs, specs, README and
+   BACKLOG are a separate, authoritative source this palace does not index. Before
+   reporting anything as undecided, name the sources you searched — a list of one
+   establishes nothing.
 5. `am_list_skills` → `am_load_skill(<name>)` — the team's centralised
    conventions for the stack you're touching. This repo is Go, so `effective-go`
    at minimum; add `cqrs` when the work is live/realtime or fans out across
