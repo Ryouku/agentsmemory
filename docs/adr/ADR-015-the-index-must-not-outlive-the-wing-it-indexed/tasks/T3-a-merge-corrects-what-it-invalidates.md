@@ -32,7 +32,7 @@ After a wing merge, a recall scoped to the target wing returns the memories that
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -93,3 +93,20 @@ Stop and ask if a merge can interleave with a concurrent write to the same drawe
 
 - 2026-08-21 · 534aea2* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · 534aea2* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:3a7adbd3a2d618f54822983c5c32fc18504d3297abc5e096115dd8d3b004cd04
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.013s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	3.641s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.014s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.003s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.476s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.006s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.018s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.006s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:5c62d7426867ce3dfbb6c3a6e89b438d1b8aea44257546c1a446b7c23b237e6e
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/admin.go` · a merge is not complete until every index that filters on wing agrees with the relabelled rows; patching the drawer points to an empty wing leaves the index disagreeing with the rows the merge just moved, which TestMergeLeavesNoIndexDrift pins · acceptance-sha256:5c62d7426867ce3dfbb6c3a6e89b438d1b8aea44257546c1a446b7c23b237e6e

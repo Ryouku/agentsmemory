@@ -38,7 +38,7 @@ Every mutable area round-trips through the tool surface, and a delete is proven 
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -101,3 +101,5 @@ Stop and report if any of the three regression scenarios cannot be made to fail 
 ## Verification Log
 
 - 2026-08-20 · 62d7c38* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+
+## Mutation Log

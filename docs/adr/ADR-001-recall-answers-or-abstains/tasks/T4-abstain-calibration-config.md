@@ -67,3 +67,5 @@ Stop if the running configuration cannot report the ranking profile without a ne
 - A profile identity carried on every production search event, as opposed to on the calibration file (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+
+## Mutation Log

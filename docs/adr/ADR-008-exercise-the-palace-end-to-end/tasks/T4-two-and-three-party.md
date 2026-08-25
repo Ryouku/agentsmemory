@@ -38,7 +38,7 @@ What one registration writes, another finds when it should and does not when it 
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -107,3 +107,20 @@ Stop and ask if two registrations cannot be created against one in-process serve
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.005s [no tests to run]
   ```
 - 2026-08-20 · b2583ed* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:5f841b5bc6ffccfe8a1be41d3847b04d5288b378ae8c44e666a87fe64f1651ac
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	2.580s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.021s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.005s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.443s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.006s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.008s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.006s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:639c4430042eae54e6d87b8333ffe71efaa14512f72c1639c4f9ac526e5c003f
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcpserver/server.go` · the two- and three-party scenarios turn on one party naming ANOTHER partys wing explicitly; inverting the test ignores the wing the caller passed and sanitizes the empty one instead, so cross-wing recall silently answers from the wrong project · acceptance-sha256:639c4430042eae54e6d87b8333ffe71efaa14512f72c1639c4f9ac526e5c003f

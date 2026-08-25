@@ -37,7 +37,7 @@ A kit can declare that an agent has no commands directory, no memory file and no
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestCursorKitResolves|TestAgentWithoutACommandsDirWritesNoCommands|TestSandboxIsRefusedForAnAgentThatCannotRelocate" -count=1 -v 2>&1 | tee /tmp/a20t1.out
   grep -q -- "--- PASS: TestCursorKitResolves" /tmp/a20t1.out
@@ -94,7 +94,9 @@ Stop and ask if Cursor turns out to read a commands or memory file after all —
 ## Mutation Log
 
 - 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/installer.go` · without the guard filepath.Join(dir, "", "M.md") drops all three slash commands loose in the config root, files the agent never reads
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/sandbox.go` · the kit shape must treat a missing CLI as a capability that is ABSENT rather than an error; a condition that never matches sends Claude Desktop back down the resolve-a-binary path and it fails with the empty-name lookup this task exists to remove · acceptance-sha256:c3b2d096f48ba330c999d959320269029e5764b135088fa2e882bc265f4c5467
 
 ## Verification Log
 
 - 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:c3b2d096f48ba330c999d959320269029e5764b135088fa2e882bc265f4c5467

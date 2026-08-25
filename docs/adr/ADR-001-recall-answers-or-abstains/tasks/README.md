@@ -71,3 +71,7 @@ the Docker invocation this repo builds under, and `adr-verify` runs that one.
 - T1 changes what a case file means, so case files generated before it are not comparable with ones
   generated after. `--style absent-easy` exists to reproduce the old regime deliberately, not to
   keep old files silently valid.
+
+> **Amended 2026-08-25.** `pending` here does not mean unbuilt. T1's and T2's mechanisms exist
+> in `internal/palace/calibration.go` and `cmd/server/eval.go`; what is missing is the `adr-verify`
+> evidence. T3 to T6 are genuinely unbuilt. See the Amendment in the ADR.

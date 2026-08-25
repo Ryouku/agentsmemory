@@ -62,3 +62,5 @@ Stop if adding the columns requires rewriting existing rows; they must be nullab
 - Reading the recorded scores back to re-calibrate from production traffic (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+
+## Mutation Log

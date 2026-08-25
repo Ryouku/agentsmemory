@@ -96,3 +96,8 @@ Stop and ask if distinguishing "no entities" from "below threshold" needs a quer
 - 2026-08-21 · 749b92e* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · 42b0368* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · d99f8d5 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:d918016461e3729f6477b4aa00a91b9466b7669c898101397a43261298f2402a
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:d918016461e3729f6477b4aa00a91b9466b7669c898101397a43261298f2402a
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcpserver/emptygraph.go` · the note exists so an agent meeting an empty graph learns WHY it is empty rather than concluding the palace holds nothing; treating any hallway count as populated returns the silent branch every time · acceptance-sha256:d918016461e3729f6477b4aa00a91b9466b7669c898101397a43261298f2402a

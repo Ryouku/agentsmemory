@@ -37,7 +37,7 @@
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestClaudeDesktopKitResolves|TestClaudeDesktopInstallRegistersTheBridge|TestClaudeDesktopRefusesWithoutAServerBinary" -count=1 -v 2>&1 | tee /tmp/a21t2.out
   grep -q -- "--- PASS: TestClaudeDesktopKitResolves" /tmp/a21t2.out
@@ -95,7 +95,9 @@ Stop and ask if Claude Desktop's config turns out to accept an HTTP entry — th
 ## Mutation Log
 
 - 2026-08-22 · 15bf930* · mutant killed · exit 1 · `clients/claude-code/installer.go` · a missing host binary writes a command that does not exist, and Claude Desktop then fails at spawn with an error naming our binary — which reads as our bug on the users machine
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/agentkit.go` · the Desktop kit has nowhere to put commands or hooks, so registering the MCP by writing its config file is the ONLY thing it does; an empty config file name makes the kit install nothing at all while still reporting success · acceptance-sha256:6b4b6af73efdbf83e0a9f2f08a22ea400b27198258f7c3955eddab39413f55bb
 
 ## Verification Log
 
 - 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:6b4b6af73efdbf83e0a9f2f08a22ea400b27198258f7c3955eddab39413f55bb

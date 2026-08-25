@@ -874,3 +874,12 @@ Two smaller ones from the same review:
   is empty and names a near neighbour — and it does not put the fact on the page. The open question
   is whether a scoped search that finds nothing should widen automatically, which is a product
   decision about whether scoping is a filter or a preference, and nobody has taken it.
+
+## From ADR-025 (executable contract axes)
+
+- **A live-dependency integration cohort** — Qdrant, TEI, OAuth and model quality cannot be
+  treated as hermetic, so the contract axes exclude them. Binding them needs a separate cohort
+  with typed dependencies, run against real services rather than substitutes, and it is a
+  different instrument from the in-process axis runner: an axis proves a selection is reachable,
+  where this would prove an external boundary still behaves. Deferred from ADR-025's Out of Scope
+  on 2026-08-25, when the disposition was given a receipt it had been missing.

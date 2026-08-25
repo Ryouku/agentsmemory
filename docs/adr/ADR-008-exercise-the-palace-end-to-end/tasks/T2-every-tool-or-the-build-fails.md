@@ -45,7 +45,7 @@ The live catalogue is compared against the scenario registry; a tool with no sce
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -103,3 +103,24 @@ Stop and ask if the number of genuinely unobservable tools exceeds five — that
 ## Verification Log
 
 - 2026-08-20 · 283c282* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:f1e35c1faf4c420b96317f3dfe0458a7d65997d21550728530bfe6fc381ba27c
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.012s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	4.058s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.326s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.008s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.004s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:2ac1632988375f31efcf685c4e911f8494133e229b6035699e701e6cfa53a350
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant survived · exit 0 · `internal/mcptest/scenarios.go` · the build fails unless every registered tool is exercised or carries a named, justified exemption; accepting an exemption with no tool name at all reopens the escape hatch, and the exemption list is empty today so only a direct test of this rule can catch it · acceptance-sha256:2ac1632988375f31efcf685c4e911f8494133e229b6035699e701e6cfa53a350
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcptest/harness.go` · every gate in this task compares what a scenario CLAIMS against what it actually invoked, and this line is the only record of the second half; with nothing recorded the coverage check has no observations to test claims against. A first mutant on ValidExemptions empty-name branch SURVIVED, which showed this fence never reaches the exemption rule — the exemption list is empty, so that branch is exercised by no scenario · acceptance-sha256:2ac1632988375f31efcf685c4e911f8494133e229b6035699e701e6cfa53a350

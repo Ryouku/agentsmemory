@@ -5,8 +5,30 @@
 **Owner:** Zy (with Mindaugas as upstream maintainer)
 **Spec:** None — no spec stage; grounded in eval measurements and cited research.
 **Cross-references:** `internal/palace/rank.go` (`rankFused`, `bm25Scores`, `adaptiveBM25Weight`, `LexicalCoverageIDF`), `internal/palace/eval.go` (arm registry, `evalCase`), `internal/palace/evalstats.go` (paired bootstrap), `internal/palace/armreach_test.go` (arm reachability), `internal/palace/service_test.go` (`TestLexicalIDFChangesWhatSearchReturns`, the behavioural-reachability pattern), `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-003-retire-the-closet-prior.md` (it decides whether the prior this ADR must rank alongside survives at all)
-**Served-path change:** The lexical normaliser is an operator-selectable choice — `--lex-norm` / `LEX_NORM` / `Service.WithLexNorm`, landed 2026-08-21 — so `Search` can now run `ceiling` and `saturating`, which were previously reachable from an eval table and from nothing an operator runs. The DEFAULT is unchanged and stays `page-max`: which normaliser should win is T3's evidence question, and shipping the choice first means the answer is a changed default rather than a build.
+**Served-path change:** The lexical normaliser is an operator-selectable choice — `--lex-norm` / `LEX_NORM` / `Service.WithLexNorm`, landed 2026-08-21 — so `Search` can now run `ceiling` and `saturating`, which were previously reachable from an eval table and from nothing an operator runs. The DEFAULT is unchanged and stays `page-max`. **Amended 2026-08-25:** under the shipped `fusion=rrf` the normaliser is not consulted at all — a live span carries no `am.lex_norm` attribute and the startup line reads `lex-norm=n/a` — so "which normaliser should win" is a question about a `FUSION=linear` deployment, not about the served path. See the Amendment below.
 
+## Amendment 2026-08-25 — T3 and T4 are conditional, and the condition is not met
+
+Measured, not inferred. A live search on the deployed stack emits:
+
+    am.search.fusion  27ms  ran  fusion=rrf count=10
+
+and the parent span carries no `am.lex_norm` attribute at all, because
+`linearFusionAttrs` (`internal/palace/trace.go`) is appended only when
+`!s.fusionRRF`. The startup line agrees: `lex-weight=n/a lex-norm=n/a`.
+
+So the normaliser this ADR made selectable is **not consulted on the served
+path**, and has not been since ADR-014 shipped `fusion=rrf` as the default. That
+does not invalidate T1 and T2 — the choice is real, reachable and operator-visible,
+which is what they delivered. It makes T3 (re-run the four tables under both
+normalisers) and T4 (retire or ratify adaptive weighting) **measurements of a
+dimension production does not read**.
+
+They stay written, and they stay pending, but they are conditional. The trigger
+that reopens them is a reconsideration of `FUSION=linear` as the default, which
+ADR-014 owns — not a decision this ADR can take. Until then, work spent here buys
+no served-path change, and an ADR whose remaining tasks cannot change what an
+agent experiences should say so where a reader will see it.
 ## Context
 
 `rankFused` blends a vector term and a lexical term. The two are not on the same footing:

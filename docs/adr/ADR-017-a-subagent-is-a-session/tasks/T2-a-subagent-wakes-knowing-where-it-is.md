@@ -41,7 +41,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   # list exits 1, and `set -e` aborts — a green tree failing its gate for being
   # green. Fourth occurrence of this shape in this corpus.
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestInstallerRegistersSubagentStart|TestSubagentContextNamesTheWing|TestSubagentContextStaysShort|TestSubagentContextNeverGuessesTheWing|TestShippedAgentDefinitionsNameTheMemoryTools" -count=1 -v 2>&1 | tee /tmp/a17t2.out
   grep -q -- "--- PASS: TestInstallerRegistersSubagentStart" /tmp/a17t2.out
@@ -82,10 +82,8 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
 
 ## Out of Scope
 
-- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — the events exist, but a
-  live dispatch has not yet proved the payload fields or that hook stdout is
-  injected as subagent context)
-- pi subagent hooks (no hook system in the measured version)
+- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — the events exist, but a live dispatch has not yet proved the payload fields or that hook stdout is injected as subagent context)
+- pi subagent hooks (permanent: no hook system in the measured version)
 - Running the recall in the hook and injecting the RESULTS (deferred: docs/adr/BACKLOG.md)
 
 ## Invariants
@@ -104,6 +102,7 @@ Stop and ask if Claude Code does not deliver `additionalContext` from `SubagentS
 ## Mutation Log
 
 - 2026-08-22 · 23ee73d* · mutant killed · exit 1 · `clients/claude-code/installer.go` · the SubagentStart registration would point at nothing, so the injection T1 measured at 5/5 silently never runs on any installed machine
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/installer.go` · TestInstallerRegistersSubagentStart lives in THIS task, so registration is T2s contract, not T1s; a near-miss event name installs cleanly and is never fired, leaving the subagent to wake knowing nothing. The identical mutant SURVIVED against T1, which is how the boundary between the two tasks was established · acceptance-sha256:ba8797b7727fbad1f1fb552f278f1f5ca96cc67341a305564dd5b4b07ebe874e
 
 ## Verification Log
 
@@ -121,3 +120,4 @@ Stop and ask if Claude Code does not deliver `additionalContext` from `SubagentS
   FAIL
   ```
 - 2026-08-22 · 23ee73d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:ba8797b7727fbad1f1fb552f278f1f5ca96cc67341a305564dd5b4b07ebe874e

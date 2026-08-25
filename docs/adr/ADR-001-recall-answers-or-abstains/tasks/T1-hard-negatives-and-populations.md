@@ -34,7 +34,7 @@ Make the calibration set honest: negatives that keep the identifiers a real near
 
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   if [ -n "$(gofmt -l internal/palace cmd/server)" ]; then echo "gofmt"; exit 1; fi
   go vet ./... || exit 1
   go test ./internal/palace/ ./cmd/server/ -run "TestPopulationLabelsSeparateUnreachable|TestAbsentPromptKeepsIdentifiers|TestAbsentCaseOutcomeDropsOnVerifierError|TestAbstentionCalibrationComesFromTheDefaultPage" -count=1 -v 2>&1 | tee /tmp/a1t1.out
@@ -157,6 +157,7 @@ other.
 ## Mutation Log
 
 - 2026-08-22 · 1c9506a* · mutant killed · exit 1 · `internal/palace/eval.go` · a gold that never entered the pool would be labelled reachable, making a retrieval failure look like a ranking result the arms all got wrong
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `cmd/server/eval.go` · a verified-absent case is only honest if its absence was actually checked; treating a verifier ERROR as a keep writes a row indistinguishable from a verified one, and every abstention number downstream then treats an unchecked assumption as a measurement · acceptance-sha256:6b4eb28eade01392f00e81c2222cf8405f51ab2c5f0cf1f9e851a65fe81a24e1
 
 ## Verification Log
 - 2026-08-21 · 9a88b51* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

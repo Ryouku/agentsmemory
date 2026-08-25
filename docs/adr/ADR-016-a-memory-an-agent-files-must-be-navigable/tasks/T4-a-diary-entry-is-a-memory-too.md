@@ -34,7 +34,7 @@ Diary entries are also the RICHEST source the graph could have. They are where a
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -91,3 +91,7 @@ Stop and ask if diary entries turn out to produce an order of magnitude more hal
 ## Verification Log
 
 - 2026-08-21 · 4edbfe5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:4b4645f7137d9adad6d7cae3fb7a8c00c066323e67434bf2039a5b3c4bbad915
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/service.go` · a diary entry is a memory too, and the diary was the last write path filing rows the derived graph never saw; stamping nil entities on that path restores exactly the gap ADR-016 T4 closed, so hallways stop deriving from the richest source the graph has · acceptance-sha256:4b4645f7137d9adad6d7cae3fb7a8c00c066323e67434bf2039a5b3c4bbad915

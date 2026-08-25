@@ -112,3 +112,7 @@ Stop and ask if the case set can change mid-run — that would make a single id 
 ## Verification Log
 
 - 2026-08-21 · 754c60b* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:641aa6f3c541df386184faa943c8f93c3d6d369d4ae0ce4e5fa8337998c697b2
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/eval.go` · CaseSetID sorts its per-case lines so that reordering a case set cannot change the id; without the sort the id becomes order-dependent, which is precisely what TestCaseSetIDIsContentDerived exists to reject · acceptance-sha256:641aa6f3c541df386184faa943c8f93c3d6d369d4ae0ce4e5fa8337998c697b2

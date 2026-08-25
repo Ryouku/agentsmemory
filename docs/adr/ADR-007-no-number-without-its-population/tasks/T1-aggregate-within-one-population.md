@@ -82,3 +82,5 @@ Stop and ask if an aggregate cannot be assigned a single scope — that means th
 ## Verification Log
 
 <Tool-written by adr-verify. Do not hand-edit.>
+
+## Mutation Log

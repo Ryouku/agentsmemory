@@ -88,3 +88,8 @@ Stop and ask if the block turns out to depend on state built later in `newServic
 ## Verification Log
 
 - 2026-08-20 · 067d6ee* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:408ad3f3abcd00f7c7791b6f1515e88f8877e4dc55b26a105489814de1d9f875
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:408ad3f3abcd00f7c7791b6f1515e88f8877e4dc55b26a105489814de1d9f875
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `cmd/server/main.go` · configureRanking must attach a reranker only when an operator supplied a URL; inverting the guard configures one from an empty URL and skips it when a real one is set, which is what TestConfigureRankingHonoursTheRerankURLGuard pins · acceptance-sha256:408ad3f3abcd00f7c7791b6f1515e88f8877e4dc55b26a105489814de1d9f875

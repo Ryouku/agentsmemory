@@ -26,6 +26,11 @@ end the ADR. T4 is the only task that changes behaviour. T5 makes the prose matc
 in the same release as T4 — a default that moves while the README still describes the old one is
 the failure this ADR spends a task preventing.
 
+
+> **Amended 2026-08-25.** T4's flip is already live on the served path — `config.Default()` sets
+> `ClosetBoost: 0` and a live span reads `am.search.closet bypassed reason=scale_zero`. It stays
+> `pending` because no `adr-verify` run has recorded it. See the Amendment in the ADR.
+
 ## Task Index
 
 | ID | Title | Status | Covers | Acceptance |

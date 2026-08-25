@@ -100,3 +100,8 @@ Stop and ask if a backend has no way to write a payload without the vector AND n
 ## Verification Log
 
 - 2026-08-21 · 4e944e5* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:717c22f4be763d543215896fdaebf18d12ef8f15e7c82782eab195022c7b60e5
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:717c22f4be763d543215896fdaebf18d12ef8f15e7c82782eab195022c7b60e5
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/store/hybrid.go` · a payload correction is only complete when the INDEX agrees with the source of truth; writing the patch to the source of truth twice leaves the index carrying the old wing while every error path still reports success · acceptance-sha256:717c22f4be763d543215896fdaebf18d12ef8f15e7c82782eab195022c7b60e5

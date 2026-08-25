@@ -34,7 +34,7 @@ An operator runs one command, sees what moved and what did not, and the server r
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -84,3 +84,5 @@ Stop and ask if `am_status` cannot carry the profile without breaking an existin
 ## Verification Log
 
 <Tool-written by adr-verify. Do not hand-edit.>
+
+## Mutation Log
