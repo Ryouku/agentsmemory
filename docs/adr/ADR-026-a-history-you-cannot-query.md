@@ -172,7 +172,8 @@ Returning them is additive and needs no migration. **Filtering** on them is not 
 |---|---|---|---|
 | `status` | `KGQuery` endedness predicate | `all` at T1, **`current` at T4** | T1–T3: today's behaviour. T4: open-ended only, with `withheld` |
 | `predicate` | exact match on the indexed column; makes `entity` optional | none | every predicate |
-| `entity`, `as_of`, `direction` | unchanged | unchanged | unchanged |
+| `entity`, `direction` | unchanged | unchanged | unchanged |
+| `as_of` | unchanged as a parameter, but it **composes** with `status`, and T4 moves what that composition returns | unchanged | T1–T3: facts in effect at that instant. T4: `current` ∩ `as_of` is *open-ended facts that were also in effect then* — a snapshot of a past date needs `as_of` **plus** `status:"all"` |
 
 Response additions, all additive keys so a later field cannot break a caller: `status` (always, echoing what was applied), `withheld` and `hint` (only when something was removed), `recorded_at`, `source_drawer_id`, `source_file`.
 
@@ -205,7 +206,8 @@ T1 ships with the old default deliberately, so the filter is exercised in produc
 
 - **Positive:** the default query stops returning retracted facts, and stops returning them *before* they cost context. The graph's own vocabulary becomes selectable. Three columns stop being written-and-invisible. `KGCounts` gets faster for free.
 - **Negative:** T4 is a breaking change to the agent-facing contract. A caller relying on the default returning ended facts gets fewer, mitigated only by `withheld` and a release note. ADR-024's default change also owes a release note that has not been written — after T4 that debt is two, and they should ship together.
-- **Neutral:** the write path, storage semantics, ranking and every stored fact are untouched; `as_of` behaves exactly as today; T1–T3 and T5–T6 are additive.
+- **Neutral:** the write path, storage semantics, ranking and every stored fact are untouched; `as_of` keeps its own meaning, and T1–T3 and T5–T6 are additive.
+- **Watch:** `as_of` is the one parameter T4 changes without touching. The two select on different questions — `status` on whether a fact was *ever* ended, `as_of` on whether it was in effect at an instant — and they **compose**, so under the new default `as_of` alone answers "open-ended facts that were also in effect on D", not "facts in effect on D". Asking the graph what it believed on a past date now needs `as_of` **plus** `status:"all"`. Nothing warns the caller, because from the server's side nothing is inconsistent: the filter did exactly what it says.
 - **Honest:** the measured saving today is 3.4% of facts. The decision rests on the default being *correct*, not on the current ratio (Context).
 
 ## Out of Scope
