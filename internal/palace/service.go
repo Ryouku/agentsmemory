@@ -1405,10 +1405,11 @@ func (s *Service) CheckDuplicate(ctx context.Context, teamID, content string, th
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("embed content: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
+	searchRes, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("vector search: %w", err)
 	}
+	hits := searchRes.H
 	if len(hits) == 0 {
 		return DuplicateResult{IsDuplicate: false}, nil
 	}

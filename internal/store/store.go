@@ -41,6 +41,20 @@ type Hit struct {
 	Payload map[string]any
 }
 
+// SearchResult is what a search returns: the hits, plus whether the index that
+// served them was behind the source of truth when it did.
+//
+// StaleIndex is the carrier of the behind-index flag (ADR-027). It lives on the
+// interface's return type — not as a parallel method — because every production
+// caller consumes the interface: the flag is reachable from serving or it is
+// not reachable at all. A single backend (sqlite, qdrant, chromem) is its own
+// truth and reports false; only Hybrid, which compares the two halves, can set
+// it, and only when it served from the source of truth because the index lagged.
+type SearchResult struct {
+	H          []Hit
+	StaleIndex bool
+}
+
 // Filter narrows a search to points whose payload matches every entry, compared
 // as strings. An empty (or nil) Filter matches everything.
 //
@@ -74,7 +88,12 @@ type VectorStore interface {
 	// ordered closest-first, restricted to points whose payload matches filter.
 	// Fewer than k hits means the namespace held fewer matching points; a k <= 0
 	// returns no hits. A nil or empty filter searches the whole namespace.
-	Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) ([]Hit, error)
+	//
+	// The result's StaleIndex carries whether the index that served the query was
+	// behind the source of truth when it did. A single backend is its own truth
+	// and always reports false; only Hybrid, which can compare the two halves,
+	// may set it.
+	Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) (SearchResult, error)
 
 	// Delete removes points by ID. IDs that are not present are ignored; an
 	// empty slice is a no-op.

@@ -95,9 +95,9 @@ func (c *Client) upsertChunk(ctx context.Context, namespace string, points []sto
 // Search runs an approximate nearest-neighbour query against the namespace's
 // collection and maps Qdrant's results back onto store.Hit, restoring each
 // caller-facing ID from the payload.
-func (c *Client) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
+func (c *Client) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) (store.SearchResult, error) {
 	if k <= 0 {
-		return nil, nil
+		return store.SearchResult{}, nil
 	}
 	body := map[string]any{"vector": vector, "limit": k, "with_payload": true}
 	if f := matchFilter(filter); f != nil {
@@ -115,7 +115,7 @@ func (c *Client) Search(ctx context.Context, namespace string, vector []float32,
 	}
 	path := "/collections/" + CollectionName(namespace) + "/points/search"
 	if err := c.do(ctx, http.MethodPost, path, body, &resp); err != nil {
-		return nil, err
+		return store.SearchResult{}, err
 	}
 	hits := make([]store.Hit, 0, len(resp.Result))
 	for _, r := range resp.Result {
@@ -123,7 +123,7 @@ func (c *Client) Search(ctx context.Context, namespace string, vector []float32,
 		delete(r.Payload, payloadIDKey) // the reserved key is internal; hide it
 		hits = append(hits, store.Hit{ID: id, Score: r.Score, Payload: r.Payload})
 	}
-	return hits, nil
+	return store.SearchResult{H: hits}, nil
 }
 
 // matchFilter renders a payload filter as Qdrant's must-match clause, or nil when

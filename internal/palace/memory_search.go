@@ -102,7 +102,11 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 	}
 	for {
 		rounds++
-		hits, err := s.vectors.Search(retrieveCtx, teamID, vec, k, searchFilter(q))
+		res, err := s.vectors.Search(retrieveCtx, teamID, vec, k, searchFilter(q))
+		if err != nil {
+			return nil, nil, err
+		}
+		hits := res.H
 		if err != nil {
 			finish(nil, err, "")
 			return nil, nil, fmt.Errorf("vector search: %w", err)

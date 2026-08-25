@@ -20,7 +20,7 @@ type endlessVectors struct {
 	ks []int
 }
 
-func (e *endlessVectors) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
+func (e *endlessVectors) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) (store.SearchResult, error) {
 	if strings.HasSuffix(namespace, "::closets") {
 		return e.VectorStore.Search(ctx, namespace, vector, k, filter)
 	}
@@ -29,7 +29,7 @@ func (e *endlessVectors) Search(ctx context.Context, namespace string, vector []
 	for i := range hits {
 		hits[i] = store.Hit{ID: fmt.Sprintf("ghost-%d", i), Score: 1}
 	}
-	return hits, nil
+	return store.SearchResult{H: hits}, nil
 }
 
 // TestCandidateWideningIsBounded pins the safety stop.

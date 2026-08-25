@@ -145,10 +145,15 @@ func RunSetPayloadConformance(t *testing.T, name string, newStore Factory) {
 		// The vector must survive: this is a label change, and the whole reason
 		// SetPayload exists rather than an Upsert is that re-embedding a memory
 		// to correct its wing is a model call per drawer for a string edit.
-		hits, err := s.Search(ctx, ns, []float32{1, 0, 0}, 2, nil)
+		res, err := s.Search(ctx, ns, []float32{1, 0, 0}, 2, nil)
 		if err != nil {
 			t.Fatalf("Search after SetPayload: %v", err)
 		}
+		if res.StaleIndex {
+			t.Errorf("a freshly written store reported a stale index — StaleIndex is the carrier " +
+				"of the behind-index flag and must default false on a backend that is its own truth")
+		}
+		hits := res.H
 		if len(hits) == 0 || hits[0].ID != "a" {
 			t.Errorf("after patching its payload, point a is no longer the nearest neighbour of its "+
 				"own vector (hits %+v) — the patch replaced or dropped the vector", hits)
@@ -160,29 +165,29 @@ func RunSetPayloadConformance(t *testing.T, name string, newStore Factory) {
 		// only the readable copy leaves every scoped query matching the OLD value.
 		// That is precisely the bug this method exists to repair, so a repair that
 		// reproduced it in another backend would be invisible.
-		oldWing, err := s.Search(ctx, ns, []float32{1, 0, 0}, 5, store.Filter{"wing": "wing_acme-legacy"})
+		oldRes, err := s.Search(ctx, ns, []float32{1, 0, 0}, 5, store.Filter{"wing": "wing_acme-legacy"})
 		if err != nil {
 			t.Fatalf("filtered search on the old wing: %v", err)
 		}
-		for _, h := range oldWing {
+		for _, h := range oldRes.H {
 			if h.ID == "a" {
 				t.Errorf("point a still matches a filter on its OLD wing after the patch — the copy " +
 					"the index filters on was not updated, so every scoped search still sees the old value")
 			}
 		}
-		newWing, err := s.Search(ctx, ns, []float32{1, 0, 0}, 5, store.Filter{"wing": "wing_acme"})
+		newRes, err := s.Search(ctx, ns, []float32{1, 0, 0}, 5, store.Filter{"wing": "wing_acme"})
 		if err != nil {
 			t.Fatalf("filtered search on the new wing: %v", err)
 		}
 		found := false
-		for _, h := range newWing {
+		for _, h := range newRes.H {
 			if h.ID == "a" {
 				found = true
 			}
 		}
 		if !found {
 			t.Errorf("point a does not match a filter on its NEW wing after the patch (hits %+v) — "+
-				"the memory is unreachable from the wing it now belongs to", newWing)
+				"the memory is unreachable from the wing it now belongs to", newRes.H)
 		}
 
 		// Unknown ids and empty inputs are no-ops, matching Delete.

@@ -1199,12 +1199,13 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
 			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
 		case arm == ArmContextual:
-			ctxHits, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
+			ctxRes, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 				caseOut = telemetry.FailedClosed
 				return caseOutcome{TopDistance: -1}, fmt.Errorf("contextual index search: %w", err)
 			}
+			ctxHits := ctxRes.H
 			if len(ctxHits) == 0 {
 				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
 				break
@@ -1436,10 +1437,11 @@ func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, po
 	// The same retrieval seam evalCase uses, scoped to the drawer's own wing: a
 	// superseded fact and its correction belong to one project, and a cross-wing
 	// "pair" would be two projects coincidentally near in embedding space.
-	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: d.Wing}))
+	res, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: d.Wing}))
 	if err != nil {
 		return Drawer{}, false, fmt.Errorf("temporal pair search: %w", err)
 	}
+	hits := res.H
 	ids := make([]string, len(hits))
 	for i, h := range hits {
 		ids[i] = h.ID
