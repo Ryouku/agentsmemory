@@ -140,11 +140,14 @@ const searchWingMutationPatch = `diff --git a/internal/mcpserver/server.go b/int
 const writeGuardMutationPatch = `diff --git a/internal/mcpserver/server.go b/internal/mcpserver/server.go
 --- a/internal/mcpserver/server.go
 +++ b/internal/mcpserver/server.go
-@@ -96,5 +96,5 @@
+@@ -98,7 +98,7 @@
  func (r *registrar) addWrite(tool mcp.Tool, handler server.ToolHandlerFunc) {
  	tool = classifyTool(tool, true)
--	r.srv.AddTool(tool, writeGuard(tool.Name, handler))
-+	r.srv.AddTool(tool, handler)
+ 	// traceTool wraps OUTSIDE writeGuard so a role refusal is a visible
+ 	// failed_closed span rather than a silent drop. Argument payloads stay off
+ 	// the span: ADR-025 forbids dumping tool inputs into telemetry.
+-	r.srv.AddTool(tool, traceTool(tool.Name, writeGuard(tool.Name, handler)))
++	r.srv.AddTool(tool, traceTool(tool.Name, handler))
  	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: true})
  }
 `
