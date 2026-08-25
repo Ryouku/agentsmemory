@@ -31,7 +31,7 @@ func TestConfigureRankingEmitsTheSameLines(t *testing.T) {
 	}{
 		{"a default configuration still announces the profile it resolved",
 			func(c config.Config) config.Config { return c },
-			[]string{"ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=off unit=memory evidence=lexical"}},
+			[]string{"ranking: fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00 rerank=off unit=memory evidence=lexical"}},
 		{"the shipped default announces that the lexical knobs do not apply",
 			func(c config.Config) config.Config { return c },
 			[]string{"fusion: reciprocal-rank (bm25 weight and lex-norm do not apply)"}},

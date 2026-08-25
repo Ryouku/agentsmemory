@@ -412,18 +412,26 @@ func (s *Service) RankingProfile() string {
 		fusion = "rrf"
 	}
 	lex := fmt.Sprintf("%.2f", s.bm25Base)
+	lexNorm := s.lexNormName
 	switch {
 	case s.bm25Auto && s.bm25IDF:
 		lex = "auto-idf"
 	case s.bm25Auto:
 		lex = "auto"
 	}
+	if s.fusionRRF {
+		// Rank fusion combines positions, not magnitudes. Printing the unused
+		// default ("auto", "page-max") made am_status claim lexical knobs that
+		// Search never consulted.
+		lex = "n/a"
+		lexNorm = "n/a"
+	}
 	rerank := "off"
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
 	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
-		fusion, lex, s.lexNormName, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
+		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state

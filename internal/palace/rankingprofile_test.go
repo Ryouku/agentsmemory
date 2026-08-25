@@ -58,4 +58,14 @@ func TestRankingProfileReportsTheArmThatActuallyRan(t *testing.T) {
 			t.Fatal("profile is empty; am_status would report no arm at all")
 		}
 	})
+
+	t.Run("rrf does not claim lexical knobs Search never reads", func(t *testing.T) {
+		got := base.Clone().WithFusion("rrf").RankingProfile()
+		if !strings.Contains(got, "lex-weight=n/a") || !strings.Contains(got, "lex-norm=n/a") {
+			t.Errorf("rrf profile still names a lexical magnitude: %s", got)
+		}
+		if strings.Contains(got, "lex-weight=auto") || strings.Contains(got, "lex-norm=page-max") {
+			t.Errorf("rrf profile reports unused defaults as if they ranked: %s", got)
+		}
+	})
 }

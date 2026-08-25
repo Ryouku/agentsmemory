@@ -24,6 +24,11 @@ const verifyHookAsset = "hooks/agentsmemory-verify-hook.sh"
 // sessionEndHookAsset is the embedded SessionEnd hook: the closing recall report.
 const sessionEndHookAsset = "hooks/agentsmemory-session-end-hook.sh"
 
+// statsHelperAsset is the /stats fetch Stop and SessionEnd source. It is not
+// registered as a hook; both scripts `.` it from the same directory the
+// installer writes them into.
+const statsHelperAsset = "hooks/agentsmemory-stats.sh"
+
 // subagentHookAsset is the embedded SubagentStart hook: it puts the recall
 // instruction NEXT TO the subagent's task.
 //
@@ -52,6 +57,9 @@ const (
 
 	// sessionEndHookFile is where the SessionEnd hook lands.
 	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
+
+	// statsHelperFile is the sourced /stats helper, beside the hook scripts.
+	statsHelperFile = "agentsmemory-stats.sh"
 
 	// legacyHookRel is where installs before that change put the hook. It is
 	// removed on the next install (along with its now-stale Stop entry) so the
@@ -596,6 +604,18 @@ func (i *Installer) writeAssets() error {
 	}
 	i.ok("hook %s", filepath.Base(i.hookPath()))
 
+	// Stop (every hook-owning kit) and SessionEnd (Claude) both source this.
+	// Codex only registers Stop, but that script still `.` the helper, so it
+	// has to land for every kit that gets a hook script, not only Claude.
+	statsHelper, err := i.source().ReadFile(statsHelperAsset)
+	if err != nil {
+		return err
+	}
+	if err := i.writeFile(i.statsHelperPath(), statsHelper, 0o644); err != nil {
+		return err
+	}
+	i.ok("hook %s", filepath.Base(i.statsHelperPath()))
+
 	// The companion hooks remain Claude-only. Codex 0.144.5 exposes the two
 	// SUBAGENT event names, but event availability is not the execution contract:
 	// its input fields, stdout feedback envelope, and exit-2 retry behaviour have
@@ -753,6 +773,13 @@ func (i *Installer) sessionEndHookPath() string {
 	return filepath.Join(i.targetDir, sessionEndHookFile)
 }
 
+// statsHelperPath is where the sourced /stats helper lands, beside the scripts
+// that `.` it. The filename is the contract: both hook scripts resolve it as
+// a sibling of $0.
+func (i *Installer) statsHelperPath() string {
+	return filepath.Join(i.targetDir, statsHelperFile)
+}
+
 // legacyHookPath is where earlier installs wrote the hook, under hooks/.
 func (i *Installer) legacyHookPath() string { return filepath.Join(i.targetDir, legacyHookRel) }
 
@@ -903,7 +930,7 @@ type hookPlan struct {
 // no hooks file, and its checkpoint ships inside the bridge extension.
 func (i *Installer) hookPlans() []hookPlan {
 	plans := []hookPlan{
-		{event: "Stop", cmd: bashHookCommand(i.hookPath()), note: "registered Stop hook in " + i.kit.hooksFile},
+		{event: "Stop", cmd: i.hookCommand(i.hookPath()), note: "registered Stop hook in " + i.kit.hooksFile},
 	}
 	if i.kit.name != agentClaude {
 		return plans
@@ -911,12 +938,12 @@ func (i *Installer) hookPlans() []hookPlan {
 	return append(plans,
 		hookPlan{
 			event: "SessionStart",
-			cmd:   bashHookCommand(i.verifyHookPath()),
+			cmd:   i.hookCommand(i.verifyHookPath()),
 			note:  "registered SessionStart hook (verifies memories against your code)",
 		},
 		hookPlan{
 			event: "SubagentStart",
-			cmd:   bashHookCommand(i.subagentHookPath()),
+			cmd:   i.hookCommand(i.subagentHookPath()),
 			note:  "registered SubagentStart hook (a subagent wakes knowing memory exists)",
 		},
 		// The WRITE half (ADR-017 T3), and deliberately the SAME script as Stop:
@@ -924,12 +951,12 @@ func (i *Installer) hookPlans() []hookPlan {
 		// in machinery. A second script would be a second thing to keep in step.
 		hookPlan{
 			event: "SubagentStop",
-			cmd:   bashHookCommand(i.hookPath()),
+			cmd:   i.hookCommand(i.hookPath()),
 			note:  "registered SubagentStop hook (a subagent offers back what it found)",
 		},
 		hookPlan{
 			event: "SessionEnd",
-			cmd:   bashHookCommand(i.sessionEndHookPath()),
+			cmd:   i.hookCommand(i.sessionEndHookPath()),
 			note:  "registered SessionEnd hook (reports what recall did this session)",
 		},
 	)
@@ -942,11 +969,50 @@ func shellQuote(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }
 
-// bashHookCommand renders the exact shell command stored in an agent's hook
-// configuration. `--` keeps a path beginning with a dash from becoming a bash
-// option; shellQuote keeps the path data rather than executable shell syntax.
+// bashHookCommand renders the bash invocation for an installed hook script.
+// `--` keeps a path beginning with a dash from becoming a bash option;
+// shellQuote keeps the path data rather than executable shell syntax.
 func bashHookCommand(path string) string {
 	return "bash -- " + shellQuote(path)
+}
+
+// hookCommand is the shell command stored in an agent's hook registration: the
+// MCP URL this install talks to, then bash running the installed script. The
+// URL is injected here rather than defaulted inside the script so a hosted
+// install and a --local install cannot disagree about which palace /stats hits.
+func hookCommand(mcpURL, path string) string {
+	return mcpURLEnvVar + "=" + shellQuote(mcpURL) + " " + bashHookCommand(path)
+}
+
+func (i *Installer) hookCommand(path string) string {
+	return hookCommand(i.mcpURL, path)
+}
+
+// stripMCPURLAssignment removes the leading AGENTSMEMORY_MCP_URL='…' this
+// installer prefixes onto hook commands, leaving the bash invocation that
+// installerHookPath already knows how to parse. Unprefixed legacy commands
+// pass through unchanged so an upgrade can still match them.
+func stripMCPURLAssignment(cmd string) string {
+	prefix := mcpURLEnvVar + "="
+	if !strings.HasPrefix(cmd, prefix) {
+		return cmd
+	}
+	rest := strings.TrimPrefix(cmd, prefix)
+	if !strings.HasPrefix(rest, "'") {
+		return cmd
+	}
+	i := 1
+	for i < len(rest) {
+		if rest[i] == '\'' {
+			if strings.HasPrefix(rest[i:], `'"'"'`) {
+				i += 5
+				continue
+			}
+			return strings.TrimSpace(rest[i+1:])
+		}
+		i++
+	}
+	return cmd
 }
 
 // installerHookPath parses only the two command shapes this installer has
@@ -955,6 +1021,7 @@ func bashHookCommand(path string) string {
 // against the exact target path because they cannot be distinguished safely
 // from arbitrary multi-argument shell commands in the general case.
 func installerHookPath(cmd string) (string, bool) {
+	cmd = stripMCPURLAssignment(cmd)
 	const quotedPrefix = "bash -- "
 	if strings.HasPrefix(cmd, quotedPrefix) {
 		encoded := strings.TrimPrefix(cmd, quotedPrefix)
@@ -981,6 +1048,7 @@ func installerHookPath(cmd string) (string, bool) {
 // containing spaces; the general parser stays strict for commands from another
 // directory where an unquoted multi-field string would be ambiguous.
 func installerHookCommandMatches(cmd, expectedPath string) bool {
+	cmd = stripMCPURLAssignment(cmd)
 	if cmd == "bash "+expectedPath || cmd == bashHookCommand(expectedPath) {
 		return true
 	}

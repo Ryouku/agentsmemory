@@ -566,7 +566,7 @@ which is the only thing that says the overlay applied:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.full.yml logs agentsmemory | grep 'ranking:'
-# ranking: fusion=rrf lex-weight=auto lex-norm=page-max closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=memory evidence=lexical
+# ranking: fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00 rerank=on(pool=10,weight=0.50) unit=memory evidence=lexical
 ```
 
 `rerank=on(...)` is the line to look for. If it says `rerank=off`, the overlay did

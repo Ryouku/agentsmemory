@@ -159,15 +159,17 @@ func TestSeedFromGlobalRejectsSelfCopy(t *testing.T) {
 // fire the checkpoint twice. Ours is kept, theirs retired, a user's own hook
 // never matched.
 func TestForeignHookPredicate(t *testing.T) {
-	mine := bashHookCommand("/Users/x/.sandboxes/acme/" + hookFile)
+	mine := hookCommand(defaultMCPURL, "/Users/x/.sandboxes/acme/"+hookFile)
 	obsolete := foreignHookPredicate(mine)
 
 	if obsolete(mine) {
 		t.Error("the hook this install registers was marked obsolete")
 	}
 	for _, cmd := range []string{
-		"bash /Users/x/.claude/" + hookFile,       // inherited by --copy
-		"bash /Users/x/.claude/hooks/" + hookFile, // pre-relocation layout
+		"bash /Users/x/.claude/" + hookFile,                            // inherited by --copy
+		"bash /Users/x/.claude/hooks/" + hookFile,                      // pre-relocation layout
+		bashHookCommand("/Users/x/.sandboxes/acme/" + hookFile),        // pre-URL-prefix
+		hookCommand(localMCPURL, "/Users/x/.sandboxes/acme/"+hookFile), // same script, other palace
 	} {
 		if !obsolete(cmd) {
 			t.Errorf("%q should be retired: it runs our hook from another config dir", cmd)

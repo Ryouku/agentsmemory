@@ -64,6 +64,9 @@ func runStopHookWithInput(t *testing.T, input, statsBody string, env ...string) 
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Env = append(os.Environ(),
 		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		// Same injection the installer prefixes onto the registered command.
+		// Without it the helper skips /stats and every report assertion is vacuous.
+		"AGENTSMEMORY_MCP_URL=http://127.0.0.1:9/mcp",
 	)
 	cmd.Env = append(cmd.Env, env...)
 	var stderr strings.Builder
@@ -408,5 +411,137 @@ func TestSubagentStopHookCanBeDisabledOnItsOwn(t *testing.T) {
 	if code != 2 || !strings.Contains(sess, "am_diary_write") {
 		t.Errorf("the subagent switch also disabled the session checkpoint (exit %d):\n%s",
 			code, sess)
+	}
+}
+
+// TestRetiredStatsEnvNamesAreGone fails when a second name for /stats or its
+// off-switch returns. AGENTSMEMORY_STATS_URL, AGENTSMEMORY_STATS_BASE, and
+// AGENTSMEMORY_SESSION_REPORT were three names for one endpoint and two
+// switches for one report; setting one did not move the others.
+func TestRetiredStatsEnvNamesAreGone(t *testing.T) {
+	root := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks")
+	retired := []string{"AGENTSMEMORY_STATS_URL", "AGENTSMEMORY_STATS_BASE", "AGENTSMEMORY_SESSION_REPORT"}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
+			continue
+		}
+		found++
+		body, err := os.ReadFile(filepath.Join(root, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range retired {
+			if strings.Contains(string(body), name) {
+				t.Errorf("%s still names %s; that is a second knob for the same /stats fetch", e.Name(), name)
+			}
+		}
+	}
+	if found < 4 {
+		t.Fatalf("only %d hook scripts; a missing file would let this pass against nothing", found)
+	}
+}
+
+// TestHookScriptsDoNotGuessAPalace fails when a hook hardcodes localhost or the
+// hosted origin. The installer injects AGENTSMEMORY_MCP_URL; a default in the
+// script is a second palace.
+func TestHookScriptsDoNotGuessAPalace(t *testing.T) {
+	root := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks")
+	banned := []string{"localhost:8080", "127.0.0.1:8080", "aiagentmemory.dev"}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(root, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, lit := range banned {
+			if strings.Contains(string(body), lit) {
+				t.Errorf("%s hardcodes %s; the palace is AGENTSMEMORY_MCP_URL from the installer", e.Name(), lit)
+			}
+		}
+	}
+}
+
+// TestStatsFetchUsesTheMCPOrigin drives the real scripts against a curl that
+// records its URL, so a second origin (STATS_BASE, a localhost default) cannot
+// return silently.
+func TestStatsFetchUsesTheMCPOrigin(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "curl-args")
+	fakeCurl := filepath.Join(dir, "curl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"" + argsFile + "\"\ncat <<'BODY'\n" + statsWithSuggestions + "\nBODY\n"
+	if err := os.WriteFile(fakeCurl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Fatalf("bash is not installed: %v", err)
+	}
+
+	palace := "http://palace.test:9/mcp"
+	run := func(scriptName string, stdout bool) {
+		t.Helper()
+		os.Remove(argsFile)
+		hook := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks", scriptName)
+		cmd := exec.Command("bash", hook)
+		cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"AGENTSMEMORY_MCP_URL="+palace,
+			"AGENTSMEMORY_STOP_HOOK=on",
+			"AGENTSMEMORY_STATS=on",
+		)
+		var buf strings.Builder
+		if stdout {
+			cmd.Stdout = &buf
+		} else {
+			cmd.Stderr = &buf
+		}
+		_ = cmd.Run()
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("%s did not invoke curl: %v", scriptName, err)
+		}
+		if !strings.Contains(string(raw), "http://palace.test:9/stats?") {
+			t.Errorf("%s curl args = %q, want origin derived from AGENTSMEMORY_MCP_URL", scriptName, raw)
+		}
+	}
+	run("agentsmemory-stop-hook.sh", false)
+	run("agentsmemory-session-end-hook.sh", true)
+}
+
+// TestSessionEndHonoursTheSharedStatsOffSwitch pins that SessionEnd and Stop
+// share AGENTSMEMORY_STATS. A second name (SESSION_REPORT) meant turning stats
+// off in one hook left the other printing.
+func TestSessionEndHonoursTheSharedStatsOffSwitch(t *testing.T) {
+	dir := t.TempDir()
+	fakeCurl := filepath.Join(dir, "curl")
+	if err := os.WriteFile(fakeCurl, []byte("#!/bin/sh\necho should-not-run\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks", "agentsmemory-session-end-hook.sh")
+	cmd := exec.Command("bash", hook)
+	cmd.Stdin = strings.NewReader(`{}`)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"AGENTSMEMORY_MCP_URL=http://palace.test:9/mcp",
+		"AGENTSMEMORY_STATS=off",
+	)
+	var stdout strings.Builder
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("session-end: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "" {
+		t.Errorf("AGENTSMEMORY_STATS=off still printed: %q", got)
 	}
 }

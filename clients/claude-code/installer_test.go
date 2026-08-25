@@ -82,7 +82,7 @@ func newTestInstallerFor(t *testing.T, kit agentKit, recommended bool) (*Install
 
 func TestAssetsEmbedded(t *testing.T) {
 	// The shipped assets must be embedded; the retired agentsmemory.md must not be.
-	for _, name := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookAsset, bootstrapAsset, piExtensionAsset} {
+	for _, name := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookAsset, statsHelperAsset, bootstrapAsset, piExtensionAsset} {
 		data, err := assets.ReadFile(name)
 		if err != nil {
 			t.Fatalf("asset %s not embedded: %v", name, err)
@@ -103,28 +103,28 @@ func TestInstallCoreWritesAssetsAndRegistersMCP(t *testing.T) {
 	}
 
 	// Commands + both hooks must be on disk.
-	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile, sessionEndHookFile} {
+	for _, rel := range []string{"commands/M.md", "commands/am.md", "commands/load-skill.md", hookFile, verifyHookFile, sessionEndHookFile, statsHelperFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
 	}
 
 	// Stop hook must be registered pointing at the installed hook.
-	wantCmd := bashHookCommand(filepath.Join(dir, hookFile))
+	wantCmd := inst.hookCommand(filepath.Join(dir, hookFile))
 	if !hookPresent(readStop(t, filepath.Join(dir, "settings.json")), wantCmd) {
 		t.Errorf("Stop hook %q not registered", wantCmd)
 	}
 
 	// ...and its SessionStart companion, which is what makes anchor verification
 	// automatic rather than a command nobody remembers to run.
-	wantVerify := bashHookCommand(filepath.Join(dir, verifyHookFile))
+	wantVerify := inst.hookCommand(filepath.Join(dir, verifyHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionStart"), wantVerify) {
 		t.Errorf("SessionStart hook %q not registered", wantVerify)
 	}
 
 	// ...and the closing report, which is the only one of the three that sees a
 	// whole session.
-	wantEnd := bashHookCommand(filepath.Join(dir, sessionEndHookFile))
+	wantEnd := inst.hookCommand(filepath.Join(dir, sessionEndHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SessionEnd"), wantEnd) {
 		t.Errorf("SessionEnd hook %q not registered", wantEnd)
 	}
@@ -369,13 +369,29 @@ func TestResolveInstallTargetMakesConfigDirAbsolute(t *testing.T) {
 	}
 }
 
+func TestHookCommandCarriesTheInstallMCPURL(t *testing.T) {
+	path := "/cfg/agentsmemory-stop-hook.sh"
+	hosted := hookCommand(defaultMCPURL, path)
+	local := hookCommand(localMCPURL, path)
+	if hosted == local {
+		t.Fatal("hosted and --local hook commands are identical, so the install's palace never reaches /stats")
+	}
+	if !strings.Contains(hosted, defaultMCPURL) || !strings.Contains(local, localMCPURL) {
+		t.Errorf("hookCommand did not embed the install URL\n hosted: %s\n local: %s", hosted, local)
+	}
+	if strings.Contains(hosted, localMCPURL) {
+		t.Errorf("hosted hook command still names the local palace: %s", hosted)
+	}
+}
+
 func TestHookPlansShellQuoteLiteralConfigPath(t *testing.T) {
 	inst := &Installer{
 		kit:       claudeKit,
 		targetDir: "/tmp/a b/it's;literal",
+		mcpURL:    defaultMCPURL,
 	}
 	got := inst.hookPlans()[0].cmd
-	want := "bash -- '/tmp/a b/it'\"'\"'s;literal/agentsmemory-stop-hook.sh'"
+	want := hookCommand(defaultMCPURL, "/tmp/a b/it's;literal/agentsmemory-stop-hook.sh")
 	if got != want {
 		t.Fatalf("Stop hook command = %q, want %q", got, want)
 	}
@@ -519,7 +535,7 @@ func TestInstallCodexCore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), configBefore, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wantCmd := bashHookCommand(filepath.Join(dir, hookFile))
+	wantCmd := inst.hookCommand(filepath.Join(dir, hookFile))
 	legacy := map[string]any{
 		"hooks": map[string]any{
 			"Stop": []any{map[string]any{
@@ -538,7 +554,7 @@ func TestInstallCodexCore(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", hookFile} {
+	for _, rel := range []string{"prompts/M.md", "prompts/am.md", "prompts/load-skill.md", hookFile, statsHelperFile} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 			t.Errorf("expected %s written: %v", rel, err)
 		}
@@ -787,7 +803,7 @@ func TestInstallMigratesLegacyHookDir(t *testing.T) {
 	if hookPresent(stop, legacyCmd) {
 		t.Error("the stale Stop entry survived; it would run a deleted file on every stop")
 	}
-	if want := bashHookCommand(filepath.Join(dir, hookFile)); !hookPresent(stop, want) {
+	if want := inst.hookCommand(filepath.Join(dir, hookFile)); !hookPresent(stop, want) {
 		t.Errorf("relocated Stop hook %q not registered", want)
 	}
 }
@@ -1085,7 +1101,7 @@ func TestInstallerRegistersSubagentStart(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, subagentHookFile)); err != nil {
 		t.Errorf("expected %s written: %v", subagentHookFile, err)
 	}
-	want := bashHookCommand(filepath.Join(dir, subagentHookFile))
+	want := inst.hookCommand(filepath.Join(dir, subagentHookFile))
 	if !hookPresent(readHookEvent(t, filepath.Join(dir, "settings.json"), "SubagentStart"), want) {
 		t.Errorf("SubagentStart hook %q not registered — the injection then only exists on "+
 			"machines where someone edited settings.json by hand", want)
@@ -1296,7 +1312,7 @@ func TestInstallerRegistersSubagentStop(t *testing.T) {
 	if err := inst.run(); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	want := bashHookCommand(filepath.Join(dir, hookFile))
+	want := inst.hookCommand(filepath.Join(dir, hookFile))
 	settings := filepath.Join(dir, "settings.json")
 	if !hookPresent(readHookEvent(t, settings, "SubagentStop"), want) {
 		t.Fatalf("SubagentStop hook %q not registered — a subagent then finishes with its "+
@@ -1411,7 +1427,7 @@ func TestRedeployKitCheckCoversEveryInstalledArtifact(t *testing.T) {
 			want = append(want, "clients/claude-code/agents/"+name+ext)
 		}
 	}
-	for _, asset := range []string{hookAsset, verifyHookAsset, sessionEndHookAsset, subagentHookAsset} {
+	for _, asset := range []string{hookAsset, verifyHookAsset, sessionEndHookAsset, statsHelperAsset, subagentHookAsset} {
 		want = append(want, "clients/claude-code/"+asset)
 	}
 	if len(want) < 5 {
