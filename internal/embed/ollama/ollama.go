@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 )
 
 // Embedder is a client for Ollama's /api/embed endpoint.
@@ -28,7 +30,7 @@ func New(baseURL, model string, timeout time.Duration) *Embedder {
 	return &Embedder{
 		endpoint: strings.TrimRight(baseURL, "/") + "/api/embed",
 		model:    model,
-		http:     &http.Client{Timeout: timeout},
+		http:     telemetry.HTTPClient(timeout),
 	}
 }
 

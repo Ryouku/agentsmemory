@@ -219,6 +219,30 @@ func TestConfigureRankingAppliesTheLexicalNormaliser(t *testing.T) {
 	}
 }
 
+// TestConfigureRankingAppliesRetrieveK is the selection test for the retrieve-k
+// composition root. Testing WithRetrieveK alone would permit the same
+// reachability gap this repository has shipped before: a finished setter with
+// no production wire.
+func TestConfigureRankingAppliesRetrieveK(t *testing.T) {
+	cfg := config.Default()
+	cfg.RetrieveK = 50
+	svc, lines := configureRanking(bareService(), cfg, noReranker)
+	if got := svc.RankingProfile(); !strings.Contains(got, "retrieve-k=50") {
+		t.Errorf("profile = %q, want retrieve-k=50", got)
+	}
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "retrieve-k: floor 50") {
+		t.Errorf("startup did not announce the floor:\n%s", got)
+	}
+
+	def, defLines := configureRanking(bareService(), config.Default(), noReranker)
+	if strings.Contains(def.RankingProfile(), "retrieve-k=") {
+		t.Errorf("default profile names retrieve-k: %s", def.RankingProfile())
+	}
+	if strings.Contains(strings.Join(defLines, "\n"), "retrieve-k: floor") {
+		t.Errorf("default startup announced a floor Search does not use:\n%s", strings.Join(defLines, "\n"))
+	}
+}
+
 // TestConfiguredDefaultsMatchConfig: the startup lines report a departure from
 // what SHIPS, so the literals they compare against must equal config.Default().
 //

@@ -1153,7 +1153,33 @@ All flags have sensible local defaults:
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
 | `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
 | `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
+| `--retrieve-k` | `0` | `RETRIEVE_K` — floor on how many distinct memories Search retrieves before ranking, independent of the page. `0` (default) uses the formula: `limit×3`, raised to `--rerank-pool` when a cross-encoder will run. Does not change the page size |
 | `--memory-evidence-selector` | `lexical` | `MEMORY_EVIDENCE_SELECTOR` — bounded reranker evidence: literal query coverage or query-time semantic passage selection |
+| `--otel-endpoint` | *(empty)* | `AGENTSMEMORY_OTEL_ENDPOINT` — OpenTelemetry export: empty=off, `stdout` prints a compact stage tree to stderr, otherwise an OTLP HTTP collector URL (`http://localhost:4318`). Does not change search results |
+
+### Observability
+
+Runtime execution is OpenTelemetry (ADR-025): one parent span per `am_search` (`am.search`) with child stages `embed`, `retrieve` (`hydrate` nested), `collapse`, `closet`, `fusion`, `recency`, `rerank` (`evidence` nested when a reranker is configured), `record`. Each stage reports `ran` / `bypassed` / `failed_open` / `failed_closed`. MCP tools emit `am.tool`. Outbound HTTP (embed, rerank, Qdrant) and inbound `/mcp` are wrapped. Eval wraps each question in `am.eval.case` and each ranking arm in `am.eval.arm` so an ablation is a tree, not a forest.
+
+The dump is a debug tool, not a JSON firehose. Every span carries `am.code.file` / `am.code.line` / `am.code.func` (the `Start` call site). A bypassed or failed stage carries a closed `am.reason` (`scale_zero`, `weight_zero`, `band_zero`, `no_reranker`, `skip_sqlite`, `empty`, `lexical`, `error`, …). Retrieve emits a `widen` event per doubling round (`k`, `hits`, `distinct`, `stop`). The `am.search` parent repeats the resolved knobs (`am.fusion`, `am.closet_scale`, `am.rerank_configured`, …) beside `am.profile_id`, so you can read a tree against `RankingProfile()` / `am_status` and see whether a stage was eligible, whether it ran, and which line of code started it.
+
+`--otel-endpoint stdout` prints that tree on stderr:
+
+```
+am.search  5040ms  ran  profile_id=fusion=rrf… closet_scale=0 rerank_configured=true  internal/palace/service.go:961
+  am.search.embed  153ms  ran  dim=1024  internal/palace/service.go:964
+  am.search.retrieve  42ms  ran  reason=exhausted  k=50 rounds=1  internal/palace/memory_search.go:69
+    · widen k=50 hits=3 distinct=1 stop=exhausted
+    am.search.hydrate  12ms  ran  count=3  internal/palace/memory_search.go:70
+  am.search.closet  0ms  bypassed  reason=scale_zero  scale=0  internal/palace/mine.go:320
+  am.search.record  0ms  bypassed  reason=skip_sqlite
+```
+
+A closet span that says `ran` while `closet_scale=0` (or `bypassed` with no `am.reason`) means the stage is not wired. OTLP to a collector keeps the same attributes for Jaeger; stdout is the local join to source.
+
+`search_id` is the SQLite `search_events.id` so a sampled trace can join a durable relevance row. Wing and room appear as booleans (`am.has_wing`, `am.has_room`), never names. Raw queries, memory content and tenant ids are not metric labels.
+
+A collector that is down drops observability, not search. `SkipTelemetry` still skips the SQLite log (eval); OTEL spans are always created and hit the noop provider when `--otel-endpoint` is empty. Each stage also increments unsampled `eligible` / `selected` / `effect` / `fallback` counters.
 
 ### Memory-level ranking
 

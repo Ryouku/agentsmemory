@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -516,7 +519,9 @@ type KGStatsResult struct {
 // creates the subject/object entities, and inserts the triple — UNLESS an
 // identical current fact already exists, in which case it returns that fact's id
 // (the frozen no-auto-supersede rule: to replace a fact, invalidate it first).
-func (s *Service) KGAdd(ctx context.Context, teamID, subject, predicate, object, validFrom, validTo, sourceCloset, sourceFile, sourceDrawerID string) (KGAddResult, error) {
+func (s *Service) KGAdd(ctx context.Context, teamID, subject, predicate, object, validFrom, validTo, sourceCloset, sourceFile, sourceDrawerID string) (result KGAddResult, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageKGAdd)
+	defer func() { endStage(sp, err) }()
 	subj, err := sanitizeKGValue(subject, "subject")
 	if err != nil {
 		return KGAddResult{}, err
@@ -631,7 +636,11 @@ func kgComplementStatus(status string) string {
 // That is the point of them: a fact filtered in the client has already crossed the
 // wire and entered the agent's context window, which is the cost being removed
 // (ADR-026).
-func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (KGQueryResult, error) {
+func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (out KGQueryResult, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageKGQuery)
+	defer func() {
+		endStage(sp, err, attribute.Int("am.count", len(out.Facts)), attribute.Int("am.withheld", int(out.Withheld)))
+	}()
 	// Exactly one of the two entry points is required, not both, because either
 	// alone finds rows through an index. Neither would mean "every fact this team
 	// owns", which is a table dump wearing a query's clothes.
@@ -673,7 +682,7 @@ func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (
 	}
 	asOfKey := temporalStartKey(ao)
 	dropped := kgComplementStatus(status)
-	out := KGQueryResult{Entity: ent, Predicate: pred, Status: status, WithheldStatus: dropped}
+	out = KGQueryResult{Entity: ent, Predicate: pred, Status: status, WithheldStatus: dropped}
 
 	// With no entity, the predicate IS the entry point and direction has nothing to
 	// be relative to — there is no queried endpoint for a fact to be incoming or

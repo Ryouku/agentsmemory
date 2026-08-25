@@ -37,6 +37,8 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
 	"github.com/urfave/cli/v3"
 )
 
@@ -115,7 +117,7 @@ func runKGExtract(ctx context.Context, c *cli.Command, def config.Config, out io
 		url:    genURL(c),
 		model:  c.String("gen-model"),
 		apiKey: strings.TrimSpace(c.String("gen-api-key")),
-		http:   &http.Client{Timeout: 120 * time.Second},
+		http:   telemetry.HTTPClient(120 * time.Second),
 	}
 	fmt.Fprintf(out, "extracting triples from %d of %d source(s) in %s with %s…\n", len(batch), len(sources), wing, gen.model)
 

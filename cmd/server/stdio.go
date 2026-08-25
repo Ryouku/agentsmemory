@@ -29,6 +29,7 @@ import (
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/config"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 
 	"github.com/urfave/cli/v3"
 )
@@ -114,19 +115,19 @@ func newUpstream(socketPath, rawURL, token, wing string) (*upstream, error) {
 		// exchange including reading the body, which would truncate the SSE
 		// stream the server opens whenever a tool emits notifications. Request
 		// lifetime is governed by ctx instead, so the agent stays in control.
-		up.client = &http.Client{}
+		up.client = &http.Client{Transport: telemetry.WrapTransport(nil)}
 		return up, nil
 	}
 
 	up.endpoint = socketURL
 	up.client = &http.Client{
-		Transport: &http.Transport{
+		Transport: telemetry.WrapTransport(&http.Transport{
 			// Every connection goes to the socket regardless of the URL's host,
 			// which is why the endpoint above is a placeholder.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 			},
-		},
+		}),
 	}
 	return up, nil
 }

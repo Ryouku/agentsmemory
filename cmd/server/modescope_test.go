@@ -489,6 +489,7 @@ var unobservableKnobs = map[string]string{
 	"RerankTimeout":          "bounds a call the sweep never makes, so every value produces the same ordering in-process",
 	"HTTPTimeout":            "bounds outbound calls to the vector and embedding backends, which the fixture serves locally",
 	"MemoryEvidenceSelector": "changes cross-encoder documents only for long memories; the ordering sweep has no live reranker, while evidence_test observes those documents directly",
+	"RetrieveK":              "widens the vector fetch; the sweep's 24-document fixture is already fully retrieved at limit×3, so every retrieve-k produces the same page. The eval's production retrieve-k arm and TestSearchRetrieveKWidensTheFetch observe the fetch itself",
 }
 
 // TestEveryKnobIsSweptOrNamed: every config field the ranking wiring READS is

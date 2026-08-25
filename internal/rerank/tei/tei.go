@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 )
 
 // maxBatch is how many texts may go in ONE request to TEI. It mirrors TEI's
@@ -80,7 +82,7 @@ func New(baseURL string, timeout time.Duration) *Client {
 	}
 	return &Client{
 		endpoint: endpoint,
-		http:     &http.Client{Timeout: timeout},
+		http:     telemetry.HTTPClient(timeout),
 		budget:   timeout,
 	}
 }

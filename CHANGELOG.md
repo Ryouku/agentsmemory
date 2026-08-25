@@ -244,3 +244,9 @@ Three things are not automatic, in the order they will bite you:
 3. **If a caller assumed `am_search` returned a chunk-sized payload, set `snippet_chars` explicitly.** The default is a window over the whole memory now, not over the matched chunk.
 
 **If you query the past, read this one.** `as_of` is unchanged, but it now *composes* with the new default rather than standing alone. The two answer different questions — `status` asks whether a fact was ever retracted, `as_of` asks whether it was in effect at an instant — so `as_of` on its own now returns **open-ended facts that were also in effect on that date**, not every fact in effect on it. A point-in-time snapshot needs both: `as_of:"2026-01-31", status:"all"`. This is the quietest edge of the change, because the call still succeeds and the answer still looks like history.
+
+## Unreleased
+
+OpenTelemetry runtime telemetry (ADR-025 PR-E). `--otel-endpoint` / `AGENTSMEMORY_OTEL_ENDPOINT`: empty=off, `stdout` prints a compact stage tree to stderr (call site, outcome, reason), otherwise an OTLP HTTP collector URL. Search stages carry `am.reason` on bypass/fail, retrieve `widen` events, and structured ranking knobs so a dump can be compared to `RankingProfile()`. Eval nests `am.eval.case` / `am.eval.arm`. Telemetry does not change ranking.
+
+`--retrieve-k` / `RETRIEVE_K`: floor on how many distinct memories Search fetches before ranking, independent of the page `--limit`. Default `0` leaves the existing formula (`limit×3`, raised to rerank-pool when a cross-encoder will run). The eval adds `production (Search) retrieve-k=50` so the table can measure the same retrieve as the ablation pool at the default page of five. Production ranking is unchanged until the operator sets the floor.
