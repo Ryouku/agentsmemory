@@ -77,6 +77,64 @@ func callKGQuery(t *testing.T, srv *server.MCPServer, args map[string]any) map[s
 	return fields
 }
 
+// TestDefaultQueryIsCurrentOnly is ADR-026 T4's gate: the BREAKING half.
+//
+// It names no status, which is what every existing caller does and what this
+// repo's own llm_init bootstrap instructs every session to write. Before T4 that
+// call returned every fact ever recorded about the entity, retracted ones tagged
+// current:false and left for the reader to honour — an agent that acted on one was
+// wrong, and nothing on the server stopped it.
+//
+// The assertion is on the RETRACTED fact being absent, not on the count, because a
+// count is satisfied by any two facts and this needs to be the right one missing.
+// The withheld keys are asserted too: a default that hides history silently is the
+// version ADR-010 rejects, so "filtered" and "said so" are one behaviour and one
+// gate, never two that can drift apart.
+func TestDefaultQueryIsCurrentOnly(t *testing.T) {
+	srv := kgToolServer(t)
+	fields := callKGQuery(t, srv, map[string]any{"entity": "Alice"})
+
+	var status string
+	if err := json.Unmarshal(fields["status"], &status); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status != palace.KGStatusCurrent {
+		t.Fatalf("the shipped default is %q, want %q", status, palace.KGStatusCurrent)
+	}
+
+	var facts []palace.KGFact
+	if err := json.Unmarshal(fields["facts"], &facts); err != nil {
+		t.Fatalf("facts: %v", err)
+	}
+	for _, f := range facts {
+		if f.Object == "Acme" {
+			t.Errorf("the retracted fact is still in the default response: %+v", f)
+		}
+		if !f.Current {
+			t.Errorf("a non-current fact reached the default response: %+v", f)
+		}
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected only the open-ended fact, got %d: %+v", len(facts), facts)
+	}
+
+	// Hiding it silently is the version ADR-010 rejects.
+	raw, ok := fields["withheld"]
+	if !ok {
+		t.Fatal("the new default filtered a fact and did not say so")
+	}
+	var withheld map[string]int64
+	if err := json.Unmarshal(raw, &withheld); err != nil {
+		t.Fatalf("withheld: %v", err)
+	}
+	if withheld[palace.KGStatusEnded] != 1 {
+		t.Errorf("withheld = %v, want one ended fact", withheld)
+	}
+	if _, ok := fields["hint"]; !ok {
+		t.Error("no hint names the parameter that restores the hidden history")
+	}
+}
+
 // TestPredicateEntryPointIsReachableFromTheTool is T5's reachability gate, and it
 // guards this repository's signature defect rather than the feature.
 //
@@ -91,7 +149,9 @@ func callKGQuery(t *testing.T, srv *server.MCPServer, args map[string]any) map[s
 func TestPredicateEntryPointIsReachableFromTheTool(t *testing.T) {
 	srv := kgToolServer(t)
 
-	fields := callKGQuery(t, srv, map[string]any{"predicate": "works at"})
+	// status is named explicitly: this test is about the entry point being
+	// reachable, and leaving the default in would silently couple it to T4.
+	fields := callKGQuery(t, srv, map[string]any{"predicate": "works at", "status": palace.KGStatusAll})
 
 	var count int
 	if err := json.Unmarshal(fields["count"], &count); err != nil {

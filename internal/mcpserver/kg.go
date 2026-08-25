@@ -15,7 +15,7 @@ import (
 // "current" as a separate, revertible commit, and reverting must be this line and
 // nothing else. Anything that needs to branch on the default is a sign the filter
 // logic leaked out of palace.KGQuery, where it belongs.
-const kgQueryDefaultStatus = palace.KGStatusAll
+const kgQueryDefaultStatus = palace.KGStatusCurrent
 
 // kgStatusParamDescription is BUILT from the palace constants rather than
 // restating them, so a status the service accepts can never drift from the list
