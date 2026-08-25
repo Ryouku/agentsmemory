@@ -457,16 +457,45 @@ type KGQueryResult struct {
 
 // KGFact is one fact a query/timeline returns, with display names resolved and the
 // current flag computed.
+//
+// Current means OPEN-ENDED — valid_to is empty — not "true right now". The two
+// differ for a future-dated valid_to, which KGAdd can write and nothing does. The
+// field is not renamed to open_ended because it is a live contract agents read;
+// this comment is the correction ADR-026 chose instead.
+//
+// RecordedAt is TRANSACTION time, not validity time, and the pair is what makes
+// the graph bitemporal: as_of answers "what was true on D" and recorded_at answers
+// "what did we KNOW on D". It has been half-bitemporal since it was built and
+// unable to say so, because the column was written on every fact and returned by
+// nothing.
 type KGFact struct {
-	Direction    string  `json:"direction,omitempty"`
-	Subject      string  `json:"subject"`
-	Predicate    string  `json:"predicate"`
-	Object       string  `json:"object"`
-	ValidFrom    string  `json:"valid_from,omitempty"`
-	ValidTo      string  `json:"valid_to,omitempty"`
-	Confidence   float64 `json:"confidence,omitempty"`
-	SourceCloset string  `json:"source_closet,omitempty"`
-	Current      bool    `json:"current"`
+	Direction      string  `json:"direction,omitempty"`
+	Subject        string  `json:"subject"`
+	Predicate      string  `json:"predicate"`
+	Object         string  `json:"object"`
+	ValidFrom      string  `json:"valid_from,omitempty"`
+	ValidTo        string  `json:"valid_to,omitempty"`
+	Confidence     float64 `json:"confidence,omitempty"`
+	SourceCloset   string  `json:"source_closet,omitempty"`
+	SourceFile     string  `json:"source_file,omitempty"`
+	SourceDrawerID string  `json:"source_drawer_id,omitempty"`
+	RecordedAt     string  `json:"recorded_at,omitempty"`
+	Current        bool    `json:"current"`
+}
+
+// kgRowFieldRenames maps a kgTripleRow field to the KGFact field that returns it,
+// for the one pair not spelled the same. extracted_at is surfaced as recorded_at
+// because "extracted" describes how kg-extract produced a fact and says nothing to
+// an agent asking when the graph learned it.
+var kgRowFieldRenames = map[string]string{"ExtractedAt": "RecordedAt"}
+
+// kgRowFieldsExcluded names every stored column deliberately NOT returned, each
+// with the reason it is withheld. A column absent from both this map and KGFact is
+// a column written and invisible, which is what TestEveryStoredTripleColumnIsReturnedOrExcluded
+// refuses — three such columns are exactly what ADR-026 T6 was fixing.
+var kgRowFieldsExcluded = map[string]string{
+	"TeamID": "tenancy comes from the session; a caller-supplied team is a hole, not a field",
+	"ID":     "fetch-by-triple-id is a different tool's shape, and no read path takes one",
 }
 
 // KGAddResult / KGStatsResult are the structured tool returns.
@@ -785,7 +814,9 @@ func kgFact(direction, subject, predicate, object string, row kgTripleRow) KGFac
 	return KGFact{
 		Direction: direction, Subject: subject, Predicate: predicate, Object: object,
 		ValidFrom: row.ValidFrom, ValidTo: row.ValidTo, Confidence: row.Confidence,
-		SourceCloset: row.SourceCloset, Current: row.ValidTo == "",
+		SourceCloset: row.SourceCloset, SourceFile: row.SourceFile,
+		SourceDrawerID: row.SourceDrawerID, RecordedAt: row.ExtractedAt,
+		Current: row.ValidTo == "",
 	}
 }
 

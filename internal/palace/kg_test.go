@@ -2,6 +2,8 @@ package palace
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -226,6 +228,92 @@ func TestPredicateIsAnEntryPointAndAFilter(t *testing.T) {
 	// Neither entry point is a table dump, not a query.
 	if _, err := svc.KGQuery(ctx, team, KGQueryInput{}); err == nil {
 		t.Fatal("a query with neither entity nor predicate must be rejected")
+	}
+}
+
+// TestEveryStoredTripleColumnIsReturnedOrExcluded is ADR-026 T6's gate, and it is
+// DERIVED rather than hand-listed on purpose.
+//
+// Walking kgTripleRow by reflection means a column added tomorrow enters this
+// check in the commit that creates it, instead of waiting for someone to remember
+// this file exists. A hand-written list of expected fields is a second thing to
+// maintain and it fails in the silent direction: it keeps passing while the column
+// it does not mention goes unreturned. That is precisely how extracted_at,
+// source_drawer_id and source_file were written on every fact and surfaced by
+// nothing, while source_closet sitting beside them was returned.
+//
+// The exclusion map has to carry a REASON, so withholding a column is a sentence
+// someone had to write rather than an omission nobody noticed.
+func TestEveryStoredTripleColumnIsReturnedOrExcluded(t *testing.T) {
+	row := reflect.TypeOf(kgTripleRow{})
+	fact := reflect.TypeOf(KGFact{})
+
+	for i := 0; i < row.NumField(); i++ {
+		name := row.Field(i).Name
+		if reason, excluded := kgRowFieldsExcluded[name]; excluded {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("%s is excluded with an empty reason — an exclusion without one is an omission", name)
+			}
+			continue
+		}
+		surfaced := name
+		if renamed, ok := kgRowFieldRenames[name]; ok {
+			surfaced = renamed
+		}
+		if _, ok := fact.FieldByName(surfaced); !ok {
+			t.Errorf("kg_triples.%s is stored on every fact and returned by nothing.\n"+
+				"  Either surface it on KGFact (as %q), or name it in kgRowFieldsExcluded with the reason it is withheld.\n"+
+				"  A column written and invisible is the defect ADR-026 T6 exists to close.",
+				name, surfaced)
+		}
+	}
+
+	// A rename that no longer points anywhere would silently excuse its column
+	// from the check above, so the map itself is verified against both types.
+	for from, to := range kgRowFieldRenames {
+		if _, ok := row.FieldByName(from); !ok {
+			t.Errorf("kgRowFieldRenames maps %q, which is no longer a kgTripleRow field", from)
+		}
+		if _, ok := fact.FieldByName(to); !ok {
+			t.Errorf("kgRowFieldRenames points %q at %q, which is not a KGFact field", from, to)
+		}
+	}
+	for name := range kgRowFieldsExcluded {
+		if _, ok := row.FieldByName(name); !ok {
+			t.Errorf("kgRowFieldsExcluded names %q, which is no longer a kgTripleRow field", name)
+		}
+	}
+}
+
+// TestProvenanceReachesTheCaller is the value half of T6: the reflection gate above
+// proves a field EXISTS on KGFact, which a zero value satisfies perfectly.
+func TestProvenanceReachesTheCaller(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Acme", "2024-01-01", "",
+		"closet-1", "notes.md", "drawer-abc"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	res, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Direction: "outgoing"})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	f := findFact(res.Facts, "works_at", "Acme")
+	if f == nil {
+		t.Fatalf("expected the seeded fact, got %+v", res.Facts)
+	}
+	if f.SourceFile != "notes.md" {
+		t.Errorf("source_file = %q, want %q", f.SourceFile, "notes.md")
+	}
+	if f.SourceDrawerID != "drawer-abc" {
+		t.Errorf("source_drawer_id = %q, want %q — every fact knows which memory asserted it and no agent could ask",
+			f.SourceDrawerID, "drawer-abc")
+	}
+	if f.RecordedAt == "" {
+		t.Error("recorded_at is empty; transaction time is what makes the graph bitemporal and it is written on every row")
 	}
 }
 
