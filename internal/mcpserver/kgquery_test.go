@@ -77,6 +77,69 @@ func callKGQuery(t *testing.T, srv *server.MCPServer, args map[string]any) map[s
 	return fields
 }
 
+// TestPredicateEntryPointIsReachableFromTheTool is T5's reachability gate, and it
+// guards this repository's signature defect rather than the feature.
+//
+// palace.KGQuery accepting a predicate with no entity is worth nothing if the tool
+// still declares entity as Required — the capability would be finished, tested,
+// and impossible to invoke. Four capabilities shipped exactly that way in one week
+// here, every one of them with passing tests, because the tests exercised the
+// component and never the selection. So this calls the REGISTERED handler with no
+// entity at all, and separately reads the declared schema: a caller must be able
+// to learn from the tool description that entity is optional, not discover it by
+// guessing.
+func TestPredicateEntryPointIsReachableFromTheTool(t *testing.T) {
+	srv := kgToolServer(t)
+
+	fields := callKGQuery(t, srv, map[string]any{"predicate": "works at"})
+
+	var count int
+	if err := json.Unmarshal(fields["count"], &count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("predicate alone must return both works_at facts, got %d: %v", count, fields)
+	}
+	if _, ok := fields["entity"]; ok {
+		t.Error("no entity was asked for, so none should be echoed")
+	}
+	var predicate string
+	if err := json.Unmarshal(fields["predicate"], &predicate); err != nil {
+		t.Fatalf("predicate echo: %v", err)
+	}
+	if predicate != "works_at" {
+		t.Errorf("predicate echoed as %q, want the normalized %q", predicate, "works_at")
+	}
+
+	// The schema half: entity must not be advertised as required.
+	tool := srv.GetTool(mcpprotocol.ToolPrefix + "kg_query")
+	if tool == nil {
+		t.Fatal("kg_query is not registered")
+	}
+	for _, req := range tool.Tool.InputSchema.Required {
+		if req == "entity" {
+			t.Error("kg_query still declares entity as required, so the predicate entry point is unreachable " +
+				"for any caller that trusts the schema — finished and unselectable is this repo's recurring defect")
+		}
+	}
+
+	// And a call naming neither entry point must be refused rather than dumping
+	// every fact the tenant owns.
+	const name = mcpprotocol.ToolPrefix + "kg_query"
+	ctx := auth.WithTenant(context.Background(), tenant.Tenant{
+		TeamID: kgQueryTestTeam, UserID: "u1", Role: tenant.RoleAdmin,
+	})
+	res, err := tool.Handler(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: name, Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("empty call: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("a query naming neither entity nor predicate must be refused, got: %s", errText(res))
+	}
+}
+
 // TestFilteredResponseReportsWhatItWithheld is ADR-026 T3's gate.
 //
 // It asserts the withheld NUMBER, not the presence of the field, and it reads it

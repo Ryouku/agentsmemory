@@ -170,6 +170,65 @@ func TestEndedFactIsAbsentFromCurrentQuery(t *testing.T) {
 	}
 }
 
+// TestPredicateIsAnEntryPointAndAFilter covers ADR-026 T5's behaviour: predicate
+// alone answers "every fact of this relation" without naming an entity, and
+// predicate WITH an entity narrows that entity's facts.
+//
+// Both halves matter. Only the entry point is new capability — the graph's own
+// vocabulary was the one dimension nothing could select on, so auditing a relation
+// meant reading the whole graph by eye — but the filter half is what makes it
+// compose with the entity lookup instead of being a separate tool.
+func TestPredicateIsAnEntryPointAndAFilter(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	for _, f := range []struct{ s, p, o string }{
+		{"Alice", "works at", "Acme"},
+		{"Alice", "knows", "Bob"},
+		{"Carol", "works at", "Globex"},
+	} {
+		if _, err := svc.KGAdd(ctx, team, f.s, f.p, f.o, "2024-01-01", "", "", "", ""); err != nil {
+			t.Fatalf("seed %v: %v", f, err)
+		}
+	}
+
+	// Entry point: no entity at all. Reaches facts about entities the caller never
+	// named, which is the capability that did not exist before.
+	only, err := svc.KGQuery(ctx, team, KGQueryInput{Predicate: "works at"})
+	if err != nil {
+		t.Fatalf("predicate-only: %v", err)
+	}
+	if len(only.Facts) != 2 {
+		t.Fatalf("predicate-only should reach both works_at facts, got %+v", only.Facts)
+	}
+	if findFact(only.Facts, "works_at", "Globex") == nil {
+		t.Fatalf("predicate-only must reach an entity the caller never named: %+v", only.Facts)
+	}
+	for _, f := range only.Facts {
+		if f.Direction != "" {
+			t.Errorf("with no queried endpoint a fact cannot be incoming or outgoing, got %q", f.Direction)
+		}
+	}
+	if only.Predicate != "works_at" {
+		t.Errorf("the applied predicate must be echoed normalized, got %q", only.Predicate)
+	}
+
+	// Filter: entity AND predicate. Alice has two facts; one matches.
+	both, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Predicate: "works at"})
+	if err != nil {
+		t.Fatalf("entity+predicate: %v", err)
+	}
+	if len(both.Facts) != 1 || findFact(both.Facts, "works_at", "Acme") == nil {
+		t.Fatalf("entity+predicate should return only Alice's works_at fact, got %+v", both.Facts)
+	}
+
+	// Neither entry point is a table dump, not a query.
+	if _, err := svc.KGQuery(ctx, team, KGQueryInput{}); err == nil {
+		t.Fatal("a query with neither entity nor predicate must be rejected")
+	}
+}
+
 func TestKGStatsAndTimeline(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)

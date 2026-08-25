@@ -116,6 +116,31 @@ func TestStatusCurrentIsIndexed(t *testing.T) {
 	}
 }
 
+// TestPredicateOnlyQueryIsIndexed is ADR-026 T5's gate: predicate standing alone
+// must be a real entry point, resolved BY the predicate index.
+//
+// idx_kg_triples_team_predicate has existed since 00010_kg.sql and no query ever
+// used it — the schema was built for predicate lookups and the query layer never
+// arrived. That is the reverse of this repo's usual defect and just as invisible:
+// an index nothing uses costs writes forever and shows up in no test. This asserts
+// the entry point is genuinely served rather than being a filter over a tenant
+// walk wearing an index's name.
+func TestPredicateOnlyQueryIsIndexed(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	const team = "team-plan"
+	seedKGCorpus(t, svc, ctx, team, 300)
+
+	for _, status := range []string{KGStatusCurrent, KGStatusEnded, KGStatusAll} {
+		plan := explainPlan(t, svc, ctx, func(r *Repo) *gorm.DB {
+			return r.kgTripleQuery(ctx, team, kgTripleFilter{column: "predicate", value: "relates_to_5", status: status})
+		})
+		if cols := planConstraints(t, plan); !slices.Contains(cols, "predicate") {
+			t.Errorf("predicate-only at status=%s must be constrained on predicate, got %v\nplan: %s", status, cols, plan)
+		}
+	}
+}
+
 // TestStatusFilterRefinesTheEntryPointRatherThanReplacingIt is the other half of
 // T2, and it exists because measuring T2 turned up a trap the ADR did not predict.
 //
@@ -145,7 +170,7 @@ func TestStatusFilterRefinesTheEntryPointRatherThanReplacingIt(t *testing.T) {
 	} {
 		for _, status := range []string{KGStatusCurrent, KGStatusEnded, KGStatusAll} {
 			plan := explainPlan(t, svc, ctx, func(r *Repo) *gorm.DB {
-				return r.kgTripleQuery(ctx, team, c.column, c.value, status)
+				return r.kgTripleQuery(ctx, team, kgTripleFilter{column: c.column, value: c.value, status: status})
 			})
 			cols := planConstraints(t, plan)
 			if !slices.Contains(cols, c.column) {

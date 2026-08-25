@@ -109,10 +109,11 @@ func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usa
 
 func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_query",
-		mcp.WithDescription("Query an entity's relationships in the knowledge graph, optionally as of a point in time and in a chosen direction. Facts are workspace-wide: this returns facts filed by any project in the workspace, not only this registration's."),
-		mcp.WithString("entity", mcp.Required(), mcp.Description("The entity to look up.")),
+		mcp.WithDescription("Query the knowledge graph by entity, by predicate, or both — optionally as of a point in time, in a chosen direction, and restricted to facts that are still current. Give at least one of entity/predicate. Facts are workspace-wide: this returns facts filed by any project in the workspace, not only this registration's."),
+		mcp.WithString("entity", mcp.Description("The entity to look up. Optional when predicate is given.")),
+		mcp.WithString("predicate", mcp.Description("Only facts with this relation. Given WITHOUT an entity it is an entry point in its own right, answering \"every fact of this relation\" — how you audit a whole relation type, e.g. every retracts edge. Given WITH an entity it narrows that entity's facts.")),
 		mcp.WithString("as_of", mcp.Description("Only facts in effect at this instant (YYYY-MM-DD or datetime).")),
-		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default).")),
+		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default). Ignored without an entity: with predicate alone there is no queried endpoint for a fact to be incoming or outgoing of.")),
 		mcp.WithString("status", mcp.Description(kgStatusParamDescription)),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -120,13 +121,10 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		if !ok {
 			return errResult, nil
 		}
-		entity, err := req.RequireString("entity")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		asOf := req.GetString("as_of", "")
 		res, err := drawers.KGQuery(ctx, t.TeamID, palace.KGQueryInput{
-			Entity:    entity,
+			Entity:    req.GetString("entity", ""),
+			Predicate: req.GetString("predicate", ""),
 			AsOf:      asOf,
 			Direction: req.GetString("direction", "both"),
 			Status:    req.GetString("status", kgQueryDefaultStatus),
@@ -135,8 +133,16 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		out := map[string]any{
-			"entity": res.Entity, "facts": res.Facts, "count": len(res.Facts),
-			"status": res.Status,
+			"facts": res.Facts, "count": len(res.Facts), "status": res.Status,
+		}
+		// Each entry point is echoed only when it was used, so the response says
+		// which question was asked rather than carrying an empty key for the one
+		// that was not.
+		if res.Entity != "" {
+			out["entity"] = res.Entity
+		}
+		if res.Predicate != "" {
+			out["predicate"] = res.Predicate
 		}
 		if asOf != "" {
 			out["as_of"] = asOf
