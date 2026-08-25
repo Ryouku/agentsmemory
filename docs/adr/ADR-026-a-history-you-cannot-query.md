@@ -187,6 +187,8 @@ Response additions, all additive keys so a later field cannot break a caller: `s
 
 ## Implementation
 
+**All seven landed 2026-08-25**, in the order T0 → T1 → T2 → T3 → T5 → T6 → T4, one commit each. T4 is last so the breaking default sits on top of the branch and reverts without disturbing anything under it. Every gate below was **mutation-proved** — wiring removed, test watched go red, wiring restored — because a gate nobody has seen fail is a gate nobody has tested. T2 grew a second gate that this ADR did not anticipate; see §2.
+
 | # | Task | Gate |
 |---|---|---|
 | T0 | Amend ADR-004's Out of Scope clause to `kg_add` / `kg_invalidate`, recording the reasoning there | Approved by M; nothing else starts until it lands |
