@@ -354,7 +354,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 var errIndexDown = errors.New("index write down")
 
-// TestSearchFallsBackWhenIndexBehind is the ADR-029 R2 core: an index at 7 of
+// TestSearchFallsBackWhenIndexBehind is the ADR-033 R2 core: an index at 7 of
 // 10 serves the source-of-truth hits with stale_index set, never an empty
 // result, and the behind index is rebuilt off the request path.
 func TestSearchFallsBackWhenIndexBehind(t *testing.T) {

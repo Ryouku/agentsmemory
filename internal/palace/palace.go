@@ -139,7 +139,7 @@ type SearchHit struct {
 	// that matched in one, and a silent collapse throws that away.
 	ChunksMatched int
 	// StaleIndex says the index that served this recall was behind its source of
-	// truth (ADR-029): the hits come from the SoT's own vector path, not the
+	// truth (ADR-033): the hits come from the SoT's own vector path, not the
 	// search index, and an async rebuild is in flight. It rides on every hit of
 	// a degraded recall, so an agent that reads a sentence from a stale recall
 	// can tell it happened instead of mistaking it for fresh knowledge.

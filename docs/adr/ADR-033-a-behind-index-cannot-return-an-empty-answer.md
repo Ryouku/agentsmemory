@@ -1,4 +1,4 @@
-# ADR-029: A behind index cannot return an empty answer to a population gap
+# ADR-033: A behind index cannot return an empty answer to a population gap
 
 **Status:** Proposed (rev. 6 — the above-cap rebuild trigger is corroborated by an index-ingested watermark with hysteresis, and the qdrant exactness premise is a stated verification duty; R4's relabel clause is qualified qdrant-only and its deletion target named; the sqlite "untouched" claim is made precise; `Checked`'s redefinition is named; the surface gap is stated. rev. 5's corroboration read the same cached datum twice, its relabel clause named a command that refuses non-qdrant backends, and its "four call sites" were five)
 **Date:** 2026-08-24

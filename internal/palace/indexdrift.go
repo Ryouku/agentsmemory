@@ -62,7 +62,7 @@ type DriftReport struct {
 	// over-count (orphans, or the transient upsert-before-stamp window) renders
 	// Indexed > Expected in the coverage view; without it the raw fields show
 	// indexed == expected and the over-count is indistinguishable from a perfect
-	// index (ADR-029 R3).
+	// index (ADR-033 R3).
 	IndexCount     NamespaceSplit `json:"index_count"`
 	SotMissing     NamespaceSplit `json:"sot_missing"`
 	SotMislabelled NamespaceSplit `json:"sot_mislabelled"`
@@ -174,7 +174,7 @@ func (s *Service) IndexDrift(ctx context.Context, teamID string) (DriftReport, e
 	// also supplies the REAL population count: the per-id audit below only asks
 	// for drawer ids, so an over-count (orphans, or the transient
 	// upsert-before-stamp window) is invisible to it — the coverage view's
-	// indexed field must come from the index's own Count (ADR-029 R3).
+	// indexed field must come from the index's own Count (ADR-033 R3).
 	var indexHalf store.VectorStore
 	stores := []struct {
 		name string

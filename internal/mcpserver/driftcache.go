@@ -19,9 +19,15 @@ const driftTTL = 60 * time.Second
 // driftFetch loads a fresh coverage audit for a team.
 type driftFetch func(ctx context.Context, teamID string) (palace.DriftReport, error)
 
+// maxDriftTeams bounds the per-team cache so a hosted server serving many
+// tenants cannot grow it without bound; each entry retains a report of up to
+// driftSample points. When full, the least-recently-refreshed team is evicted.
+const maxDriftTeams = 1024
+
 // driftCache is the per-team TTL cache in front of the coverage audit. A
 // failed audit is not cached (a failure is a fact about the attempt, not about
-// the palace), so the next status call retries it.
+// the palace), so the next status call retries it. The map is bounded: expired
+// entries are dropped opportunistically and a hard cap evicts the oldest.
 type driftCache struct {
 	mu      sync.Mutex
 	fetch   driftFetch
@@ -49,6 +55,13 @@ func (c *driftCache) get(ctx context.Context, teamID string) (palace.DriftReport
 		c.mu.Unlock()
 		return e.report, nil
 	}
+	// Opportunistically drop expired entries so a tenant that stopped calling
+	// status does not hold its slot until the cap forces the issue.
+	for id, e := range c.perTeam {
+		if time.Since(e.at) >= c.ttl {
+			delete(c.perTeam, id)
+		}
+	}
 	c.mu.Unlock()
 
 	report, err := c.fetch(ctx, teamID)
@@ -56,7 +69,23 @@ func (c *driftCache) get(ctx context.Context, teamID string) (palace.DriftReport
 		return palace.DriftReport{}, err
 	}
 	c.mu.Lock()
+	if len(c.perTeam) >= maxDriftTeams {
+		c.evictOldestLocked()
+	}
 	c.perTeam[teamID] = driftEntry{report: report, at: time.Now()}
 	c.mu.Unlock()
 	return report, nil
+}
+
+// evictOldestLocked removes the least-recently-refreshed entry, breaking ties
+// on the team ID so the choice is deterministic when several refreshes land in
+// the same clock tick. Called with c.mu held, at the cap.
+func (c *driftCache) evictOldestLocked() {
+	oldestID, oldestAt := "", time.Time{}
+	for id, e := range c.perTeam {
+		if oldestID == "" || e.at.Before(oldestAt) || (e.at.Equal(oldestAt) && id < oldestID) {
+			oldestID, oldestAt = id, e.at
+		}
+	}
+	delete(c.perTeam, oldestID)
 }

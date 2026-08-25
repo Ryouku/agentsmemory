@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -116,5 +117,48 @@ func TestStatusRoutesThroughDriftCache(t *testing.T) {
 	}
 	if strings.Contains(body[i:], "drawers.IndexDrift(ctx, t.TeamID") {
 		t.Error("registerStatus still calls drawers.IndexDrift directly — the audit runs on every status call")
+	}
+}
+
+// TestDriftCacheEvictsOldestWhenFull: the per-team map must stay bounded on a
+// multi-tenant server. Each entry is small (a report of up to driftSample
+// drifted points), but nothing ever removed one, so a tenant that stopped
+// calling status held its slot forever (review round 2, R2-6). The cap must
+// hold even when every entry is fresh — no TTL expiry to lean on — and the
+// evicted team is the least-recently-refreshed one.
+func TestDriftCacheEvictsOldestWhenFull(t *testing.T) {
+	dc := newDriftCache(func(_ context.Context, teamID string) (palace.DriftReport, error) {
+		return palace.DriftReport{}, nil
+	}, time.Hour)
+
+	for i := 0; i < maxDriftTeams+1; i++ {
+		if _, err := dc.get(context.Background(), fmt.Sprintf("team-%03d", i)); err != nil {
+			t.Fatalf("get team-%03d: %v", i, err)
+		}
+	}
+	if n := len(dc.perTeam); n > maxDriftTeams {
+		t.Fatalf("cache holds %d teams; cap is %d", n, maxDriftTeams)
+	}
+
+	// The evicted team is the least-recently-refreshed one, deterministically:
+	// with all refreshes landing within the same clock tick the tie breaks on
+	// the smallest team ID, which is also the oldest refresh order here.
+	dc.mu.Lock()
+	_, survived := dc.perTeam["team-000"]
+	dc.mu.Unlock()
+	if survived {
+		t.Error("team-000 (the least-recently-refreshed) survived the cap — eviction did not pick the oldest")
+	}
+
+	// A fresh get re-adds it (evicting someone else); the cache is a cache, not
+	// a tombstone for teams that merely aged out.
+	if _, err := dc.get(context.Background(), "team-000"); err != nil {
+		t.Fatalf("re-get team-000: %v", err)
+	}
+	dc.mu.Lock()
+	_, back := dc.perTeam["team-000"]
+	dc.mu.Unlock()
+	if !back {
+		t.Error("re-added team-000 is not in the cache")
 	}
 }

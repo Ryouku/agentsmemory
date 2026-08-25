@@ -1286,7 +1286,7 @@ func publishedLoopback() bool {
 // re-writing every vector on every boot would make startup scale with the palace.
 // Partial fall-behind is not repaired here — it is NAMED here, because an index
 // at 800 of 1000 points boots clean today and nothing reports the 200 missing
-// (ADR-029 R2's population check catches it at search time instead).
+// (ADR-033 R2's population check catches it at search time instead).
 func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chromemvec.Index, hybrid *store.Hybrid) (ReconcileReport, error) {
 	var report ReconcileReport
 	namespaces, err := sot.Namespaces(ctx)

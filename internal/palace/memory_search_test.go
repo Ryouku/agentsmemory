@@ -7,7 +7,7 @@ import (
 )
 
 // TestSurvivorsFromCarriesStaleIndex: a hit served from the source of truth
-// while the index is behind must say so, or the ADR-029 headline ("must serve
+// while the index is behind must say so, or the ADR-033 headline ("must serve
 // the truth, never an empty answer — and must say so") is half a promise. The
 // flag rides on the store.SearchResult into searchCandidates; survivorsFrom is
 // where the flag would be dropped if nothing read it, so the stamp lives here.

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// adrNumberRe extracts the number from an ADR filename (ADR-029-…).
+// adrNumberRe extracts the number from an ADR filename (ADR-033-…).
 var adrNumberRe = regexp.MustCompile(`^ADR-(\d+)-`)
 
 // duplicateADRNumbers returns the numbers claimed by more than one file.

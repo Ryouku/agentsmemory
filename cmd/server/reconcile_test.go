@@ -78,7 +78,7 @@ func fixturePoints(n int) []store.Point {
 	return out
 }
 
-// TestReconcileReportsPartialDrift pins the ADR-029 report: an index at 7 of 10
+// TestReconcileReportsPartialDrift pins the ADR-033 report: an index at 7 of 10
 // at boot is not repaired (the empty case is) but is NAMED — the 3 missing
 // points were invisible before this report existed.
 func TestReconcileReportsPartialDrift(t *testing.T) {

@@ -94,7 +94,7 @@ func RunPointsConformance(t *testing.T, name string, newStore Factory) {
 
 // RunCountConformance exercises Count against one backend.
 //
-// Count exists for the coverage check (ADR-029): comparing the two halves'
+// Count exists for the coverage check (ADR-033): comparing the two halves'
 // counts tells a caller whether the index ingested everything the source of
 // truth holds. The contract pinned here: the count equals what was written,
 // re-upserting an id REPLACES rather than inflates, Delete decrements, and a
