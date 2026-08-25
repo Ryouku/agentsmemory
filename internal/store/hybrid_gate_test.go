@@ -16,8 +16,9 @@ import (
 // result it serves), and an index that can lag, fail, and block on demand.
 
 type gateSoT struct {
-	mu     sync.Mutex
-	points map[string][]store.Point
+	mu       sync.Mutex
+	points   map[string][]store.Point
+	countErr error // failure injection for the truth-half count
 }
 
 func newGateSoT() *gateSoT { return &gateSoT{points: map[string][]store.Point{}} }
@@ -49,6 +50,9 @@ func (f *gateSoT) Search(_ context.Context, ns string, _ []float32, k int, _ sto
 func (f *gateSoT) Count(_ context.Context, ns string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
 	return len(f.points[ns]), nil
 }
 
@@ -119,12 +123,12 @@ type gateIndex struct {
 	points    map[string][]store.Point // what the index holds
 	ensure    int                      // rebuild attempts: Rebuild ensures before it upserts
 	upsertErr error                    // failure injection for the index write
-	approx    map[string]int           // injected approximate counts
+	countErr  error                    // failure injection for the index count read
 	block     chan struct{}            // when set, Upsert signals then waits for release
 }
 
 func newGateIndex() *gateIndex {
-	return &gateIndex{points: map[string][]store.Point{}, approx: map[string]int{}}
+	return &gateIndex{points: map[string][]store.Point{}}
 }
 
 func (f *gateIndex) EnsureNamespace(context.Context, string, int) error {
@@ -180,12 +184,33 @@ func (f *gateIndex) Search(_ context.Context, ns string, _ []float32, k int, _ s
 func (f *gateIndex) Count(_ context.Context, ns string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
 	return len(f.points[ns]), nil
 }
 
-func (f *gateIndex) ApproximateCount(_ context.Context, ns string) (int, error) {
+// approxGateIndex is gateIndex plus ApproximateCounter — the qdrant-shaped
+// backend whose sampled count can lag and must be watermark-corroborated.
+// Keeping the approximate capability OFF the base fake proves the exact path of
+// indexCount: a backend without ApproximateCounter (chromem, sqlitevec) counts
+// exactly at any size, and a deficit it reports above the cap is genuine, never
+// suppressed as a lagged estimate.
+type approxGateIndex struct {
+	*gateIndex
+	approx map[string]int // injected approximate counts
+}
+
+func newApproxGateIndex() *approxGateIndex {
+	return &approxGateIndex{gateIndex: newGateIndex(), approx: map[string]int{}}
+}
+
+func (f *approxGateIndex) ApproximateCount(_ context.Context, ns string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
 	if v, ok := f.approx[ns]; ok {
 		return v, nil
 	}
@@ -266,8 +291,23 @@ func (f *gateIndex) setUpsertErr(e error) {
 	f.upsertErr = e
 }
 
+// setCountErr swaps the index-count failure injection under the lock, so a test
+// can make the index half look wiped or unreachable.
+func (f *gateIndex) setCountErr(e error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.countErr = e
+}
+
+// setCountErr swaps the source-of-truth-count failure injection under the lock.
+func (f *gateSoT) setCountErr(e error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.countErr = e
+}
+
 // setApprox injects the approximate-count value under the lock.
-func (f *gateIndex) setApprox(ns string, v int) {
+func (f *approxGateIndex) setApprox(ns string, v int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.approx[ns] = v
@@ -441,7 +481,9 @@ func TestRebuildBackoffOnFailure(t *testing.T) {
 func TestApproximateCountAloneDoesNotTriggerRebuild(t *testing.T) {
 	cfg := store.DefaultGateConfig()
 	cfg.ExactCountCap = 5 // everything below is a tiny namespace
-	h, _, idx := newGateHybrid(t, cfg)
+	sot := newGateSoT()
+	idx := newApproxGateIndex()
+	h := store.NewHybridWithConfig(sot, idx, cfg)
 	ctx := context.Background()
 	if err := h.Upsert(ctx, "ns", points(10, "sot")); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -549,6 +591,198 @@ func TestCountCacheInvalidatedOnWrite(t *testing.T) {
 	if !res.StaleIndex {
 		t.Fatal("a failed index write was masked by the cached count pair: served from the behind index")
 	}
+}
+
+// TestSearchServesTruthWhenIndexCountFails is the JD-002 gate: an index half
+// that cannot be counted (a wiped or missing qdrant collection answers a count
+// with 404) reads as "index empty" — the source of truth serves, flagged
+// stale, and the rebuild trigger fires. Before the fix the count error made
+// countPairFor fail and Hybrid fail-open to the index, which errors too, so the
+// query errored and the trigger was never reached.
+func TestSearchServesTruthWhenIndexCountFails(t *testing.T) {
+	h, _, idx := newGateHybrid(t, store.DefaultGateConfig())
+	ctx := context.Background()
+	if err := h.Upsert(ctx, "ns", points(10, "sot")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	idx.setCountErr(errIndexDown) // the index half cannot report its population
+
+	res, err := h.Search(ctx, "ns", []float32{0, 0, 0}, 5, nil)
+	if err != nil {
+		t.Fatalf("search: %v — an uncountable index must not error the query", err)
+	}
+	if len(res.H) == 0 {
+		t.Fatal("an uncountable index returned an empty answer")
+	}
+	if !res.StaleIndex {
+		t.Fatal("an uncountable index served without the stale_index flag")
+	}
+	for _, hit := range res.H {
+		if hit.Payload["src"] != "sot" {
+			t.Fatalf("hit %q came from %v, want the source of truth", hit.ID, hit.Payload["src"])
+		}
+	}
+	// The rebuild trigger fires despite the count error — that is how the wiped
+	// collection gets recreated and refilled.
+	eventually(t, "the rebuild trigger to fire", func() bool { return idx.ensureCount() == 1 })
+}
+
+// TestSearchErrorsWhenTruthCountFails pins the other half of JD-002: a
+// source-of-truth count failure is NOT an empty index — the truth itself is
+// down, and there is nothing to serve.
+func TestSearchErrorsWhenTruthCountFails(t *testing.T) {
+	h, sot, _ := newGateHybrid(t, store.DefaultGateConfig())
+	ctx := context.Background()
+	if err := h.Upsert(ctx, "ns", points(10, "both")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	sot.setCountErr(errIndexDown)
+
+	if _, err := h.Search(ctx, "ns", []float32{0, 0, 0}, 5, nil); err == nil {
+		t.Fatal("a source-of-truth count failure served a result instead of erroring")
+	}
+}
+
+// exactGateIndex is the gate index WITHOUT ApproximateCounter — the chromem- or
+// sqlitevec-shaped backend that counts exactly and cheaply at any size.
+type exactGateIndex struct {
+	mu     sync.Mutex
+	points map[string][]store.Point
+	ensure int // rebuild attempts
+}
+
+func newExactGateIndex() *exactGateIndex {
+	return &exactGateIndex{points: map[string][]store.Point{}}
+}
+
+func (f *exactGateIndex) EnsureNamespace(context.Context, string, int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensure++
+	return nil
+}
+
+func (f *exactGateIndex) Upsert(_ context.Context, ns string, pts []store.Point) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byID := map[string]store.Point{}
+	for _, p := range f.points[ns] {
+		byID[p.ID] = p
+	}
+	for _, p := range pts {
+		byID[p.ID] = p
+	}
+	f.points[ns] = f.points[ns][:0]
+	for _, p := range byID {
+		f.points[ns] = append(f.points[ns], p)
+	}
+	return nil
+}
+
+func (f *exactGateIndex) Search(_ context.Context, ns string, _ []float32, k int, _ store.Filter) (store.SearchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var hits []store.Hit
+	for _, p := range f.points[ns] {
+		hits = append(hits, store.Hit{ID: p.ID, Score: 1, Payload: p.Payload})
+	}
+	if k > 0 && len(hits) > k {
+		hits = hits[:k]
+	}
+	return store.SearchResult{H: hits}, nil
+}
+
+func (f *exactGateIndex) Count(_ context.Context, ns string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.points[ns]), nil
+}
+
+func (f *exactGateIndex) Delete(_ context.Context, ns string, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keep := f.points[ns][:0]
+	for _, p := range f.points[ns] {
+		if !slices.Contains(ids, p.ID) {
+			keep = append(keep, p)
+		}
+	}
+	f.points[ns] = keep
+	return nil
+}
+
+func (f *exactGateIndex) PointsByIDs(_ context.Context, ns string, ids []string) ([]store.Point, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []store.Point
+	for _, p := range f.points[ns] {
+		if slices.Contains(ids, p.ID) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *exactGateIndex) SetPayload(_ context.Context, ns string, ids []string, patch map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.points[ns] {
+		if slices.Contains(ids, p.ID) {
+			for k, v := range patch {
+				p.Payload[k] = v
+			}
+		}
+	}
+	return nil
+}
+
+// drop simulates the index falling behind, like gateIndex.drop.
+func (f *exactGateIndex) drop(ns string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pts := f.points[ns]
+	if n >= len(pts) {
+		f.points[ns] = nil
+		return
+	}
+	f.points[ns] = pts[:len(pts)-n]
+}
+
+// ensureCount reads the rebuild-attempt counter under the lock.
+func (f *exactGateIndex) ensureCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ensure
+}
+
+// TestExactCountAboveCapTriggersRebuild is the JD-004 gate: sampled must mean
+// "an approximate count was actually read", not "expected exceeded the cap".
+// Above the cap on a backend without ApproximateCounter (chromem, sqlitevec)
+// the read is exact, so the watermark suppression must not swallow a genuine
+// deficit — a namespace at 7 of 10 must self-heal. Empirically reproduced
+// before the fix: 1997/2000 never rebuilt.
+func TestExactCountAboveCapTriggersRebuild(t *testing.T) {
+	cfg := store.DefaultGateConfig()
+	cfg.ExactCountCap = 5 // 10 expected is above the cap
+	sot := newGateSoT()
+	idx := newExactGateIndex()
+	h := store.NewHybridWithConfig(sot, idx, cfg)
+	ctx := context.Background()
+	if err := h.Upsert(ctx, "ns", points(10, "sot")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	idx.drop("ns", 3) // the index falls behind by 3
+
+	res, err := h.Search(ctx, "ns", []float32{0, 0, 0}, 5, nil)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !res.StaleIndex {
+		t.Fatal("an exact-read deficit above the cap served unflagged")
+	}
+	// The deficit is genuine (an exact read, not a lagged estimate), so the
+	// rebuild must fire — the watermark suppression is for sampled reads only.
+	eventually(t, "the exact-count rebuild to fire", func() bool { return idx.ensureCount() == 1 })
 }
 
 // TestSearchServesFromIndexWhenHealthy pins that the gate is neutral on the

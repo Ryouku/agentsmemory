@@ -63,6 +63,29 @@ func TestCoverageUsesIndexHalfOnly(t *testing.T) {
 	}
 }
 
+// TestCoverageViewIndexedIsRealPopulation is the JD-003 gate on the view
+// itself: Indexed is the index half's REAL point population (carried in
+// IndexCount), not expected−missing−mislabelled, so an over-count displays
+// indexed > expected instead of saturating at expected. Fails when the view
+// derives Indexed from the checked rows again.
+func TestCoverageViewIndexedIsRealPopulation(t *testing.T) {
+	r := DriftReport{
+		Checked:      NamespaceSplit{Drawers: 10},
+		IndexMissing: NamespaceSplit{Drawers: 2},
+		IndexCount:   NamespaceSplit{Drawers: 13}, // 10 expected + 3 orphans
+	}
+	v := r.CoverageView()["drawers"]
+	if v.Indexed != 13 {
+		t.Fatalf("indexed = %d, want 13 (the real index population, not the derived 8)", v.Indexed)
+	}
+	if v.Indexed <= v.Expected {
+		t.Fatal("an over-count index must display indexed > expected — the raw fields are how it stays visible")
+	}
+	if v.Coverage != 0.8 {
+		t.Fatalf("coverage = %v, want 0.8 — the formula still reads from missing/mislabelled", v.Coverage)
+	}
+}
+
 // TestCoverageClampsToUnitInterval: a corrupted report (missing + mislabelled >
 // expected, unreachable from the pinned accounting but possible from a counting
 // bug) reads 0, never a negative number — and the raw fields still expose the

@@ -117,8 +117,13 @@ type gate struct {
 type countPair struct {
 	expected int
 	indexed  int
-	sampled  bool // indexed came from the approximate count (above ExactCountCap)
-	at       time.Time
+	// sampled marks an INDEXED count that came from the approximate path: the
+	// read may lag the durable count, so the watermark rule suppresses a rebuild
+	// triggered by it. An exact Count is never sampled, whatever the expected
+	// size — a backend without ApproximateCounter counts exactly at any size,
+	// and a deficit it reports is a genuine one.
+	sampled bool
+	at      time.Time
 }
 
 // EnsureNamespace prepares both backends. The SoT comes first for the same
@@ -167,10 +172,10 @@ func (h *Hybrid) Upsert(ctx context.Context, namespace string, points []Point) e
 func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32, k int, filter Filter) (SearchResult, error) {
 	p, err := h.countPairFor(ctx, namespace)
 	if err != nil {
-		// The gate cannot tell the halves apart; serve from the index, exactly
-		// as a Hybrid without the gate would. The gate is a detection aid, not
-		// a hard guarantee, and serving must never block on it.
-		return h.index.Search(ctx, namespace, vector, k, filter)
+		// The source of truth could not be counted — the truth itself is down,
+		// and there is nothing to serve. An index-count failure never reaches
+		// here: countPairFor treats it as an empty index and the truth serves.
+		return SearchResult{}, err
 	}
 	if p.indexed >= p.expected {
 		return h.index.Search(ctx, namespace, vector, k, filter)
@@ -198,11 +203,21 @@ func (h *Hybrid) countPairFor(ctx context.Context, namespace string) (countPair,
 	if err != nil {
 		return countPair{}, fmt.Errorf("count source of truth: %w", err)
 	}
-	indexed, err := h.indexCount(ctx, namespace, expected)
+	indexed, sampled, err := h.indexCount(ctx, namespace, expected)
 	if err != nil {
-		return countPair{}, fmt.Errorf("count index: %w", err)
+		// The index half cannot be counted (a wiped or missing collection
+		// answers a count with 404). That is not a population statement — treat
+		// it as "index empty": the source of truth is the authority, so Search
+		// serves from it and the rebuild trigger fires. A source-of-truth count
+		// error above still errors: the truth itself is down and there is
+		// nothing to serve.
+		p := countPair{expected: expected, indexed: 0, sampled: false, at: time.Now()}
+		h.gate.mu.Lock()
+		h.gate.pair[namespace] = p
+		h.gate.mu.Unlock()
+		return p, nil
 	}
-	p := countPair{expected: expected, indexed: indexed, sampled: expected > h.gate.cfg.ExactCountCap, at: time.Now()}
+	p := countPair{expected: expected, indexed: indexed, sampled: sampled, at: time.Now()}
 	h.gate.mu.Lock()
 	h.gate.pair[namespace] = p
 	h.gate.mu.Unlock()
@@ -211,14 +226,19 @@ func (h *Hybrid) countPairFor(ctx context.Context, namespace string) (countPair,
 
 // indexCount reads the index half's population: exact below the ExactCountCap,
 // the approximate count above it when the index exposes one (a chromem index
-// counts exactly and cheaply at any size, so it keeps its exact count).
-func (h *Hybrid) indexCount(ctx context.Context, namespace string, expected int) (int, error) {
+// counts exactly and cheaply at any size, so it keeps its exact count). The
+// returned sampled flag says WHICH read was used, so the watermark suppression
+// applies only to genuinely sampled reads — an exact count above the cap is a
+// real population, not a lagged estimate, and must not be suppressed.
+func (h *Hybrid) indexCount(ctx context.Context, namespace string, expected int) (count int, sampled bool, err error) {
 	if expected > h.gate.cfg.ExactCountCap {
 		if ac, ok := h.index.(ApproximateCounter); ok {
-			return ac.ApproximateCount(ctx, namespace)
+			n, err := ac.ApproximateCount(ctx, namespace)
+			return n, true, err
 		}
 	}
-	return h.index.Count(ctx, namespace)
+	n, err := h.index.Count(ctx, namespace)
+	return n, false, err
 }
 
 // triggerRebuild starts an asynchronous rebuild of the index half for the

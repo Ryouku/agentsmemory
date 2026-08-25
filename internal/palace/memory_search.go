@@ -104,13 +104,15 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		rounds++
 		res, err := s.vectors.Search(retrieveCtx, teamID, vec, k, searchFilter(q))
 		if err != nil {
-			return nil, nil, err
-		}
-		hits := res.H
-		if err != nil {
+			// The widen loop's only error exit, and it must route through finish:
+			// finish records the failed-closed outcome, ends the retrieve/hydrate
+			// spans (and their counters). A bare return here would leave both
+			// spans dangling and the failure invisible to exactly the telemetry a
+			// debugging session needs.
 			finish(nil, err, "")
 			return nil, nil, fmt.Errorf("vector search: %w", err)
 		}
+		hits := res.H
 
 		missing := make([]string, 0, len(hits))
 		for _, h := range hits {
