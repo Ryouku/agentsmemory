@@ -1065,3 +1065,29 @@ which reads thirty as a finding count. It is not.
   Description still presents the generated styles first, which is how a fixture that cannot exhibit
   the defect became the one that picked two shipped defaults. **Trigger: ADR-032 T2 reporting,
   either way.**
+
+## From ADR-032 T1 (the null result, 2026-08-26)
+
+- **`TestShippedDefaultsCiteTheirCorpus`.** Planned for T2 and NOT written, because it belongs with a
+  default change and there was none. Every `config.Default()` field whose comment claims it was
+  measured should name the case-set id it was measured on — `Fusion` and `RerankWeight` say "chosen
+  by the eval's weight sweep" and name no corpus, which is how a measurement outlived the corpus that
+  produced it. Worth doing on its own. **Trigger: the next change to any default annotated "measured".**
+
+- **The 3 answers no arm retrieved (n=54 run).** The first corpus of three that is not saturated —
+  94% in-pool against 100% for both earlier runs — so for the first time there are genuine RETRIEVAL
+  failures, distinct from ranking ones. No reranker can reach them. The run's own advice: raise
+  `--pool` and re-run; if they come back the pool was too small, if they stay missing the embedding is
+  not placing those memories near their question. **Trigger: any work on retrieval rather than ranking
+  — this is the only measured evidence of which of the two is failing.**
+
+- **The 5 golds `production` lost below its page cut.** Retrieved and ranked, then cut by the page
+  size rather than by the pool. The knobs are the search limit and `RERANK_POOL`, not `--pool`. This
+  is a different failure from the 3 above and the table separates them. **Trigger: a complaint that a
+  recall "missed something obvious" — this is the shape that produces it.**
+
+- **`rerank blend w=0.25` is the top arm in BOTH real runs** (0.761 at n=26, 0.694 at n=54) against a
+  shipped 0.50, and remains unresolved: it is the arm each table selected, so the comparison flatters
+  it, and `w=0.50` is inconclusive against it in both. It is the strongest surviving hint about a
+  shipped default. **Trigger: a run designed to test it specifically, with the contrast preselected
+  rather than read off the winner column.**

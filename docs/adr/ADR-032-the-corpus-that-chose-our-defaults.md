@@ -1,6 +1,6 @@
 # ADR-032: The corpus that chose our defaults could not disagree with them
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-25
 **Owner:** Zy
 **Spec:** None — no spec stage; grounded in two eval runs taken the same day on the same commit and configuration, differing only in the questions. Full tables: `evidence/two-corpora-2026-08-25.md`.
@@ -31,6 +31,27 @@ Two eval runs, same palace, same day, same commit `3eb4b33`, same ranking config
 **One finding replicated, and it is the one nobody chose from a table.** The closet prior costs on both corpora — ΔMRR −0.048 [−0.11, −0.00] and −0.039 [−0.10, 0.00], Δrecall@1 −0.067 and −0.077 — and that comparison is PRESELECTED rather than picked from the table it appears in. Same sign, same magnitude, two independent question sets. It is already `closet-boost=0.00` in production.
 
 **And one shipped change is not confirmed by it.** ADR-030's sigmoid normalisation scores identically to min-max on the real corpus (0.708 both); `norm=rank`, the arm registered to lose, scores higher at 0.748 and is inconclusive. The degeneracy sigmoid fixes is provable in isolation and the corpus declines to say it moves recall. Recorded here rather than left for someone to discover.
+
+## Amended 2026-08-26 — T1 ran, and the actionable half of this ADR is retracted
+
+**T1's verdict: the corpus inversion is real; the effect size it implied for `FUSION` was not. T2's precondition fails and nothing flips.**
+
+70 recorded searches, 54 scorable, same configuration. Full table: `evidence/real-corpus-large.md`.
+
+| contrast | n=26 | n=54 | survived? |
+|---|---|---|---|
+| `vector` worst | 0.580, worse by 0.10–0.38 | 0.587, worse by 0.01–0.20 | **YES** |
+| `rrf` | 0.721, worse by 0.00–0.21 | 0.636, **inconclusive** | **NO** |
+| `production (Search)` | 0.694, worse by 0.02–0.25 | 0.660, **inconclusive** | **NO** |
+| best arm | `anchored:ceiling` 0.821 | `rerank blend w=0.25` 0.694 | different arm |
+
+The Context below says "linear fusion beats rrf by ~0.12 MRR". **At n=54 that gap is 0.011 and inconclusive.** The spread across `vector`/`rrf`/`hybrid` went from 0.580→0.721→0.818 to 0.587→0.636→0.647 — same ordering, four times smaller. The n=26 magnitudes were substantially small-sample noise, and the claim built on them is withdrawn. The Context is left standing rather than edited, because the retraction is the more useful record: it is a worked example of a dramatic table at n=26 that did not survive doubling.
+
+**What survives and is stronger.** The closet prior costs on a THIRD independent corpus and resolves for the first time: ΔMRR −0.027, CI [−0.06, −0.00], preselected. Three runs: −0.048, −0.039, −0.027. And `vector`-only really is the worst arm on real queries, resolved at both sample sizes — so the corpus inversion itself stands.
+
+**What this changes about the ADR's thesis: nothing.** "A measurement inherits the validity of its corpus" is exactly what just happened to this ADR's own measurement, one level down. The paraphrase corpus could not reject the defaults it chose; the n=26 real corpus could, and overstated by 4×. Both are the same lesson, and the second one cost a retraction rather than a served default only because T2's precondition was written before the run.
+
+**The instrument improved in the way that matters most.** This is the first corpus of the three that is NOT saturated: 94% in-pool against 100% for both earlier runs, which is the state ADR-001's preflight names as disqualifying. Three of 54 answers were never retrieved by any arm — a retrieval failure no ranking change can reach — and `production` lost five more below its page cut. A corpus that can fail is worth more than a table that agrees with you.
 
 ## Existing Primitives Audit
 
