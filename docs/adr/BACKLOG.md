@@ -1004,3 +1004,31 @@ which reads thirty as a finding count. It is not.
   and the sweep ran at pools of 128 and 10 while 17.6% of real reranked recalls run at four or fewer.
   The general question — for any normalisation or threshold here, does the tuning fixture span the
   range production serves? — was answered "no" once and has not been asked of the others.
+
+## From ADR-031 (keep the one score that separates a recall that worked)
+
+- **An abstention threshold, calibrated on `top_rerank_score`.** ADR-031 keeps the signal; spending
+  it is ADR-001's T3, which stays BLOCKED on its own preflight — a corpus measuring 100% in-pool is
+  saturated and the go/no-go cannot be taken there in either direction. **Trigger: a corpus with hard
+  identifier-preserving negatives and a retrieval ceiling under saturation, plus enough reranked rows
+  to plot the answered-versus-unanswered distribution against ADR-001's table.**
+
+- **Changing `FUSION` away from `rrf` so the fused score carries magnitude again.** Reciprocal rank
+  fusion discards magnitude at retrieval on both arms, which is why `top_score`'s top-1 range is only
+  0.0275..0.0328. A linear fusion would keep it. This changes the SERVED ORDERING, and the eval of
+  2026-08-25 cannot support a change of that size at n=30 — every arm's verdict was "inconclusive vs
+  best (CI spans zero)". **Trigger: an eval corpus large enough for a paired comparison to resolve.**
+
+- **Removing `avg_top_score` from `am_recall_stats`.** Under `rrf` it is an average of a
+  near-constant, so it invites a conclusion it cannot support. It is NOT wrong for a `FUSION=linear`
+  deployment, and it may be on somebody's dashboard. Its doc comment now states its own limitation.
+  **Trigger: `FUSION=rrf` becoming the only supported fusion, or a confirmed report that nobody reads
+  the field.**
+
+- **The 2026-08-25 eval's uncomfortable headline, unresolved.** On that 30-case replay, plain
+  `vector` scored MRR 0.644 and `production (Search)` scored 0.592 with 7 golds ranked below the page
+  cut — the whole ranking stack underperformed doing nothing. Three reasons not to act on it: n=30,
+  questions generated FROM the drawers (which flatters vector similarity by construction), and
+  ADR-001's finding that this corpus is saturated. It is recorded because an unexplained result that
+  nobody writes down gets rediscovered every quarter. **Trigger: the next eval on a corpus that is
+  not generated from the memories it searches.**

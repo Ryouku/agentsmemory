@@ -140,9 +140,18 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 				"answered":      w.Answered,
 				"answered_pct":  w.AnsweredPct(),
 				"avg_top_score": w.AvgTop,
-				"drawers":       w.Drawers,
-				"last_used":     w.LastUsed,
-				"last_filed":    w.LastFiled,
+				// The fused score above is a rank encoding under FUSION=rrf, so it is
+				// nearly constant and cannot say whether recall is working. This one can:
+				// ADR-001 measured the cross-encoder separating answerable from
+				// unanswerable by ~4.7 in median where cosine distance separated them by
+				// 0.022. Reported with its own count, because averaging it over searches
+				// no cross-encoder touched would divide real logits by a denominator of
+				// not-measured zeros.
+				"avg_top_rerank_score": w.AvgTopRerank,
+				"reranked":             w.Reranked,
+				"drawers":              w.Drawers,
+				"last_used":            w.LastUsed,
+				"last_filed":           w.LastFiled,
 			})
 		}
 		return jsonResult(map[string]any{

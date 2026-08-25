@@ -1075,6 +1075,9 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
+		// The signal an abstention threshold can actually use. TopScore above is the
+		// FUSED score, and under rrf that is 1/(60+rank) — rank, not quality.
+		ev.TopRerankScore = results[0].RerankScore
 	}
 	s.repo.recordSearch(ctx, ev)
 	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))

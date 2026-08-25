@@ -31,8 +31,18 @@ type searchEventRow struct {
 	Candidates int     `gorm:"column:candidates"`
 	Hits       int     `gorm:"column:hits"`
 	TopScore   float64 `gorm:"column:top_score"`
-	Reranked   int     `gorm:"column:reranked"`
-	CreatedAt  string  `gorm:"column:created_at"`
+	// TopRerankScore is the cross-encoder's score for the best hit, 0 when no
+	// cross-encoder ran (tell the two apart with Reranked — these are logits, so 0
+	// is mid-range and a genuine value, not "no match").
+	//
+	// It exists because TopScore cannot carry this: under FUSION=rrf the fused
+	// score is a rank encoding, so its top-1 value is nearly constant regardless of
+	// how well anything matched. ADR-001 measured the cross-encoder separating
+	// answerable from unanswerable by ~4.7 in median while cosine distance
+	// separated them by 0.022 and "no threshold separates them at any value".
+	TopRerankScore float64 `gorm:"column:top_rerank_score"`
+	Reranked       int     `gorm:"column:reranked"`
+	CreatedAt      string  `gorm:"column:created_at"`
 }
 
 // TableName pins the table name so gorm does not pluralise the struct name.
@@ -68,13 +78,26 @@ func (r *Repo) SampleSearchQueries(ctx context.Context, teamID, wing string, lim
 // rather than an average score: a score is only comparable within one query,
 // while "did this wing have anything to say" compares across all of them.
 type WingRecall struct {
-	Wing      string
-	Searches  int
-	Answered  int
-	AvgTop    float64 // mean top-hit score across ANSWERED searches
-	Drawers   int     // drawers currently filed in this wing
-	LastUsed  string  // most recent search against this wing, RFC3339 ("" if none)
-	LastFiled string  // most recent drawer filed into it ("" if none)
+	Wing     string
+	Searches int
+	Answered int
+	// AvgTop is the mean top-hit FUSED score across ANSWERED searches. Under
+	// FUSION=rrf the fused score is a rank encoding, so its top-1 value is nearly
+	// constant and this says almost nothing about match quality. Kept for
+	// continuity with rows written before AvgTopRerank existed.
+	AvgTop float64
+	// AvgTopRerank is the mean top-hit CROSS-ENCODER score, over reranked answered
+	// searches only. This is the number that separates a recall which answered from
+	// one that did not: ADR-001 measured medians 0.891 against -3.832, where cosine
+	// distance managed 0.401 against 0.423 and separated nothing.
+	AvgTopRerank float64
+	// Reranked is how many answered searches a cross-encoder actually ordered, and
+	// it is the denominator AvgTopRerank was divided by. Reported so nobody reads
+	// an average over three searches as a property of the wing.
+	Reranked  int
+	Drawers   int    // drawers currently filed in this wing
+	LastUsed  string // most recent search against this wing, RFC3339 ("" if none)
+	LastFiled string // most recent drawer filed into it ("" if none)
 }
 
 // AnsweredPct is the share of searches that returned something, 0 when the wing
@@ -169,17 +192,26 @@ func (s *Service) RecallStats(ctx context.Context, teamID, wing string, since ti
 	out := RecallStats{Since: cutoff}
 
 	type agg struct {
-		Wing     string
-		Searches int
-		Answered int
-		SumTop   float64
-		LastUsed string
+		Wing         string
+		Searches     int
+		Answered     int
+		SumTop       float64
+		SumTopRerank float64
+		Reranked     int
+		LastUsed     string
 	}
 	var rows []agg
 	searches := s.repo.db.WithContext(ctx).
 		Model(&searchEventRow{}).
 		Select("wing, COUNT(*) AS searches, SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) AS answered, "+
-			"SUM(CASE WHEN hits > 0 THEN top_score ELSE 0 END) AS sum_top, MAX(created_at) AS last_used").
+			"SUM(CASE WHEN hits > 0 THEN top_score ELSE 0 END) AS sum_top, "+
+			// Averaged over RERANKED answered searches only. Folding in rows where no
+			// cross-encoder ran would divide a sum of real logits by a count that
+			// includes zeros that mean "not measured", which is the shape of the
+			// write-to-read ratio this project already had to retract.
+			"SUM(CASE WHEN hits > 0 AND reranked = 1 THEN top_rerank_score ELSE 0 END) AS sum_top_rerank, "+
+			"SUM(CASE WHEN hits > 0 AND reranked = 1 THEN 1 ELSE 0 END) AS reranked, "+
+			"MAX(created_at) AS last_used").
 		Where("team_id = ? AND created_at >= ?", teamID, cutoff)
 	if wing != "" {
 		searches = searches.Where("wing = ?", wing)
@@ -201,6 +233,10 @@ func (s *Service) RecallStats(ctx context.Context, teamID, wing string, since ti
 		w := &WingRecall{Wing: wing, Searches: a.Searches, Answered: a.Answered, LastUsed: a.LastUsed}
 		if a.Answered > 0 {
 			w.AvgTop = a.SumTop / float64(a.Answered)
+		}
+		w.Reranked = a.Reranked
+		if a.Reranked > 0 {
+			w.AvgTopRerank = a.SumTopRerank / float64(a.Reranked)
 		}
 		byWing[wing] = w
 		out.Searches += a.Searches
