@@ -463,6 +463,23 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 
+		// Serving coverage: the one number a session's mandated first call should
+		// carry about whether its search index is behind its source of truth.
+		// Best-effort like the blocks around it: a drift failure leaves a note
+		// rather than failing the wake-up call, and nothing here is a write.
+		drift, driftErr := drawers.IndexDrift(ctx, t.TeamID)
+		coverageBlock := map[string]any{
+			"coverage":   drift.Coverage(),
+			"namespaces": drift.CoverageView(),
+			"pending_embedding": map[string]any{
+				"drawers": drift.Pending.Drawers,
+				"closets": drift.Pending.Closets,
+			},
+		}
+		if driftErr != nil {
+			coverageBlock["note"] = "coverage could not be taken this time — this is not an all-clear"
+		}
+
 		out, _ := json.Marshal(map[string]any{
 			"ok":      true,
 			"team_id": t.TeamID,
@@ -476,6 +493,7 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			"default_wing":  defaultWing,
 			"total_drawers": total,
 			"wings":         tax.Wings, // [{wing, drawers, rooms:[{wing, room, drawers}]}]
+			"coverage":      coverageBlock,
 			"inbox":         inbox,
 			"usage": map[string]any{
 				"used_this_month": st.Used,

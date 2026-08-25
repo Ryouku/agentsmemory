@@ -227,6 +227,12 @@ type Service struct {
 	graphLocks *keyedMutex
 }
 
+// Repo exposes the underlying repository. Tool layers hold the Service, and
+// seeding or inspection paths (the mcpserver test harness) legitimately need
+// the repo; keeping the field private and exposing this accessor keeps that
+// one door explicit.
+func (s *Service) Repo() *Repo { return s.repo }
+
 // NewService wires the collaborators. dim is the embedding width used to create a
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).

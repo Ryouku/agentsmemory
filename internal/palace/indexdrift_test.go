@@ -22,7 +22,7 @@ func TestIndexDriftIsSilentOnACleanPalace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IndexDrift: %v", err)
 	}
-	if report.Checked == 0 {
+	if report.Checked.Drawers+report.Checked.Closets == 0 {
 		t.Fatal("the check examined nothing, so it cannot have found nothing")
 	}
 	if !report.Clean() {
@@ -200,8 +200,8 @@ func TestIndexDriftDoesNotFaultAPendingEmbedding(t *testing.T) {
 	if !report.Clean() {
 		t.Errorf("a drawer awaiting its first embedding was reported as drift: %+v", report.Drifted)
 	}
-	if report.Pending != 1 {
-		t.Errorf("Pending = %d, want 1 — the queue must be counted, not hidden", report.Pending)
+	if report.Pending.Drawers != 1 {
+		t.Errorf("Pending.Drawers = %d, want 1 — the queue must be counted, not hidden", report.Pending.Drawers)
 	}
 }
 

@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -259,12 +260,32 @@ type RecomputeResult struct {
 	PrunedHallways int      `json:"pruned_hallways"`
 }
 
+// ErrRecomputeMismatch is returned by RecomputeGraph when a write landed fewer
+// rows than the recompute derived. Both writes are single batch transactions, so
+// any divergence is driver-level silent row loss — a wiring regression, not a
+// data difference.
+var ErrRecomputeMismatch = errors.New("recompute mismatch")
+
+// verifyRecomputeCount is R1's gate: the recompute's written count must equal
+// what it derived, per leg. Named so the gate is testable without simulating a
+// driver that lies (a real sqlite driver reports honest batch counts, so the
+// divergence path is by construction unreachable on it — the gate is the net,
+// and the net's mesh is what is pinned here).
+func verifyRecomputeCount(scope string, expected, landed int) error {
+	if landed != expected {
+		return fmt.Errorf("%w: %s: expected %d rows, write landed %d", ErrRecomputeMismatch, scope, expected, landed)
+	}
+	return nil
+}
+
 // RecomputeGraph rebuilds the derived graph from current drawers, no source files
 // read. It recomputes each target wing's hallways (all present wings, or the one
 // given), then regenerates the entity tunnels globally from the full hallway set
 // (delete-and-rebuild, so stale ones are pruned). With prune on a full recompute,
 // hallways for wings that no longer have drawers are cleared. Topic tunnels are
-// not generated (no topic registry yet).
+// not generated (no topic registry yet). The returned counts are verified: they
+// come from what the writes actually landed, and a write that landed fewer rows
+// than derived is an error (ErrRecomputeMismatch), not a blended number.
 func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune bool) (result RecomputeResult, err error) {
 	_, sp := telemetry.Start(ctx, telemetry.StageRecompute, attribute.Bool("am.prune", prune), attribute.Bool("am.has_wing", wing != ""))
 	defer func() {
@@ -300,19 +321,24 @@ func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune
 		targets = []string{wing}
 	}
 
-	res := RecomputeResult{}
 	for _, w := range targets {
 		halls, err := s.computeHallwaysForWing(ctx, teamID, w, now)
 		if err != nil {
 			return RecomputeResult{}, err
 		}
-		if err := s.repo.ReplaceWingHallways(ctx, teamID, w, halls); err != nil {
+		stats, err := s.repo.ReplaceWingHallways(ctx, teamID, w, halls)
+		if err != nil {
 			return RecomputeResult{}, err
 		}
-		res.WingsRebuilt = append(res.WingsRebuilt, w)
-		res.Hallways += len(halls)
+		// R1: verify the insert leg — the delete leg exists only to be excluded.
+		// Hallways name the wing; tunnels are team-wide and name the scope instead.
+		if err := verifyRecomputeCount("wing "+w, len(halls), stats.Inserted); err != nil {
+			return RecomputeResult{}, err
+		}
+		result.WingsRebuilt = append(result.WingsRebuilt, w)
+		result.Hallways += stats.Inserted
 	}
-	sort.Strings(res.WingsRebuilt)
+	sort.Strings(result.WingsRebuilt)
 
 	// Prune hallways for wings that no longer have drawers (full recompute only).
 	if prune && full {
@@ -327,10 +353,14 @@ func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune
 			}
 		}
 		for w := range stale {
-			if err := s.repo.ReplaceWingHallways(ctx, teamID, w, nil); err != nil {
+			stats, err := s.repo.ReplaceWingHallways(ctx, teamID, w, nil)
+			if err != nil {
 				return RecomputeResult{}, err
 			}
-			res.PrunedHallways++
+			if err := verifyRecomputeCount("wing "+w, 0, stats.Inserted); err != nil {
+				return RecomputeResult{}, err
+			}
+			result.PrunedHallways++
 		}
 	}
 
@@ -358,11 +388,15 @@ func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune
 			entityTunnels = append(entityTunnels, t)
 		}
 	}
-	if err := s.repo.SaveTunnels(ctx, entityTunnels); err != nil {
+	landed, err := s.repo.SaveTunnels(ctx, entityTunnels)
+	if err != nil {
 		return RecomputeResult{}, err
 	}
-	res.EntityTunnels = len(entityTunnels)
-	return res, nil
+	if err := verifyRecomputeCount("entity tunnels", len(entityTunnels), landed); err != nil {
+		return RecomputeResult{}, err
+	}
+	result.EntityTunnels = landed
+	return result, nil
 }
 
 // --- small set helpers ----------------------------------------------------

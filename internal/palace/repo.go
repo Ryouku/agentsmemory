@@ -779,9 +779,12 @@ func (r *Repo) DrawerWings(ctx context.Context, teamID string) (embedded map[str
 	return embedded, pending, nil
 }
 
-// ClosetWings maps every closet id to the wing it is filed in — the closet half
-// of DrawerWings, and for the same reason: closets keep a second copy of the wing
-// in their stored payload, and nothing compared them.
+// ClosetWings maps every EMBEDDED closet id to the wing it is filed in — the
+// closet half of DrawerWings, and for the same reason: closets keep a second
+// copy of the wing in their stored payload, and nothing compared them. The
+// embedded_at filter mirrors DrawerWings' pending split: a closet awaiting its
+// first embedding is a queue, not a fault, so it is excluded here and counted
+// separately via PendingClosetCount.
 func (r *Repo) ClosetWings(ctx context.Context, teamID string) (map[string]string, error) {
 	var rows []struct {
 		ID   string
@@ -790,7 +793,7 @@ func (r *Repo) ClosetWings(ctx context.Context, teamID string) (map[string]strin
 	if err := r.db.WithContext(ctx).
 		Model(&closetRow{}).
 		Select("id", "wing").
-		Where("team_id = ?", teamID).
+		Where("team_id = ? AND embedded_at IS NOT NULL", teamID).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
