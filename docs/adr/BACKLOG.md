@@ -915,3 +915,67 @@ did not ship, each with the reason it was held back rather than the intention to
 - **A relevance metric derived from the fetch signal.** Deliberately last. The signal has to exist
   and be observed before anything is derived from it; deriving a metric from a signal nobody has
   seen is how the eval acquired arms that measured configurations nobody ran.
+
+## From ADR-029 (a trace that cannot lie about what it did)
+
+A five-lens sweep of the search path on 2026-08-25 against `dcc1389` returned thirty findings across
+eight families, each adversarially verified. ADR-029 takes the seven that make a span LIE and the two
+families that make the request and the filter unrecoverable. These are the rest — real, verified, and
+held back with the reason, not the intention.
+
+- **Backend identity on the span.** `VECTOR_BACKEND` selects sqlite brute force, embedded chromem or
+  Qdrant over HTTP, and no search span names the one that ran; the three are not equivalent, since
+  chromem clamps `k` to the collection size. `EMBED_BACKEND` and the embedding model are worse:
+  they decide what every distance in every trace and every eval table MEANS, and both default paths
+  serve the same dimension count, so the one attribute the embed span carries (`am.dim`) cannot
+  separate them. This is the highest-consequence item the sweep found. Held back from ADR-029 only
+  because it is `cmd/server/main.go` wiring rather than the search path, so it earns its own record.
+  **Trigger: the next ADR that touches the embed or retrieve wiring, or the next eval table anyone
+  intends to compare across a config change.**
+
+- **The adaptive BM25 weight's resolved value.** Under `FUSION=linear` with `BM25Weight=auto`,
+  `adaptiveBM25Weight(query, docs, base) = base × LexicalCoverage(query, docs)` is recomputed per
+  query, and the fusion span carries `am.bm25_auto`, `am.bm25_idf`, `am.lex_norm` and `am.bm25_base`
+  — that auto is ON and what the base was, never what it resolved to for this query. Held back
+  because it makes the trace incomplete, not wrong.
+
+- **The whole-memory degradation that lives only in prose.** The search handler silently degrades
+  whole-memory requests to a 400-rune window once a page exceeds `wholeMemoryBudget`, and the fact
+  reaches the caller as a `note` string and reaches no span at all. Held back with the same
+  reasoning, and noted here because a prose field is exactly the shape this repository has ruled
+  is not load-bearing.
+
+- **`SearchQuery.Context` presence on the rerank span.** The context is concatenated onto the query
+  handed to the cross-encoder and changes the served order; `am_search` advertises that it "sharpens
+  re-ranking when a reranker is configured; ignored otherwise", and neither branch of that promise
+  is observable.
+
+- **The coerced-to-zero cosine rejection.** In semantic evidence selection, `similarity, ok :=
+  cosineSimilarity(...); if !ok { similarity = 0 }` emits nothing, so a degraded embedder's
+  non-finite vectors and a deliberately blank window produce the same score. `Span.Event` exists for
+  exactly this and is unused here.
+
+- **`closetBoostsAt`'s three discard paths.** A purged row, a duplicate source, and a distance past
+  `closetDistanceCap` all drop a retrieved closet, and the span ends `ran` carrying only
+  `am.count=len(boosts)` — `len(hits)` is recorded nowhere. So `am.count=0` reads identically for
+  "the team has never mined" and "five closets were retrieved and every one was thrown away".
+
+- **The evidence stage's window counts.** `am.pool` counts DOCUMENTS; the unit that determines the
+  stage's cost is the window, and the file's own comment notes a five-thousand-rune memory yields
+  seventeen of them. How many were generated, embedded, or discarded past
+  `maxMemoryEvidenceRegions` is recorded nowhere.
+
+- **An anchor/staleness stage.** The anchor pass has no span at all, so `SearchStages()` can never
+  catch its absence. ADR-029 T1 makes its FAILURE visible on the enclosing tool span; giving it a
+  stage of its own is a new stage rather than a list repair. **Trigger: the next time a stale flag
+  is wrong in production and nobody can tell from a trace whether the lookup ran.**
+
+- **Telling the CALLER that anchors failed, or that a wing lookup failed.** ADR-029 T1 makes both
+  visible in the trace only. Surfacing them in the `am_search` response is a contract change and
+  needs its own record. **Trigger: the first support question that turns out to be a silently
+  unflagged stale page.**
+
+- **Acting on a non-zero out-of-scope drop count.** ADR-029 T2 makes it visible, and it is an alarm
+  rather than a metric: a non-zero count means the vector index and the durable rows have diverged.
+  What the server should DO about that — refuse, repair, warn — has a blast radius this ADR does not
+  take on. **Trigger: the first non-zero count observed in the deployed container.**
