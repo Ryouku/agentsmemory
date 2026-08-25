@@ -40,6 +40,48 @@ exception costs so much.
 
 ---
 
+## 0b. The trigger rule — before you act in a domain
+
+The six above tell you how memory behaves. This one tells you **when to reach for
+it**, and it is the rule most likely to be skipped, because skipping it feels like
+nothing at all.
+
+> **BEFORE YOU ACT IN A DOMAIN, NAME THE DOMAIN AND CHECK WHAT IS FILED FOR IT.**
+> Before the **first** command — not while debugging one.
+
+About to run `git`? There are `ref.craft.git-*` edges. Write datastar? The v1
+attribute reference is cached in `wing_craft` room `examples` — read it, do not
+re-fetch. Touch Go? `effective-go`, plus `cqrs` when the work is live/realtime or
+fans out across subagents.
+
+**The domain index already exists, and it costs nothing.** The bootstrap's own edge
+query (P5 / step 1) returns every `ref.*` predicate, and `am_list_skills` returns
+every skill description. Both are in your context *before* your task starts, so this
+is a **re-read of what you already hold, not a call** — and it needs no maintained
+list, because the predicate namespace **is** the list and it grows itself.
+
+⚠ **Why it must be a routine and not a judgement call: the failure is silent by
+construction.** You cannot retrieve what you do not know to ask for. An agent that
+has never heard of a framework does not search for it — it writes the idiom it
+already knows, confidently, and nothing contradicts it. There is no moment where you
+*feel* the absence. So "check when relevant" resolves in practice to "check when you
+already knew", which is never the case that mattered.
+
+★ **The tell:** you are about to run a command, write markup, or touch a subsystem
+in a **named technology**. *That* is the trigger — not *"when I am unsure."* Being
+unsure is the case that already works, because unsure agents search.
+
+⚠ **If nothing is filed for the domain, say so in one line.** A recorded miss is what
+turns a gap into work; an unrecorded one gets rediscovered by everyone, forever.
+
+**This is distinct from the critical-thinking routine**, which is about checking a
+*claim* — name the universe, read the mechanism, eliminate against the artifact, say
+what would falsify you. That routine runs on something you are already examining.
+This rule runs *earlier*: it is what puts the right material in front of you before
+you have an opinion to check.
+
+---
+
 ## 1. The problem onboarding actually solves
 
 A palace with memories in it is not a palace an agent can use. The gap is
