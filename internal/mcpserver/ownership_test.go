@@ -22,7 +22,7 @@ func TestProductionMCPRegistryHasOneOwner(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -87,6 +87,16 @@ func TestProductionMCPRegistryHasOneOwner(t *testing.T) {
 					if !productionSeam && !testHarness {
 						t.Errorf("%s calls mcpserver.Compose from %s; only productionMCPServer and the harness may", function.Name.Name, rel)
 					}
+				case selector.Sel.Name == "NewStreamableHTTPServer" && pkg != nil && pkg.Name == serverPackage:
+					if rel != "internal/mcpserver/server.go" || function.Name.Name != "StreamHTTP" {
+						t.Errorf("%s.%s owns Streamable HTTP assembly in %s; only StreamHTTP may construct it", function.Name.Name, selector.Sel.Name, rel)
+					}
+				case selector.Sel.Name == "StreamHTTP" && pkg != nil && pkg.Name == memoryServerPackage:
+					productionSeam := rel == "cmd/server/main.go" && function.Name.Name == "run"
+					testHarness := rel == "internal/mcptest/harness.go"
+					if !productionSeam && !testHarness {
+						t.Errorf("%s calls mcpserver.StreamHTTP from %s; only run and the harness may", function.Name.Name, rel)
+					}
 				}
 				return true
 			})
@@ -131,7 +141,7 @@ func namedTypeFactories(root, importPath, fallback, typeName string) (map[string
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "vendor" {
+			if entry.Name() == ".git" || entry.Name() == "vendor" || entry.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 			return nil

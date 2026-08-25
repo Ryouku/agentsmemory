@@ -141,7 +141,6 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		EmbedURL:               strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:            c.Float("closet-boost"),
 		Fusion:                 strings.TrimSpace(c.String("fusion")),
-		MemoryLevelRanking:     c.Bool("memory-level-ranking"),
 		MemoryEvidenceSelector: strings.TrimSpace(c.String("memory-evidence-selector")),
 		LexNorm:                strings.TrimSpace(c.String("lex-norm")),
 		RerankWeight:           c.Float("rerank-weight"),
@@ -199,8 +198,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 0 off (default), 1 full boost — measured to hurt on mined-transcript corpora and help on curated ones"},
 		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
-		&cli.BoolFlag{Name: "memory-level-ranking", Sources: cli.EnvVars("MEMORY_LEVEL_RANKING"), Value: def.MemoryLevelRanking, Usage: "rank distinct logical memories instead of stored chunks (A/B treatment; default false keeps the legacy control)"},
-		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder under memory-level ranking: lexical (default/control) or semantic (query-time passage embeddings across the whole memory)"},
+		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder: lexical (default/control) or semantic (query-time passage embeddings across the whole memory). Inert without --rerank-url"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
@@ -318,15 +316,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	issuer := oauthIssuer(cfg.Addr)
 	authSrv := oauth.NewAuthServer(issuer, sealer, tenants, tenants)
 
-	streamSrv := server.NewStreamableHTTPServer(
-		mcpSrv,
-		// The OAuth gate resolves the bearer and puts the tenant on the request
-		// context; Bridge forwards it into the per-tool context.
-		server.WithHTTPContextFunc(auth.Bridge),
-		// Stateless: no server-side session map. Suits a multi-tenant remote
-		// server and lets it scale horizontally behind a load balancer.
-		server.WithStateLess(true),
-	)
+	streamSrv := mcpserver.StreamHTTP(mcpSrv)
 
 	// The base router both modes share: logging (debug only), panic recovery, and
 	// the liveness probe. Everything mounted after this point differs per mode.
@@ -831,7 +821,6 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	var lines []string
 	say := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	drawers := svc
-	drawers = drawers.WithMemoryLevelRanking(cfg.MemoryLevelRanking)
 	requestedEvidence := strings.TrimSpace(cfg.MemoryEvidenceSelector)
 	beforeEvidence := drawers.MemoryEvidenceSelectorName()
 	drawers = drawers.WithMemoryEvidenceSelector(requestedEvidence)

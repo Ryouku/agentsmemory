@@ -86,7 +86,7 @@ func TestSemanticEvidenceSelectorFindsParaphrasedDistantPassages(t *testing.T) {
 
 	controlDocs := &recordingDocuments{}
 	controlEmbed := &selectiveEvidenceEmbedder{}
-	control := base.Clone().WithMemoryLevelRanking(true).
+	control := base.Clone().
 		WithMemoryEvidenceSelector("lexical").
 		WithReranker(controlDocs, 10).WithRerankWeight(0.5)
 	control.embed = controlEmbed
@@ -103,7 +103,7 @@ func TestSemanticEvidenceSelectorFindsParaphrasedDistantPassages(t *testing.T) {
 
 	semanticDocs := &recordingDocuments{}
 	semanticEmbed := &selectiveEvidenceEmbedder{}
-	semantic := base.Clone().WithMemoryLevelRanking(true).
+	semantic := base.Clone().
 		WithMemoryEvidenceSelector("semantic").
 		WithReranker(semanticDocs, 10).WithRerankWeight(0.5)
 	semantic.embed = semanticEmbed
@@ -135,37 +135,22 @@ func TestSemanticEvidenceSelectorFindsParaphrasedDistantPassages(t *testing.T) {
 	}
 }
 
-// TestSemanticEvidenceSelectorRequiresBothGates keeps the nested experiment
-// honest. Selecting semantic is observable in the profile, but it must not add
-// passage-embedding latency unless memory-level ranking and the cross-encoder
-// are both active.
-func TestSemanticEvidenceSelectorRequiresBothGates(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		memory   bool
-		reranker bool
-	}{
-		{name: "chunk ranking", memory: false, reranker: true},
-		{name: "no cross-encoder", memory: true, reranker: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base, team, ordered := semanticEvidenceFixture(t)
-			embed := &selectiveEvidenceEmbedder{}
-			svc := base.Clone().WithMemoryLevelRanking(tc.memory).WithMemoryEvidenceSelector("semantic")
-			if tc.reranker {
-				svc.WithReranker(&recordingDocuments{}, 10).WithRerankWeight(0.5)
-			}
-			svc.embed = embed
-			svc.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
-			if _, err := svc.Search(context.Background(), team, SearchQuery{
-				Query: "unfinished reasoning", Limit: 1, SkipTelemetry: true,
-			}); err != nil {
-				t.Fatalf("search: %v", err)
-			}
-			if len(embed.batches) != 0 {
-				t.Fatalf("semantic passage embedding ran with memory=%v reranker=%v: %#v", tc.memory, tc.reranker, embed.batches)
-			}
-		})
+// TestSemanticEvidenceSelectorRequiresTheCrossEncoder keeps the nested
+// experiment honest. Selecting semantic is observable in the profile, but it
+// must not add passage-embedding latency unless the cross-encoder will run.
+func TestSemanticEvidenceSelectorRequiresTheCrossEncoder(t *testing.T) {
+	base, team, ordered := semanticEvidenceFixture(t)
+	embed := &selectiveEvidenceEmbedder{}
+	svc := base.Clone().WithMemoryEvidenceSelector("semantic")
+	svc.embed = embed
+	svc.vectors = &orderedVectors{VectorStore: base.vectors, hits: ordered}
+	if _, err := svc.Search(context.Background(), team, SearchQuery{
+		Query: "unfinished reasoning", Limit: 1, SkipTelemetry: true,
+	}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(embed.batches) != 0 {
+		t.Fatalf("semantic passage embedding ran with no cross-encoder: %#v", embed.batches)
 	}
 }
 
@@ -188,7 +173,7 @@ func TestSemanticEvidenceSelectorFailsOpenForTheWholeShortlist(t *testing.T) {
 	}
 
 	lexicalDocs := &recordingDocuments{}
-	lexical := base.Clone().WithMemoryLevelRanking(true).
+	lexical := base.Clone().
 		WithMemoryEvidenceSelector("lexical").
 		WithReranker(lexicalDocs, 10).WithRerankWeight(0.5)
 	lexical.embed = &selectiveEvidenceEmbedder{}
@@ -199,7 +184,7 @@ func TestSemanticEvidenceSelectorFailsOpenForTheWholeShortlist(t *testing.T) {
 
 	failedDocs := &recordingDocuments{}
 	failedEmbed := &selectiveEvidenceEmbedder{err: errors.New("passage embedding unavailable")}
-	semantic := base.Clone().WithMemoryLevelRanking(true).
+	semantic := base.Clone().
 		WithMemoryEvidenceSelector("semantic").
 		WithReranker(failedDocs, 10).WithRerankWeight(0.5)
 	semantic.embed = failedEmbed

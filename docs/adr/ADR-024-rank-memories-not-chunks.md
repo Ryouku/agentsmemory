@@ -6,7 +6,9 @@
 **Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
 **Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
 **Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
-**Served-path change:** behind `MEMORY_LEVEL_RANKING=true`, vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. Independently of the flag and therefore in BOTH arms, `am_search` carries memory-level identity, regions, coverage and anchor staleness — the wire-level fix is not part of the experiment, and the Wiring table below states it per column. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The unset/false memory-level control keeps the existing chunk-ranked path for production A/B comparison.
+**Served-path change (2026-08-25):** Memory is the only ranking unit. Vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. `am_search` carries memory-level identity, regions, coverage and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The chunk-ranked control and `MEMORY_LEVEL_RANKING` were deleted.
+
+**2026-08-25 retirement:** This is a reachability wipe, not a quality overturn of the 2026-08-24 bake-off below. That comparison still records equivalent answer quality with the treatment ~15.5% slower at small n, and ADR-014's measured default was `MEMORY_LEVEL_RANKING=false`. Collapsing anyway because a flag that still selects chunk ranking is a second production Search. Every consumer of `rankRetrieved` already collapsed when the flag was on; the leftover was the `if` that skipped it. `am_status.ranking` always reports `unit=memory`.
 
 ## Context
 
@@ -535,8 +537,6 @@ and vector search, not by SQLite row volume or embedding round trips.
 
 ## Rollback
 
-Set `MEMORY_EVIDENCE_SELECTOR=lexical` to roll back only semantic passage selection, or set
-`MEMORY_LEVEL_RANKING=false` to restore chunk-level ranking, then restart. Both controls are retained
-intact; no data has changed.
-Reverting the implementation removes the treatment, flag and additive `memory_id` field without a
-schema rollback.
+Set `MEMORY_EVIDENCE_SELECTOR=lexical` to roll back only semantic passage selection, then restart.
+Chunk-level ranking is no longer selectable; restoring it is a revert of the 2026-08-25 retirement,
+not a flag. No data has changed.

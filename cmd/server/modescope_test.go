@@ -67,10 +67,6 @@ var sweptKnobs = []knob{
 		}
 		return c
 	}},
-	{"--memory-level-ranking", []string{"false", "true"}, func(c config.Config, v string) config.Config {
-		c.MemoryLevelRanking = v == "true"
-		return c
-	}},
 }
 
 // TestModeScopedKnobsAreDiscovered sweeps the ranking knobs over the real wiring

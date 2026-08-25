@@ -974,17 +974,9 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	if err != nil {
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("embed eval query: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
+	hits, rows, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
 	if err != nil {
-		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval vector search: %w", err)
-	}
-	ids := make([]string, len(hits))
-	for i, h := range hits {
-		ids[i] = h.ID
-	}
-	rows, err := s.repo.GetMany(ctx, teamID, ids)
-	if err != nil {
-		return caseOutcome{TopDistance: -1}, fmt.Errorf("load eval candidates: %w", err)
+		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval candidate pool: %w", err)
 	}
 
 	// The gold is a MEMORY, not a chunk of one.
@@ -1284,17 +1276,9 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 	if err != nil {
 		return nil, fmt.Errorf("embed query for pooling: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: wing}))
+	hits, rows, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: wing}, vec, poolSize)
 	if err != nil {
-		return nil, fmt.Errorf("pool vector search: %w", err)
-	}
-	ids := make([]string, len(hits))
-	for i, h := range hits {
-		ids[i] = h.ID
-	}
-	rows, err := s.repo.GetMany(ctx, teamID, ids)
-	if err != nil {
-		return nil, fmt.Errorf("load pooled candidates: %w", err)
+		return nil, fmt.Errorf("pool candidate search: %w", err)
 	}
 
 	if len(rows) == 0 {

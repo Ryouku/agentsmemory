@@ -16,28 +16,26 @@ recalls what its team already decided, does the work, and writes back what it le
 retrieval half has to be good enough that recall beats re-deriving from source; the tenancy half
 has to be strict enough that one team's decisions never surface in another's session.
 
-## Retrieval unit A/B
+## Retrieval unit
 
-SQLite remains the durable source of truth and vectors remain indexed per chunk. The served ranking
-unit is selected at the composition root by `MEMORY_LEVEL_RANKING` / `--memory-level-ranking`:
+SQLite remains the durable source of truth and vectors remain indexed per chunk.
+The served ranking unit is always the logical memory: vector retrieval widens
+the ordered prefix to distinct memory roots, hydrates their chunks, and applies
+BM25, closet boost and cross-encoding once per memory.
 
-- `false` (control) retrieves and ranks chunks, then collapses the page to distinct memories;
-- `true` (treatment) widens the ordered vector prefix to distinct memory roots, hydrates their
-  chunks, and applies BM25, closet boost and cross-encoding once per memory.
+`am_search` carries memory-level identity, regions, coverage and anchor
+staleness. The startup and `am_status` ranking profile ends in `unit=memory`;
+this is the live-arm authority because process environment may override an
+`.env` file. ADR-024 owns the ranking-unit decision; the 2026-08-25 retirement
+note records why the chunk-ranked control was deleted rather than left as a flag.
 
-Both arms expose the stable root as `am_search.memory_id`, present snippets/regions against the
-reassembled memory, and resolve anchors across every sibling so a child passage cannot lose a root
-staleness verdict. The startup and `am_status` ranking profile ends in `unit=chunk|memory`; this is
-the live-arm authority because process environment may override an `.env` file. ADR-024 owns the
-experiment and its rollback.
-
-Within `unit=memory`, `MEMORY_EVIDENCE_SELECTOR` / `--memory-evidence-selector`
-selects the bounded cross-encoder document. `lexical` (default/control) chooses
-regions by literal query-term coverage. `semantic` reuses the raw query vector,
-batch-embeds overlapping windows from the reassembled long memory, then selects
-several distant high-similarity passages in source order. Short memories bypass
-the extra pass, and any invalid or failed passage batch falls back to lexical
-evidence for the whole shortlist. Semantic batches are bounded at 128 windows;
+`MEMORY_EVIDENCE_SELECTOR` / `--memory-evidence-selector` selects the bounded
+cross-encoder document. `lexical` (default/control) chooses regions by literal
+query-term coverage. `semantic` reuses the raw query vector, batch-embeds
+overlapping windows from the reassembled long memory, then selects several
+distant high-similarity passages in source order. Short memories bypass the extra
+pass, and any invalid or failed passage batch falls back to lexical evidence for
+the whole shortlist. Semantic batches are bounded at 128 windows;
 the TEI adapter reads `max_client_batch_size` from `/info` — caching only a successful
 answer, retried after a backoff otherwise, and never probed under the lock that
 guards it — then splits to the
