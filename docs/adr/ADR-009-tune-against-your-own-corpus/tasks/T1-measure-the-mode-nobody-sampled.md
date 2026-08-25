@@ -78,3 +78,5 @@ Stop and report if the literal mode's retrieval ceiling is far below the paraphr
 ## Verification Log
 
 <Tool-written by adr-verify. Do not hand-edit.>
+
+## Mutation Log

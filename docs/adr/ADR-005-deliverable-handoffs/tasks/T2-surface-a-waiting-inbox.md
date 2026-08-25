@@ -75,3 +75,12 @@ Stop and ask if `default_wing` turns out to be empty for most real registrations
 
 - 2026-08-20 · c49e0aa* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · 3877f08* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:df3edbaec4f09b849cbd42ccdcde1d10351b7e98aa997fff5e40a5bbfc8c29c9
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:df3edbaec4f09b849cbd42ccdcde1d10351b7e98aa997fff5e40a5bbfc8c29c9
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant survived · exit 0 · `internal/palace/repo.go` · InboxCount must count the inbox room and nothing else; flipping the room predicate counts every OTHER room in the wing, so a wing with a full diary and an empty inbox would report a waiting handoff — what TestInboxCountCountsOnlyTheInboxRoom rejects · acceptance-sha256:df3edbaec4f09b849cbd42ccdcde1d10351b7e98aa997fff5e40a5bbfc8c29c9
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/repo.go` · InboxCount must count the inbox room and nothing else; flipping the room predicate counts every OTHER room in the wing. The first attempt SURVIVED because the fixture held two inbox drawers against two non-inbox, so both predicates returned 2; the fixture is now unbalanced and the same mutant is caught · acceptance-sha256:df3edbaec4f09b849cbd42ccdcde1d10351b7e98aa997fff5e40a5bbfc8c29c9

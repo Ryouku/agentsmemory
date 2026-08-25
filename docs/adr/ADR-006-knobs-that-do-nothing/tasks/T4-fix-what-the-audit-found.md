@@ -37,7 +37,7 @@ Telemetry stops claiming reranking that did not happen; `HTTPTimeout` becomes se
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -119,3 +119,20 @@ Stop and report if step 5 fails more than five fields — that is a finding abou
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.074s
   ```
 - 2026-08-21 · aee8451* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:a81c7a24b416212c49fdea4f176042b2e1272f19f12ae813c72718fdbc764a5a
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	1.436s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.365s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.010s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.004s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:8818422b653ecc7af32faa494d8e6d0f6834e7ece0cace57fbc641a0219f2a43
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/service.go` · the search event must record whether a cross-encoder pass actually RAN, not whether one was configured; the mutant restores the exact historical defect the comment above it documents, where weight 0 logged a rerank that never happened and ADR-001 calibrates from those rows · acceptance-sha256:8818422b653ecc7af32faa494d8e6d0f6834e7ece0cace57fbc641a0219f2a43

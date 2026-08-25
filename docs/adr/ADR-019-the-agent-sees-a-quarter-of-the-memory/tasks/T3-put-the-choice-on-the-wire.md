@@ -36,7 +36,7 @@ An agent reading a page can see which part of which memory to expand, and we kno
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
   go test ./internal/mcptest/ -run "TestScenarioRegionsReachTheAgent|TestScenarioCoverageVariesAcrossAPage|TestScenarioContentKeepsItsMeaning|TestScenarioCoverageIsOneWhenNothingWasCut" -count=1 -v 2>&1 | tee /tmp/a19t3.out
@@ -116,3 +116,5 @@ Stop and report if the re-judged score is unchanged. That is not a failed task �
   ok  	github.com/atvirokodosprendimai/agentsmemory/internal/mcptest	0.255s
   ```
 - 2026-08-21 · d150b7e* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+
+## Mutation Log

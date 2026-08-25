@@ -9,6 +9,24 @@
 
 **Served-path change:** `Service.Search` returns a confidence verdict and ABSTAINS rather than answering when calibration says it cannot — `am_search` carries it. Not yet on the served path: 0 of 6 tasks done, and T4-T6, the three that touch it, are gated on T3's go/no-go.
 
+## Amendment 2026-08-25 — the task table understates what exists
+
+A source audit found `internal/palace/calibration.go` already exports
+`RecommendThresholds`, `RiskCoverageCurve`, `ViablePoint`, `RefusalGate`,
+`LoadCalibration`, `ScoreCanary` and `ScoresLookBounded`, and `cmd/server/eval.go`
+already declares `--calibrate`, `--calibration-out`, `--gate` and `--rerank-model`.
+That is T1's and T2's mechanism, built.
+
+The README lists all six tasks as `pending`, which reads as "none of this exists".
+The accurate statement is narrower: the mechanisms exist and **the verification
+evidence does not** — no `adr-verify` run has recorded an acceptance digest for
+them, which is a different debt from unwritten code and is repaid differently.
+
+T4, T5 and T6 remain genuinely unbuilt, and this was checked rather than assumed:
+nothing under `cmd/server` calls `LoadCalibration`, there is no `Confidence` type
+in `internal/palace`, and a live search trace shows no abstention stage between
+`am.search.rerank` and `am.search.record`. T3's go/no-go — the human decision that
+governs whether T4 to T6 are built at all — has not been taken.
 ## Context
 
 Recall currently returns a ranked page and says nothing about whether the page contains an answer. The agent consuming it cannot tell "here is the memory you asked for" from "here are the five least-unrelated things in the palace", so a confident-looking page of irrelevant memories is indistinguishable from a good one — and an agent that cannot tell will act on both.

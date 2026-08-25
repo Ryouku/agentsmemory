@@ -192,14 +192,8 @@ list stops covering the kit.
 
 ## Out of Scope
 
-- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — **amended 2026-08-22**:
-  event availability is no longer the reason. Codex 0.144.5 exposes
-  `SubagentStart` and `SubagentStop` in native `config.toml`, but no live Codex
-  capture yet proves the fields these scripts branch on, that a start hook's
-  stdout reaches the subagent as context, or that exit 2 feeds a stop nudge back
-  exactly once with a loop guard. Registering the Claude scripts before those
-  three contracts are observed would make them reachable, not correct.)
-- pi subagent hooks (permanent for the measured version: pi has no hook system)
+- Codex subagent hooks (deferred: docs/adr/BACKLOG.md — **amended 2026-08-22**: event availability is no longer the reason. Codex 0.144.5 exposes `SubagentStart` and `SubagentStop` in native `config.toml`, but no live Codex capture yet proves the fields these scripts branch on, that a start hook's stdout reaches the subagent as context, or that exit 2 feeds a stop nudge back exactly once with a loop guard. Registering the Claude scripts before those three contracts are observed would make them reachable, not correct.)
+- pi subagent hooks (permanent: for the measured version — pi has no hook system)
 - Mining sidechains so past subagent work is recoverable (deferred: docs/adr/BACKLOG.md — the filter is one flag serving two jobs, and separating them is its own decision)
 - Having the hook run the recall and inject the RESULTS rather than the instruction (deferred: docs/adr/BACKLOG.md — the strongest version of this idea; it needs the task text the hook does not have)
 - The read-only review exception, which stays (permanent: an independent reviewer sharing none of our context is valuable BECAUSE it shares none of it, and `AGENTS.md` already states the conditions)

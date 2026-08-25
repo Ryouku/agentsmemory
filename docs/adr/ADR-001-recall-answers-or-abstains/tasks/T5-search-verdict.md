@@ -63,3 +63,5 @@ Stop if deriving the verdict requires a knob that is not in the calibration file
 - Scoring the whole page rather than the top hit (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+
+## Mutation Log

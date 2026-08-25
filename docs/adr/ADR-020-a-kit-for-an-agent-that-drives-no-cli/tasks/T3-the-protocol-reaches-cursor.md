@@ -37,7 +37,7 @@ A Cursor session starts carrying the memory protocol, and a Cursor subagent can 
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestCursorInstallWritesTheProtocolRule|TestCursorRuleIsAlwaysApplied|TestReadmeNamesEveryInstallableAgent" -count=1 -v 2>&1 | tee /tmp/a20t3.out
   grep -q -- "--- PASS: TestCursorInstallWritesTheProtocolRule" /tmp/a20t3.out
@@ -99,8 +99,10 @@ Stop and ask if `alwaysApply: true` does not make the rule load — the mechanis
 ## Mutation Log
 
 - 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/installer.go` · without alwaysApply the rule loads on demand, and on demand for an always-on operating protocol means never — the protocol ships and changes nothing
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/installer.go` · the protocol only reaches Cursor because the rule file is marked alwaysApply; a rule Cursor loads on request is a document nobody opens, so this is the difference between the protocol arriving every session and not at all · acceptance-sha256:5eb453be14d4a96ec2e76f883e6ad2b4091eab9681061311e39f736d6aa94c86
 
 ## Verification Log
 
 - 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-22 · human-observed · live rung-4 check on the reference machine, 2026-08-22: aiagentmemory install --agent cursor --global --local --yes wrote rules/agentsmemory.mdc (always applied), agents/agentsmemory-researcher.md and left the mcp.json entry idempotent; cursor-agent mcp list-tools agentsmemory then listed all 41 am_* tools from the running server. The hand-made copy of the definition was DELETED first so the kit had to produce it — the first run of this check found it did not: writeAssets returned early for a hookless agent before the definitions were written, so Cursor got none. Fixed, and the test that allowed the agents directory without requiring it now requires it.
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:5eb453be14d4a96ec2e76f883e6ad2b4091eab9681061311e39f736d6aa94c86

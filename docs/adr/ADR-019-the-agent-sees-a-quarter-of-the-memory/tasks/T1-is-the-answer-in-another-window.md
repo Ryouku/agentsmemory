@@ -104,3 +104,5 @@ Stop and report if the answer is in NO window for most cases. That is the pre-re
   ok  	github.com/atvirokodosprendimai/agentsmemory/cmd/server	0.008s
   ```
 - 2026-08-21 · 632c857* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+
+## Mutation Log

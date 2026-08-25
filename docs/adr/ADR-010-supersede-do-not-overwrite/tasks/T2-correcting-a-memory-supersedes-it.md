@@ -41,7 +41,7 @@ An agent correcting a memory writes a new record and ends the old one; an agent 
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -93,3 +93,5 @@ Stop and ask if superseding cannot be made atomic with the current store — two
 ## Verification Log
 
 <Tool-written by adr-verify. Do not hand-edit.>
+
+## Mutation Log

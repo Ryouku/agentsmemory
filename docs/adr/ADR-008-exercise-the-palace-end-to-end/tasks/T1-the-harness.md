@@ -32,7 +32,7 @@ A test can call any registered tool the way an agent does, and one round trip pr
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -86,3 +86,20 @@ Stop and ask if the transport cannot be driven in-process — an out-of-process 
 
 - 2026-08-20 · c92e2ab* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · 3877f08* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:b597855edbf9a253ff7f57d9fbe60693a523726b416e40c977640f21e3aee7e2
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.011s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	3.392s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.017s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.003s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.432s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.004s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.016s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.009s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.005s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:a250bd61ccbac06e0566e65487737ba2bb043b428f461fe0d5b03c363a46174c
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcptest/harness.go` · UsableCatalogue is the guard that stops a harness serving nothing from letting every scenario pass vacuously; a length that can never be negative accepts the empty catalogue, which is exactly TestHarnessFailsOnAnEmptyCatalogue's subject · acceptance-sha256:a250bd61ccbac06e0566e65487737ba2bb043b428f461fe0d5b03c363a46174c

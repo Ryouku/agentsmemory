@@ -92,3 +92,5 @@ Stop and ask if the deletion trigger's four intervals **split by regime** — fi
 - Any change to the cross-encoder blend or the reranked arms.
 
 ## Verification Log
+
+## Mutation Log

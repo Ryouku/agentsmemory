@@ -81,6 +81,19 @@ services:
       # the fused order it already has. At 90s it never did: the caller died
       # holding nothing while a perfectly good page sat one fallback away.
       RERANK_TIMEOUT: "10s"
+      # Traces ON by default in the deployed stack, printed as a compact stage
+      # tree to stderr. This is not observability for its own sake: an ADR audit
+      # on 2026-08-25 found records claiming pending work that had shipped, and
+      # one whose two remaining tasks measure a knob the served path never reads
+      # under the shipped fusion. A span saying `bypassed reason=scale_zero`
+      # settles in one line what a document argued about for weeks.
+      #
+      # It costs nothing that matters: telemetry never changes ranking, and a
+      # collector that is down drops observability rather than results. The value
+      # is an OTLP HTTP endpoint when you have a collector; `stdout` needs none.
+      # scripts/redeploy.sh FAILS the deploy when the smoke search leaves no
+      # span, so this cannot quietly stop working.
+      AGENTSMEMORY_OTEL_ENDPOINT: "stdout"
 
   qdrant:
     image: qdrant/qdrant:v1.15.0

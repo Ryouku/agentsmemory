@@ -39,7 +39,7 @@ A superseded record is unreachable by every default route and reachable by one e
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -97,3 +97,5 @@ Stop and report if the falsification cannot be satisfied — a superseded record
 ## Verification Log
 
 <Tool-written by adr-verify. Do not hand-edit.>
+
+## Mutation Log

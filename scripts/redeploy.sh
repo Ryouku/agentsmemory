@@ -35,10 +35,21 @@ docker run --rm -v "$PWD":/src \
     # base image has only ash, and those tests FAIL LOUDLY without it rather than
     # skipping — which is why this line exists: the first deploy after they landed
     # was correctly refused, instead of shipping over a suite that had not run.
-    apk add --no-cache bash >/dev/null 2>&1 || true
+    # git joins it for the same reason: internal/contractaxis drives a real
+    # repository (git init, commit, worktree) to prove a mutation actually
+    # applied, and alpine ships no git — so those 15 tests failed on the
+    # environment, not the code, and the gate refused every deploy for a day.
+    apk add --no-cache bash git >/dev/null 2>&1 || true
     gofmt -l cmd internal | grep -q . && { echo "gofmt dirty"; exit 1; }
     go vet ./... || exit 1
-    go test ./... -count=1 >/dev/null 2>&1
+    # The reason a red suite is red must reach the operator. This line used to
+    # end in >/dev/null 2>&1, so a failing gate printed its banner and nothing
+    # else: the script whose whole purpose is proof was hiding the proof.
+    go test ./... -count=1 >/tmp/suite.log 2>&1 || {
+      echo "--- suite RED ---"
+      grep -E "^(--- FAIL|FAIL|panic:|.*\[build failed\])" /tmp/suite.log | head -40
+      exit 1
+    }
   '
 echo "    suite green"
 
@@ -160,6 +171,38 @@ if [ "$elapsed" -gt 25 ]; then
   echo "    A search that times out returns nothing, which is worse than a bad ranking."
   exit 1
 fi
+
+# The smoke search above just ran through every semantic stage. If it left no
+# span, this deploy has no instrument — and an unmeasured deploy is one whose
+# claims have to be believed. Asserted on the SEARCH THAT JUST RAN rather than on
+# the startup banner, because the banner is only in the window when the container
+# actually restarted, and an unchanged image does not restart it. Asserted on the
+# trace rather than on the compose file for the same reason the needle check
+# above reads the binary: a variable set in a file is a claim about the file.
+echo "==> otel: the smoke search must have left a trace"
+# --since "$start", NOT a duration: $start is the epoch second captured just
+# before the smoke curl above. A window like `--since 120s` asks "did ANY search
+# emit a span recently", which a span from a minute-old search satisfies while the
+# tracer is dead — docker logs survive a restart, so the stale line is right there.
+# That version passed its own mutant for a timing reason rather than a wiring one.
+# Polled, not sampled once. The stdout path uses a SimpleSpanProcessor, so there
+# is no batch delay — but the tree exporter prints a tree when its ROOT span ends,
+# and that is the same instant the HTTP response is written. A single grep the
+# millisecond curl returns lost that race and failed a deploy whose tracer was
+# demonstrably on. Bounded at ~10s so a genuinely absent span still fails.
+traced=0
+for _ in $(seq 1 20); do
+  if docker logs --since "$start" "$CONTAINER" 2>&1 | grep -q "am\.search "; then traced=1; break; fi
+  sleep 0.5
+done
+if [ "$traced" -eq 1 ]; then
+  echo "    span tree emitted"
+else
+  echo "    the smoke search left NO am.search span."
+  echo "    AGENTSMEMORY_OTEL_ENDPOINT is unset or the tracer never started, so this"
+  echo "    stack cannot tell you which stages ran, which were bypassed, and why."
+  exit 1
+fi
 # ---------------------------------------------------------------------------
 # The CLIENT half. Everything above proves the SERVER carries the change; none of
 # it says anything about the binary and kit installed on this machine.
@@ -176,15 +219,46 @@ fi
 echo "==> the installed client kit, against this checkout"
 kit_stale=0
 if command -v aiagentmemory >/dev/null 2>&1; then
-  want_rev="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  want_rev="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  bin_path="$(command -v aiagentmemory)"
+  # Read the ARTIFACT, not its self-report — the same rule the needle check above
+  # follows. Every `go build` inside a checkout stamps vcs.revision into the
+  # binary, while main.version is set only by -ldflags in the release workflow.
+  # The old check compared `--version` against the short SHA, so every locally
+  # built kit reported STALE forever, including one built from this exact commit
+  # by the very command the failure message prescribes. A gate whose own remedy
+  # cannot satisfy it is a gate people learn to skip.
   # sed, not awk: an unescaped $NF is expanded by the SHELL under `set -u`
   # before awk sees it, and the gate then dies with "NF: unbound variable"
   # instead of reporting staleness — a check that fails for its own reasons.
-  have_ver="$(aiagentmemory --version 2>/dev/null | sed -n 's/.* //p')"
-  case "$have_ver" in
-    *"$want_rev"*) echo "    binary  $have_ver" ;;
-    *) echo "    binary  STALE: $have_ver, checkout is $want_rev"; kit_stale=1 ;;
-  esac
+  have_rev="$(go version -m "$bin_path" 2>/dev/null | sed -n 's/.*vcs\.revision=//p' | head -n1)"
+  have_dirty="$(go version -m "$bin_path" 2>/dev/null | sed -n 's/.*vcs\.modified=//p' | head -n1)"
+  # Compare TREES, not revisions. A merge commit gives the same tree a new sha,
+  # and revision equality reported every kit stale the moment a branch merged —
+  # a gate that cries wolf on every merge is one people learn to pass with the
+  # skip flag. git rev-parse on an unknown object fails, and the empty result
+  # then falls through to the revision comparison below.
+  want_tree="$(git rev-parse "${want_rev}^{tree}" 2>/dev/null || echo "")"
+  have_tree="$(git rev-parse "${have_rev}^{tree}" 2>/dev/null || echo "")"
+  if [ -n "$have_rev" ] && [ -n "$have_tree" ] && [ "$have_tree" = "$want_tree" ] &&
+     [ "$have_rev" != "$want_rev" ] && [ "$have_dirty" != "true" ]; then
+    echo "    binary  $(printf '%.7s' "$have_rev") (tree identical to $(printf '%.7s' "$want_rev"))"
+  elif [ -n "$have_rev" ]; then
+    if [ "$have_rev" = "$want_rev" ] && [ "$have_dirty" != "true" ]; then
+      echo "    binary  $(printf '%.7s' "$have_rev")"
+    elif [ "$have_rev" = "$want_rev" ]; then
+      echo "    binary  STALE: built from $(printf '%.7s' "$have_rev") with uncommitted changes"; kit_stale=1
+    else
+      echo "    binary  STALE: built from $(printf '%.7s' "$have_rev"), checkout is $(printf '%.7s' "$want_rev")"; kit_stale=1
+    fi
+  else
+    # No Go toolchain here, or a binary carrying no VCS stamp: the artifact
+    # cannot be read, so say that rather than guess. Not a failure — a gate that
+    # blocks with no way to satisfy it is the bug this block just fixed — but it
+    # must never look like a pass, because silence is not success.
+    have_ver="$(aiagentmemory --version 2>/dev/null | sed -n 's/.* //p')"
+    echo "    binary  UNVERIFIED: reports $have_ver; no vcs stamp readable (need go on PATH)"
+  fi
 
   # Byte-compare what the installer would lay down against what is there. The
   # binary embeds these, so a stale binary shows up here too — but a kit that

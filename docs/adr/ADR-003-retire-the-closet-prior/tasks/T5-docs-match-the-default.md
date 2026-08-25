@@ -64,3 +64,5 @@ Stop if the README's recall section cannot be corrected without also re-describi
 - A general doc-vs-code gate for every configurable default (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+
+## Mutation Log

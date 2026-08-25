@@ -91,6 +91,7 @@ Stop and report if the identity exists but is stable across a client RESTART —
 ## Mutation Log
 
 - 2026-08-22 · d66e364* · mutant killed · exit 1 · `cmd/server/main.go` · a stateful transport MINTS session ids, making attribution possible and falsifying the finding — the premise test must notice
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcpserver/server.go` · this task is a DIAGNOSTIC: it establishes whether a session identity is reachable at all, and the answer was no because production runs the transport stateless. TestProductionStillRunsStateless is the tripwire for that premise, so flipping the flag must fail it — otherwise ADR-018 T2 stayed withdrawn on an assumption nothing checks · acceptance-sha256:8604af526cf8e0f446227e56c66b97fa96983456412498e2d2be5881248b0421
 
 ## Verification Log
 
@@ -109,3 +110,4 @@ Stop and report if the identity exists but is stable across a client RESTART —
   ```
 - 2026-08-22 · d66e364* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-22 · d66e364* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:8604af526cf8e0f446227e56c66b97fa96983456412498e2d2be5881248b0421

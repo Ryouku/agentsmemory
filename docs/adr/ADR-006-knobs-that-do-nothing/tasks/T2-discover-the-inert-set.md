@@ -92,3 +92,8 @@ Stop and ask if any shipped configuration produces a finding — that means the 
 ## Verification Log
 
 - 2026-08-20 · cf94d91* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:f8f974ce18ef85d92f13f987c9dda33f483248f6011b0997a5e1f45bdeade29a
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:f8f974ce18ef85d92f13f987c9dda33f483248f6011b0997a5e1f45bdeade29a
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `cmd/server/main.go` · the mode-scoping this task discovers starts at the fusion selector: inverting it makes FUSION=linear enter the rrf branch and FUSION=rrf skip it silently, so the knobs that are inert under one mode are no longer scoped to it · acceptance-sha256:f8f974ce18ef85d92f13f987c9dda33f483248f6011b0997a5e1f45bdeade29a

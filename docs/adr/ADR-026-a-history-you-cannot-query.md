@@ -212,15 +212,15 @@ T1 ships with the old default deliberately, so the filter is exercised in produc
 
 ## Out of Scope
 
-- **Date-window filters** `started_from/to`, `ended_from/to`, `recorded_from/to` (deferred: drafted, cut for lack of demand — Follow-ups carries the trigger).
-- **Filtering on the provenance columns** surfaced by T6 (deferred: no index, no measured demand; returning them is the half that is justified).
-- **Drawer validity windows and recall returning only current drawers** (deferred: ADR-010, Proposed, 0 of 3 — this is the graph half only, and the two must share the `valid_to == ''` vocabulary).
-- **A `reason` on invalidation** (permanent here: ADR-010's "third gap" owns it, and it changes `am_kg_invalidate`, which the Amendment leaves untouched — issue #23 item 4).
-- **New columns** `reason`, `ended_by`, `superseded_by` (permanent here: a nullable column added ahead of its writer is the unreachable-capability defect this repo is named after, and §Existing Primitives lists three live instances. The **contract** is designed once; the **schema** grows when something writes to it).
-- **Semantic search over the graph** (deferred: `am_kg_query` is an exact entity lookup; a fact cannot be found without knowing its entity name. A missing capability, not a missing filter — its own issue).
-- **Wiring a graph read into `Service.Search`** (permanent: ADR-004 owns it, reachable only through a `justified` verdict — issue #34).
-- **Wing-scoping the graph** (permanent: facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. A decision with a test behind it, raised as a defect often enough that its absence here should be visibly deliberate).
-- **Entity quality** (deferred: issue #41 — the graph harvests Go identifiers, `Repo` and `Fatalf` topping the degree table. Stated honestly: a better filter over bad entities returns bad facts faster).
+- **Date-window filters** `started_from/to`, `ended_from/to`, `recorded_from/to` (deferred: drafted, cut for lack of demand — Follow-ups carries the trigger)
+- **Filtering on the provenance columns** surfaced by T6 (deferred: no index, no measured demand; returning them is the half that is justified)
+- **Drawer validity windows and recall returning only current drawers** (deferred: ADR-010, Proposed, 0 of 3 — this is the graph half only, and the two must share the `valid_to == ''` vocabulary)
+- **A `reason` on invalidation** (permanent: here — ADR-010's "third gap" owns it, and it changes `am_kg_invalidate`, which the Amendment leaves untouched — issue #23 item 4)
+- **New columns** `reason`, `ended_by`, `superseded_by` (permanent: here — a nullable column added ahead of its writer is the unreachable-capability defect this repo is named after, and §Existing Primitives lists three live instances. The **contract** is designed once; the **schema** grows when something writes to it)
+- **Semantic search over the graph** (deferred: `am_kg_query` is an exact entity lookup; a fact cannot be found without knowing its entity name. A missing capability, not a missing filter — its own issue)
+- **Wiring a graph read into `Service.Search`** (permanent: ADR-004 owns it, reachable only through a `justified` verdict — issue #34)
+- **Wing-scoping the graph** (permanent: facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. A decision with a test behind it, raised as a defect often enough that its absence here should be visibly deliberate)
+- **Entity quality** (deferred: issue #41 — the graph harvests Go identifiers, `Repo` and `Fatalf` topping the degree table. Stated honestly: a better filter over bad entities returns bad facts faster)
 
 ## Risks
 

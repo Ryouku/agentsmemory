@@ -78,3 +78,5 @@ Stop and report if the three anchored fixed-weight arms come back rank-identical
 - Growing either corpus beyond the cases the original tables used (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
+
+## Mutation Log

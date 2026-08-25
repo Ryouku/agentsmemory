@@ -75,3 +75,5 @@ Stop and take it back to the ADR when D1's cell fires the tie or the `lo > 0` ro
 - Re-running until a cell reads differently (permanent: the case counts and the categories are fixed before the run; re-rolling a measurement until it agrees is how a table stops being evidence.)
 
 ## Verification Log
+
+## Mutation Log

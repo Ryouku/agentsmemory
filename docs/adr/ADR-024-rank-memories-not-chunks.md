@@ -3,10 +3,10 @@
 **Status:** Accepted
 **Date:** 2026-08-24
 **Owner:** Mindaugas
-**Spec:** Production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
+**Spec:** None — no spec stage. The trigger was production feedback: schema analysis found the retrieval unit, not SQLite durability, to be the binding defect.
 **Cross-references:** ADR-013 (a page of memories, not chunks), ADR-019 (a hit shows matching regions), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one)
 **Supersedes:** ADR-013's decision to rank chunks and collapse only after ranking, and its deferral of cross-chunk evidence aggregation. It does not supersede chunk-backed storage or `am_get_drawer whole=true`.
-**Served-path change (2026-08-25):** Memory is the only ranking unit. Vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. `am_search` carries memory-level identity, regions, coverage and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The chunk-ranked control and `MEMORY_LEVEL_RANKING` were deleted.
+**Served-path change:** (2026-08-25) Memory is the only ranking unit. Vector retrieval fills a pool of distinct memories and BM25 and the cross-encoder score one combined evidence document per memory. `am_search` carries memory-level identity, regions, coverage and anchor staleness. `MEMORY_EVIDENCE_SELECTOR=lexical|semantic` chooses how that bounded reranker document is selected from the reassembled memory; lexical is the default/control. The chunk-ranked control and `MEMORY_LEVEL_RANKING` were deleted.
 
 **2026-08-25 retirement:** This is a reachability wipe, not a quality overturn of the 2026-08-24 bake-offs below, and it **supersedes the Final verdict's "retain both treatments" clause**. Both comparisons found equivalent answer quality; neither found a rank difference. They disagree on cost, and both numbers belong here rather than the smaller one alone: the six-query run put the treatment ~15.5% slower at the median, and the frozen nine-query run — the one that carries the Final verdict — put it 61.8% slower at the median and 2.15 times slower at the mean.
 
