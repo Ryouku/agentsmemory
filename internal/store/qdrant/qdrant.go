@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 )
 
 // CollectionName returns the deterministic Qdrant collection name for a team.
@@ -48,7 +50,7 @@ func New(baseURL, apiKey string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		http:    &http.Client{Timeout: timeout},
+		http:    telemetry.HTTPClient(timeout),
 	}
 }
 

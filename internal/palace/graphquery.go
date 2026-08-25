@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // This file holds the read side of the graph (build/traverse/find_tunnels/
@@ -95,7 +99,9 @@ type TraverseNode struct {
 // start room actually belongs to, narrowing as it goes. Reaching a genuinely
 // unrelated project is then the job of an explicit tunnel, which is authored and
 // says what it means.
-func (s *Service) Traverse(ctx context.Context, teamID, startRoom string, maxHops int) ([]TraverseNode, error) {
+func (s *Service) Traverse(ctx context.Context, teamID, startRoom string, maxHops int) (result []TraverseNode, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageTraverse, attribute.Int("am.max_hops", maxHops))
+	defer func() { endStage(sp, err, attribute.Int("am.count", len(result))) }()
 	if maxHops <= 0 {
 		maxHops = traverseDefaultHops
 	}
@@ -124,7 +130,6 @@ func (s *Service) Traverse(ctx context.Context, teamID, startRoom string, maxHop
 	roomOrder := sortedRooms(nodes)
 	visited := map[string]struct{}{startRoom: {}}
 	queue := []qitem{{room: startRoom, hop: 0, via: nodes[startRoom].Wings}}
-	var result []TraverseNode
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
@@ -260,7 +265,15 @@ type RecomputeResult struct {
 // (delete-and-rebuild, so stale ones are pruned). With prune on a full recompute,
 // hallways for wings that no longer have drawers are cleared. Topic tunnels are
 // not generated (no topic registry yet).
-func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune bool) (RecomputeResult, error) {
+func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune bool) (result RecomputeResult, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageRecompute, attribute.Bool("am.prune", prune), attribute.Bool("am.has_wing", wing != ""))
+	defer func() {
+		endStage(sp, err,
+			attribute.Int("am.hallways", result.Hallways),
+			attribute.Int("am.entity_tunnels", result.EntityTunnels),
+			attribute.Int("am.wings", len(result.WingsRebuilt)),
+		)
+	}()
 	// Serialize a team's recomputes so two cannot interleave the hallway replace
 	// and entity-tunnel delete-and-rebuild and leave a stale graph.
 	unlock := s.graphLocks.lock(teamID)

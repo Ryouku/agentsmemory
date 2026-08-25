@@ -185,13 +185,18 @@ Before an adapter may protect production, the runner’s own tests must prove:
 - **Negative:** telemetry introduces cardinality, privacy and sampling constraints; population claims therefore come from bounded counters, not sampled traces.
 - **Neutral:** component tests remain useful. They prove local behaviour; contract axes prove selection and externally visible effect.
 
+## Wiring & Contract Changes
+
+None — implementation-internal only. `internal/contractaxis` is imported by no
+production package (checked 2026-08-25); it is a harness the test suite drives.
+
 ## Out of Scope
 
-- Proving the absence of every possible bug.
-- Choosing product policy for concurrent updates, realtime delivery or privilege tiers.
-- Treating live Qdrant, TEI, OAuth or model quality as hermetic. Those require a separate integration cohort with typed dependencies.
-- Publishing a universal external tool before this implementation has passed at least three different-stack pilots. The data contract is stack-neutral now; extraction is earned by use.
-- Recording every source-level branch. Only declared semantic decisions are instrumented; ordinary code coverage and mutants remain the executable evidence for source paths.
+- Proving the absence of every possible bug (permanent: no finite gate can, and claiming otherwise is the failure this ADR is about)
+- Choosing product policy for concurrent updates, realtime delivery or privilege tiers (permanent: product policy, not a contract axis)
+- Treating live Qdrant, TEI, OAuth or model quality as hermetic. Those require a separate integration cohort with typed dependencies (deferred: docs/adr/BACKLOG.md — needs its own integration cohort)
+- Publishing a universal external tool before this implementation has passed at least three different-stack pilots. The data contract is stack-neutral now; extraction is earned by use. (deferred: T6 owns the pilots that would justify it)
+- Recording every source-level branch. Only declared semantic decisions are instrumented; ordinary code coverage and mutants remain the executable evidence for source paths. (permanent: only declared semantic decisions are instrumented; ordinary coverage is a different instrument)
 
 ## Risks
 

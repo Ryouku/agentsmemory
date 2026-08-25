@@ -33,7 +33,7 @@ For each `(knob, gating knob)` the sweep discovers, the knob's flag Usage or its
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; 
   set -e
   gofmt -l cmd internal | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./...
@@ -96,3 +96,20 @@ Stop and ask if a knob's condition cannot be stated without contradicting an acc
 
 - 2026-08-20 · 9b520f3* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-20 · a335bd4 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 1 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:93c22a03293cd76ba07bf31b5e2d13e59cc66be991ee0fbbce0b629bc7bac91f
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.007s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	2.344s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.008s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.003s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.353s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.005s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.013s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.018s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.005s
+  FAIL
+  ```
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'apk add --no-cache bash git >/dev/null 2>&1 || true; …` · acceptance-sha256:63977f1bf92a2c02b53788978f997988d34b09c57943896597578900defb5470
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `cmd/server/main.go` · rrf is the flag every later guard reads to suppress the knobs rank fusion ignores; leaving it false makes startup announce that bm25 weight does not apply and then report one — the self-contradiction TestStartupDoesNotContradictItself exists to catch · acceptance-sha256:63977f1bf92a2c02b53788978f997988d34b09c57943896597578900defb5470

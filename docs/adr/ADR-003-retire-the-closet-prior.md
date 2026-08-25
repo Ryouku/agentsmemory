@@ -7,6 +7,24 @@
 **Cross-references:** `internal/palace/mine.go` (`closetBoosts`), `internal/palace/rank.go` (`closetRankBoosts`, `closetBoostStrength`), `internal/palace/eval.go` (`ArmHybrid` / `ArmHybridCloset`, `evalCase`, `CandidateUnion`), `internal/palace/evalstats.go` (`PairedDelta`), `cmd/server/eval.go` (the printed table and the run record), `internal/config/config.go` (`ClosetBoost`), `docs/adr/ADR-001-recall-answers-or-abstains.md` (judges the top result; what reaches the top is decided here), `docs/adr/ADR-002-anchor-the-lexical-score.md` (renormalises the fused score this prior is added to)
 **Served-path change:** At acceptance this flip was still T4 and `config.Default()` still shipped `ClosetBoost: 1`. ADR-014 subsequently pre-empted T4 and shipped `ClosetBoost: 0`; T3 remains the promised measurement of whether that shipped choice holds up.
 
+## Amendment 2026-08-25 — the flip is live; the receipt is what is owed
+
+T4 ("flip the closet prior's default to off, end to end") describes a change that
+is already in production. `config.Default()` sets `ClosetBoost: 0`, and a live
+search on the deployed stack emits:
+
+    am.search.closet  0ms  bypassed  reason=scale_zero  scale=0
+
+which is the wiring proof `searchAttrs` was written to give: bypassed with
+`scale_zero` means the operator's value reached the stage and turned it off, where
+bypassed with a non-zero scale would mean a bug.
+
+The task stays `pending` because pending here means *unverified*, not *unbuilt* —
+no `adr-verify` run has recorded an acceptance digest against it. T3 (the four
+`cells.json` runs) and T5 (documentation matching the shipped ranking) are the
+genuine remainder, and T3 is the one that matters: this ADR's own Follow-up
+requires the two-corpus evidence to be reported **including the case where it does
+not support the flip that already shipped**.
 ## Context
 
 Mining a source builds **closets**: short summaries that point back at the text they came from. `closetBoosts` (`internal/palace/mine.go:299`) searches the closet index with the query vector, and each of the top five closet hits lends **every drawer sharing that closet's source file** a rank boost — 0.40, 0.25, 0.15, 0.08, 0.04 by closet rank, faded linearly to zero as the closet approaches `closetDistanceCap` (0.6), then scaled by `CLOSET_BOOST`. One mined Claude session is one source, so a single closet match lifts on the order of fifty drawers at once.

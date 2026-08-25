@@ -38,6 +38,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 )
 
 // maxBatch is the safe fallback when TEI's /info capability endpoint is not
@@ -156,7 +158,7 @@ func New(baseURL string, timeout time.Duration) *Embedder {
 		endpoint:     baseURL + "/embed",
 		infoEndpoint: baseURL + "/info",
 		safeEndpoint: redactURL(baseURL) + "/info",
-		http:         &http.Client{Timeout: timeout},
+		http:         telemetry.HTTPClient(timeout),
 		retryAfter:   defaultProbeRetry,
 	}
 }

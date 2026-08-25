@@ -36,7 +36,7 @@ Find out whether a client handed the instructions stops inventing the rule it in
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l cmd internal clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestReadmeNamesEveryInstallableAgent" -count=1 -v 2>&1 | tee /tmp/a21t3.out
   grep -q -- "--- PASS: TestReadmeNamesEveryInstallableAgent" /tmp/a21t3.out
@@ -95,10 +95,11 @@ Stop and ask if Claude Desktop does not surface `instructions` to its model at a
   the fence passed with the mechanism broken
   ```
 - 2026-08-22 · 347fdee* · mutant killed · exit 1 · `internal/web/windows-guide.md` · the guide reverts to recommending the Node.js bridge for a self-hosted server that ships its own, which is the documentation defect this task exists to correct
+- 2026-08-25 · 8c3167d* · mutant killed · exit 2 · `README.md` · TestReadmeNamesEveryInstallableAgent pins that every kit the installer can build is named where a human looks for it; a typo makes the one agent this ADR added undiscoverable from the docs while the code still ships it · acceptance-sha256:053e01495897ffce4b3249001c0e9cbdc3ce5f8cbb77dc140fba1498c8801543
 
 ## Verification Log
 
-- 2026-08-22 · live Claude Desktop 1.34493.1 · PASS · fully restarted Desktop,
+- 2026-08-22 · human-observed · live Claude Desktop 1.34493.1, PASS: fully restarted Desktop,
   opened a fresh chat, and asked `what happens to an am_search that names no
   wing`; the bridge's raw initialize response carried the instructions and the
   answer changed on both material points: registration-default scoping was

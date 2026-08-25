@@ -50,7 +50,12 @@ func TestInboxCountCountsOnlyTheInboxRoom(t *testing.T) {
 	// Distinct content per drawer: re-adding identical text is idempotent by
 	// design, so two identical inbox items would collapse into one and this test
 	// would be measuring the dedup rather than the count.
-	for i, room := range []string{"inbox", "inbox", "decisions", "diary"} {
+	// Deliberately UNBALANCED: two inbox drawers against three that are not. With
+	// an even split this fixture could not tell `room = ?` from `room <> ?` — both
+	// return 2 — so the assertion below passed with the room predicate inverted.
+	// Measured 2026-08-25: that mutant survived, which means this test was proving
+	// nothing about the filter it exists to pin.
+	for i, room := range []string{"inbox", "inbox", "decisions", "diary", "reviews"} {
 		if _, err := svc.Add(ctx, "team", AddInput{
 			Wing: "wing_x", Room: room, Content: fmt.Sprintf("drawer %d filed into %s", i, room),
 		}); err != nil {

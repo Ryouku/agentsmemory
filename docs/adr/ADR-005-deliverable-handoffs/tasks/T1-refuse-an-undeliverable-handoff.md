@@ -82,3 +82,8 @@ Stop and ask if the emptiness check cannot be made to cost less than the write i
 - 2026-08-20 · d38c341* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-20 · d38c341* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
 - 2026-08-21 · 3877f08* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:bb4d0928aeeea9510fad3d6c01265f9268afcb6d9a30892635fcae4a67964da3
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:bb4d0928aeeea9510fad3d6c01265f9268afcb6d9a30892635fcae4a67964da3
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcpserver/handoff.go` · handoffRefusal exists to catch an inbox item filed into a wing that holds nothing; inverting the emptiness test makes it refuse populated wings and wave the undeliverable handoff through, which is the exact case TestHandoffIntoAnUnresolvableWingIsRefused pins · acceptance-sha256:bb4d0928aeeea9510fad3d6c01265f9268afcb6d9a30892635fcae4a67964da3

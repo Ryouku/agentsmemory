@@ -68,4 +68,18 @@ func TestRankingProfileReportsTheArmThatActuallyRan(t *testing.T) {
 			t.Errorf("rrf profile reports unused defaults as if they ranked: %s", got)
 		}
 	})
+
+	t.Run("retrieve-k is absent at the default", func(t *testing.T) {
+		got := base.RankingProfile()
+		if strings.Contains(got, "retrieve-k=") {
+			t.Errorf("default profile names retrieve-k, so am_status would claim a floor Search does not use: %s", got)
+		}
+		on := base.Clone().WithRetrieveK(50).RankingProfile()
+		if !strings.Contains(on, "retrieve-k=50") {
+			t.Errorf("retrieve-k is ON and the profile still omits it: %s", on)
+		}
+		if strings.Contains(base.RankingProfile(), "retrieve-k=") {
+			t.Errorf("configuring a Clone changed the base service's reported arm: %s", base.RankingProfile())
+		}
+	})
 }

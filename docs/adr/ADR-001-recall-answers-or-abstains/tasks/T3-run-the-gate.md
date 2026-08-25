@@ -69,3 +69,5 @@ one. Stop and ask if the two regimes disagree in direction (the easy set passing
 
 ## Verification Log
 - 2026-08-22 · human-observed · corpus 449 drawers, retrieval ceiling in-pool 100% — SATURATED, which T3's own preflight disqualifies; gate run on hard negatives: 17 verified-absent (8 dropped as answerable at depth 20), 21 reachable-answerable; answer_at=-3.1407 refuse_below=-3.1407 (band EMPTY); refusal 3/17 = 0.176, 90% Wilson lower bound 0.073 against the declared 0.30; absent cases below refuse_below = 0; eval --calibrate --gate exit 1; no threshold on the curve clears both bars, best point 0.920 recall / 0.294 refusal misses by 0.03 and 0.006; recorded in evidence/abstain-gate-2026-08.md; decision BLOCKED — neither ship nor withdraw, because the preflight names this corpus unfit to decide on; T4/T5/T6 not started
+
+## Mutation Log

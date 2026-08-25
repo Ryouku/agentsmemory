@@ -37,7 +37,7 @@
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestCursorMCPRegistrationPreservesForeignServers|TestCursorInstallRegistersTheMCP|TestCursorMCPRefusesUnparseableJSON" -count=1 -v 2>&1 | tee /tmp/a20t2.out
   grep -q -- "--- PASS: TestCursorMCPRegistrationPreservesForeignServers" /tmp/a20t2.out
@@ -95,7 +95,9 @@ Stop and ask if `cursor-agent mcp list` does not show the server after a clean w
 ## Mutation Log
 
 - 2026-08-22 · 2469a25* · mutant killed · exit 1 · `clients/claude-code/settings.go` · a fresh map instead of a merge silently deletes every other MCP server the user runs, and this is the first registration path with no CLI between us and their file
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/settings.go` · a kit with no CLI registers its MCP by writing the config file directly, and mcpServers is the only key the client reads; merging into a neighbouring key leaves a file that parses, reports success, and registers nothing · acceptance-sha256:fb8f677ba853a7dd05e244e16f62c2f583547f61b0b720b549742056a43013b6
 
 ## Verification Log
 
 - 2026-08-22 · 2469a25* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:fb8f677ba853a7dd05e244e16f62c2f583547f61b0b720b549742056a43013b6

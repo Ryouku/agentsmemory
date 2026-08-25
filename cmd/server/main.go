@@ -47,6 +47,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/web"
@@ -140,12 +141,14 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		SearchScope:            strings.TrimSpace(c.String("search-scope")),
 		EmbedURL:               strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:            c.Float("closet-boost"),
+		RetrieveK:              c.Int("retrieve-k"),
 		Fusion:                 strings.TrimSpace(c.String("fusion")),
 		MemoryEvidenceSelector: strings.TrimSpace(c.String("memory-evidence-selector")),
 		LexNorm:                strings.TrimSpace(c.String("lex-norm")),
 		RerankWeight:           c.Float("rerank-weight"),
 		RerankTimeout:          c.Duration("rerank-timeout"),
 		HTTPTimeout:            c.Duration("http-timeout"),
+		OTELEndpoint:           strings.TrimSpace(c.String("otel-endpoint")),
 		Debug:                  c.Bool("debug"),
 		Local:                  c.Bool("local"),
 		// Trimmed because the presented credential is: auth.bearerToken strips the
@@ -196,10 +199,12 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 0 off (default), 1 full boost — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.IntFlag{Name: "retrieve-k", Sources: cli.EnvVars("RETRIEVE_K"), Value: def.RetrieveK, Usage: "floor on how many distinct memories Search retrieves before ranking, independent of the page size. 0 (default) uses the formula: limit×3, raised to --rerank-pool when a cross-encoder will run. Does not change the page size"},
 		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
 		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder: lexical (default/control) or semantic (query-time passage embeddings across the whole memory). Inert without --rerank-url"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
+		&cli.StringFlag{Name: "otel-endpoint", Sources: cli.EnvVars("AGENTSMEMORY_OTEL_ENDPOINT"), Value: def.OTELEndpoint, Usage: "OpenTelemetry export: empty=off, 'stdout' prints a compact stage tree to stderr (file:line, outcome, reason), otherwise an OTLP HTTP collector URL (http://localhost:4318). Does not change search results"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -256,9 +261,21 @@ func run(ctx context.Context, cfg config.Config) error {
 		// Make the "why is it silent?" answer obvious on boot: echo the effective
 		// wiring so a misread flag/env is visible before any request arrives.
 		log.Printf("debug mode ON — request + SQL logging enabled")
-		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s",
+		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s otel=%s",
 			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel,
-			cmp.Or(cfg.RerankURL, "off"))
+			cmp.Or(cfg.RerankURL, "off"), cmp.Or(cfg.OTELEndpoint, "off"))
+	}
+
+	shutdown, err := telemetry.Setup(ctx, telemetry.Config{Endpoint: cfg.OTELEndpoint})
+	if err != nil {
+		// A collector that refuses is instrument-health, not a reason to refuse
+		// /mcp. ADR-025: export failure drops observability, not search.
+		log.Printf("otel: setup failed (%v) — serving without traces", err)
+	} else {
+		defer func() { _ = shutdown(context.Background()) }()
+		if cfg.OTELEndpoint != "" {
+			log.Printf("otel: exporting traces to %s", cfg.OTELEndpoint)
+		}
 	}
 
 	// Claim the database before opening it. Only one server may serve a given
@@ -433,7 +450,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	defer ln.Close()
 
 	log.Printf("agentsmemory listening on %s (dashboard /, MCP /mcp, OAuth issuer %s)", listenDescription(cfg), issuer)
-	return http.Serve(ln, r)
+	return serveHTTP(ln, r)
 }
 
 // seedGlobalSkillset writes the default wakeup playbook when the database holds
@@ -577,7 +594,14 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 		install += " --socket " + cfg.SocketPath
 	}
 	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  %s", install)
-	return http.Serve(ln, r)
+	return serveHTTP(ln, r)
+}
+
+// serveHTTP serves h on ln with inbound OpenTelemetry spans. This is the one
+// place HTTP requests become traces; skipping it would leave /mcp and the
+// dashboard invisible while Search still emitted children with no parent.
+func serveHTTP(ln net.Listener, h http.Handler) error {
+	return http.Serve(ln, telemetry.HTTPHandler(h))
 }
 
 // agentEndpoint renders the /mcp URL to hand an agent for a given listen
@@ -837,6 +861,11 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	if cfg.ClosetBoost != defaultClosetBoost {
 		say("closet boost: scaled to %.2f (%.2f is the shipped default; 1.00 is the full curation prior)",
 			cfg.ClosetBoost, defaultClosetBoost)
+	}
+	drawers = drawers.WithRetrieveK(cfg.RetrieveK)
+	if cfg.RetrieveK > 0 {
+		say("retrieve-k: floor %d (0 is formula-only — limit×3, raised to rerank-pool when a cross-encoder will run)",
+			cfg.RetrieveK)
 	}
 	// An unrecognized value is reported rather than silently ignored, the same way
 	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the

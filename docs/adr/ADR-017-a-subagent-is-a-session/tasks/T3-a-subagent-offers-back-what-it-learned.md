@@ -45,7 +45,7 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   if [ -n "$(gofmt -l clients)" ]; then echo "gofmt"; exit 1; fi
   # The hook tests execute the SHIPPED bash scripts and FAIL LOUDLY without bash
   # rather than skipping, so the base image needs it before anything runs.
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./clients/... -run "TestInstallerRegistersSubagentStop|TestStopHookAsksASubagentForFindingsNotASummary|TestSubagentStopIsNotSwallowedByTheOnceGuard|TestUnknownStopEventKeepsTheSessionBehaviour|TestSubagentStopHookCanBeDisabledOnItsOwn|TestInstallerInstallsAgentDefinitions|TestEveryShippedAgentDefinitionIsInstalled|TestRedeployKitCheckCoversEveryInstalledArtifact" -count=1 -v 2>&1 | tee /tmp/a17t3.out
   grep -q -- "--- PASS: TestInstallerRegistersSubagentStop" /tmp/a17t3.out
@@ -139,9 +139,7 @@ for the read side: do it for the agent rather than ask.
 
 ## Out of Scope
 
-- Codex `SubagentStop` registration (deferred: docs/adr/BACKLOG.md — the event
-  exists, but its payload, exit-2 feedback, loop guard, and one-retry bound have
-  not been captured on a live Codex dispatch)
+- Codex `SubagentStop` registration (deferred: docs/adr/BACKLOG.md — the event exists, but its payload, exit-2 feedback, loop guard, and one-retry bound have not been captured on a live Codex dispatch)
 - Mining past sidechains so already-finished subagent work is recoverable (deferred: docs/adr/BACKLOG.md)
 - Whether a subagent's writes should be attributed to it or to its dispatcher (deferred: docs/adr/BACKLOG.md — it needs a session identity the palace does not record; see the recall-stats attribution defect filed there)
 
@@ -188,7 +186,9 @@ Stop and ask if `SubagentStop` does not fire on this harness — the write half 
 - 2026-08-22 · 6c9347f* · mutant killed · exit 1 · `clients/claude-code/hooks/agentsmemory-stop-hook.sh` · failing closed on an unrecognised event takes the humans own checkpoint away too, on a rename nobody announced
 - 2026-08-22 · 6c9347f* · mutant killed · exit 1 · `clients/claude-code/installer.go` · the agent definition stays embedded in the binary and reaches no disk, which is exactly the defect T2 shipped and this task found
 - 2026-08-22 · 6c9347f* · mutant killed · exit 1 · `scripts/redeploy.sh` · an installed artifact missing from the freshness list is the one the staleness gate cannot see, which is how a stale SubagentStart hook reported as deployed and verified
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/installer.go` · the write half of the subagent loop exists only if the stop nudge is registered on the event the harness fires; a misnamed event leaves the subagent with nothing asking it to offer back what it learned · acceptance-sha256:a304f9caa5f063682603eca33c95a7866f36b4f0bf027d7d1204c9cc51380dc6
 
 ## Verification Log
 
 - 2026-08-22 · 6c9347f* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:a304f9caa5f063682603eca33c95a7866f36b4f0bf027d7d1204c9cc51380dc6

@@ -73,3 +73,5 @@ Stop if `TestClosetFlipIsBackedByEvidence` cannot pass — the records are missi
 - Removing or retuning the mechanism (permanent: only the default moves; the ADR's Out of Scope explains why the code stays.)
 
 ## Verification Log
+
+## Mutation Log

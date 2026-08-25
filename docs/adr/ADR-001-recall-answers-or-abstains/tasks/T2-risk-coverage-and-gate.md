@@ -38,7 +38,7 @@ Turn the labelled scores into a risk–coverage curve, two boundaries and a fing
 
 ```bash
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   if [ -n "$(gofmt -l internal/palace cmd/server)" ]; then echo "gofmt"; exit 1; fi
   go vet ./... || exit 1
   go test ./internal/palace/ ./cmd/server/ -run "TestRiskCoverageRecommendsThresholds|TestRiskCoverageCurveShowsTheWholeTradeoff|TestGateFailsBelowDeclaredBar|TestCalibrationFingerprintRoundTrip|TestLoadCalibrationRejectsGarbage|TestCanaryToleranceIsMeasuredNotTyped|TestViablePointReportsWhetherAnyThresholdClearsBothBars|TestAnsweredAndRefusedAreComplementary|TestCalibrateRefusesUnverifiedCases" -count=1 -v 2>&1 | tee /tmp/a1t2.out
@@ -94,6 +94,7 @@ Stop if the curve cannot be computed because too few rows carry a scored top-1 �
 ## Mutation Log
 
 - 2026-08-22 · 1c9506a* · mutant killed · exit 1 · `internal/palace/calibration.go` · the gate would compare the POINT ESTIMATE instead of the Wilson lower bound, so at these sample sizes it passes on noise about half the time it sits near the bar
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/palace/calibration.go` · the gate must clear its bar on the LOWER confidence bound, not the point estimate: a refusal rate measured on twenty-odd cases sits far above its own interval, so judging by rate ships a calibration the evidence does not support — which is the entire purpose of a risk-coverage gate · acceptance-sha256:33b55f69582d924eff0dcc811d72142eeaba2d43e051c4f693815309ad34e6df
 
 ## Verification Log
 - 2026-08-21 · c2e8992* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`

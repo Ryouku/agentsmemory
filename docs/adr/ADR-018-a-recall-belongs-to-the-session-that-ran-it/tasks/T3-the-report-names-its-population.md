@@ -107,3 +107,7 @@ Stop and ask if the Stop event carries no usable per-session key at all — the 
   FAIL
   ```
 - 2026-08-21 · c4c30e7* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:7a3bb6461e7cc49c4f08f9b2cbf480bfc2fdffaed57121cc3823b43ffe5d79df
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/hooks/agentsmemory-stop-hook.sh` · the server mints no session identity, so a report headed this session names a population it cannot measure; a no-op rewrite restores exactly that false attribution while every number below it stays unchanged and plausible · acceptance-sha256:7a3bb6461e7cc49c4f08f9b2cbf480bfc2fdffaed57121cc3823b43ffe5d79df

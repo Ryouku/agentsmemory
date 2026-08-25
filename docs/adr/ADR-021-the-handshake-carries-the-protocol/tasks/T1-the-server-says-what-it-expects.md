@@ -34,7 +34,7 @@ Every client is told the wing rule on connection, instead of inferring one from 
 docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c '
   set -e
   if [ -n "$(gofmt -l cmd internal)" ]; then echo "gofmt"; exit 1; fi
-  apk add --no-cache bash >/dev/null
+  apk add --no-cache bash git >/dev/null
   go vet ./...
   go test ./internal/mcpserver/ -run "TestHandshakeCarriesInstructions|TestInstructionsNameTheWingRule|TestInstructionsStayShort" -count=1 -v 2>&1 | tee /tmp/a21t1.out
   grep -q -- "--- PASS: TestHandshakeCarriesInstructions" /tmp/a21t1.out
@@ -90,7 +90,9 @@ Stop and ask if `instructions` cannot be served without changing the transport �
 ## Mutation Log
 
 - 2026-08-22 · 15bf930* · mutant killed · exit 1 · `internal/mcpserver/server.go` · without the option the field is empty on every connection and a client with no protocol file invents its own scoping rule, which is the defect this ADR was opened by
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `internal/mcpserver/server.go` · the handshake is the only channel that reaches a client with no protocol file; serving empty instructions still initialises cleanly and returns tools, so nothing but this assertion notices that every such client now wakes with no protocol at all · acceptance-sha256:37bcb5c0e493e95f973e8bae012e417239836ce733987fc1721c27edc1c206ff
 
 ## Verification Log
 
 - 2026-08-22 · 15bf930* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:37bcb5c0e493e95f973e8bae012e417239836ce733987fc1721c27edc1c206ff

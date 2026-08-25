@@ -122,3 +122,8 @@ Stop and ask if a backend cannot report a point's payload without a vector searc
 ## Verification Log
 
 - 2026-08-21 · f5c33c3* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …`
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:d4cde566f8e847c05a027ae4a56345a46e3d1b1515d0b7d7e6571a39975d97ff
+- 2026-08-25 · 8c3167d* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:d4cde566f8e847c05a027ae4a56345a46e3d1b1515d0b7d7e6571a39975d97ff
+
+## Mutation Log
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `cmd/server/doctor.go` · doctor --index must exit non-zero when stored points disagree with their rows; treating every report as clean returns nil on real drift, so the command reports success over the exact condition it exists to detect · acceptance-sha256:d4cde566f8e847c05a027ae4a56345a46e3d1b1515d0b7d7e6571a39975d97ff

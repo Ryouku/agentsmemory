@@ -499,14 +499,15 @@ func TestEvalArmNamesAreUnique(t *testing.T) {
 // own case. A new arm that is neither fails here.
 func TestEveryRegisteredArmIsScorable(t *testing.T) {
 	notFusion := map[EvalArm]string{
-		ArmVector:         "nearest-neighbour order, no fusion at all",
-		ArmRRF:            "reciprocal rank fusion, its own case",
-		ArmRRFReranked:    "RRF then the cross-encoder, its own case and its own scores",
-		ArmContextual:     "scores a different candidate set, not a different ranker",
-		ArmProduction:     "goes through Search, which is the point of it",
-		ArmProductionDeep: "the same Search at a deeper page, which is the point of it",
-		ArmHybridRerank:   "fusion then the cross-encoder, scored in the rerank branch",
-		ArmReranked:       "fusion then the cross-encoder, scored in the rerank branch",
+		ArmVector:             "nearest-neighbour order, no fusion at all",
+		ArmRRF:                "reciprocal rank fusion, its own case",
+		ArmRRFReranked:        "RRF then the cross-encoder, its own case and its own scores",
+		ArmContextual:         "scores a different candidate set, not a different ranker",
+		ArmProduction:         "goes through Search, which is the point of it",
+		ArmProductionDeep:     "the same Search at a deeper page, which is the point of it",
+		ArmProductionRetrieve: "the same Search at the default page with a retrieve-k floor matching the eval pool",
+		ArmHybridRerank:       "fusion then the cross-encoder, scored in the rerank branch",
+		ArmReranked:           "fusion then the cross-encoder, scored in the rerank branch",
 	}
 	for _, w := range rerankSweep {
 		notFusion[rerankArm(w)] = "a rerank blend weight, scored in the rerank branch"
@@ -1214,7 +1215,7 @@ func TestProductionArmsAskForDifferentDepths(t *testing.T) {
 // a pool miss — the exact bug that made a run print "8 of 30 outside the pool"
 // under a ceiling saying 93% were in it.
 func TestBothProductionArmsArePageScoped(t *testing.T) {
-	for _, arm := range []EvalArm{ArmProduction, ArmProductionDeep} {
+	for _, arm := range []EvalArm{ArmProduction, ArmProductionDeep, ArmProductionRetrieve} {
 		if got := ArmScope(arm); got != ScopePage {
 			t.Errorf("ArmScope(%s) = %s, want %s — a page-scoped arm summed into the pool "+
 				"diagnosis reports ranking misses as retrieval failures", arm, got, ScopePage)

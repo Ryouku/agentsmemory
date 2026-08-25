@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 
+	"go.opentelemetry.io/otel/attribute"
 	"gorm.io/gorm"
 )
 
@@ -205,6 +207,13 @@ type Service struct {
 	// rather than a second reorder beside it. ADR-004 keeps production off.
 	recencyBand float64
 
+	// retrieveK is a floor on how many distinct memories Search fetches before
+	// ranking, independent of the page Limit. Zero (the default) leaves the
+	// fetch at candidateKFor: limit×3, raised to rerankPool only when a
+	// cross-encoder will actually run. A positive floor widens; it never
+	// shrinks below that formula, and it never changes the page size.
+	retrieveK int
+
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -328,6 +337,18 @@ func (s *Service) WithClosetBoost(scale float64) *Service {
 	return s
 }
 
+// WithRetrieveK sets a floor on how many distinct memories Search retrieves
+// before ranking. k <= 0 turns the floor off and leaves candidateKFor in
+// charge. Same post-construction-setter contract as WithReranker: call before
+// the service is shared across goroutines.
+func (s *Service) WithRetrieveK(k int) *Service {
+	if k < 0 {
+		k = 0
+	}
+	s.retrieveK = k
+	return s
+}
+
 // WithBM25Weight configures the lexical half of fusion: auto scales it per query,
 // otherwise base is used as a fixed weight. Out-of-range bases keep the default.
 func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
@@ -430,8 +451,12 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
+	profile := fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
 		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
+	if s.retrieveK > 0 {
+		profile += fmt.Sprintf(" retrieve-k=%d", s.retrieveK)
+	}
+	return profile
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -476,7 +501,11 @@ type AddResult struct {
 // vector, and the inverse orphan (a vector with no row) is harmless because
 // search skips ids it cannot resolve. It returns the drawers created (one per
 // chunk), so the tool can report their ids.
-func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (AddResult, error) {
+func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result AddResult, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageAdd)
+	defer func() {
+		endStage(sp, err, attribute.Int("am.count", len(result.Drawers)), attribute.Bool("am.pending_embed", result.PendingEmbedding))
+	}()
 	wing := strings.TrimSpace(in.Wing)
 	room := strings.TrimSpace(in.Room)
 	content := strings.TrimSpace(in.Content)
@@ -651,8 +680,16 @@ func (s *Service) purgeSource(ctx context.Context, teamID, wing, room, source st
 }
 
 // Get returns one drawer, mapping an unknown id to ErrNotFound.
-func (s *Service) Get(ctx context.Context, teamID, id string) (Drawer, error) {
-	d, err := s.repo.Get(ctx, teamID, id)
+func (s *Service) Get(ctx context.Context, teamID, id string) (d Drawer, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageGet)
+	defer func() {
+		if errors.Is(err, ErrNotFound) {
+			sp.End(telemetry.Ran, attribute.Bool("am.found", false))
+			return
+		}
+		endStage(sp, err, attribute.Bool("am.found", err == nil))
+	}()
+	d, err = s.repo.Get(ctx, teamID, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Drawer{}, ErrNotFound
 	}
@@ -672,8 +709,16 @@ func (s *Service) Get(ctx context.Context, teamID, id string) (Drawer, error) {
 //
 // The id may be ANY chunk's, not only the first: a caller holding a search hit
 // holds whichever chunk matched.
-func (s *Service) GetMemory(ctx context.Context, teamID, id string) ([]Drawer, error) {
-	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
+func (s *Service) GetMemory(ctx context.Context, teamID, id string) (chunks []Drawer, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageGetMemory)
+	defer func() {
+		if errors.Is(err, ErrNotFound) {
+			sp.End(telemetry.Ran, attribute.Bool("am.found", false), attribute.Int("am.count", 0))
+			return
+		}
+		endStage(sp, err, attribute.Bool("am.found", err == nil), attribute.Int("am.count", len(chunks)))
+	}()
+	chunks, err = s.repo.MemoryChunks(ctx, teamID, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -688,7 +733,9 @@ func (s *Service) GetMemory(ctx context.Context, teamID, id string) ([]Drawer, e
 // is written, so a failed embed leaves the drawer fully consistent in its old
 // state rather than with a row ahead of its stale vector. A no-op patch just
 // returns the current drawer.
-func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPatch) (Drawer, error) {
+func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPatch) (updated Drawer, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageUpdate)
+	defer func() { endStage(sp, err) }()
 	for _, f := range []struct {
 		name string
 		val  *string
@@ -796,7 +843,7 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 	}
 
 	// Index is current; now commit the authoritative row.
-	updated, err := s.repo.Update(ctx, teamID, id, patch)
+	updated, err = s.repo.Update(ctx, teamID, id, patch)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Drawer{}, ErrNotFound
 	}
@@ -809,7 +856,9 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 // Delete removes a drawer's metadata row and its vector. The row goes first so
 // the authoritative record is gone before the derived index; a failed vector
 // delete leaves an orphan the next search harmlessly skips.
-func (s *Service) Delete(ctx context.Context, teamID, id string) (int, error) {
+func (s *Service) Delete(ctx context.Context, teamID, id string) (n int, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageDelete)
+	defer func() { endStage(sp, err, attribute.Int("am.count", n)) }()
 	// The memory is the unit, not the row. A memory over ChunkSize is several
 	// rows sharing a parent, and deleting one of them left the rest orphaned —
 	// still embedded, still returned by search, and now pointing at a parent that
@@ -864,6 +913,11 @@ type SearchQuery struct {
 	// touch the embedding, because widening the query vector would quietly change
 	// which candidates are retrieved rather than how they are ordered.
 	Context string
+	// RetrieveK is a per-call floor on how many distinct memories this search
+	// fetches before ranking. Zero leaves the process default (and, when that
+	// is also zero, the candidateKFor formula). It widens only; a value below
+	// the formula is ignored. The page Limit is unchanged.
+	RetrieveK int
 }
 
 // rerankQuery returns the text the cross-encoder scores against: the (already
@@ -897,6 +951,14 @@ func searchFilter(q SearchQuery) store.Filter {
 // widens a vector prefix until it holds a pool of distinct logical memories, then
 // ranks those memories through rankRetrieved. Storage stays chunked; the ranking
 // unit is the memory.
+//
+// Each semantic stage records an OpenTelemetry span (embed, retrieve, hydrate,
+// collapse, closet, fusion, recency, rerank, record) with outcome
+// ran|bypassed|failed_open|failed_closed. SQLite search_events stay the product
+// log; the two share one search_id so a sampled span can join a durable row.
+// Telemetry never changes ranking: a collector that is down drops observability,
+// not results. SkipTelemetry skips only the SQLite write (eval); OTEL spans
+// still run and hit the noop provider when Setup was not called.
 func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" {
@@ -916,14 +978,29 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		limit = MaxSearchLimit
 	}
 
-	vec, err := s.embed.EmbedOne(ctx, query)
+	// One id for the SQLite product log and the OpenTelemetry trace. Generated
+	// first so a sampled span can join a durable row without a migration; the
+	// record stage writes it even when SkipTelemetry skips SQLite (eval).
+	searchID := randomID()
+	ctx = telemetry.WithSearchID(ctx, searchID)
+	// searchCtx is the parent every stage (and outbound HTTP) must Start from.
+	// Starting siblings from the pre-Search ctx leaves them parentless — which
+	// is how the first eval dump shipped a forest of roots instead of a tree.
+	searchCtx, parent := telemetry.Start(ctx, telemetry.StageSearch, searchAttrs(s, q, limit)...)
+	defer parent.End(telemetry.Ran)
+
+	embedCtx, embedSpan := telemetry.Start(searchCtx, telemetry.StageEmbed)
+	vec, err := s.embed.EmbedOne(embedCtx, query)
 	if err != nil {
+		embedSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+		parent.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 		// Recall genuinely cannot proceed — a query has to become a vector — so
 		// unlike filing this fails. Name the cause, because the same outage lets
 		// writes succeed (queued), and an agent seeing one work and the other not
 		// will otherwise conclude the memory itself is broken.
 		return nil, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
+	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
@@ -935,24 +1012,30 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
-	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
-	hits, rows, err := s.searchCandidates(ctx, teamID, q, vec, candidateK)
+	candidateK := withRetrieveFloors(
+		candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight),
+		q.RetrieveK, s.retrieveK,
+	)
+	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
+		parent.End(telemetry.FailedClosed)
 		return nil, err
 	}
 	q.Limit = limit
-	results, reranked, err := s.rankRetrieved(ctx, teamID, query, q, vec, hits, rows)
+	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
 	if err != nil {
+		parent.End(telemetry.FailedClosed)
 		return nil, err
 	}
 
-	// Record what this recall found. Best-effort by construction: measurement must
-	// never be able to fail the thing it measures.
+	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
+		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
+		parent.Set(attribute.Int("am.count", len(results)))
 		return results, nil
 	}
 	ev := searchEventRow{
-		TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
+		ID: searchID, TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
 		// Whether reranking HAPPENED, not whether a reranker exists. The previous
 		// value was boolToInt(s.rerank != nil), so at weight 0 — where
 		// applyRerankWith returns before scoring anything — every event claimed a
@@ -964,6 +1047,8 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		ev.TopScore = results[0].Score
 	}
 	s.repo.recordSearch(ctx, ev)
+	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))
+	parent.Set(attribute.Int("am.count", len(results)))
 
 	return results, nil
 }
@@ -993,11 +1078,18 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// memories. Eval pool arms call this on a Clone: an arm reconstructing the
 	// served configuration has to collapse the same way or it is measuring a
 	// pipeline nobody runs.
-	collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
-	if err != nil {
-		return nil, false, err
+	_, collapseSpan := telemetry.Start(ctx, telemetry.StageCollapse)
+	if len(survivors) == 0 {
+		collapseSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty), attribute.Int("am.count", 0))
+	} else {
+		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+		if err != nil {
+			collapseSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+			return nil, false, err
+		}
+		collapseSpan.End(telemetry.Ran, attribute.Int("am.count", len(collapsed)))
+		survivors = collapsed
 	}
-	survivors = collapsed
 
 	// Closet boost: search the team's closets with the same query and let the
 	// best-matching closets lift the rank of the drawers from their source. Closets
@@ -1015,9 +1107,16 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 		dates[i] = h.Drawer.ContentDate
 	}
+	_, fusionSpan := telemetry.Start(ctx, telemetry.StageFusion, s.fusionAttrs()...)
 	ranked := s.fusionRanker()(query, docs, dists, boosts)
+	fusionSpan.End(telemetry.Ran, attribute.Int("am.count", len(ranked)))
+
+	_, recencySpan := telemetry.Start(ctx, telemetry.StageRecency)
 	if s.recencyBand > 0 {
 		ranked = reorderByRecency(ranked, dates, s.recencyBand)
+		recencySpan.End(telemetry.Ran, attribute.Float64("am.band", s.recencyBand))
+	} else {
+		recencySpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonBandZero))
 	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
@@ -1090,6 +1189,17 @@ func candidateKFor(limit int, rerankConfigured bool, rerankPool int, rerankWeigh
 	return k
 }
 
+// withRetrieveFloors raises k to the largest positive floor. Zero and negative
+// floors are ignored, so a caller cannot shrink the fetch below candidateKFor.
+func withRetrieveFloors(k int, floors ...int) int {
+	for _, f := range floors {
+		if f > k {
+			k = f
+		}
+	}
+	return k
+}
+
 // boolToInt maps a flag onto the INTEGER column SQLite uses for booleans.
 func boolToInt(b bool) int {
 	if b {
@@ -1121,7 +1231,16 @@ func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery st
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
 func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
-	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
+	rerankCtx, sp := telemetry.Start(ctx, telemetry.StageRerank, attribute.Float64("am.weight", weight))
+	switch {
+	case s.rerank == nil:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonNoReranker))
+		return ranked, false
+	case len(ranked) == 0:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
+		return ranked, false
+	case weight <= 0:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonWeightZero))
 		return ranked, false
 	}
 	pool := min(s.rerankPool, len(ranked))
@@ -1130,27 +1249,35 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		hit := survivors[ranked[i].Index]
 		docs[i] = hit.rankingContent(evidenceQuery, hit.MemoryContent != "")
 	}
+	_, evSpan := telemetry.Start(rerankCtx, telemetry.StageEvidence)
 	if s.MemoryEvidenceSelectorName() == semanticMemoryEvidenceSelector {
-		semanticDocs, err := s.semanticRerankDocuments(ctx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
+		semanticDocs, err := s.semanticRerankDocuments(rerankCtx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
 		if err != nil {
 			slog.Warn("semantic evidence selection failed, falling back to lexical evidence", "error", err, "candidates", pool)
+			evSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonSemanticFailed))
 		} else {
 			docs = semanticDocs
+			evSpan.End(telemetry.Ran, attribute.Int("am.pool", pool))
 		}
+	} else {
+		evSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonLexical))
 	}
 
-	scores, err := s.rerank.Rerank(ctx, rerankQuery, docs)
+	scores, err := s.rerank.Rerank(rerankCtx, rerankQuery, docs)
 	if err != nil {
 		// A degraded reranker returns FALSE, deliberately. It failed open and the
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass
 		// would be exactly as wrong as the weight-0 case this fix is about.
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError), attribute.Int("am.pool", pool))
 		return ranked, false
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonScoreCount), attribute.Int("am.pool", pool), attribute.Int("am.got", len(scores)))
 		return ranked, false
 	}
+	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
 	return BlendRerank(ranked, scores, weight), true
 }
 

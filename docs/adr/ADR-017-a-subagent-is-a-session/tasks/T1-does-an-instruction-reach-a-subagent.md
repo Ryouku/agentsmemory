@@ -96,8 +96,14 @@ Stop and report if compliance with injection is not clearly higher than without.
 ## Mutation Log
 
 - 2026-08-22 · 282b7d9* · mutant killed · exit 1 · `clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh` · a hook that still injects when switched off makes T1's control arm carry the treatment, turning the measurement into a comparison of one thing with itself
+- 2026-08-25 · 8c3167d* · mutant survived · exit 0 · `clients/claude-code/installer.go` · an instruction reaches a subagent only through a hook registered on the event the harness actually fires; a near-miss event name installs cleanly and is never invoked, which is the unreachable-capability defect this repository is named for · acceptance-sha256:e95919cb58e89c219393e1829dff8dac5897bb72724ca23b71ad44ffd6a13dcf
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-25 · 8c3167d* · mutant killed · exit 1 · `clients/claude-code/hooks/agentsmemory-subagent-start-hook.sh` · the whole instruction path is this one field: Claude Code injects hookSpecificOutput.additionalContext into the subagent and ignores any other key, so renaming it leaves a hook that runs, exits 0 and delivers nothing. A first mutant on the SubagentStart registration in installer.go SURVIVED, which showed this fence binds to the script rather than to the event it is registered on · acceptance-sha256:e95919cb58e89c219393e1829dff8dac5897bb72724ca23b71ad44ffd6a13dcf
 
 ## Verification Log
 
 - 2026-08-22 · human-observed · hook written, envelope+fail-open tests green, registered by hand and CONFIRMED FIRING on a live dispatch (5 marker writes for 5 dispatches); measurement 2026-08-22 on a 449-memory palace, compliance counted from search_events not self-report: TREATMENT 5/5 subagents called am_search, CONTROL 0/5 with the injection disabled; every treatment query maps 1:1 to its task; the control arm already carried the ENTIRE protocol (global CLAUDE.md + bootstrap + repo CLAUDE.md/AGENTS.md incl. the hard gate) and produced zero recalls, so placement not instruction was the gap; T1's withdraw-branch does not apply and T2 proceeds as designed; limits: n=5 per arm, arms used different (comparable) tasks, and a codebase-memory SubagentStart hook fired in both
 - 2026-08-22 · 6c9347f* · exit 0 · `# Human-observed: this measures a live agent's behaviour and cannot be asserted …`
+- 2026-08-25 · 8c3167d* · exit 0 · `# Human-observed: this measures a live agent's behaviour and cannot be asserted …` · acceptance-sha256:e95919cb58e89c219393e1829dff8dac5897bb72724ca23b71ad44ffd6a13dcf

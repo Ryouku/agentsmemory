@@ -88,3 +88,5 @@ Stop if the distractor cannot be ranked without re-running retrieval for it — 
 - 2026-08-20 · 8a89e42 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
 - 2026-08-20 · 15d2f91 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
 - 2026-08-20 · a5f94cb · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
+
+## Mutation Log
