@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runStopHook executes the real Stop hook against a fake /stats server and
@@ -543,5 +545,142 @@ func TestSessionEndHonoursTheSharedStatsOffSwitch(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "" {
 		t.Errorf("AGENTSMEMORY_STATS=off still printed: %q", got)
+	}
+}
+
+// gnuStatShim is `stat` as GNU coreutils implements it, in the two respects this
+// probe depends on: -c takes the format, and -f is --file-system — a MODE, not a
+// format flag — so its operands are FILENAMES. Given `-f %B FILE` it therefore
+// fails on the bogus "%B" operand, prints the filesystem block for FILE anyway,
+// and exits non-zero.
+const gnuStatShim = `#!/bin/sh
+mode=file
+fmt=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f) mode=fs; shift ;;
+    -c) fmt="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+if [ "$mode" = fs ]; then
+  rc=0
+  for op in "$@"; do
+    if [ -e "$op" ]; then
+      echo "  File: \"$op\""
+      echo "    ID: 0 Namelen: 255     Type: ext2/ext3"
+      echo "Block size: 4096       Fundamental block size: 4096"
+    else
+      echo "stat: cannot read file system information for '$op': No such file or directory" >&2
+      rc=1
+    fi
+  done
+  exit $rc
+fi
+case "$fmt" in
+  %W) echo @BIRTH@ ;;
+  %Y) echo @MTIME@ ;;
+  *) echo "stat: invalid format" >&2; exit 1 ;;
+esac
+`
+
+// bsdStatShim is `stat` as macOS ships it: -f carries the format and there is no
+// -c whatsoever, so the GNU probe is REJECTED rather than reinterpreted. That
+// asymmetry is the whole reason the shipped order can be GNU-first and still work
+// on both platforms.
+const bsdStatShim = `#!/bin/sh
+case "$1" in
+  -c) echo "stat: illegal option -- c" >&2
+      echo "usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]" >&2
+      exit 1 ;;
+  -f) fmt="$2" ;;
+  *) exit 1 ;;
+esac
+case "$fmt" in
+  %B) echo @BIRTH@ ;;
+  %m) echo @MTIME@ ;;
+  *) exit 1 ;;
+esac
+`
+
+// runStatsQuery sources the SHIPPED helper with a stand-in `stat` on PATH and
+// returns the STATS_QUERY it built, plus anything the shell complained about.
+//
+// The helper is sourced rather than executed because that is how both hooks use
+// it; driving a Go re-implementation of the probe would pass while the file that
+// actually runs on every Stop said something else.
+func runStatsQuery(t *testing.T, shim string, birth, mtime int64) (string, string) {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Fatalf("bash is not installed, so the shipped helper cannot be sourced: %v", err)
+	}
+	dir := t.TempDir()
+	body := strings.NewReplacer(
+		"@BIRTH@", strconv.FormatInt(birth, 10),
+		"@MTIME@", strconv.FormatInt(mtime, 10),
+	).Replace(shim)
+	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(body), 0o755); err != nil {
+		t.Fatalf("write fake stat: %v", err)
+	}
+	// A real file, because the helper refuses to compute a window without one.
+	transcript := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	helper := filepath.Join(repoRootForHooks(t), "clients", "claude-code", "hooks", "agentsmemory-stats.sh")
+	// Same shell options the hooks source it under, so an unset variable or a
+	// failing probe surfaces here the way it would in production.
+	cmd := exec.Command("bash", "-u", "-o", "pipefail", "-c",
+		`. "$1"; INPUT="$2"; agentsmemory_stats_query; printf '%s' "$STATS_QUERY"`,
+		"stats-probe", helper, `{"hook_event_name":"Stop","transcript_path":"`+transcript+`"}`)
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("source helper: %v (stderr: %s)", err, stderr.String())
+	}
+	return stdout.String(), stderr.String()
+}
+
+// TestSessionWindowSurvivesBothStatImplementations pins the probe ORDER.
+//
+// The first version of this helper probed BSD-form first (`stat -f %B || stat -c
+// %W`). On macOS that is correct and every developer here saw it work. On Linux
+// it is not a fallback at all: GNU's -f means --file-system, so "%B" is read as a
+// filename, the multiline filesystem block lands in BORN, the `-gt` comparison
+// dies with "integer expression expected", and the session window silently
+// degrades to the fixed hours= default on every Linux install. It shipped, and a
+// user on Linux reported it.
+//
+// The order is only testable by supplying the OTHER implementation, so both are
+// faked. Swap the shipped probes back to BSD-first and the gnu subtests go red.
+func TestSessionWindowSurvivesBothStatImplementations(t *testing.T) {
+	// An hour of slack: the window is (now-born)/60+1, so any plausible test
+	// runtime lands on the same integer.
+	born := time.Now().Add(-time.Hour).Unix()
+
+	for _, tc := range []struct {
+		name         string
+		shim         string
+		birth, mtime int64
+	}{
+		{"gnu", gnuStatShim, born, born},
+		// ext4 and friends report no birth time as 0. The guard must fall through
+		// to mtime — and the FALLBACK probe carries the same order, so it is a
+		// second copy of the same bug and needs its own case.
+		{"gnu without birthtime", gnuStatShim, 0, born},
+		{"bsd", bsdStatShim, born, born},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, stderr := runStatsQuery(t, tc.shim, tc.birth, tc.mtime)
+			if want := "minutes=61&label=this%20session"; got != want {
+				t.Errorf("STATS_QUERY = %q, want %q — the session window was not computed, so "+
+					"the report silently describes a fixed window instead of this session", got, want)
+			}
+			if strings.Contains(stderr, "integer expression") {
+				t.Errorf("the probe put a non-integer in BORN: %s", stderr)
+			}
+		})
 	}
 }
