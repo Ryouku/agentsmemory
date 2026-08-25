@@ -205,13 +205,34 @@ Two rules follow, and both are enforced mechanically rather than trusted:
   changes nothing when they do). `TestEveryFlagIsRead` fails when a flag is
   declared and never consulted — `--help` is documentation like any other.
 
+**A setting is read only if it is read in the MODE THAT IS RUNNING** (ADR-006,
+Accepted). "Is it read anywhere" is the weaker question and it passes knobs that
+are inert under the configuration an operator is actually using.
+`TestEveryKnobIsSweptOrNamed` derives its universe from `configureRanking`'s own
+body, so a field that joins the wiring joins the check on the same commit; a knob
+it finds inert must be listed with a reason, never just listed.
+`TestDiscoveredPairsAdmitTheirCondition` then requires the `--help` text to name
+the gating knob **greppably** — an honest sentence phrased without that name fails.
+
+**Documentation is load-bearing in BOTH directions, and the reverse arrow is the
+one that bit.** `TestDocumentedEnvVarsAreRead` fails when something advertised in
+`.env.example`, a `docker-compose*.yml` `environment:` block, or a Go comment
+showing a value is read by nothing — it caught a shipped compose file promising a
+rerank pool the server never read. `TestReadEnvVarsAreDocumented` runs the other
+way, because a variable the code reads and no operator doc mentions is a knob only
+its author knows exists. The escape hatch is `notOperatorFacing`, and
+`TestNotOperatorFacingIsJustified` refuses an entry without a written reason — the
+reason is the review.
+
 The same principle covers the gates already in the tree: `internal/doclint`
 (a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`
 (an eval arm that no code path registers appears in no table, silently), and
 `TestCatalogSizeIsWhatTheReadmeClaims` (the README's tool count must be the real one).
 
 Prose belongs where a human reads it and nowhere else. Anything that must stay
-true gets a command whose exit code says so.
+true gets a command whose exit code says so — including this section, which
+`TestAgentsMdNamesGatesThatExist` pins so the list cannot rot into a claim about
+tests nobody kept.
 
 ## Exception — read-only review
 
