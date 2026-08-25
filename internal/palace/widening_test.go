@@ -42,7 +42,7 @@ func (e *endlessVectors) Search(ctx context.Context, namespace string, vector []
 // that is why the assertion is on the requested depths and not on a return
 // value.
 func TestCandidateWideningIsBounded(t *testing.T) {
-	svc := newTestService(t).WithMemoryLevelRanking(true)
+	svc := newTestService(t)
 	vectors := &endlessVectors{VectorStore: svc.vectors}
 	svc.vectors = vectors
 
@@ -78,7 +78,7 @@ func TestCandidateWideningIsBounded(t *testing.T) {
 // RESULT differs, so the gate watches the statements: a row resolved once must
 // not be requested a second time.
 func TestCandidateWideningDoesNotRefetchRows(t *testing.T) {
-	svc := newTestService(t).WithMemoryLevelRanking(true)
+	svc := newTestService(t)
 	ctx := context.Background()
 
 	// Two long memories, deeply chunked. The prefix must be FULL and hold far

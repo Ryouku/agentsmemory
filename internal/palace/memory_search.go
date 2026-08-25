@@ -49,12 +49,11 @@ func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]S
 	return survivors, len(distinct)
 }
 
-// searchCandidates resolves a vector prefix to the rows behind it. The legacy
-// arm asks once for a chunk-sized pool. The memory arm widens the same ordered
-// prefix until candidateK distinct logical memories survive, or the backend has
-// no more results. Without this widening, a long memory can spend every slot on
-// siblings before BM25 or the cross-encoder gets a chance to compare anything
-// else.
+// searchCandidates resolves a vector prefix to the rows behind it. It widens the
+// ordered prefix until candidateK distinct logical memories survive, or the
+// backend has no more results. Without this widening, a long memory can spend
+// every slot on siblings before BM25 or the cross-encoder gets a chance to
+// compare anything else.
 //
 // It returns the RAW hits and their rows rather than the survivors it filtered,
 // which looks wasteful and is deliberate: rankRetrieved takes (hits, rows)
@@ -103,7 +102,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		// per-arm retrieval would confound the comparison they exist to make.
 		_, distinct := survivorsFrom(hits, rows, q)
 
-		if !s.memoryLevelRanking || distinct >= candidateK || len(hits) < k {
+		if distinct >= candidateK || len(hits) < k {
 			return hits, rows, nil
 		}
 		// Search results are closest-first. Once the farthest member of a full
@@ -134,10 +133,10 @@ func drawerMatchesSearch(d Drawer, q SearchQuery) bool {
 	return (q.Wing == "" || d.Wing == q.Wing) && (q.Room == "" || d.Room == q.Room)
 }
 
-// collapseCandidatesToMemories turns the treatment's retrieved chunks into one
-// scoring document per logical memory. The best vector distance and the number
-// of retrieved matching chunks remain explicit signals; lexical and rerank text
-// comes from the whole reassembled memory.
+// collapseCandidatesToMemories turns retrieved chunks into one scoring document
+// per logical memory. The best vector distance and the number of retrieved
+// matching chunks remain explicit signals; lexical and rerank text comes from
+// the whole reassembled memory.
 func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID string, q SearchQuery, chunks []SearchHit) ([]SearchHit, error) {
 	// One pass, not one pass per root. Rescanning every chunk for each root is
 	// quadratic in the candidate pool, and the pool is exactly what the memory
@@ -183,37 +182,6 @@ func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID strin
 		out = append(out, representative)
 	}
 	return out, nil
-}
-
-// hydrateResultMemories attaches stable identity and whole content after the
-// legacy arm has ranked and collapsed chunks. It deliberately happens after
-// ranking there, preserving the control's scores while fixing the wire-level
-// mismatch where a child hit lost root metadata and sibling evidence.
-func (s *Service) hydrateResultMemories(ctx context.Context, teamID string, results []SearchHit) error {
-	roots := make([]string, 0, len(results))
-	for i := range results {
-		results[i].MemoryID = memoryOf(results[i].Drawer)
-		if results[i].MemoryContent == "" {
-			roots = append(roots, results[i].MemoryID)
-		}
-	}
-	if len(roots) == 0 {
-		return nil
-	}
-	byRoot, err := s.repo.MemoryChunksByRoots(ctx, teamID, roots)
-	if err != nil {
-		return fmt.Errorf("load result memories: %w", err)
-	}
-	for i := range results {
-		if results[i].MemoryContent != "" {
-			continue
-		}
-		results[i].MemoryContent = reassembleMemory(byRoot[results[i].MemoryID])
-		if results[i].MemoryContent == "" {
-			results[i].MemoryContent = results[i].Drawer.Content
-		}
-	}
-	return nil
 }
 
 // storedWithoutOverlap reports whether a chunk came from the ONE writer that

@@ -53,7 +53,6 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -505,11 +504,7 @@ func newStreamWith(gdb *gorm.DB, usageSvc *usage.Service, local bool) (http.Hand
 		Workspaces:        nil,
 	})
 
-	stream := server.NewStreamableHTTPServer(mcpSrv,
-		server.WithHTTPContextFunc(auth.Bridge),
-		server.WithStateLess(true),
-	)
-	return stream, drawers
+	return mcpserver.StreamHTTP(mcpSrv), drawers
 }
 
 // AsRole stands up a server and dials it as a registration whose caller holds the

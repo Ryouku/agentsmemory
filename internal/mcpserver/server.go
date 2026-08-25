@@ -193,6 +193,18 @@ func Compose(deps Deps) *server.MCPServer {
 	return New(deps)
 }
 
+// StreamHTTP is the one Streamable HTTP envelope. Production and the contract
+// harness both call it, so the auth bridge and the stateless transport cannot
+// be wired on one path and omitted on the other. Compose owns the catalogue;
+// this owns the HTTP options around it.
+func StreamHTTP(srv *server.MCPServer) *server.StreamableHTTPServer {
+	return server.NewStreamableHTTPServer(
+		srv,
+		server.WithHTTPContextFunc(auth.Bridge),
+		server.WithStateLess(true),
+	)
+}
+
 // serverInstructions is returned to every client in the MCP initialize response.
 //
 // It exists because it is the ONLY channel that reaches a client with nowhere to

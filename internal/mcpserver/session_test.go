@@ -196,18 +196,44 @@ func TestTwoSessionsGetDifferentIdentities(t *testing.T) {
 // The grep is deliberately narrow — it asks only whether the transport is still
 // built stateless, which is the single fact the finding depends on.
 func TestProductionStillRunsStateless(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "main.go"))
+	src, err := os.ReadFile(filepath.Join("server.go"))
 	if err != nil {
-		t.Fatalf("read cmd/server/main.go: %v", err)
+		t.Fatalf("read server.go: %v", err)
 	}
 	body := string(src)
-	if !strings.Contains(body, "server.WithStateLess(true)") {
-		t.Error("cmd/server no longer builds its transport with server.WithStateLess(true). " +
+	fn := "func StreamHTTP"
+	i := strings.Index(body, fn)
+	if i < 0 {
+		t.Fatal("StreamHTTP is gone; production and the harness have no shared stateless envelope")
+	}
+	rest := body[i:]
+	end := strings.Index(rest, "\nfunc ")
+	if end > 0 {
+		rest = rest[:end]
+	}
+	if !strings.Contains(rest, "server.WithStateLess(true)") {
+		t.Error("StreamHTTP no longer builds its transport with server.WithStateLess(true). " +
 			"That is the premise ADR-018 T1's finding rests on — a stateful manager MINTS a " +
 			"session id, so attribution may now be possible and T2 should be revisited rather " +
 			"than left withdrawn.")
 	}
-	if strings.Contains(body, "server.WithStateLess(false)") {
+	if strings.Contains(rest, "server.WithStateLess(false)") {
 		t.Error("the transport is explicitly stateful; see above")
+	}
+	for _, rel := range []string{
+		filepath.Join("..", "..", "cmd", "server", "main.go"),
+		filepath.Join("..", "mcptest", "harness.go"),
+	} {
+		src, err := os.ReadFile(rel)
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		got := string(src)
+		if !strings.Contains(got, "mcpserver.StreamHTTP") {
+			t.Errorf("%s no longer calls mcpserver.StreamHTTP; the HTTP envelope has a second owner", rel)
+		}
+		if strings.Contains(got, "NewStreamableHTTPServer") {
+			t.Errorf("%s constructs Streamable HTTP beside StreamHTTP", rel)
+		}
 	}
 }

@@ -20,10 +20,10 @@ import (
 func TestRankingProfileReportsTheArmThatActuallyRan(t *testing.T) {
 	base := newTestService(t)
 
-	t.Run("the control", func(t *testing.T) {
+	t.Run("the served unit is memory", func(t *testing.T) {
 		got := base.RankingProfile()
 		for key, want := range map[string]string{
-			"unit":     "unit=chunk",
+			"unit":     "unit=memory",
 			"evidence": "evidence=lexical",
 			"rerank":   "rerank=off",
 		} {
@@ -33,17 +33,13 @@ func TestRankingProfileReportsTheArmThatActuallyRan(t *testing.T) {
 		}
 	})
 
-	t.Run("the treatment", func(t *testing.T) {
-		treated := base.Clone().WithMemoryLevelRanking(true)
-		got := treated.RankingProfile()
-		if !strings.Contains(got, "unit=memory") {
-			t.Errorf("memory-level ranking is ON and the profile still reports a chunk unit: %s", got)
+	t.Run("a Clone does not mutate the base", func(t *testing.T) {
+		cloned := base.Clone().WithMemoryEvidenceSelector("semantic")
+		got := cloned.RankingProfile()
+		if !strings.Contains(got, "evidence=semantic") {
+			t.Errorf("memory evidence selector is ON and the profile still reports lexical: %s", got)
 		}
-		// The control must not have changed underneath: Clone exists so an arm can
-		// be configured without disturbing the served service, and a profile read
-		// off shared state would report the last arm constructed rather than the
-		// one that ran.
-		if strings.Contains(base.RankingProfile(), "unit=memory") {
+		if strings.Contains(base.RankingProfile(), "evidence=semantic") {
 			t.Errorf("configuring a Clone changed the base service's reported arm: %s", base.RankingProfile())
 		}
 	})
