@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // registerDrawers wires the core memory-loop tools — the WRITE/FILE, SEARCH/RECALL
@@ -270,6 +272,17 @@ const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder co
 	"so this memory is queued for background indexing. It will become searchable once the embedder is " +
 	"running again (check the Ollama server the agentsmemory server points at). Tell the user."
 
+// annotateSearchID records a caller-supplied search_id on the current tool span.
+//
+// Separate from the handler so it can be driven by a test: the handler needs a
+// live palace, and the behaviour worth pinning is "the id reaches the span",
+// which needs no storage at all.
+func annotateSearchID(ctx context.Context, req mcp.CallToolRequest) {
+	if sid := strings.TrimSpace(req.GetString("search_id", "")); sid != "" {
+		telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
+	}
+}
+
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("get_drawer",
@@ -279,6 +292,20 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is accepted and not yet recorded — pass it and nothing changes today, which is what lets clients adopt it before the recording lands.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Inert for STORAGE — recording the join durably is its own task with its
+		// own trigger — but not invisible. The id goes on the tool span, so a
+		// search followed by a fetch is one traceable pair today, at the cost of
+		// one attribute and no schema change.
+		//
+		// The first version of this line threw the id away (`_ = ...`). That
+		// shipped a signal whose adoption could not be observed by the very
+		// instrument this repository had just made mandatory at deploy time: an
+		// agent sent the id, the server accepted it, and the trace showed a bare
+		// `am.tool ... ran` with nothing linking it to any recall. A change that
+		// adds a signal has to extend the instrument in the same commit, or its
+		// own trigger — "the first week a non-test client sends one" — is
+		// unanswerable.
+		annotateSearchID(ctx, req)
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -287,13 +314,6 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		// Read and deliberately unconsumed. Recording the join is its own task,
-		// with its own trigger; accepting the argument first is what lets a client
-		// start sending it before anything reads it. Inert by design, not by
-		// omission — and an unrecognised value must never fail the fetch, because a
-		// memory readable only when quoting a valid recall would be a regression
-		// introduced by a field that does nothing yet.
-		_ = req.GetString("search_id", "")
 		// A chunked memory had no read path that could return it whole: the query
 		// existed (repo.MemoryChunks) and was called only by update and delete.
 		// An agent handed one chunk of a long note had no second call to complete
