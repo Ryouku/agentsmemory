@@ -230,8 +230,17 @@ PROCEDURE, not a list. Nothing here needs editing when the palace grows; add a
 
 1 am_kg_query(entity:"<THIS DRAWER'S OWN ID>", direction:"outgoing")
 2 Fetch EVERY edge whose predicate starts `must.` — am_get_drawer(id, whole:true),
-  one small call each. Edges starting `ref.` are on demand: load one only when its
-  subject IS the task in front of you.
+  one call each.
+★THIS IS BY PROTOCOL, NOT A JUDGEMENT CALL. Do NOT cherry-pick the ones that look
+relevant to your task, and do not skip the tier because it looks like a lot of
+calls. am_get_drawer is a BY-ID ROW READ — no embedding, no search, no ranking —
+the cheapest call in the toolset. Fifteen of them cost less than one confident
+wrong assumption.
+⚠YOU CANNOT KNOW WHICH ONE YOU NEEDED UNTIL YOU HAVE READ IT. That is the entire
+reason this tier exists: a session skipping it does not feel a gap, it just
+proceeds confidently wrong. "Only the ones relevant to my task" is the same error
+as skipping a domain check — it is judged by the knowledge you are missing.
+Edges starting `ref.` are ON DEMAND — but YOU create the demand.
 3 am_list_skills, then am_load_skill for `human-decisions` and
   `memory-orchestration`. Both say "LOAD FIRST, EVERY SESSION".
 4 Then your task.
@@ -343,7 +352,7 @@ being dangerous. Each is one drawer:
 | `must.ops.<topic>` | What does a release/deploy actually do? |
 | `must.<domain>.<topic>` | The standing rules a session must carry in this project. |
 
-**The tier test — be ruthless; this tier is paid for on every session:**
+**The tier test — be ruthless at WRITE time; this tier is paid for on every session:**
 
 > `must.*` = *a session that does not know this will confidently do the wrong
 > thing.* Everything else is `ref.*`, loaded on demand when its subject **is** the
@@ -351,6 +360,19 @@ being dangerous. Each is one drawer:
 
 A `must.*` tier that grows without this test stops being read — and then the
 important entries lose to the unimportant ones.
+
+⚠ **But the ruthlessness belongs at WRITE time only. At READ time the tier is
+all-or-nothing.** A session does not get to re-run the tier test against its own
+task and load the subset that looks relevant — **that judgement is made with the
+knowledge it is missing.** `am_get_drawer` is a by-id row read (no embedding, no
+search, no ranking), so the whole tier costs a handful of the cheapest calls in the
+toolset. Fifteen of them are cheaper than one confident wrong assumption.
+
+★ **This is the same failure as the §0b domain check, one level up.** Skipping is
+silent: nothing reports the drawer you did not read, and you proceed feeling
+perfectly well-informed. Which is why the read side is a **protocol**, not a
+judgement — and why the fix for "the tier is too big" is to file less into it, never
+to read less out of it.
 
 ### P5 — Verify by cold-start rehearsal (the gate)
 
