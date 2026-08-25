@@ -1022,13 +1022,13 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight),
 		q.RetrieveK, s.retrieveK,
 	)
-	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
+	hits, rows, stale, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return nil, err
 	}
 	q.Limit = limit
-	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
+	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows, stale)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return nil, err
@@ -1062,7 +1062,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
 // Eval arms that reconstruct a served configuration call it on a Clone rather
 // than reimplementing fusion, closet boost, recency, rerank, or collapse.
-func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, error) {
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer, stale bool) ([]SearchHit, bool, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = DefaultSearchLimit
@@ -1078,7 +1078,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// same filter to know how many DISTINCT memories a widening round found, and
 	// therefore whether to widen again. Two copies of a scope predicate is how a
 	// stale one survives, so both paths call survivorsFrom instead.
-	survivors, _ := survivorsFrom(hits, rows, q)
+	survivors, _ := survivorsFrom(hits, rows, q, stale)
 
 	// Collapse HERE, before scoring, so every consumer of rankRetrieved ranks
 	// memories. Eval pool arms call this on a Clone: an arm reconstructing the

@@ -138,10 +138,16 @@ type SearchHit struct {
 	// signal — a memory that matched in four places is stronger evidence than one
 	// that matched in one, and a silent collapse throws that away.
 	ChunksMatched int
-	Score         float64 // fused rank score, higher is better
-	BM25          float64 // raw Okapi-BM25 lexical score (pre-normalization)
-	ClosetBoost   float64 // closet rank boost folded into Score (0 when none)
-	Distance      float64 // raw cosine distance, lower is closer
+	// StaleIndex says the index that served this recall was behind its source of
+	// truth (ADR-029): the hits come from the SoT's own vector path, not the
+	// search index, and an async rebuild is in flight. It rides on every hit of
+	// a degraded recall, so an agent that reads a sentence from a stale recall
+	// can tell it happened instead of mistaking it for fresh knowledge.
+	StaleIndex  bool
+	Score       float64 // fused rank score, higher is better
+	BM25        float64 // raw Okapi-BM25 lexical score (pre-normalization)
+	ClosetBoost float64 // closet rank boost folded into Score (0 when none)
+	Distance    float64 // raw cosine distance, lower is closer
 	// RerankScore is the cross-encoder's relevance for this hit, or 0 when no
 	// reranker is configured or it did not score this one. It is reported
 	// alongside Score rather than replacing it: the two are not on the same scale

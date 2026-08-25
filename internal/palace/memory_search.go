@@ -30,7 +30,7 @@ const maxCandidateWidening = 8
 // rule surfaces another wing's memory.
 //
 // The index filter is an optimization; the durable row remains the authority.
-func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]SearchHit, int) {
+func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery, stale bool) ([]SearchHit, int) {
 	survivors := make([]SearchHit, 0, len(hits))
 	distinct := make(map[string]struct{}, len(hits))
 	for _, h := range hits {
@@ -46,7 +46,7 @@ func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]S
 			continue
 		}
 		memoryID := memoryOf(d)
-		survivors = append(survivors, SearchHit{Drawer: d, MemoryID: memoryID, Distance: distance})
+		survivors = append(survivors, SearchHit{Drawer: d, MemoryID: memoryID, Distance: distance, StaleIndex: stale})
 		distinct[memoryID] = struct{}{}
 	}
 	return survivors, len(distinct)
@@ -65,7 +65,7 @@ func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]S
 // make. Filtering here is for the widening decision only; rankRetrieved rebuilds
 // the survivors from survivorsFrom, the same predicate, over an in-memory slice
 // bounded by candidateK.
-func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]store.Hit, map[string]Drawer, error) {
+func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]store.Hit, map[string]Drawer, bool, error) {
 	retrieveCtx, retrieve := telemetry.Start(ctx, telemetry.StageRetrieve, attribute.Int("am.k", candidateK))
 	hydrateCtx, hydrate := telemetry.Start(retrieveCtx, telemetry.StageHydrate)
 	k := candidateK
@@ -100,6 +100,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		}
 		retrieve.End(telemetry.Ran, attrs...)
 	}
+	stale := false // the last round's index staleness; every surviving hit of this recall shares it
 	for {
 		rounds++
 		res, err := s.vectors.Search(retrieveCtx, teamID, vec, k, searchFilter(q))
@@ -110,9 +111,10 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 			// spans dangling and the failure invisible to exactly the telemetry a
 			// debugging session needs.
 			finish(nil, err, "")
-			return nil, nil, fmt.Errorf("vector search: %w", err)
+			return nil, nil, false, fmt.Errorf("vector search: %w", err)
 		}
 		hits := res.H
+		stale = res.StaleIndex
 
 		missing := make([]string, 0, len(hits))
 		for _, h := range hits {
@@ -125,7 +127,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 			fetched, err := s.repo.GetMany(hydrateCtx, teamID, missing)
 			if err != nil {
 				finish(nil, err, "")
-				return nil, nil, fmt.Errorf("load drawer rows: %w", err)
+				return nil, nil, false, fmt.Errorf("load drawer rows: %w", err)
 			}
 			hydrated += len(fetched)
 			for id, d := range fetched {
@@ -138,7 +140,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		// than survivors is what lets rankRetrieved keep the signature the eval
 		// arms depend on — they share one retrieved pool across arms, so a
 		// per-arm retrieval would confound the comparison they exist to make.
-		_, distinct := survivorsFrom(hits, rows, q)
+		_, distinct := survivorsFrom(hits, rows, q, stale)
 
 		stop := retrieveStop(distinct, candidateK, len(hits), k, q, hits)
 		widen := []attribute.KeyValue{
@@ -152,7 +154,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		retrieve.Event("widen", widen...)
 		if stop != "" {
 			finish(hits, nil, stop)
-			return hits, rows, nil
+			return hits, rows, stale, nil
 		}
 		k *= 2
 	}

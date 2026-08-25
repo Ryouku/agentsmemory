@@ -27,7 +27,7 @@ type Hybrid struct {
 
 // GateConfig pins the R2 serving gate's cost and safety bounds. The gate
 // compares the index half's population against the source of truth's before
-// serving (ADR-027 R2); these four numbers are the levers an operator needs:
+// serving (ADR-029 R2); these four numbers are the levers an operator needs:
 // how long a cached count pair is trusted, where exact counts stop being worth
 // their price, and how often a rebuild may fire.
 type GateConfig struct {
@@ -40,8 +40,9 @@ type GateConfig struct {
 	// ExactCountCap is the largest expected population for which the gate reads
 	// an exact index count. Above it the gate reads the approximate count, which
 	// can lag; a lagged read is suppressed by the watermark and can never alone
-	// trigger a rebuild. Defaults to the package-level ExactCountCap; an
-	// operator with a measured count cost may raise or lower it.
+	// trigger a rebuild. Defaults to the package-level ExactCountCap. It is not
+	// yet operator-tunable: NewHybrid pins DefaultGateConfig, and wiring the four
+	// gate knobs through flags is an open follow-up (ADR-029 T-list).
 	ExactCountCap int
 
 	// MinRebuildInterval is the floor between rebuild starts per namespace, so
@@ -84,6 +85,7 @@ func NewHybridWithConfig(sot SourceOfTruth, index VectorStore, cfg GateConfig) *
 		gate: gate{
 			cfg:        cfg,
 			pair:       map[string]countPair{},
+			inflight:   map[string]*pairWait{},
 			watermark:  map[string]int{},
 			rebuilding: map[string]bool{},
 			lastStart:  map[string]time.Time{},
@@ -100,6 +102,9 @@ type gate struct {
 
 	// pair caches the last count comparison per namespace (expected, indexed).
 	pair map[string]countPair
+	// inflight is the single-flight slot for a namespace's count refresh: the
+	// leader computes the pair and fills the wait, waiters block on its done.
+	inflight map[string]*pairWait
 	// watermark is the index count recorded at the last successful write to
 	// the namespace (or rebuild completion). A sampled read below it is a
 	// lagged count, not a deficit, and does not corroborate a rebuild.
@@ -111,6 +116,16 @@ type gate struct {
 	lastStart map[string]time.Time
 	// lastFail is the last rebuild failure, for RebuildFailureCooldown.
 	lastFail map[string]time.Time
+}
+
+// pairWait is the single-flight slot for a namespace's count refresh. The
+// leader fills p and err under the gate lock and closes done; waiters block on
+// done and take the filled result, so N concurrent queries on an expired pair
+// issue one count refresh instead of N.
+type pairWait struct {
+	done chan struct{}
+	p    countPair
+	err  error
 }
 
 // countPair is one cached population comparison.
@@ -160,7 +175,7 @@ func (h *Hybrid) Upsert(ctx context.Context, namespace string, points []Point) e
 }
 
 // Search is served by the index while the halves agree on population, and by
-// the source of truth when the index has fallen behind (ADR-027 R2): a behind
+// the source of truth when the index has fallen behind (ADR-029 R2): a behind
 // index cannot return an empty answer to a population gap. The fallback serves
 // the SoT's own vector path — the same backend the default deployment serves
 // from — marks the result StaleIndex, and triggers an asynchronous rebuild
@@ -184,8 +199,14 @@ func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32,
 	// the truth and rebuild the index off the request path.
 	h.triggerRebuild(namespace, p)
 	res, err := h.sot.Search(ctx, namespace, vector, k, filter)
+	if err != nil {
+		// No recall was served; the stale flag is a statement about a served
+		// result, and stamping a failed one would hand a caller a result to trust
+		// alongside the error it is expected to reject.
+		return res, err
+	}
 	res.StaleIndex = true
-	return res, err
+	return res, nil
 }
 
 // countPairFor returns the cached population comparison for the namespace,
@@ -197,10 +218,29 @@ func (h *Hybrid) countPairFor(ctx context.Context, namespace string) (countPair,
 		h.gate.mu.Unlock()
 		return p, nil
 	}
+	if w, ok := h.gate.inflight[namespace]; ok {
+		// Another query is already refreshing this namespace's pair. Wait for it
+		// rather than issue a second count: the count pair is the cost the cache
+		// exists to amortize, and a stampede at TTL expiry would pay it per query.
+		h.gate.mu.Unlock()
+		select {
+		case <-w.done:
+			return w.p, w.err
+		case <-ctx.Done():
+			return countPair{}, ctx.Err()
+		}
+	}
+	w := &pairWait{done: make(chan struct{})}
+	h.gate.inflight[namespace] = w
 	h.gate.mu.Unlock()
 
 	expected, err := h.sot.Count(ctx, namespace)
 	if err != nil {
+		h.gate.mu.Lock()
+		delete(h.gate.inflight, namespace)
+		w.err = err
+		close(w.done)
+		h.gate.mu.Unlock()
 		return countPair{}, fmt.Errorf("count source of truth: %w", err)
 	}
 	indexed, sampled, err := h.indexCount(ctx, namespace, expected)
@@ -213,13 +253,19 @@ func (h *Hybrid) countPairFor(ctx context.Context, namespace string) (countPair,
 		// nothing to serve.
 		p := countPair{expected: expected, indexed: 0, sampled: false, at: time.Now()}
 		h.gate.mu.Lock()
+		delete(h.gate.inflight, namespace)
 		h.gate.pair[namespace] = p
+		w.p = p
+		close(w.done)
 		h.gate.mu.Unlock()
 		return p, nil
 	}
 	p := countPair{expected: expected, indexed: indexed, sampled: sampled, at: time.Now()}
 	h.gate.mu.Lock()
+	delete(h.gate.inflight, namespace)
 	h.gate.pair[namespace] = p
+	w.p = p
+	close(w.done)
 	h.gate.mu.Unlock()
 	return p, nil
 }
@@ -302,12 +348,25 @@ func (h *Hybrid) rebuildAsync(namespace string) {
 // re-arms a backed-off namespace (the failure may have been transient).
 func (h *Hybrid) afterWrite(ctx context.Context, namespace string, indexOK bool) {
 	h.gate.mu.Lock()
+	// Capture the cached expected population before the invalidation: it is what
+	// the cap decision (expected > ExactCountCap) runs on, so the write path can
+	// spend the approximate count above the cap instead of the exact one the read
+	// path was engineered to avoid. Without a cached pair there is no population
+	// to compare against, and the exact count is the honest fallback.
+	p, hasExpected := h.gate.pair[namespace]
+	expected := p.expected
 	delete(h.gate.pair, namespace)
 	h.gate.mu.Unlock()
 	if !indexOK {
 		return
 	}
-	w, err := h.index.Count(ctx, namespace)
+	var w int
+	var err error
+	if hasExpected {
+		w, _, err = h.indexCount(ctx, namespace, expected)
+	} else {
+		w, err = h.index.Count(ctx, namespace)
+	}
 	if err != nil {
 		return
 	}

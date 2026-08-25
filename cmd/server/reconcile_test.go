@@ -78,7 +78,7 @@ func fixturePoints(n int) []store.Point {
 	return out
 }
 
-// TestReconcileReportsPartialDrift pins the ADR-027 report: an index at 7 of 10
+// TestReconcileReportsPartialDrift pins the ADR-029 report: an index at 7 of 10
 // at boot is not repaired (the empty case is) but is NAMED — the 3 missing
 // points were invisible before this report existed.
 func TestReconcileReportsPartialDrift(t *testing.T) {
@@ -199,5 +199,40 @@ func TestDoctorIndexFailsOnPartialDrift(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report does not name %q, so an operator cannot act on it:\n%s", want, out)
 		}
+	}
+}
+
+// TestReconcileReportStringIsDeterministic: the boot log iterates maps, and a
+// map's iteration order is random — the same report must render identically
+// every run, or an operator grepping the boot log for a namespace cannot rely
+// on the clause order (indexdrift.go sorts ids for exactly this reason: a
+// deterministic report is a diffable and greppable one).
+func TestReconcileReportStringIsDeterministic(t *testing.T) {
+	a := ReconcileReport{
+		Rebuilt: []string{"wing-1"},
+		Under:   map[string]int{"omega": 3, "alpha": 1},
+		Over:    map[string]int{"zeta": 2, "beta": 4},
+	}
+	b := ReconcileReport{
+		Rebuilt: []string{"wing-1"},
+		Under:   map[string]int{"alpha": 1, "omega": 3},
+		Over:    map[string]int{"beta": 4, "zeta": 2},
+	}
+	sa, sb := a.String(), b.String()
+	if sa != sb {
+		t.Errorf(`the same report rendered differently between runs:
+%s
+vs
+%s`, sa, sb)
+	}
+	iAlpha := strings.Index(sa, "alpha")
+	iOmega := strings.Index(sa, "omega")
+	if iAlpha < 0 || iOmega < 0 {
+		t.Fatalf(`the rendered report lost a namespace:
+%s`, sa)
+	}
+	if iAlpha > iOmega {
+		t.Errorf(`the report's namespace clauses are not sorted (alpha after omega):
+%s`, sa)
 	}
 }

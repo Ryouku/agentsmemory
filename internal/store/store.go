@@ -44,7 +44,7 @@ type Hit struct {
 // SearchResult is what a search returns: the hits, plus whether the index that
 // served them was behind the source of truth when it did.
 //
-// StaleIndex is the carrier of the behind-index flag (ADR-027). It lives on the
+// StaleIndex is the carrier of the behind-index flag (ADR-029). It lives on the
 // interface's return type — not as a parallel method — because every production
 // caller consumes the interface: the flag is reachable from serving or it is
 // not reachable at all. A single backend (sqlite, qdrant, chromem) is its own
@@ -59,7 +59,7 @@ type SearchResult struct {
 // counts on a large namespace are the accuracy/cost lever of the backing
 // stores; above the cap the check may use an approximate count, flagged as
 // sampled (the raw fields' count_quality), and an approximate count ALONE never
-// triggers a rebuild (ADR-027) — the corroborating signal is the index-ingested
+// triggers a rebuild (ADR-029) — the corroborating signal is the index-ingested
 // watermark.
 const ExactCountCap = 100_000
 
@@ -174,7 +174,7 @@ type SourceOfTruth interface {
 
 // ApproximateCounter is an OPTIONAL refinement of VectorStore, satisfied by an
 // index that can report its population cheaply at the cost of exactness. The
-// serving gate (Hybrid, ADR-027 R2) reads it instead of Count once a namespace
+// serving gate (Hybrid, ADR-029 R2) reads it instead of Count once a namespace
 // is expected to hold more than the gate's ExactCountCap points; the value can
 // lag the durable count, so the gate never lets a sampled read alone trigger a
 // rebuild — it corroborates against the index-ingested watermark.

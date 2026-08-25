@@ -459,7 +459,12 @@ type searchHitView struct {
 	drawerView
 	// MemoryID is the stable logical-memory handle. ID above remains the best
 	// matching stored passage for compatibility and may be a child chunk.
-	MemoryID    string  `json:"memory_id"`
+	MemoryID string `json:"memory_id"`
+	// StaleIndex marks a recall the index did not serve: the hits came from the
+	// source of truth's own vector path because the index was behind it, and a
+	// rebuild is in flight. Omitted on a healthy recall so responses stay
+	// byte-identical to before.
+	StaleIndex  bool    `json:"stale_index,omitempty"`
 	Score       float64 `json:"score"`        // fused hybrid rank (vector + BM25 + closet boost), higher is better
 	BM25        float64 `json:"bm25_score"`   // raw lexical BM25 component, for transparency
 	ClosetBoost float64 `json:"closet_boost"` // closet rank boost folded into score, for transparency
@@ -582,7 +587,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
+			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched, StaleIndex: h.StaleIndex}
 			ids[i] = h.MemoryID
 			fullContent := h.MemoryContent
 			if fullContent == "" {

@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1285,7 +1286,7 @@ func publishedLoopback() bool {
 // re-writing every vector on every boot would make startup scale with the palace.
 // Partial fall-behind is not repaired here — it is NAMED here, because an index
 // at 800 of 1000 points boots clean today and nothing reports the 200 missing
-// (ADR-027 R2's population check catches it at search time instead).
+// (ADR-029 R2's population check catches it at search time instead).
 func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chromemvec.Index, hybrid *store.Hybrid) (ReconcileReport, error) {
 	var report ReconcileReport
 	namespaces, err := sot.Namespaces(ctx)
@@ -1346,13 +1347,25 @@ func (r ReconcileReport) String() string {
 	if len(r.Rebuilt) > 0 {
 		parts = append(parts, fmt.Sprintf("rebuilt %d empty namespace(s): %s", len(r.Rebuilt), strings.Join(r.Rebuilt, ", ")))
 	}
-	for ns, missing := range r.Under {
-		parts = append(parts, fmt.Sprintf("namespace %q is %d point(s) behind the source of truth", ns, missing))
+	for _, ns := range sortedReportNamespaces(r.Under) {
+		parts = append(parts, fmt.Sprintf("namespace %q is %d point(s) behind the source of truth", ns, r.Under[ns]))
 	}
-	for ns, excess := range r.Over {
-		parts = append(parts, fmt.Sprintf("namespace %q holds %d point(s) the source of truth does not", ns, excess))
+	for _, ns := range sortedReportNamespaces(r.Over) {
+		parts = append(parts, fmt.Sprintf("namespace %q holds %d point(s) the source of truth does not", ns, r.Over[ns]))
 	}
 	return "chromem index reconcile: " + strings.Join(parts, "; ")
+}
+
+// sortedReportNamespaces returns the keys of m in sorted order, so the boot
+// log's namespace clauses render identically run to run — a random map order
+// would make the same report diff differently between boots.
+func sortedReportNamespaces(m map[string]int) []string {
+	ns := make([]string, 0, len(m))
+	for n := range m {
+		ns = append(ns, n)
+	}
+	sort.Strings(ns)
+	return ns
 }
 
 // openDB opens a pure-Go (no cgo) SQLite database through gorm's glebarez

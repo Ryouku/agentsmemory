@@ -16,9 +16,10 @@ import (
 // result it serves), and an index that can lag, fail, and block on demand.
 
 type gateSoT struct {
-	mu       sync.Mutex
-	points   map[string][]store.Point
-	countErr error // failure injection for the truth-half count
+	mu        sync.Mutex
+	points    map[string][]store.Point
+	countErr  error // failure injection for the truth-half count
+	searchErr error // failure injection for the truth-half search
 }
 
 func newGateSoT() *gateSoT { return &gateSoT{points: map[string][]store.Point{}} }
@@ -37,6 +38,9 @@ func (f *gateSoT) Upsert(_ context.Context, ns string, pts []store.Point) error 
 func (f *gateSoT) Search(_ context.Context, ns string, _ []float32, k int, _ store.Filter) (store.SearchResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.searchErr != nil {
+		return store.SearchResult{}, f.searchErr
+	}
 	var hits []store.Hit
 	for _, p := range f.points[ns] {
 		hits = append(hits, store.Hit{ID: p.ID, Score: 1, Payload: p.Payload})
@@ -350,7 +354,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 var errIndexDown = errors.New("index write down")
 
-// TestSearchFallsBackWhenIndexBehind is the ADR-027 R2 core: an index at 7 of
+// TestSearchFallsBackWhenIndexBehind is the ADR-029 R2 core: an index at 7 of
 // 10 serves the source-of-truth hits with stale_index set, never an empty
 // result, and the behind index is rebuilt off the request path.
 func TestSearchFallsBackWhenIndexBehind(t *testing.T) {
@@ -804,4 +808,27 @@ func TestSearchServesFromIndexWhenHealthy(t *testing.T) {
 		t.Fatalf("healthy search returned %d hits, want 5", len(res.H))
 	}
 	_ = idx
+}
+
+// TestSearchDoesNotStampStaleIndexOnSoTError: a degraded recall whose
+// source-of-truth search errors must not return a result carrying the stale
+// flag — the flag is a statement about a served recall, and there is no recall
+// to stamp. Setting it anyway would hand a caller a result to trust alongside
+// the error it is expected to reject.
+func TestSearchDoesNotStampStaleIndexOnSoTError(t *testing.T) {
+	h, sot, idx := newGateHybrid(t, store.DefaultGateConfig())
+	ctx := context.Background()
+	if err := h.Upsert(ctx, "ns", points(1, "both")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	idx.drop("ns", 1) // the index falls behind to empty
+	sot.searchErr = errors.New("truth down")
+
+	res, err := h.Search(ctx, "ns", []float32{0, 0, 0}, 5, nil)
+	if err == nil {
+		t.Fatal("the source-of-truth search error must surface")
+	}
+	if res.StaleIndex {
+		t.Error("a failed recall was stamped stale — the flag claims a served result that does not exist")
+	}
 }

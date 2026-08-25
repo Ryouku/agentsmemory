@@ -1020,7 +1020,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("embed eval query: %w", err)
 	}
 	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
-	hits, rows, err := s.searchCandidates(caseCtx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
+	hits, rows, stale, err := s.searchCandidates(caseCtx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
 	if err != nil {
 		caseOut = telemetry.FailedClosed
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval candidate pool: %w", err)
@@ -1223,7 +1223,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			hybrid := s.serviceForArm(ArmHybrid)
 			page, _, err := hybrid.rankRetrieved(armCtx, teamID, c.Query, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: len(ctxHits), SkipTelemetry: true,
-			}, vec, ctxHits, ctxRows)
+			}, vec, ctxHits, ctxRows, ctxRes.StaleIndex)
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 				caseOut = telemetry.FailedClosed
@@ -1237,7 +1237,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonOff))
 				break
 			}
-			page, reranked, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows)
+			page, reranked, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows, stale)
 			if err != nil {
 				armSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 				break
@@ -1341,7 +1341,7 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 	if err != nil {
 		return nil, fmt.Errorf("embed query for pooling: %w", err)
 	}
-	hits, rows, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: wing}, vec, poolSize)
+	hits, rows, stale, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: wing}, vec, poolSize)
 	if err != nil {
 		return nil, fmt.Errorf("pool candidate search: %w", err)
 	}
@@ -1358,7 +1358,7 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 		}
 		page, _, err := svc.rankRetrieved(ctx, teamID, query, SearchQuery{
 			Query: query, Wing: wing, Limit: perArm, SkipTelemetry: true,
-		}, vec, hits, rows)
+		}, vec, hits, rows, stale)
 		if err != nil {
 			return
 		}

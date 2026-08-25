@@ -253,7 +253,7 @@ func TestIndexDriftChecksClosetsToo(t *testing.T) {
 // the per-id audit by construction — it only asks for drawer ids — so the
 // report must carry the index half's REAL population count. Without it the
 // coverage view renders indexed == expected, indistinguishable from a perfect
-// index (ADR-027 R3's raw-fields promise).
+// index (ADR-029 R3's raw-fields promise).
 func TestIndexDriftCarriesRealIndexPopulation(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)
