@@ -337,14 +337,26 @@ Normal operation. Recall before you act, persist before you stop.
 
    Cross-check anything that disagrees against the artifact, never against whichever
    drawer you happen to like.
-4. `am_search(<task>, wing: "wing_agentmemories")` — past decisions and rationale
-   for the work in front of you. This is the *only* source of cross-session *why*;
-   don't reconstruct from code what memory explains.
+4. `am_search(<task>, wing: …)` — past decisions and rationale for the work in front
+   of you. This is the *only* source of cross-session *why*; don't reconstruct from
+   code what memory explains.
 
    ⚠ **Pass the wing explicitly.** `am_status` reports `default_wing: ""` for the
    registrations used here, and an unscoped recall then spans EVERY wing in the
    workspace — thousands of drawers from unrelated projects. They do not remove
    your answer; they add competitors ahead of it.
+
+   ⚠ **But WHICH wing depends on the question, and getting this wrong looks like
+   silence rather than an error:**
+   - *"why is this code shaped this way", "what did we decide here", "what is
+     open"* → `wing: "wing_agentmemories"`.
+   - *"how do we write X"* — datastar, Go, git, testing, any craft or library
+     question → **`wing: "wing_craft"`**. Measured 2026-08-25: **every** datastar
+     drawer lives in `wing_craft`, so a session that scoped this step to the project
+     wing searched 1,722 drawers holding none of the answer, got silence, and — per
+     the failure this protocol keeps naming — would have written the idiom it
+     already knew. Two searches are cheap; a wrong one is indistinguishable from
+     "nothing is filed".
 
    ⚠ Search the **task**, never the **entry point**: the root is reached by the
    address in step 3, and a note that quotes a query outranks the thing it
