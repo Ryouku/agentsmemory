@@ -171,3 +171,17 @@ type SourceOfTruth interface {
 	// without re-embedding. The interface method is declared on VectorStore; this
 	// is the stronger promise the durable store makes about it.
 }
+
+// ApproximateCounter is an OPTIONAL refinement of VectorStore, satisfied by an
+// index that can report its population cheaply at the cost of exactness. The
+// serving gate (Hybrid, ADR-027 R2) reads it instead of Count once a namespace
+// is expected to hold more than the gate's ExactCountCap points; the value can
+// lag the durable count, so the gate never lets a sampled read alone trigger a
+// rebuild — it corroborates against the index-ingested watermark.
+//
+// A backend whose Count is exact and cheap at any size (chromem counts an
+// in-memory collection) simply does not implement this; the gate keeps using
+// Count for it.
+type ApproximateCounter interface {
+	ApproximateCount(ctx context.Context, namespace string) (int, error)
+}
