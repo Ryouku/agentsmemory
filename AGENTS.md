@@ -247,14 +247,35 @@ Normal operation. Recall before you act, persist before you stop.
 2. `am_status` — workspace identity (`mode` + `workspace`), palace shape, quota.
    This repo's wing is **`wing_agentmemories`**; if it is not in the list yet,
    this is the first session here and your first write creates it.
-3. **Your root is `wing_agentmemories`, room `llm_init`.** Load it with
-   `am_list_drawers(wing:"wing_agentmemories", room:"llm_init")` before you plan or
-   write code. It is a routing table plus a floor plan: which rooms load whole,
-   which are searched, and the name+id of every drawer worth reaching first.
-   Everything else in the palace resolves from there — this is the only address you
-   have to know.
-4. `am_search(<task>)` — past decisions and rationale. This is the *only* source
-   of cross-session *why*; don't reconstruct from code what memory explains.
+3. **Your root is `wing_agentmemories`, room `llm_init`** — the only address you
+   have to know. Everything else resolves from it, **by traversal, not by search**:
+
+   ```
+   am_list_drawers(wing:"wing_agentmemories", room:"llm_init")  # the root names itself
+   am_kg_query(entity:"<the root drawer's own id>", direction:"outgoing")
+   am_get_drawer(id, whole:true)                                # once per must.* edge
+   ```
+
+   **Fetch EVERY `must.*` edge — all of them, not the ones that look relevant to
+   your task.** That selection is made with exactly the knowledge the tier exists to
+   supply, and skipping is silent: nothing reports the drawer you did not read.
+   `am_get_drawer` is a by-id row read — no embedding, no search, no ranking — so
+   the whole tier costs less than one confident wrong assumption. Measured
+   2026-08-25: two sessions each found load-bearing material inside a `must.*`
+   drawer whose label sounded unrelated to their task, and would have cherry-picked
+   it away. `ref.*` edges are on demand.
+
+   ⚠ **Zero edges means the query failed open, not that nothing is filed** —
+   `am_kg_query` returns `count: 0` with no error for an unrecognised entity.
+
+   ⚠ **`llm_init` is the one room small enough to list.** `am_list_drawers` caps at
+   ~22-25 chunks and silently spills the rest to a file that never enters your
+   context, so it is never how you load anything else.
+4. `am_search(<task>)` — past decisions and rationale for the work in front of you.
+   This is the *only* source of cross-session *why*; don't reconstruct from code
+   what memory explains. ⚠ Search the **task**, never the **entry point**: the root
+   is reached by the address in step 3, and a note that quotes a query outranks the
+   thing it describes.
 5. `am_list_skills` → `am_load_skill(<name>)` — the team's centralised
    conventions for the stack you're touching. This repo is Go, so `effective-go`
    at minimum; add `cqrs` when the work is live/realtime or fans out across
