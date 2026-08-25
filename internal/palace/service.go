@@ -310,10 +310,10 @@ func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
 // service is shared.
 func (s *Service) WithRerankNorm(name string) *Service {
 	switch name {
-	case RerankNormSigmoid, RerankNormRank:
+	case RerankNormMinMax, RerankNormSigmoid, RerankNormRank:
 		s.rerankNorm = name
 	default:
-		s.rerankNorm = RerankNormMinMax
+		s.rerankNorm = DefaultRerankNorm
 	}
 	return s
 }
@@ -322,7 +322,7 @@ func (s *Service) WithRerankNorm(name string) *Service {
 // table name the same thing the blend actually used.
 func (s *Service) RerankNormName() string {
 	if s.rerankNorm == "" {
-		return RerankNormMinMax
+		return DefaultRerankNorm
 	}
 	return s.rerankNorm
 }
@@ -479,7 +479,7 @@ func (s *Service) RankingProfile() string {
 	}
 	rerank := "off"
 	if s.rerank != nil {
-		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
+		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f,norm=%s)", s.rerankPool, s.rerankWeight, s.RerankNormName())
 	}
 	profile := fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
 		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
@@ -1322,7 +1322,7 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		return ranked, false
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
-	return BlendRerankWith(ranked, scores, weight, s.rerankNorm), true
+	return BlendRerankWith(ranked, scores, weight, s.RerankNormName()), true
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
@@ -1380,6 +1380,14 @@ const (
 	// but it still forces the extremes to {0,1}, so it does NOT fix the tie. It is
 	// here to separate the two halves of the defect in the measurement.
 	RerankNormRank = "rank"
+	// DefaultRerankNorm is the served policy. It is sigmoid rather than min-max
+	// because min-max is scale-free on BOTH axes: it cannot distinguish a
+	// cross-encoder that is certain from one that is indifferent, and on a small
+	// pool at weight 0.5 it makes an opposed pair tie, discarding the
+	// cross-encoder's verdict entirely. Measured on this stack 2026-08-25 — a
+	// served page returned two hits both at blended_score 0.5000 while the closest
+	// hit by cosine distance was placed last.
+	DefaultRerankNorm = RerankNormSigmoid
 )
 
 // normalizeSigmoid maps raw cross-encoder logits into (0,1) per element.
@@ -1435,8 +1443,10 @@ func normalizeBlendAxes(rerank, fused []float64, norm string) (rerankNorm, fused
 		// confidence either. It is the control that separates "magnitude mattered"
 		// from "getting off min-max mattered".
 		return normalizeRank(rerank), normalizeRank(fused)
-	default:
+	case RerankNormMinMax:
 		return normalizeScores(rerank), normalizeScores(fused)
+	default:
+		return normalizeBlendAxes(rerank, fused, DefaultRerankNorm)
 	}
 }
 

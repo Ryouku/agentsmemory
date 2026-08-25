@@ -244,6 +244,23 @@ type Config struct {
 	// it names an identifier; 0 disables reranking without unconfiguring it.
 	RerankWeight float64
 
+	// RerankNorm names how a raw cross-encoder score is brought onto a scale
+	// comparable with the fused score, before RerankWeight blends the two.
+	//
+	//   sigmoid  1/(1+e^-x) on the logit, fused scaled by the pool max. Preserves
+	//            MAGNITUDE, so an indifferent cross-encoder contributes little and
+	//            the lexical evidence decides. The served default.
+	//   minmax   the original: both axes rescaled to [0,1] across the pool. It is
+	//            SCALE-FREE, so a 0.001 logit spread and a 10.0 one both come out
+	//            spanning the full range, and on a small pool at weight 0.5 an
+	//            opposed pair ties and the cross-encoder is discarded outright.
+	//   rank     position only on both axes. Cannot amplify noise, cannot express
+	//            confidence, and still ties. Kept because it is what separates
+	//            "magnitude mattered" from "getting off min-max mattered".
+	//
+	// Empty resolves to the default, so an operator who never sets it gets sigmoid.
+	RerankNorm string
+
 	// RerankTimeout bounds a rerank call. It is separate from HTTPTimeout because
 	// the other outbound calls (embed, Qdrant) answer in milliseconds while this
 	// one is doing real inference, and one shared budget means either cutting the
@@ -338,18 +355,22 @@ func (c Config) ScopeSearchToWing() bool {
 // Flag and env resolution in cmd/server overlays user-supplied values on top.
 func Default() Config {
 	return Config{
-		Addr:                   ":8080",
-		DBPath:                 "agentsmemory.db",
-		VectorBackend:          VectorBackendSQLite,
-		QdrantURL:              "http://localhost:6333",
-		EmbedBackend:           "ollama",
-		SearchScope:            "wing",
-		OllamaURL:              "http://localhost:11434",
-		OllamaEmbedModel:       "bge-m3",
-		HTTPTimeout:            30 * time.Second,
-		BM25Weight:             "auto",
-		RerankPool:             10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
-		RerankWeight:           0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		Addr:             ":8080",
+		DBPath:           "agentsmemory.db",
+		VectorBackend:    VectorBackendSQLite,
+		QdrantURL:        "http://localhost:6333",
+		EmbedBackend:     "ollama",
+		SearchScope:      "wing",
+		OllamaURL:        "http://localhost:11434",
+		OllamaEmbedModel: "bge-m3",
+		HTTPTimeout:      30 * time.Second,
+		BM25Weight:       "auto",
+		RerankPool:       10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
+		RerankWeight:     0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
+		// palace.DefaultRerankNorm. Not min-max: that sweep ran at pools of 128 and
+		// 10, where min-max's degeneracy does not appear, while 17.6% of real
+		// reranked recalls run at four candidates or fewer.
+		RerankNorm:             "sigmoid",
 		ClosetBoost:            0,
 		RetrieveK:              0,
 		Fusion:                 "rrf",

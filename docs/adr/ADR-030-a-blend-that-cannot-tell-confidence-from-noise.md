@@ -6,7 +6,7 @@
 **Spec:** None — no spec stage; grounded in a live page served by the deployed container on 2026-08-25, an isolated arithmetic probe over `BlendRerank`, and 648 reranked recalls in the deployed `search_events` table.
 **Cross-references:** `internal/palace/service.go` (`BlendRerank`, `normalizeScores`), `internal/config/config.go:352` (`RerankWeight: 0.5`, "chosen by the eval's weight sweep"), `docs/adr/ADR-024-rank-memories-not-chunks.md` (the blend and the ranking unit), `docs/adr/ADR-014-the-shipped-default-is-the-measured-one.md` (a default is measured, never chosen), `docs/adr/ADR-028-a-recall-you-can-judge.md` (`blended_score` on the wire — the field that made this visible), `docs/adr/ADR-001-recall-answers-or-abstains.md` (the top-1 distance distributions)
 **Invalidates:** nothing outright, but it **reopens ADR-024's weight**. ADR-024 established the blend and is not contradicted; what is contradicted is the assumption that a weight measured on large pools transfers to the pools production actually serves.
-**Served-path change:** none yet. This ADR ships an eval arm and a fixture that can exhibit the defect; the ranking change is T2 and only after T1 measures which alternative wins.
+**Served-path change:** `RERANK_NORM` now defaults to `sigmoid`, so the served blend preserves cross-encoder magnitude instead of min-max stretching it. **This shipped ahead of the corpus eval on the project owner's explicit instruction (2026-08-25), against this ADR's own T2 precondition** — the fixture evidence is strong and the corpus measurement was still running. Recorded as a deviation rather than presented as the process: if the eval table contradicts it, the default reverts.
 
 ## Context
 
@@ -110,7 +110,13 @@ Either way the tuning method changes: a weight swept on large pools is not a wei
 ## Risks
 
 - **A new normalisation can be worse everywhere else while fixing the small-pool case.** This is why T1 measures on the existing corpus as well as the new fixture, and why the served blend is one of the arms rather than the assumed loser.
-- **Sigmoid on a raw logit imports a scale assumption.** Cross-encoder logits are not calibrated probabilities, and a sigmoid's useful range depends on the model. The arm is measured, not assumed, and if it wins the ADR records that the constant is model-specific.
+- **Sigmoid on a raw logit imports a scale assumption — and this risk MATERIALISED during execution, which is why it is worth reading twice.** Cross-encoder logits are not calibrated probabilities, and a sigmoid's useful range depends on the model.
+
+`TestSearchRerankDecidesTheOrder` went red the moment the default changed. Its stand-in reranker returned 0.99 and 0.01 — modelling the reranker as emitting PROBABILITIES. It does not: the page served on 2026-08-25 carried rerank scores of -1.1927, -0.5437 and -1.0018, and a probability cannot be negative. Under min-max the fixture's scale could not matter, because min-max rescales whatever arrives, so ANY two distinct numbers behave identically. Under sigmoid it is load-bearing: sigmoid(0.99) against sigmoid(0.01) is 0.729 against 0.502, a weak preference, where the fixture meant to express certainty.
+
+The fixture was corrected to a logit scale rather than the normaliser being weakened, because the real reranker's own output proves which scale is right. But the general hazard stands and is now explicit: **a deployment whose reranker returns bounded probabilities gets a silently weaker rerank contribution under sigmoid.** Nothing detects that today, and detection is not obviously possible — the same run measured a real logit vector (0.480, 0.390, 0.260, 0.210, 0.178) lying entirely within [0,1], so "the scores look like probabilities" is not a test that can distinguish them.
+
+The honest generalisation: **telling an indifferent model from a confident one REQUIRES knowing the score's scale.** No scale-free normaliser can do it, which is exactly why min-max cannot, and any fix therefore imports an assumption about the reranker. The assumption is now documented at `RERANK_NORM`, reported by `am_status` as `norm=`, and switchable back to `minmax` in one environment variable.
 - **The 17.6% figure is a lower bound on exposure, not a tie rate.** It counts pages small enough for the pool to be degenerate; it does not count how often the fused-best was the rerank-worst. Stated so nobody quotes it as "17.6% of recalls were mis-ordered" — this repository has already retracted one statistic quoted past its population.
 
 ## Rollback
