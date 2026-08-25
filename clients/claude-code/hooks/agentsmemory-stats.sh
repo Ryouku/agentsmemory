@@ -13,11 +13,22 @@ agentsmemory_stats_query() {
   STATS_QUERY="hours=${AGENTSMEMORY_STATS_HOURS:-2}"
   TRANSCRIPT="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
   if [ -n "${TRANSCRIPT:-}" ] && [ -f "$TRANSCRIPT" ]; then
-    # Birth time where the filesystem records it (macOS %B, APFS), modification
+    # Birth time where the filesystem records it (GNU %W, BSD %B), modification
     # time everywhere else — either bounds the session closely enough, and a bad
     # value simply falls back to the fixed window below.
-    BORN="$(stat -f %B "$TRANSCRIPT" 2>/dev/null || stat -c %W "$TRANSCRIPT" 2>/dev/null || true)"
-    case "${BORN:-0}" in ''|*[!0-9]*|0) BORN="$(stat -f %m "$TRANSCRIPT" 2>/dev/null || stat -c %Y "$TRANSCRIPT" 2>/dev/null || echo 0)" ;; esac
+    #
+    # GNU form FIRST in both probes, and that order is load-bearing rather than
+    # stylistic. BSD stat has no -c at all, so it REJECTS the GNU probe (usage
+    # error, rc=1, nothing on stdout) and macOS falls through cleanly. The
+    # reverse order does not fail over, because GNU's -f is --file-system and not
+    # a format flag: `stat -f %B FILE` reads "%B" as a second filename, prints
+    # the multiline filesystem block for FILE anyway, AND exits non-zero — so the
+    # `||` branch runs too and BORN captures both. The `-gt` below then dies with
+    # "integer expression expected", and every Linux session silently fell back
+    # to the fixed window. Put the implementation that REJECTS the flag second;
+    # the one that reinterprets it must never go first.
+    BORN="$(stat -c %W "$TRANSCRIPT" 2>/dev/null || stat -f %B "$TRANSCRIPT" 2>/dev/null || true)"
+    case "${BORN:-0}" in ''|*[!0-9]*|0) BORN="$(stat -c %Y "$TRANSCRIPT" 2>/dev/null || stat -f %m "$TRANSCRIPT" 2>/dev/null || echo 0)" ;; esac
     NOW="$(date +%s)"
     if [ "${BORN:-0}" -gt 0 ] && [ "$NOW" -ge "$BORN" ]; then
       MINUTES=$(( (NOW - BORN) / 60 + 1 ))
