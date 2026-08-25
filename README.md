@@ -1154,6 +1154,15 @@ All flags have sensible local defaults:
 | `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
 | `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
 | `--memory-evidence-selector` | `lexical` | `MEMORY_EVIDENCE_SELECTOR` — bounded reranker evidence: literal query coverage or query-time semantic passage selection |
+| `--otel-endpoint` | *(empty)* | `AGENTSMEMORY_OTEL_ENDPOINT` — OpenTelemetry export: empty=off, `stdout` pretty-prints traces to stderr, otherwise an OTLP HTTP collector URL (`http://localhost:4318`). Does not change search results |
+
+### Observability
+
+Runtime execution is OpenTelemetry (ADR-025): one parent span per `am_search` (`am.search`) with child stages `embed`, `retrieve`, `hydrate`, `collapse`, `closet`, `fusion`, `recency`, `rerank`, `record`. Each stage reports `ran` / `bypassed` / `failed_open` / `failed_closed`, plus unsampled `eligible` / `selected` / `effect` / `fallback` counters. MCP tools emit `am.tool`. Outbound HTTP (embed, rerank, Qdrant) and inbound `/mcp` are wrapped.
+
+`search_id` is the SQLite `search_events.id` so a sampled trace can join a durable relevance row. Wing and room appear as booleans (`am.has_wing`, `am.has_room`), never names. Raw queries, memory content and tenant ids are not metric labels.
+
+A collector that is down drops observability, not search. `SkipTelemetry` still skips the SQLite log (eval); OTEL spans are always created and hit the noop provider when `--otel-endpoint` is empty.
 
 ### Memory-level ranking
 

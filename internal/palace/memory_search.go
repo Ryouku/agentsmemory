@@ -6,6 +6,9 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // maxCandidateWidening caps how far past candidateK the memory arm will widen
@@ -63,6 +66,8 @@ func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]S
 // the survivors from survivorsFrom, the same predicate, over an in-memory slice
 // bounded by candidateK.
 func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQuery, vec []float32, candidateK int) ([]store.Hit, map[string]Drawer, error) {
+	retrieveCtx, retrieve := telemetry.Start(ctx, telemetry.StageRetrieve, attribute.Int("am.k", candidateK))
+	hydrateCtx, hydrate := telemetry.Start(retrieveCtx, telemetry.StageHydrate)
 	k := candidateK
 	// Rows already resolved by a narrower prefix. Widening re-asks the index for
 	// a SUPERSET in the same order, so every row loaded on a previous round is
@@ -72,9 +77,30 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 	// Separate from rows because an orphan vector resolves to no row at all;
 	// without this it would be re-queried on every widening round.
 	looked := make(map[string]bool)
-	for {
-		hits, err := s.vectors.Search(ctx, teamID, vec, k, searchFilter(q))
+	rounds := 0
+	hydrated := 0
+	finish := func(hits []store.Hit, err error) {
 		if err != nil {
+			hydrate.End(telemetry.FailedClosed)
+			retrieve.End(telemetry.FailedClosed)
+			return
+		}
+		if hydrated == 0 {
+			hydrate.End(telemetry.Bypassed, attribute.Int("am.count", 0))
+		} else {
+			hydrate.End(telemetry.Ran, attribute.Int("am.count", hydrated))
+		}
+		retrieve.End(telemetry.Ran,
+			attribute.Int("am.count", len(hits)),
+			attribute.Int("am.k", k),
+			attribute.Int("am.rounds", rounds),
+		)
+	}
+	for {
+		rounds++
+		hits, err := s.vectors.Search(retrieveCtx, teamID, vec, k, searchFilter(q))
+		if err != nil {
+			finish(nil, err)
 			return nil, nil, fmt.Errorf("vector search: %w", err)
 		}
 
@@ -86,10 +112,12 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 			}
 		}
 		if len(missing) > 0 {
-			fetched, err := s.repo.GetMany(ctx, teamID, missing)
+			fetched, err := s.repo.GetMany(hydrateCtx, teamID, missing)
 			if err != nil {
+				finish(nil, err)
 				return nil, nil, fmt.Errorf("load drawer rows: %w", err)
 			}
+			hydrated += len(fetched)
 			for id, d := range fetched {
 				rows[id] = d
 			}
@@ -103,12 +131,14 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		_, distinct := survivorsFrom(hits, rows, q)
 
 		if distinct >= candidateK || len(hits) < k {
+			finish(hits, nil)
 			return hits, rows, nil
 		}
 		// Search results are closest-first. Once the farthest member of a full
 		// prefix is outside the caller's distance boundary, every later member is
 		// outside too, so widening cannot add an admissible memory.
 		if q.MaxDistance > 0 && len(hits) > 0 && distanceFromScore(hits[len(hits)-1].Score) > q.MaxDistance {
+			finish(hits, nil)
 			return hits, rows, nil
 		}
 		// Doubling bounds backend round trips logarithmically while preserving the
@@ -123,6 +153,7 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		// memories it did find, which is what it would do at any other point
 		// where the backend runs out.
 		if k >= candidateK*maxCandidateWidening {
+			finish(hits, nil)
 			return hits, rows, nil
 		}
 		k *= 2

@@ -47,6 +47,7 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/chromemvec"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/web"
@@ -146,6 +147,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		RerankWeight:           c.Float("rerank-weight"),
 		RerankTimeout:          c.Duration("rerank-timeout"),
 		HTTPTimeout:            c.Duration("http-timeout"),
+		OTELEndpoint:           strings.TrimSpace(c.String("otel-endpoint")),
 		Debug:                  c.Bool("debug"),
 		Local:                  c.Bool("local"),
 		// Trimmed because the presented credential is: auth.bearerToken strips the
@@ -200,6 +202,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
 		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder: lexical (default/control) or semantic (query-time passage embeddings across the whole memory). Inert without --rerank-url"},
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
+		&cli.StringFlag{Name: "otel-endpoint", Sources: cli.EnvVars("AGENTSMEMORY_OTEL_ENDPOINT"), Value: def.OTELEndpoint, Usage: "OpenTelemetry export: empty=off, 'stdout' pretty-prints traces to stderr, otherwise an OTLP HTTP collector URL (http://localhost:4318). Does not change search results"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
@@ -256,9 +259,21 @@ func run(ctx context.Context, cfg config.Config) error {
 		// Make the "why is it silent?" answer obvious on boot: echo the effective
 		// wiring so a misread flag/env is visible before any request arrives.
 		log.Printf("debug mode ON — request + SQL logging enabled")
-		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s",
+		log.Printf("config: addr=%s db=%s vector_backend=%s ollama=%s/%s rerank=%s otel=%s",
 			cfg.Addr, cfg.DBPath, cfg.VectorBackend, cfg.OllamaURL, cfg.OllamaEmbedModel,
-			cmp.Or(cfg.RerankURL, "off"))
+			cmp.Or(cfg.RerankURL, "off"), cmp.Or(cfg.OTELEndpoint, "off"))
+	}
+
+	shutdown, err := telemetry.Setup(ctx, telemetry.Config{Endpoint: cfg.OTELEndpoint})
+	if err != nil {
+		// A collector that refuses is instrument-health, not a reason to refuse
+		// /mcp. ADR-025: export failure drops observability, not search.
+		log.Printf("otel: setup failed (%v) — serving without traces", err)
+	} else {
+		defer func() { _ = shutdown(context.Background()) }()
+		if cfg.OTELEndpoint != "" {
+			log.Printf("otel: exporting traces to %s", cfg.OTELEndpoint)
+		}
 	}
 
 	// Claim the database before opening it. Only one server may serve a given
@@ -433,7 +448,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	defer ln.Close()
 
 	log.Printf("agentsmemory listening on %s (dashboard /, MCP /mcp, OAuth issuer %s)", listenDescription(cfg), issuer)
-	return http.Serve(ln, r)
+	return serveHTTP(ln, r)
 }
 
 // seedGlobalSkillset writes the default wakeup playbook when the database holds
@@ -577,7 +592,14 @@ func serveLocal(ctx context.Context, cfg config.Config, svc *services, r chi.Rou
 		install += " --socket " + cfg.SocketPath
 	}
 	log.Printf("then install the memory protocol (CLAUDE.md + /M, /am commands + the end-of-turn hook), or the tools sit unused:  %s", install)
-	return http.Serve(ln, r)
+	return serveHTTP(ln, r)
+}
+
+// serveHTTP serves h on ln with inbound OpenTelemetry spans. This is the one
+// place HTTP requests become traces; skipping it would leave /mcp and the
+// dashboard invisible while Search still emitted children with no parent.
+func serveHTTP(ln net.Listener, h http.Handler) error {
+	return http.Serve(ln, telemetry.HTTPHandler(h))
 }
 
 // agentEndpoint renders the /mcp URL to hand an agent for a given listen

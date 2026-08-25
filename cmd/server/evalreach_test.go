@@ -33,6 +33,7 @@ func TestEvalOutputsAreReachableFromTheCommand(t *testing.T) {
 		"cellsPath":              "runEval",
 		"resultsPath":            "runEval",
 		"readCasesWithMeta":      "loadOrGenerateCases",
+		"Setup":                  "runEval",
 	}
 
 	fset := token.NewFileSet()

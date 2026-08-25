@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // keyedMutex is a set of mutexes keyed by string, used to serialize work that must
@@ -79,7 +82,11 @@ type MineResult struct {
 // than accumulates. Content that yields no chunk (shorter than the minimum after
 // trimming) is a valid no-op: the prior source is still purged and zero is
 // reported.
-func (s *Service) Mine(ctx context.Context, teamID string, in MineInput) (MineResult, error) {
+func (s *Service) Mine(ctx context.Context, teamID string, in MineInput) (result MineResult, err error) {
+	_, sp := telemetry.Start(ctx, telemetry.StageMine)
+	defer func() {
+		endStage(sp, err, attribute.Int("am.drawers", result.Drawers), attribute.Int("am.closets", result.Closets))
+	}()
 	wing, err := SanitizeName(in.Wing, "wing")
 	if err != nil {
 		return MineResult{}, err
@@ -310,17 +317,24 @@ func (s *Service) closetBoosts(ctx context.Context, teamID string, vec []float32
 // scale, which is why the split is here rather than a parameter added to every
 // caller.
 func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float32, scale float64) map[string]float64 {
+	closetCtx, sp := telemetry.Start(ctx, telemetry.StageCloset, attribute.Float64("am.scale", scale))
 	boosts := map[string]float64{}
 	if scale == 0 {
 		// The prior is off: skip the closet vector search too, not just the
 		// arithmetic — this is one network call per search.
+		sp.End(telemetry.Bypassed)
 		return boosts
 	}
 	// No filter: a closet summarises a whole source, so its boost is not scoped to
 	// the wing/room a search happens to be narrowed to — the drawers it lifts are
 	// filtered on their own way in.
-	hits, err := s.vectors.Search(ctx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
-	if err != nil || len(hits) == 0 {
+	hits, err := s.vectors.Search(closetCtx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
+	if err != nil {
+		sp.End(telemetry.FailedOpen)
+		return boosts
+	}
+	if len(hits) == 0 {
+		sp.End(telemetry.Ran, attribute.Int("am.count", 0))
 		return boosts
 	}
 	ids := make([]string, len(hits))
@@ -329,6 +343,7 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 	}
 	rows, err := s.repo.ClosetsByIDs(ctx, teamID, ids)
 	if err != nil {
+		sp.End(telemetry.FailedOpen)
 		return boosts
 	}
 	seen := map[string]struct{}{}
@@ -348,6 +363,7 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 			boosts[c.SourceFile] = closetRankBoosts[i] * strength * scale
 		}
 	}
+	sp.End(telemetry.Ran, attribute.Int("am.count", len(boosts)))
 	return boosts
 }
 

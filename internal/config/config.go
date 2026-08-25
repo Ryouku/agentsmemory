@@ -246,6 +246,15 @@ type Config struct {
 	// HTTPTimeout bounds outbound calls to Qdrant and Ollama.
 	HTTPTimeout time.Duration
 
+	// OTELEndpoint is the OpenTelemetry export target. "" (the default) leaves
+	// tracing off — the noop provider, no collector required. "stdout" pretty-prints
+	// traces to stderr so an operator can watch one request's path. Any other
+	// value is an OTLP HTTP collector URL (http://localhost:4318).
+	//
+	// This is ADR-025 PR-E: operational execution evidence. It must not change a
+	// served decision. A collector that is down drops observability, not search.
+	OTELEndpoint string
+
 	// Debug turns on verbose logging: per-request HTTP access logs (chi) and
 	// gorm SQL logging. Off by default so production stays quiet; set APP_DEBUG=true
 	// (or --debug) to see traffic and queries during development.

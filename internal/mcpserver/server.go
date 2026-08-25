@@ -22,11 +22,13 @@ import (
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skill"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/skillset"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // newTool builds a tool with the agentsmemory prefix applied to its name: callers
@@ -77,7 +79,7 @@ type registrar struct {
 // TestEveryMutatingToolIsRegisteredAsAWrite fails when it happens.
 func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	tool = classifyTool(tool, false)
-	r.srv.AddTool(tool, handler)
+	r.srv.AddTool(tool, traceTool(tool.Name, handler))
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: false})
 }
 
@@ -95,7 +97,10 @@ func (r *registrar) add(tool mcp.Tool, handler server.ToolHandlerFunc) {
 // Role resolution is unchanged; this is the consumer that was missing.
 func (r *registrar) addWrite(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	tool = classifyTool(tool, true)
-	r.srv.AddTool(tool, writeGuard(tool.Name, handler))
+	// traceTool wraps OUTSIDE writeGuard so a role refusal is a visible
+	// failed_closed span rather than a silent drop. Argument payloads stay off
+	// the span: ADR-025 forbids dumping tool inputs into telemetry.
+	r.srv.AddTool(tool, traceTool(tool.Name, writeGuard(tool.Name, handler)))
 	r.catalog = append(r.catalog, CatalogEntry{Name: tool.Name, Description: tool.Description, Write: true})
 }
 
@@ -131,6 +136,23 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 				name, string(t.Role))), nil
 		}
 		return handler(ctx, req)
+	}
+}
+
+// traceTool records one am.tool span per invocation. The tool name is an
+// attribute, never a dump of arguments. A handler error or IsError result is
+// failed_closed (including a writeGuard role refusal); a successful result is
+// ran. It is a named function so a test can drive the real wrapper.
+func traceTool(name string, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		_, sp := telemetry.Start(ctx, telemetry.StageTool, attribute.String("am.tool", name))
+		res, err := handler(ctx, req)
+		if err != nil || (res != nil && res.IsError) {
+			sp.End(telemetry.FailedClosed)
+			return res, err
+		}
+		sp.End(telemetry.Ran)
+		return res, err
 	}
 }
 

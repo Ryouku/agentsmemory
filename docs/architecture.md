@@ -77,6 +77,7 @@ nothing, so this column is the one to distrust first.
 | `internal/dataexport` | adapter | the export manifest or redaction changes | dashboard export |
 | `internal/wingbundle` | adapter | the wing bundle format changes | wing export/import |
 | `internal/config` | infra | a setting is added or removed | `configFromCmd` |
+| `internal/telemetry` | infra | how traces and feature counters are exported | `telemetry.Setup`, Search stages, MCP `traceTool`, outbound HTTP |
 | `internal/mcptest` | test-support | the end-to-end harness changes | tests only (ADR-008) |
 | `internal/archguard` | test-support | a dependency rule changes | tests only (this doc's gate) |
 | `internal/doclint` | tooling | the doc-comment rule changes | tests only |
@@ -116,6 +117,7 @@ graph TD
     RRK[rerank/tei]
   end
   AUTH[internal/auth]
+  TEL[internal/telemetry]
 
   CMD --> MCP
   CMD --> WEB
@@ -142,6 +144,9 @@ graph TD
   WEB --> SKS
   AUTH --> TEN
   PAL --> STO
+  PAL --> TEL
+  MCP --> TEL
+  CMD --> TEL
   SQL -.implements VectorStore.-> STO
   CHR -.implements VectorStore.-> STO
   QDR -.implements VectorStore.-> STO
@@ -154,9 +159,10 @@ composition root, the two surfaces, the domain and the adapters. The remaining 4
 modules this view does not name, and `internal/archguard` is what checks all of them.
 
 Solid arrows are imports; dotted arrows are implementations, which point the other way — the
-adapter depends on the port, never the reverse. `internal/palace` imports exactly one first-party
-package (`internal/store`) and `internal/tenant` imports none, which is what lets nine modules
-share identity without a cycle.
+adapter depends on the port, never the reverse. `internal/palace` imports two first-party
+packages (`internal/store` and `internal/telemetry`) and `internal/tenant` imports none, which is
+what lets nine modules share identity without a cycle. Telemetry is not a D2 surface: palace
+records semantic stages; it does not know which transport asked.
 
 ## Dependency Contracts
 
