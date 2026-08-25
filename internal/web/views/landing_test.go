@@ -55,7 +55,7 @@ func TestLandingPageLinksInstallGuide(t *testing.T) {
 	}
 	// The prompt outlives the page it was copied from, so it must not point at a
 	// URL that only works because something redirects it.
-	if strings.Contains(html, "https://aiagentmemory.dev/windows-guide") {
+	if strings.Contains(html, siteURL+"/windows-guide") {
 		t.Error("prompt still names the absorbed /windows-guide URL; it should name the destination")
 	}
 	if !strings.Contains(html, "_copiedNoCLI") {
@@ -411,5 +411,17 @@ func TestLandingBuilderOffersTheNoCLIPath(t *testing.T) {
 	}
 	if !strings.Contains(landingSignals(), "_plat") {
 		t.Error("_plat is not declared in landingSignals()")
+	}
+}
+
+// TestLandingMigrateCommandUsesSiteURL proves the exporter one-liner interpolates
+// the protocol origin rather than a second hosted-URL literal.
+func TestLandingMigrateCommandUsesSiteURL(t *testing.T) {
+	var buf bytes.Buffer
+	if err := LandingPage(LandingData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(buf.String(), "--server "+siteURL) {
+		t.Errorf("migrate command does not interpolate siteURL %q", siteURL)
 	}
 }

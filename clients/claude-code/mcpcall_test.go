@@ -151,7 +151,7 @@ func TestTokenFromClaudeJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".claude.json")
 	// The shape `claude mcp add --header "Authorization: Bearer <token>"` leaves.
-	body := `{"mcpServers":{"other":{"command":"x"},"agentsmemory":{"type":"http","url":"https://aiagentmemory.dev/mcp","headers":{"Authorization":"Bearer sk_live_json"}}}}`
+	body := `{"mcpServers":{"other":{"command":"x"},"agentsmemory":{"type":"http","url":"` + defaultMCPURL + `","headers":{"Authorization":"Bearer sk_live_json"}}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
