@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 )
 
 // AssetVersion is a cache-busting token — a short content hash of the embedded
@@ -538,7 +540,7 @@ type LandingData struct {
 // page regardless of how a given request reached the server (localhost, proxy…).
 const (
 	siteName          = "AI Agent Memory"
-	siteURL           = "https://aiagentmemory.dev"
+	siteURL           = mcpprotocol.HostedOrigin
 	repoURL           = "https://github.com/atvirokodosprendimai/agentsmemory"
 	openCollectiveURL = "https://opencollective.com/it-uoga/projects/ai-agents-memory"
 )
@@ -959,9 +961,9 @@ type launchStep struct {
 }
 
 // claudeGuideURL is the canonical public URL of the agent-facing install guide
-// (served raw-Markdown by handleClaudeGuide). It is hardcoded like landingInstallCmd
-// because the landing page is static marketing copy, not request-scoped.
-const claudeGuideURL = "https://aiagentmemory.dev/claude-guide"
+// (served raw-Markdown by handleClaudeGuide). Derived from HostedOrigin so the
+// guide cannot advertise a different host than the MCP endpoint.
+const claudeGuideURL = mcpprotocol.HostedOrigin + "/claude-guide"
 
 // landingClaudePrompt is the copy-paste prompt a visitor hands to Claude (or any
 // agent) to install the kit hands-free: the agent fetches the guide, asks for the
@@ -970,13 +972,13 @@ const claudeGuideURL = "https://aiagentmemory.dev/claude-guide"
 const landingClaudePrompt = "Read " + claudeGuideURL + " and install the agentsmemory Claude Code kit for me. When you need my workspace API token, ask me — I'll create one in the dashboard."
 
 // installMCPURL is the canonical public URL of the connect-any-client guide
-// (handleInstallMemoryMCP). Hardcoded for the same reason as claudeGuideURL.
+// (handleInstallMemoryMCP). Derived from HostedOrigin like claudeGuideURL.
 //
 // It replaces the older /windows-guide, which absorbed into it and now redirects.
 // The prompt below is pasted into a chat box and lives on past the page, so it
 // names the destination directly rather than spending a redirect hop — while the
 // old URL stays alive for prompts already in circulation.
-const installMCPURL = "https://aiagentmemory.dev/install-memory-mcp"
+const installMCPURL = mcpprotocol.HostedOrigin + "/install-memory-mcp"
 
 // windowsPrompt is the copy-paste prompt for a visitor with no CLI — Windows, VS
 // Code, Cursor, Claude Desktop. The installer is a bash script and a Linux/macOS
