@@ -293,10 +293,12 @@ Normal operation. Recall before you act, persist before you stop.
    it away. `ref.*` edges are on demand.
 
    ⚠ **The room holds several drawers and the listing does not flag which is the
-   root.** It is the one whose content opens `WHAT MUST I LOAD AT THE START OF A
-   SESSION?` (its `source_file` begins `INIT —`). Take **that** drawer's own id for
-   the `am_kg_query` above; the siblings are reached as edges, so do not traverse
-   from one of them.
+   root.** It is the one whose **content** opens `WHAT MUST I LOAD AT THE START OF A
+   SESSION?`. Use the content line, not the filename: a sibling is called
+   `INIT FLOOR PLAN — …`, so an `INIT` prefix match picks the wrong drawer and the
+   siblings are themselves `must.*` targets. Traversing from one of them returns zero
+   edges, which this file teaches you to read as a failed query — silent, at the step
+   where silence is indistinguishable from breakage.
 
    ⚠ **Zero edges means the query failed open, not that nothing is filed** —
    `am_kg_query` returns `count: 0` with no error for an unrecognised entity.
@@ -320,10 +322,21 @@ Normal operation. Recall before you act, persist before you stop.
    read as current by anyone following the steps above alone.
 
    Predicate-without-entity is an entry point in its own right, so **one call
-   returns every retraction in the workspace** — nine of them at the time of
-   writing, a few hundred bytes. Match the objects against the ids you just
-   fetched. Cross-check anything that disagrees against the artifact, never against
-   whichever drawer you happen to like.
+   returns every retraction in the workspace** — a few hundred bytes.
+
+   ⚠ **Read every row's `source_file`; do NOT just match objects against the ids you
+   fetched.** Matching is the obvious reading and it misses the corrections that
+   matter most: on 2026-08-25 the only datastar correction in the palace hung off a
+   `wing_craft/examples` drawer that is in no tier at all, so an id-match returned
+   nothing while the row itself named the problem. Each row's `source_file` says what
+   was corrected and how narrowly.
+
+   ⚠ **Run all three predicates.** The one that mattered that day was a `qualifies`,
+   and a session that ran only `retracts` shipped a pointer to an ADR that is not on
+   `main`.
+
+   Cross-check anything that disagrees against the artifact, never against whichever
+   drawer you happen to like.
 4. `am_search(<task>, wing: "wing_agentmemories")` — past decisions and rationale
    for the work in front of you. This is the *only* source of cross-session *why*;
    don't reconstruct from code what memory explains.
