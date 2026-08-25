@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
 )
 
 // TestClaudeGuideServesMarkdown checks the public /claude-guide handler: it returns
@@ -158,5 +160,65 @@ func TestInstallMemoryMCPServesMarkdown(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("install-memory-mcp document is missing %q", want)
 		}
+	}
+}
+
+// TestBootstrapMemoryTeachesTheCurrentKGQueryContract pins §6.1's `am_kg_query`
+// row to the contract the server actually serves.
+//
+// This gate exists because that row drifted and nothing noticed. ADR-026 gave
+// kg_query a `predicate` entry point and a `status` filter and moved its default
+// from every fact ever recorded to only the ones still true — and this document,
+// which §1 hands to a session as the thing to type from, went on teaching
+// `am_kg_query(entity, as_of?, direction?)` → "everything about this entity"
+// through the whole of it. The other tests in this file assert that the guide is
+// SERVED; none asserted what it says, so a page that still rendered was
+// indistinguishable from a page that was still right.
+//
+// The status values are read from the palace constants rather than typed out,
+// for the same reason kgStatusParamDescription is built from them instead of
+// restating them: a status the service renames cannot stay right here by
+// accident.
+func TestBootstrapMemoryTeachesTheCurrentKGQueryContract(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://memory.example/bootstrap-memory", nil)
+	rec := httptest.NewRecorder()
+
+	(&Server{}).handleBootstrapMemory(rec, req)
+
+	body := rec.Body.String()
+
+	// Every status the service accepts, spelled the way a caller passes it.
+	for _, status := range []string{palace.KGStatusCurrent, palace.KGStatusEnded, palace.KGStatusAll} {
+		if want := `status:"` + status + `"`; !strings.Contains(body, want) {
+			t.Errorf("bootstrap-memory never teaches %s", want)
+		}
+	}
+
+	// The two parameters ADR-026 added. Both carry the "?" of the signature row,
+	// so neither matches the prose that discusses them elsewhere in §6.
+	for _, want := range []string{"predicate?", "status?"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the am_kg_query signature row is missing %q", want)
+		}
+	}
+
+	// Filtering has to announce itself. A caller who never learns `withheld`
+	// exists reads a filtered page as the whole graph.
+	if !strings.Contains(body, `withheld: {"ended"`) {
+		t.Error("bootstrap-memory does not show the withheld key that a filtered response carries")
+	}
+
+	// The compose rule. Missing this one costs a plausible wrong answer rather
+	// than an error, which is exactly why it is asserted instead of trusted to
+	// prose: `as_of` alone no longer means "facts in effect on D".
+	if !strings.Contains(body, "compose") {
+		t.Error("bootstrap-memory does not say that as_of and status compose")
+	}
+
+	// The obsolete signature, pinned negatively. Every positive check above passes
+	// with the stale row still sitting in the table beside the new prose — which
+	// is the shape the drift actually had.
+	if old := "am_kg_query(entity, as_of?, direction?)"; strings.Contains(body, old) {
+		t.Errorf("bootstrap-memory still teaches the pre-ADR-026 signature %s", old)
 	}
 }

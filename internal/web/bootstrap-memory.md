@@ -476,10 +476,23 @@ It is **not** the record.
 | Call | Answers |
 |---|---|
 | `am_kg_add(subject, predicate, object, valid_from?, source_drawer_id?)` | File a fact |
-| `am_kg_query(entity, as_of?, direction?)` | Everything about this entity |
+| `am_kg_query(entity?, predicate?, as_of?, direction?, status?)` | Facts about this entity — or, with `predicate` alone, every fact of one relation |
 | `am_kg_invalidate(...)` | This **stopped being true** on this date |
 | `am_kg_timeline(entity?)` | What changed, in order |
 | `am_kg_stats()` | Totals and predicates in use — ⚠ can dump ~1000 predicate names |
+
+⚠ **`am_kg_query` returns only facts that are still true.** The default is `status:"current"`,
+filtered server-side, so retracted facts never reach your context. Nothing is dropped silently:
+a response that filtered something carries `withheld: {"ended": N}` and a hint naming the
+parameter that brings it back. Pass `status:"all"` for the whole history and `status:"ended"` to
+audit what the team has changed its mind about.
+
+⚠ **`as_of` and `status` compose, so asking about the past takes both.** They select on
+different questions — `status` on whether a fact was *ever* retracted, `as_of` on whether it was
+in effect at an instant. Under the default, `as_of` alone therefore answers "open-ended facts
+that were *also* in effect on D", not "facts in effect on D". For a real snapshot of a past
+date, pass `as_of` **and** `status:"all"`. The call succeeds either way and the short answer
+still looks like history, which is what makes this one worth knowing.
 
 ### 6.2 ⚠ The entity string is a KEY, not a label
 
