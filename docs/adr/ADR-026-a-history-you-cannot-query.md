@@ -1,6 +1,6 @@
 # ADR-026: Ask for current facts, and stop paying for the dead ones
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-25
 **Owner:** unassigned
 **Spec:** None — no spec stage; grounded in probes against the live graph and `EXPLAIN QUERY PLAN` against the real table, recorded inline.
@@ -20,6 +20,8 @@ ADR-004 is **Accepted** and its Out of Scope list reads:
 The reasoning put to M, and it is **an inference rather than a reconstruction of intent**: the clause's own rationale names only the write path, and ADR-004's founding premise is that *"`Service.Search` … never touches a triple"*. No eval arm reads the graph, so a read-side filter cannot move the number the gate reads in either direction. If the clause was meant to cover reads deliberately, only its author can say so.
 
 **T0 carries the edit.** Nothing else in this ADR is authorised by anything else.
+
+**Landed 2026-08-25.** ADR-004's Out of Scope clause now names only `kg_add` / `kg_invalidate`, and the amendment is recorded *in ADR-004* — beside the clause it changes, flagged as an inference, with the rejected alternative. Recording it only here would have left the amended document silent about its own amendment, which is the failure mode ADR-004 itself is about: a claim whose evidence lives somewhere the reader is not.
 
 ## Context
 
