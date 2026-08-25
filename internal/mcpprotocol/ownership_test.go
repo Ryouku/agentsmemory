@@ -79,6 +79,9 @@ func TestNonGoClientsUseProtocolEnvNames(t *testing.T) {
 	}{
 		{"clients/claude-code/extensions/agentsmemory.ts", []string{TokenEnvVar, LocalEnvVar, MCPURLEnvVar}},
 		{"clients/claude-code/hooks/agentsmemory-verify-hook.sh", []string{MCPURLEnvVar}},
+		{"clients/claude-code/hooks/agentsmemory-stop-hook.sh", []string{MCPURLEnvVar}},
+		{"clients/claude-code/hooks/agentsmemory-session-end-hook.sh", []string{MCPURLEnvVar}},
+		{"clients/claude-code/hooks/agentsmemory-stats.sh", []string{MCPURLEnvVar}},
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, tc.rel))
 		if err != nil {

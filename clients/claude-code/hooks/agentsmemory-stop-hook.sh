@@ -25,9 +25,10 @@
 # fan-out pays that once per branch, so the bill has its own switch rather than
 # forcing a choice between subagent writes and the session checkpoint.
 #
-# It also prints a short recall report from a self-hosted server (AGENTSMEMORY_STATS=off
-# to suppress, AGENTSMEMORY_STATS_HOURS to widen the window, AGENTSMEMORY_STATS_URL
-# to point elsewhere) — see the bottom of this file for why that belongs here.
+# It also prints a short recall report (AGENTSMEMORY_STATS=off to suppress,
+# AGENTSMEMORY_STATS_HOURS to widen the window). The palace is AGENTSMEMORY_MCP_URL
+# — the same endpoint the installer registered — with /mcp stripped and /stats
+# appended. See the bottom of this file for why the report belongs here.
 #
 # `once` is the default because this hook exits 2, which BLOCKS the stop: on every
 # turn of a long session that is a lot of interruption for a reminder the agent
@@ -130,9 +131,9 @@ MSG
 # how many came back with something, and — most useful of all — what it looked for
 # and did not find.
 #
-# Self-hosted only, and deliberately silent when anything is off: no server, an
-# older server without /stats, no curl. A statistics line must never be the reason
-# a Stop hook fails.
+# Deliberately silent when anything is off: no AGENTSMEMORY_MCP_URL, no server,
+# an older server without /stats, no curl. A statistics line must never be the
+# reason a Stop hook fails.
 # The window is measured from the transcript file the event names rather than a
 # fixed number of hours, because a fixed window at the first Stop of a session
 # reports mostly the PREVIOUS session's work.
@@ -142,32 +143,12 @@ MSG
 # TIME — narrowing the window cannot separate sessions that overlap in it, and
 # concurrent sessions against one local palace are the normal case, not the
 # exception. The window bounds the report; it does not attribute it. See ADR-018.
-STATS_QUERY="hours=${AGENTSMEMORY_STATS_HOURS:-2}"
-TRANSCRIPT="$(printf '%s' "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-if [ -n "${TRANSCRIPT:-}" ] && [ -f "$TRANSCRIPT" ]; then
-  # Birth time where the filesystem records it (macOS %B, APFS), modification
-  # time everywhere else — either bounds the session closely enough, and a bad
-  # value simply falls back to the fixed window below.
-  BORN="$(stat -f %B "$TRANSCRIPT" 2>/dev/null || stat -c %W "$TRANSCRIPT" 2>/dev/null || true)"
-  case "${BORN:-0}" in ''|*[!0-9]*|0) BORN="$(stat -f %m "$TRANSCRIPT" 2>/dev/null || stat -c %Y "$TRANSCRIPT" 2>/dev/null || echo 0)" ;; esac
-  NOW="$(date +%s)"
-  if [ "${BORN:-0}" -gt 0 ] && [ "$NOW" -ge "$BORN" ]; then
-    MINUTES=$(( (NOW - BORN) / 60 + 1 ))
-    [ "$MINUTES" -gt 1440 ] && MINUTES=1440
-    STATS_QUERY="minutes=${MINUTES}&label=this%20session"
-  fi
-fi
-
-STATS_URL="${AGENTSMEMORY_STATS_URL:-http://localhost:8080/stats?${STATS_QUERY}}"
-if [ "${AGENTSMEMORY_STATS:-on}" != "off" ] && command -v curl >/dev/null 2>&1; then
-  # No arrays: macOS ships bash 3.2, where expanding an EMPTY array under `set -u`
-  # aborts the script ("AUTH[@]: unbound variable"). Two explicit calls are longer
-  # and cannot break the hook on the one platform most of these installs run on.
-  if [ -n "${AGENTSMEMORY_LOCAL_TOKEN:-}" ]; then
-    STATS="$(curl -fsS -m 3 -H "Authorization: Bearer ${AGENTSMEMORY_LOCAL_TOKEN}" "$STATS_URL" 2>/dev/null || true)"
-  else
-    STATS="$(curl -fsS -m 3 "$STATS_URL" 2>/dev/null || true)"
-  fi
+HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "$HOOK_DIR/agentsmemory-stats.sh"
+agentsmemory_stats_query
+agentsmemory_stats_fetch
+if [ -n "${STATS:-}" ]; then
   # The server marks grouped write-me suggestions with a stable "  write: "
   # prefix (palace.RecallStats.SuggestionLines — that prefix is a contract with
   # this grep). They are split out of the report here and re-rendered below as

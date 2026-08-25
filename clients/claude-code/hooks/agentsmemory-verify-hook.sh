@@ -31,7 +31,11 @@ command -v aiagentmemory >/dev/null 2>&1 || exit 0
 DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 cd "$DIR" 2>/dev/null || exit 0
 
-MCP_URL="${AGENTSMEMORY_MCP_URL:-http://localhost:8080/mcp}"
+# The installer prefixes this command with AGENTSMEMORY_MCP_URL. An unset
+# value means the hook was not installed (or was run by hand without the env);
+# guessing localhost would poke the wrong palace when MCP is hosted.
+MCP_URL="${AGENTSMEMORY_MCP_URL:-}"
+[ -n "$MCP_URL" ] || exit 0
 
 # Fail fast if no server is listening: without this the CLI would sit through its
 # own connect timeout on every session start of every project, which is exactly
