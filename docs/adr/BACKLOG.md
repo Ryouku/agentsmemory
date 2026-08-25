@@ -1032,3 +1032,36 @@ which reads thirty as a finding count. It is not.
   ADR-001's finding that this corpus is saturated. It is recorded because an unexplained result that
   nobody writes down gets rediscovered every quarter. **Trigger: the next eval on a corpus that is
   not generated from the memories it searches.**
+
+## From ADR-032 (the corpus that chose our defaults could not disagree with them)
+
+- **The 14-of-40 unanswered real queries.** The largest single number in the 2026-08-25 real run
+  and the least interpretable: the judge sees only the RETRIEVED POOL, so "no relevant memory"
+  conflates a memory that is not there with one the judge missed. Four of the fourteen were the same
+  question re-asked (`mutatesOnlyTempPaths temp-write exemption`), which is the "questions the team
+  should have written and did not" signal `search_events` was built for — but separating a write gap
+  from a retrieval miss needs an instrument that does not exist. **Trigger: the next time somebody
+  wants to quote a recall-failure rate.**
+
+- **A stronger judge than `qwen2.5-coder:7b`.** It bounds every ABSOLUTE number in the real table
+  ("85% recall@5" is judge-limited) though not the arm-vs-arm comparisons, since every arm faces the
+  same gold. **Trigger: publishing an absolute recall figure, or a run whose verdict hinges on cases
+  the judge scored inconsistently.**
+
+- **The recalls that never happened.** An agent that does not know a framework exists never searches
+  for it — "you cannot retrieve what you do not know to ask for" — so no corpus built from
+  `search_events` can contain that case, and no eval can see it. It is the one failure mode on
+  ADR-032's subject with NO METRIC AT ALL, and the reason the push channel (`llm_init`, protocol
+  files, centralised skills) exists on convention rather than on measurement. Naming it is the most
+  that can be done honestly today. **Trigger: any proposal to reduce what is loaded unconditionally,
+  since that is the only lever whose cost this blind spot hides.**
+
+- **Re-examine every default annotated as "measured".** Two are named in ADR-032 (`Fusion`,
+  `RerankWeight`); a sweep of `config.Default()` for comments claiming a measurement would say
+  whether there are more. ADR-032 T2's `TestShippedDefaultsCiteTheirCorpus` is the mechanical
+  version of this question. **Trigger: T2 landing.**
+
+- **Make `--style real` the corpus the eval documentation leads with.** `cmd/server/eval.go`'s
+  Description still presents the generated styles first, which is how a fixture that cannot exhibit
+  the defect became the one that picked two shipped defaults. **Trigger: ADR-032 T2 reporting,
+  either way.**
