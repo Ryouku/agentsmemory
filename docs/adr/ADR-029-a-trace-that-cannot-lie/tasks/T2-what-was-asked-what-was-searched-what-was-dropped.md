@@ -20,7 +20,10 @@ A trace can answer three questions it cannot answer today: what the caller actua
 | `internal/palace/service.go` | edit | pass the pre-clamp limit and pre-truncation rune count into `searchAttrs`; record the drop counts at `rankRetrieved`'s single call site |
 | `internal/palace/memory_search.go` | edit | `survivorsFrom` returns its three drop counts instead of discarding them |
 | `internal/mcpserver/server.go` | edit | `searchWingFor` reports HOW the wing was chosen — the only place that information still exists |
-| `internal/mcpserver/drawers.go` | edit | annotate the tool span with the wing source for `am_search` and `am_list_drawers` |
+| `internal/mcpserver/drawers.go` | edit | annotate the tool span with the wing source; **three** call sites here (467, 626, 832), not one |
+| `internal/mcpserver/admin.go` | edit | **found by review**: two more `searchWingFor` callers (40, 127) |
+| `internal/mcpserver/graph.go` | edit | **found by review**: two more (178, 250) |
+| `internal/mcpserver/wing_test.go` | edit | **found by review**: four direct test callers — changing the signature without these does not compile |
 | `internal/palace/scopedrops_test.go` | add | the drop counts, and the request-vs-served deltas |
 | `internal/mcpserver/wingsource_test.go` | add | the four wing-source cases, each distinguishable from the others |
 
@@ -29,10 +32,10 @@ A trace can answer three questions it cannot answer today: what the caller actua
 1. **TDD red.** `TestRequestedLimitSurvivesTheClamp` asserts a search asking for 5000 records both `am.limit=100` and `am.limit_requested=5000`. `TestTruncatedQueryLeavesEvidence` asserts a 400-rune query records `am.query_runes=400` and `am.query_truncated=true`, and that a short query records `false`. `TestScopeDropsAreCounted` asserts the three counts and that a stale-index fixture produces a non-zero out-of-scope count. `TestWingSourceDistinguishesCallerFromServer` asserts four distinct values. Confirm all red.
 2. Widen `survivorsFrom` to return its drop counts. Keep it a pure function taking no context — see the ADR's Alternatives for why instrumenting inside it produces wrong numbers.
 3. Record the counts at `rankRetrieved` via `telemetry.Annotate`, at the single call site (`service.go:1089`) and nowhere else. The widening-loop call site at `memory_search.go:135` keeps discarding them; it runs once per round and its numbers would multiply.
-4. Assert the eval attribution explicitly. `rankRetrieved` has four callers — the served path plus three eval-arm sites — so `Annotate` paints the arm span for an eval call and the `am.search` parent for a served call. That is the correct per-caller attribution, and it is pinned by a test, because arm numbers reading as served-path numbers in a table nobody re-derives is exactly the failure this repository already retracted a statistic for.
+4. Assert the eval attribution explicitly. `rankRetrieved` has four callers, and **only two of them own an arm span** — `evalCaseResult` (`eval.go:1175`) starts `StageEvalArm`, but `CandidateUnion` (`eval.go:1358`) starts none, so `Annotate` there paints whatever outer span happens to be current, or nothing. **Found by review; the ADR's original claim of three arm-span callers was wrong.** Return the counts from `rankRetrieved` and let each caller annotate the span it owns, rather than annotating from inside and the `am.search` parent for a served call. That is the correct per-caller attribution, and it is pinned by a test, because arm numbers reading as served-path numbers in a table nobody re-derives is exactly the failure this repository already retracted a statistic for.
 5. Add `am.max_distance` to `searchAttrs`. It is the one retrieval boundary the knob set omits, and `retrieveStop` can already end the widening loop with `reason=max_distance` — so the trace names the stop and not the threshold.
 6. Pass the pre-clamp limit and the pre-truncation rune count into `searchAttrs`, keeping `am.limit` as the served value. Both numbers, not a flag: `am.limit_requested` answers what was asked, `am.limit` answers what ran, and the delta is the finding.
-7. Have `searchWingFor` report how it resolved the wing — caller-supplied, server-default-substituted, explicit-star-widened, or workspace-scope-widened — and annotate the tool span with it. `searchAttrs` runs with `q.Wing` already resolved, so no attribute added inside `internal/palace` can recover this; the capture must happen at the boundary.
+7. Have `searchWingFor` report how it resolved the wing. **It has ELEVEN call sites** — seven production across three files and four in `wing_test.go` — so prefer a second, additive resolver over widening the existing signature, or update every caller in the same commit — caller-supplied, server-default-substituted, explicit-star-widened, or workspace-scope-widened — and annotate the tool span with it. `searchAttrs` runs with `q.Wing` already resolved, so no attribute added inside `internal/palace` can recover this; the capture must happen at the boundary.
 8. Run the acceptance fence and confirm it is green only after steps 2–7.
 
 ## Acceptance
@@ -43,13 +46,13 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal clients | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./internal/palace/ ./internal/mcpserver/
-  go test ./internal/palace/ -run "TestRequestedLimitSurvivesTheClamp|TestTruncatedQueryLeavesEvidence|TestScopeDropsAreCounted|TestScopeDropsLandOnTheArmSpanForEvalArms" -count=1 -v 2>&1 | tee /tmp/t2.out
-  go test ./internal/mcpserver/ -run "TestWingSourceDistinguishesCallerFromServer" -count=1 -v 2>&1 | tee -a /tmp/t2.out
-  grep -q -- "--- PASS: TestRequestedLimitSurvivesTheClamp" /tmp/t2.out
-  grep -q -- "--- PASS: TestTruncatedQueryLeavesEvidence" /tmp/t2.out
-  grep -q -- "--- PASS: TestScopeDropsAreCounted" /tmp/t2.out
-  grep -q -- "--- PASS: TestScopeDropsLandOnTheArmSpanForEvalArms" /tmp/t2.out
-  grep -q -- "--- PASS: TestWingSourceDistinguishesCallerFromServer" /tmp/t2.out
+  go test ./internal/palace/ -run '^(TestRequestedLimitSurvivesTheClamp|TestTruncatedQueryLeavesEvidence|TestScopeDropsAreCounted|TestScopeDropsLandOnTheArmSpanForEvalArms)$' -count=1 -v 2>&1 | tee /tmp/t2.out
+  go test ./internal/mcpserver/ -run '^(TestWingSourceDistinguishesCallerFromServer)$' -count=1 -v 2>&1 | tee -a /tmp/t2.out
+  grep -qE "^--- PASS: TestRequestedLimitSurvivesTheClamp \(" /tmp/t2.out
+  grep -qE "^--- PASS: TestTruncatedQueryLeavesEvidence \(" /tmp/t2.out
+  grep -qE "^--- PASS: TestScopeDropsAreCounted \(" /tmp/t2.out
+  grep -qE "^--- PASS: TestScopeDropsLandOnTheArmSpanForEvalArms \(" /tmp/t2.out
+  grep -qE "^--- PASS: TestWingSourceDistinguishesCallerFromServer \(" /tmp/t2.out
   ! grep -qE "no tests to run|^FAIL" /tmp/t2.out
   go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1
 '

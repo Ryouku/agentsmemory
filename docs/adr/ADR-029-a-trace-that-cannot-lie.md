@@ -12,25 +12,62 @@
 
 The OpenTelemetry work merged as `26f6531` was reported — by me, to this team, and onward to a colleague — as covering search end to end: eleven stages fire on a real recall (`search → embed → retrieve → hydrate → collapse → closet → fusion → recency → rerank → evidence → record`), each with an outcome from `ran|bypassed|failed_open|failed_closed`, a reason, a `file:line` call site, and the `search_id` that joins them; widening appears as span events and outbound HTTP as children. All fifteen declared `Reason*` constants are reachable, which is worth stating because dead vocabulary is this repository's usual failure and is genuinely not one here.
 
-That report is true and it answers the wrong question. It establishes that a span **exists** for each stage. It says nothing about whether the span **tells the truth**, and a five-lens sweep of the search path on 2026-08-25 returned thirty findings across eight families. The distinction the sweep forces is the one this ADR is built on:
+That report is true and it answers the wrong question. It establishes that a span **exists** for each stage. It says nothing about whether the span tells the truth — and the distinction the sweep forces is this: **a missing signal makes a trace incomplete, a wrong signal makes it lie.** A lie is strictly worse, because every conclusion drawn downstream inherits the error and none of them look uncertain. This repository has already paid for that once this month: a write-to-read ratio of 10.8:1 was reported from a 24-hour window dominated by a single bulk import, believed, and retracted only because a human questioned it by hand.
 
-**A missing signal makes a trace incomplete. A wrong signal makes it lie**, and a lie is strictly worse, because every conclusion drawn downstream inherits the error and none of them look uncertain. This repository has already paid for that once this month: a write-to-read ratio of 10.8:1 was reported from a 24-hour window dominated by a single bulk import, believed, and retracted only because it was questioned by hand.
+**The lead finding is not a span at all. It is the durable row, and it has a shipped consumer.**
 
-Seven findings are lies in that exact sense, all confirmed by reading source:
+`am_recall_stats` is a registered tool (`internal/mcpserver/server.go:301`, handler at `internal/mcpserver/admin.go:111-131`) that reports per-wing recall: how often each wing was asked, how often it answered, and which unanswered questions to file. It groups on `search_events.wing`, and that column is written from `q.Wing` at `internal/palace/service.go:1038` — the wing **after** `searchWingFor` (`internal/mcpserver/server.go:339-362`) has already resolved it. So:
 
-- `recordSearch` is `_ = r.db.WithContext(ctx).Create(&e).Error` (`recallstats.go:140`) and returns nothing, so `service.go:1050` ends `am.search.record` with `telemetry.Ran` whatever happened. A `search_events` INSERT that failed is indistinguishable from one that succeeded — in the very table the recall statistics are computed from.
-- `applyRerankWith` ends `am.search.rerank` with `Ran` and `am.pool=N` whenever the cross-encoder returned the expected count. `normalizeScores` maps an all-equal input to 1.0 at every position, so the blend then reproduces the fused order exactly. A reranker that reordered nothing reports the same span as one that reordered everything, and `reranked=true` propagates from there into the durable row.
-- `semanticRerankDocuments` returns the lexical documents untouched when no candidate produced a window (`evidence.go:83`), and the caller takes the success branch: `am.search.evidence ran, am.pool=10` is emitted when zero of the ten documents were re-evidenced. `am.pool` is the shortlist size, never the number actually selected.
-- The `am_search` handler resolves anchors under `if err == nil` (`drawers.go:721`). A failed lookup silently returns a page with no `stale` flags and no warning, and because `traceTool` only inspects the handler's Go error and `res.IsError`, the enclosing `am.tool` span ends `ran`.
-- `tei.Client.Rerank` wraps the pool in `context.WithTimeout(c.budget)`, so the operator's own `RERANK_TIMEOUT` surfaces as an ordinary error and is recorded as `failed_open reason=error` — the same value as a reranker that is down, returning 500, or emitting undecodable JSON. There is no `ReasonTimeout`.
-- `emptyWingNote` returns `"", nil` for both "the lookup failed" and "the wing has content" (`emptywing.go:32`), so a zero-hit page loses its explanation whenever `WingIsEmpty` errors.
-- `searchAttrs` emits `am.has_wing` as a boolean computed from the **already-resolved** wing (`trace.go:30`). `searchWingFor` (`server.go:339-362`) substitutes the registration's default wing when the caller named none, and rewrites an explicit `"*"` to `""`. So `am.has_wing=true` is byte-identical for "the caller asked for this wing" and "the server injected it", and `am.has_wing=false` is byte-identical for three separate causes including `SEARCH_SCOPE=workspace`. Any recall statistic sliced on that attribute is sliced on a value that means three things.
+- A search where the caller named no wing and the registration's default was **injected** is attributed to that wing, byte-identically to one where the caller asked for it.
+- `"(unscoped)"` (`recallstats.go:197-199`) conflates "the caller asked for every wing" with "`SEARCH_SCOPE=workspace` widened a scoped request" with "the registration carries no default".
 
-Alongside the lies, two families of plain incompleteness matter enough to fix rather than receipt:
+This is the same table the retracted 10.8:1 ratio was computed from, and the same report that prompted the reaction *"those stats get me cautious"* on 2026-08-25. The attribution cannot distinguish caller intent from server injection, so a per-wing recall number is not merely imprecise — it is unfalsifiable, because no stored value records which of the two produced it. The span-side `am.has_wing` (`internal/palace/trace.go:30`) carries the identical ambiguity, but nothing reads it yet; the durable column is the one with a consumer today.
 
-**The request the caller made is not recoverable from the trace.** `SearchPage` truncates the query to 250 runes (`service.go:970`) and clamps `limit` to `MaxSearchLimit` (`service.go:977`), and `searchAttrs` is handed the post-clamp value. A caller asking for 5000 and a caller asking for 100 emit an identical `am.limit=100`; a query cut mid-sentence before embedding leaves no evidence that the embedded text differs from what was sent.
+Two further lies are confirmed, both at the MCP boundary and both silently degrading a page the caller receives:
 
-**The filter that removed candidates is not recorded, and one of its counts is a corruption detector.** `survivorsFrom` drops on three predicates — orphan vector, wing/room mismatch, `max_distance` — and both call sites discard the count (`memory_search.go:135`, `service.go:1089`). `am.max_distance` exists on no span in the tree at all, so the trace does not even carry the threshold that was applied. The sharpest consequence is the wing/room drop: `service.go:1081-1083` documents that comparison as redundant when the index honoured the filter, kept solely so a stale index cannot surface another wing's memory. **A non-zero drop there therefore means the vector index and the durable rows have diverged** — the one number in this pipeline that is an alarm rather than a metric, and it is thrown away with `survivors, _ :=`.
+- The `am_search` handler resolves anchors under `if err == nil` (`internal/mcpserver/drawers.go:721`). A failed lookup silently returns a page with **no `stale` flags and no warning**, and because `traceTool` only inspects the handler's Go error and `res.IsError`, the enclosing `am.tool` span ends `ran`. A page whose staleness marking silently vanished is indistinguishable — to the caller and to the trace — from one where nothing was stale.
+- `emptyWingNote` returns `"", nil` for both "the lookup failed" and "the wing has content" (`internal/mcpserver/emptywing.go:32`), so a zero-hit page loses its explanation whenever `WingIsEmpty` errors.
+
+Alongside the lies, one family of plain incompleteness earns a task rather than a receipt, because it carries an alarm the pipeline currently throws away.
+
+**`max_distance` is the only retrieval boundary absent from the knob set, and the count it discards is a corruption detector.** Four independent confirmations converged on it: the threshold reaches no span in the tree (`internal/palace/trace.go:27`), and `survivorsFrom` drops on three predicates — orphan vector, wing/room mismatch, distance — with both call sites discarding the count (`internal/palace/memory_search.go:135`, `internal/palace/service.go:1089`). The sharpest consequence is the wing/room drop: `service.go:1081-1083` documents that comparison as redundant when the index honoured the filter, kept solely so a stale index cannot surface another wing's memory. **A non-zero drop there therefore means the vector index and the durable rows have diverged** — an alarm rather than a metric, and the one number in this pipeline that is thrown away with `survivors, _ :=`.
+
+The 250-rune query truncation (`service.go:970`) is confirmed and rides along in the same task: nothing enforces 250 at the schema, so an over-long query is accepted and silently cut before it reaches the embedder, the lexical channel and the cross-encoder alike.
+
+
+## Amended 2026-08-25 — five claims retracted after adversarial verification
+
+**This section is kept rather than the record being rewritten.** The retracted claims below are the
+most useful thing this ADR produced: a worked example of a reachability audit that REASONED about
+instrumentation instead of MEASURING it, and the verification pass that caught it. Deleting them
+would destroy the evidence and leave a record that looks like it was right the first time.
+
+The sweep this ADR was built on ran in two halves: five blind lenses that FIND, and an adversarial
+pass that tries to REFUTE each finding. The first half returned thirty findings. The second half
+confirmed sixteen and refuted fourteen — and five of the seven "lies" this ADR's original Context
+asserted are among the refuted. Each refutation below was verified against source by hand, not
+accepted on the verifier's authority.
+
+| Retracted claim | Why it was wrong | Verified at |
+|---|---|---|
+| `am.search.record` ending `Ran` over a failed INSERT is an unnoticed gap | It is a DOCUMENTED DECISION taken after that exact production incident (2026-08-23, goose past 00021 with `search_events` absent). The doc comment names `recordSearch`'s swallow and concludes the verdict "has to be an exit code an operator can run before trusting a deployment, not a line in a runbook." A `failed_open` here duplicates a gate that already exists. | `cmd/server/doctorschema.go:107-120` |
+| A rerank cut off by `RERANK_TIMEOUT` is indistinguishable from an outage | Both produce the identical served result (fused order, `Reranked=0`) and the two are already separable by the span's own DURATION — ~budget versus ~milliseconds. The ordering property that matters is build-gated. | `cmd/server/wiring_test.go:274-287` |
+| `reranked=true` when the blend reordered nothing is a lie | The repository DEFINES the field as "whether reranking HAPPENED, not whether a reranker exists", with a comment recording the fix of the opposite bug. The claim asked the field to carry a third meaning it was deliberately built not to carry — and "reordered nothing" is a continuum, not a property of all-equal scores. | `internal/palace/service.go:1039-1043` |
+| `am.search.evidence` reports `ran, am.pool=10` with zero documents re-evidenced | Zero windows happens only when every document is at or under `ChunkSize`, and for exactly those the lexical document ALREADY IS the whole text — the reranker inputs cannot differ. `MEMORY_EVIDENCE_SELECTOR` also ships as `lexical`, so the semantic path is not the served default at all. | `internal/palace/evidence.go:76`, `.env.example:146` |
+| `StageEvidence`'s omission from `SearchStages()` is an oversight no gate catches | `SearchStages` is documented as "the set of child stages one Search parent MUST emit". `StageRerank` opens BEFORE its bypass returns; `StageEvidence` opens AFTER — so its omission is REQUIRED by that contract, not an oversight. The lexical-versus-semantic choice is already on the parent span as `am.evidence` on every search, including the reranker-less case the claim called invisible. | `internal/telemetry/telemetry.go:160-163`, `internal/palace/trace.go:36` |
+
+**T3 is withdrawn entirely**, and its refutation is the sharpest of the set because it was
+established BY MUTATION rather than by argument. The original claim was that
+`TestSearchStagesIsTheWiringList`'s `len(SearchStages()) < 8` against ten declared names lets two
+names be deleted silently, and that "deleting a name from the list also deletes the only assertion
+that the stage is emitted." A verifier deleted `StageCloset` from the list — leaving nine names, so
+the threshold stayed satisfied — AND neutered the span emission, and the test still went red: the
+hardcoded `searchKids` literal at `internal/palace/otel_test.go:71-80` is an INDEPENDENT authority
+covering the other names, which the original claim had called a drift risk. The consequence as
+stated is false. What remains is thin — a stage in neither list is unchecked — and it does not
+justify changing production emission to satisfy a gate, which is the wrong direction of causation.
+
+**The honest count is three lies, not seven, and sixteen confirmed gaps, not thirty.**
 
 ## Existing Primitives Audit
 
@@ -50,19 +87,13 @@ Nothing here needs a new span type, a new exporter, or a new configuration surfa
 
 ## Decision
 
-**Three tasks, split on what the defect does to a reader, not on which file it lives in.**
+**Two tasks. T3 is withdrawn** — see the amendment above; its defect was refuted by mutation, and its fix would have changed production emission in order to satisfy a gate, which is the wrong direction of causation.
 
-**T1 — a span that reports success only for work that succeeded.** The seven lies above are fixed by selecting the outcome and reason the existing vocabulary already provides, plus one new `ReasonTimeout`. `recordSearch` starts returning its error so the caller has a value to branch on; it keeps swallowing that error for control flow, because its documented invariant — *"measurement that can break the thing it measures is worse than no measurement"* — is correct and is not what is being changed. What changes is that the span stops asserting `Ran` over a failure.
+**T1 — the three confirmed lies.** The wing attribution written to `search_events` records what the server resolved and not what the caller asked, and `am_recall_stats` reports on it today. A `wing_source` is captured at the MCP boundary — the only place the caller's intent still exists — and stored alongside the resolved wing, so a per-wing recall number can finally say whether the caller chose that wing or the registration did. The anchor lookup's discarded error and `emptyWingNote`'s collapsed return stop being silent: both silently degrade a page the caller receives, and neither is visible in the response or the trace.
 
-**T2 — the request, the scope, and the filter become recoverable.** The pre-clamp limit and the pre-truncation query length reach the parent span, so the served values can be compared with the asked-for ones. `am.max_distance` reaches `searchAttrs`. `survivorsFrom` returns its three drop counts and `rankRetrieved` records them at its single call site. The caller's wing intent is captured at the MCP boundary — where it still exists — rather than inferred inside the palace, where it provably cannot be.
+**T2 — `max_distance` and the drop counts.** The threshold reaches `searchAttrs`; `survivorsFrom` returns its three drop counts and `rankRetrieved` records them at its single call site; the pre-truncation query length reaches the parent span. The wing/room drop count is the point: it is an alarm, not a metric, and it is the one number this pipeline computes and discards.
 
-**T3 — the completeness list becomes an identity, in both directions.** `TestSearchEmitsSemanticStageSpans` iterates `SearchStages()` and checks declared→emitted. Nothing checks emitted→declared, which is why `StageEvidence` — declared in the `Stage*` block as `am.search.evidence`, produced at exactly one site, referenced by zero tests — sits outside the list with no gate noticing. A recorded probe run on 2026-08-25 measured both directions: under the default fixture the emitted `am.search*` set equals `SearchStages()` exactly, and under a fixture with a reranker configured `am.search.evidence` appears as emitted-and-undeclared. The fix is therefore *not* "add the name": that repairs one instance and leaves the next unlisted stage to repeat it identically.
-
-Two changes make the repeat impossible. `applyRerankWith` emits `StageEvidence` on **every** path including its three bypasses, matching the pattern every other optional stage already follows (`closet` on `scale_zero`, `recency` on `band_zero`, `rerank` on `no_reranker`) — a stage that vanishes when its feature is off is indistinguishable from a stage that was deleted, which is precisely how this one stayed invisible. And the gate asserts **set equality** between the `am.search*` names a real search emits and `SearchStages()`, replacing `TestSearchStagesIsTheWiringList`'s `len(...) < 8` against ten declared names — an assertion two deletions can survive. The hand-written `searchKids` literal at `otel_test.go:71-80`, a second declaration of "the Search stages" that references neither the first nor any test, is derived from the list instead.
-
-**Why the tail is receipted rather than inlined.** Six sweep findings — the adaptive BM25 weight's resolved value, the whole-memory-to-400-rune degradation carried only in a prose `note`, `SearchQuery.Context` presence on the rerank span, the coerced-to-zero cosine rejection, `closetBoostsAt`'s three discard paths, and the evidence stage's window counts — are real, verified, and none of them make a span lie. They go to `BACKLOG.md` §"From ADR-029" with their finding text intact, because an ADR that fixes thirty things gives none of them a killed mutant, and a mutant per claim is what makes any of this evidence rather than assertion.
-
-**Backend identity is deliberately out.** `VECTOR_BACKEND` and `EMBED_BACKEND` are on no span, and the second is the highest-consequence item the sweep found — the embedding model decides what every distance in every trace and every eval table *means*, and both default paths serve the same dimension count, so the one recorded attribute (`am.dim`) cannot separate them. It is excluded here only because it is `cmd/server/main.go` wiring rather than the search path, and it earns its own record. It is receipted with that reasoning, not dropped.
+**What changed about the ADR's own method, stated because it is the transferable part.** The original version of this record asserted seven lies from source reading alone. Five did not survive an adversarial pass, and every refutation turned on code the original had not read — a doctor exit code deliberately chosen as the detector, a build-time gate on the rerank budget, a field whose meaning is pinned by a comment, a default that keeps a whole path off the served route, and a doc comment defining a list as MUST-emit. **A reachability audit that reads only the site of the suspected defect will find defects that are not there.** The verification half of the sweep is not a formality on top of the finding half; it is what turns a reading into a fact.
 
 ## Alternatives Considered
 
@@ -89,12 +120,10 @@ No module boundary moves and no new package appears. `internal/telemetry` gains 
 
 | Contract | Producing task | Consuming task(s) | Breaking? |
 |----------|----------------|-------------------|-----------|
-| `telemetry.ReasonTimeout` | T1 | none — T1 is its only user | No — additive to the declared reason vocabulary |
-| `Repo.recordSearch` returning `error` | T1 | T1 only; the caller still refuses to act on it | No — unexported, single call site |
+| `wing_source` at the MCP boundary and on the `search_events` row | T1 | none in this ADR — `am_recall_stats` consumes it once the column exists | No — additive column and additive attribute; an absent value reads as unknown |
 | `scopeDrops` from `survivorsFrom` | T2 | T2 only | No — unexported, both call sites updated in the same task |
-| `StageEvidence` emitted unconditionally | T3 | T3's own set-equality gate | No — additive span on paths that previously emitted nothing |
 
-The three tasks are contract-independent — no task consumes anything another produces — and all three touch `internal/palace/service.go`. They are ordered rather than parallel so each diff stays reviewable and each mutant stays attributable to one claim.
+The two tasks are contract-independent and both touch `internal/palace/service.go`, so they are ordered rather than parallel. T1 goes first because it is the only defect here with a live consumer: `am_recall_stats` reports per-wing numbers on the ambiguous column today.
 
 ## Implementation
 
@@ -104,22 +133,26 @@ Every task also carries a **live-trace confirmation**, not only a green fence. T
 
 ## Consequences
 
-A trace stops being a claim and starts being evidence. Concretely: a failed `search_events` write becomes visible instead of inflating a table the recall statistics are read from; a reranker that returned identical scores stops being indistinguishable from one that reordered the page; the operator's own timeout budget stops being reported as a broken dependency; and `am.has_wing` stops meaning three things at once, which makes it usable as a slice for the first time.
+A per-wing recall number becomes falsifiable. Today `am_recall_stats` cannot say whether `wing_X` was asked for or injected, and `"(unscoped)"` covers three different situations — so the report that prompted "those stats get me cautious" was right to prompt it. After T1 the stored row carries which of the two happened, and the question can be asked of data rather than of memory.
 
-The wing/room drop count becomes an alarm the pipeline can raise on its own. Today a divergence between the vector index and the durable rows is detectable only by someone reading `survivorsFrom` and noticing that its guard has to be firing.
+A page that silently lost its `stale` flags, or its empty-wing explanation, stops being indistinguishable from a healthy one.
 
-Cost: eleven more attributes on the parent span and three on `rankRetrieved`'s enclosing span, all integers, booleans or bounded enums. No text, no unbounded cardinality, no per-hit attribute.
+The wing/room drop count becomes an alarm the pipeline can raise on its own. Today a divergence between the vector index and the durable rows is detectable only by someone reading `survivorsFrom` and noticing that its guard must be firing.
+
+Cost: one additive column, one boundary attribute, and five integers on spans that already exist. No text, no unbounded cardinality, no per-hit attribute.
+
+**A cutover, not a backfill.** Rows written before `wing_source` exists carry no value for it, and nothing can recover the caller's intent retrospectively. Every recall statistic spanning the boundary is therefore mixed, and the report has to say so rather than quietly averaging across it.
 
 ## Out of Scope
 
-- **Backend identity on the span** — `VECTOR_BACKEND`, `EMBED_BACKEND`, the embedding model name (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — it is `cmd/server/main.go` wiring rather than the search path and earns its own record; trigger: the next ADR touching the embed or retrieve wiring, or the next eval table anyone intends to compare across a config change)
-- **The six tail findings** — the adaptive BM25 weight's resolved value, the whole-memory-to-400-rune degradation, `SearchQuery.Context` presence, the coerced-to-zero cosine rejection, `closetBoostsAt`'s three discard paths, the evidence stage's window counts (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — all verified, none of them make a span lie)
-- **An anchor/staleness stage of its own** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — T1 makes its failure visible on the enclosing tool span; a new stage is not a list repair)
-- **Any change to what `recordSearch` does on failure** (permanent: its documented invariant — measurement that can break the thing it measures is worse than no measurement — is correct; only the span stops lying about it)
-- **Telling the CALLER that anchors or a wing lookup failed** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — a response-shape change needs its own record; trigger: the first support question that turns out to be a silently unflagged stale page)
+- **The five retracted claims** — the record stage's outcome, the rerank timeout reason, `reranked` versus reordered, the evidence pool count, and `StageEvidence`'s list membership (permanent: refuted by adversarial verification and confirmed against source by hand; each has a compensating mechanism or a definition that makes the change wrong, documented in the amendment above)
+- **T3 — a set-equality gate over `SearchStages()`** (permanent: withdrawn. Its stated consequence was disproved by mutation, and what remains would change production span emission to satisfy a test)
+- **Backend identity on the span** — `VECTOR_BACKEND` confirmed, `EMBED_BACKEND` refuted (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — it is `cmd/server/main.go` wiring rather than the search path and earns its own record)
+- **The confirmed tail findings** — the adaptive BM25 weight's resolved value, the whole-memory-to-400-rune degradation, `SearchQuery.Context` presence, `closetBoostsAt`'s three discard paths, the evidence stage's window counts, `am_list_drawers`' wing narrowing (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — all confirmed, none of them make a span lie)
+- **Any change to what `recordSearch` does on failure** (permanent: its documented invariant is correct, and `doctorSchema` is already the deliberate detector for the failure it hides)
+- **Re-running the historical recall statistics under the corrected attribution** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — rows written before `wing_source` exists cannot be re-attributed, so the honest outcome is a cutover date, not a backfill)
 - **Acting on a non-zero out-of-scope drop count** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — T2 makes the divergence visible; deciding what the server does about it has a blast radius this ADR does not take on)
-- **Sampling, exporters, or collector configuration** (permanent: untouched; this ADR changes what spans say, never how they are transported)
-- **`am_get_drawer`'s `search_id` join** (deferred: `docs/adr/BACKLOG.md` §"From ADR-028" — it remains ADR-028's deferred T3 under its own trigger, unchanged by this record)
+- **Sampling, exporters, or collector configuration** (permanent: untouched; this ADR changes what is recorded, never how it is transported)
 - **Any change to ranking, scoring, or the retrieval unit** (permanent: ADR-024 owns the ranking unit; every survivor, score and order is byte-identical before and after this ADR)
 
 ## Risks
@@ -138,6 +171,7 @@ Per task, and each is a clean revert: T1 restores the unconditional outcomes, T2
 
 ## Follow-ups
 
-- Backend identity on the span, as its own ADR.
-- The six receipted tail findings, to be picked up at the next `/quality-harness:adr-write` sweep via `adr-debt`.
-- Once `am.has_wing` is replaced by an honest scope attribute, re-run the recall statistics that were sliced on it. The 10.8:1 ratio retraction is the precedent: a statistic computed over an ambiguous attribute is not merely imprecise, it is unfalsifiable.
+- Backend identity on the span (`VECTOR_BACKEND` confirmed), as its own ADR.
+- The six confirmed tail findings, to be picked up at the next `/quality-harness:adr-write` sweep via `adr-debt`.
+- **Re-examine every statistic this repository has published from `search_events`.** The 10.8:1 ratio was already retracted for a different reason (a window dominated by a bulk import); the wing attribution is a second, independent way those numbers can be wrong, and the two were not distinguished at the time.
+- **Run the adversarial half before writing the record, not after.** This ADR's own amendment is the argument: five of seven claims did not survive it, and writing first meant committing them.

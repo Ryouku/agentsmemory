@@ -10,9 +10,8 @@ Implementation tasks for ADR-029: A trace that cannot lie about what it did. See
 |-------|------|------------|
 | 1 | T1 | none |
 | 2 | T2 | none |
-| 3 | T3 | none |
 
-The three tasks are contract-independent — no task consumes anything another produces — but all three touch `internal/palace/service.go`. They are therefore ordered rather than parallel, so each diff stays reviewable and each mutant stays attributable to one claim. T1 goes first because a span that reports success over a failure is the only defect here with a live consumer: the recall statistics are computed from the table whose failed writes it currently hides.
+The two tasks are contract-independent — no task consumes anything another produces — but both touch `internal/palace/service.go`. They are therefore ordered rather than parallel, so each diff stays reviewable and each mutant stays attributable to one claim. T1 goes first because a span that reports success over a failure is the only defect here with a live consumer: the recall statistics are computed from the table whose failed writes it currently hides.
 
 ## Task Index
 
@@ -20,7 +19,14 @@ The three tasks are contract-independent — no task consumes anything another p
 |------|------|----------|----------|--------|------------|
 | T1 | A span that reports success only for work that succeeded | `telemetry.ReasonTimeout`; `Repo.recordSearch` returning `error`; honest outcomes on four spans | none | pending | `go test ./internal/palace/ -run "TestRecordStageReportsAWriteThatFailed\|TestRerankTimeoutIsNotReportedAsAnOutage\|TestEvidenceReportsHowManyDocumentsItActuallySelected\|TestRerankSaysWhetherItReorderedAnything"` + `go test ./internal/mcpserver/ -run "TestAnchorFailureReachesTheToolSpan\|TestEmptyWingLookupFailureIsNotSilence"` |
 | T2 | What was asked, what was searched, and what was dropped | `am.limit_requested`, `am.query_runes`, `am.query_truncated`, `am.max_distance`, `am.wing_source`; `scopeDrops` from `survivorsFrom` | none | pending | `go test ./internal/palace/ -run "TestRequestedLimitSurvivesTheClamp\|TestTruncatedQueryLeavesEvidence\|TestScopeDropsAreCounted\|TestScopeDropsLandOnTheArmSpanForEvalArms"` + `go test ./internal/mcpserver/ -run TestWingSourceDistinguishesCallerFromServer` |
-| T3 | A stage list that is an identity, in both directions | `StageEvidence` emitted unconditionally and declared; a set-equality gate | none | pending | `go test ./internal/telemetry/ -run TestSearchStagesIsTheWiringList` + `go test ./internal/palace/ -run "TestSearchEmitsSemanticStageSpans\|TestEmittedSearchStagesAreAllDeclared"` |
+
+## Withdrawn
+
+**T3 — a set-equality gate over `SearchStages()`.** Withdrawn after adversarial verification, and kept here as a named withdrawal rather than a quiet deletion. Its stated defect was disproved BY MUTATION: a verifier deleted `StageCloset` from the list (nine names, so the `len < 8` threshold stayed satisfied) and neutered the emission, and the test still went red — the `searchKids` literal at `otel_test.go:71-80` is an independent authority, not the drift risk the task claimed.
+
+A second review then found the task's premise wrong in another way: `searchKids` is a **direct-child topology** assertion, not a duplicate of the stage list. `StageHydrate` is deliberately checked under `StageRetrieve` and `StageEvidence` is a child of rerank, so a flat `SearchStages()` cannot derive it. The task's step 5 — "derive `searchKids` from the list" — would have destroyed a hierarchy assertion to remove a duplication that was not one.
+
+What remains of the idea is thin and honest: a stage in neither list is unchecked, a stage started with a string literal is in neither set, and a stage on an error path no fixture reaches evades both directions. None of that justifies changing production span emission to satisfy a gate.
 
 ## Not a task here
 

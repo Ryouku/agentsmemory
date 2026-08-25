@@ -19,6 +19,7 @@ Six spans stop asserting success over work that failed, was cut off by the opera
 | `internal/telemetry/telemetry.go` | edit | `ReasonTimeout` — the vocabulary cannot express a budget expiry today, so a timeout is forced onto `ReasonError` alongside a dead dependency |
 | `internal/palace/recallstats.go` | edit | `recordSearch` must return its error so the caller has a value to branch on. It keeps swallowing it for control flow — that invariant is correct and is not what is being changed |
 | `internal/palace/service.go` | edit | the record, rerank and evidence stage outcomes; `errors.Is(err, context.DeadlineExceeded)` at the rerank error branch |
+| `internal/palace/evidence_test.go` | edit | **found by review**: `semanticRerankDocuments` already has a two-value caller here, so widening its return without touching this file does not compile |
 | `internal/palace/evidence.go` | edit | `semanticRerankDocuments` returns how many documents it actually re-evidenced, so the caller can tell a full pass from a no-op |
 | `internal/mcpserver/drawers.go` | edit | the anchor lookup's discarded error reaches the tool span instead of vanishing under `if err == nil` |
 | `internal/mcpserver/emptywing.go` | edit | separate "the lookup failed" from "the wing has content"; today both return `"", nil` |
@@ -48,14 +49,14 @@ docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v 
   set -e
   gofmt -l cmd internal clients | grep -q . && { echo "gofmt"; exit 1; }
   go vet ./internal/telemetry/ ./internal/palace/ ./internal/mcpserver/
-  go test ./internal/palace/ -run "TestRecordStageReportsAWriteThatFailed|TestRerankTimeoutIsNotReportedAsAnOutage|TestEvidenceReportsHowManyDocumentsItActuallySelected|TestRerankSaysWhetherItReorderedAnything" -count=1 -v 2>&1 | tee /tmp/t1.out
-  go test ./internal/mcpserver/ -run "TestAnchorFailureReachesTheToolSpan|TestEmptyWingLookupFailureIsNotSilence" -count=1 -v 2>&1 | tee -a /tmp/t1.out
-  grep -q -- "--- PASS: TestRecordStageReportsAWriteThatFailed" /tmp/t1.out
-  grep -q -- "--- PASS: TestRerankTimeoutIsNotReportedAsAnOutage" /tmp/t1.out
-  grep -q -- "--- PASS: TestEvidenceReportsHowManyDocumentsItActuallySelected" /tmp/t1.out
-  grep -q -- "--- PASS: TestRerankSaysWhetherItReorderedAnything" /tmp/t1.out
-  grep -q -- "--- PASS: TestAnchorFailureReachesTheToolSpan" /tmp/t1.out
-  grep -q -- "--- PASS: TestEmptyWingLookupFailureIsNotSilence" /tmp/t1.out
+  go test ./internal/palace/ -run '^(TestRecordStageReportsAWriteThatFailed|TestRerankTimeoutIsNotReportedAsAnOutage|TestEvidenceReportsHowManyDocumentsItActuallySelected|TestRerankSaysWhetherItReorderedAnything)$' -count=1 -v 2>&1 | tee /tmp/t1.out
+  go test ./internal/mcpserver/ -run '^(TestAnchorFailureReachesTheToolSpan|TestEmptyWingLookupFailureIsNotSilence)$' -count=1 -v 2>&1 | tee -a /tmp/t1.out
+  grep -qE "^--- PASS: TestRecordStageReportsAWriteThatFailed \(" /tmp/t1.out
+  grep -qE "^--- PASS: TestRerankTimeoutIsNotReportedAsAnOutage \(" /tmp/t1.out
+  grep -qE "^--- PASS: TestEvidenceReportsHowManyDocumentsItActuallySelected \(" /tmp/t1.out
+  grep -qE "^--- PASS: TestRerankSaysWhetherItReorderedAnything \(" /tmp/t1.out
+  grep -qE "^--- PASS: TestAnchorFailureReachesTheToolSpan \(" /tmp/t1.out
+  grep -qE "^--- PASS: TestEmptyWingLookupFailureIsNotSilence \(" /tmp/t1.out
   ! grep -qE "no tests to run|^FAIL" /tmp/t1.out
   go test ./internal/telemetry/ ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1
 '
@@ -82,7 +83,7 @@ Each test pairs the failure case with its control. `TestRerankTimeoutIsNotReport
 |------|------------------------|
 | 1 — exists | each new attribute and reason is read back off a recorded span |
 | 2 — something selects it | the outcome argument at each `End` call — mutation: pass `telemetry.Ran` again and the fence goes red |
-| 3 — the caller can discover it | `ReasonTimeout` joins the declared `Reason*` block, which `TestEveryDeclaredReasonIsReachable` already sweeps; the new attributes appear in a dumped tree, which is where a trace reader looks |
+| 3 — the caller can discover it | the new reason and attributes appear in a dumped tree, which is where a trace reader looks |
 | 4 — it is used | confirmed against the deployed container: a live `am.search` tree carrying the new attributes, taken after `scripts/redeploy.sh` |
 
 ## Mutation Log

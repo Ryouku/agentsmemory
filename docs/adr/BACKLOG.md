@@ -918,10 +918,12 @@ did not ship, each with the reason it was held back rather than the intention to
 
 ## From ADR-029 (a trace that cannot lie about what it did)
 
-A five-lens sweep of the search path on 2026-08-25 against `dcc1389` returned thirty findings across
-eight families, each adversarially verified. ADR-029 takes the seven that make a span LIE and the two
-families that make the request and the filter unrecoverable. These are the rest — real, verified, and
-held back with the reason, not the intention.
+A five-lens sweep of the search path on 2026-08-25 against `dcc1389` returned thirty findings; the
+adversarial pass **confirmed sixteen and refuted fourteen**, and five of ADR-029's original seven
+"lies" were among the refuted (see that ADR's amendment). These are the CONFIRMED findings ADR-029
+does not take — real, verified, and held back with the reason, not the intention. Corrected
+2026-08-25: an earlier version of this section said "thirty findings, each adversarially verified",
+which reads thirty as a finding count. It is not.
 
 - **Backend identity on the span.** `VECTOR_BACKEND` selects sqlite brute force, embedded chromem or
   Qdrant over HTTP, and no search span names the one that ran; the three are not equivalent, since
@@ -979,3 +981,26 @@ held back with the reason, not the intention.
   rather than a metric: a non-zero count means the vector index and the durable rows have diverged.
   What the server should DO about that — refuse, repair, warn — has a blast radius this ADR does not
   take on. **Trigger: the first non-zero count observed in the deployed container.**
+
+
+## From ADR-030 (a blend that cannot tell confidence from noise)
+
+- **Persist `blended_score` to `search_events`.** ADR-028 T2 put it on the wire; the durable row still
+  records only `top_score` and `reranked`. Without it the tie rate cannot be measured retrospectively,
+  so ADR-030's 17.6% is an EXPOSURE figure (pages small enough for the pool to be degenerate) and not
+  an incidence. A migration, and ADR-030 T1's fixture answers the same question about the present
+  without one. **Trigger: the first time someone wants to know how often the blend actually tied.**
+
+- **`max_distance` as a pool shrinker.** Measured live on 2026-08-25: `max_distance=0.45` cut the
+  candidate pool from 10 to 3, and a pool of 3 is where min-max normalisation is most degenerate. The
+  corpus already holds a decision drawer reading "max_distance is DEAD as a confidence signal — on 61
+  cases the answerable/unanswerable top-1 cosine distributions overlap", matching ADR-001's table
+  (medians 0.401 vs 0.423). So the knob is both useless as a confidence signal AND actively harmful to
+  the ranking that follows it. Whether to floor it, change its default, or remove it is its own
+  decision. **Trigger: ADR-030 T1's measurement, which will show how much the small-pool case costs.**
+
+- **Re-examine every default set by the eval's weight sweep against the pool-size distribution
+  production actually serves.** `RerankWeight: 0.5` is annotated "chosen by the eval's weight sweep",
+  and the sweep ran at pools of 128 and 10 while 17.6% of real reranked recalls run at four or fewer.
+  The general question — for any normalisation or threshold here, does the tuning fixture span the
+  range production serves? — was answered "no" once and has not been asked of the others.
