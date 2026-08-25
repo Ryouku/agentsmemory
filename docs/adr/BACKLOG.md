@@ -1091,3 +1091,24 @@ which reads thirty as a finding count. It is not.
   it, and `w=0.50` is inconclusive against it in both. It is the strongest surviving hint about a
   shipped default. **Trigger: a run designed to test it specifically, with the contrast preselected
   rather than read off the winner column.**
+
+## From ADR-032 trial 2 (the pool-width test, 2026-08-26)
+
+- **`Search`'s retrieve floor is too narrow, and it is the first measured, actionable recall finding
+  this corpus produced.** A paired pool 30 → 100 re-run lifted every eval arm by ~0.05 MRR and left
+  `production (Search)` at exactly 0.660 with 8 misses, because `candidateKFor(limit, …)` computes its
+  own fetch width from `limit×3` (raised to `RERANK_POOL`) and cannot see `--pool`. Its misses are
+  golds retrieved and ranked, then cut by the PAGE: `limit=10` removes three of the eight,
+  `retrieve-k=50` two. **Trigger: this is the next change to make, and it wants its own ADR — the
+  knobs are `DefaultSearchLimit` and `RetrieveK`, both served-path defaults.**
+
+- **Re-measure everything previously measured at pool 30.** The closet prior's cost was −0.048,
+  −0.039 and −0.027 across three runs and **−0.002 with Δrecall@1 +0.000** once the pool widened —
+  so three agreeing runs were weaker evidence than they looked, because all three shared a pool
+  width nobody was varying. Any other conclusion drawn at pool 30 inherits the same doubt.
+  **Trigger: before citing any pre-2026-08-26 eval number as settled.**
+
+- **The latency cost of a wider pool is unmeasured.** Trial 2 shows what pool 100 buys in QUALITY and
+  says nothing about what it costs in hydration and rerank time. A recall that is better and twice as
+  slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
+  served retrieve floor — which is the item above, so this blocks it.**

@@ -53,6 +53,29 @@ The Context below says "linear fusion beats rrf by ~0.12 MRR". **At n=54 that ga
 
 **The instrument improved in the way that matters most.** This is the first corpus of the three that is NOT saturated: 94% in-pool against 100% for both earlier runs, which is the state ADR-001's preflight names as disqualifying. Three of 54 answers were never retrieved by any arm — a retrieval failure no ranking change can reach — and `production` lost five more below its page cut. A corpus that can fail is worth more than a table that agrees with you.
 
+## Amended 2026-08-26 (second) — the pool-width trial, and the first actionable result
+
+A paired re-run of the SAME 54 cases at `--pool 100` instead of 30, pre-specified with both outcomes named by the previous run's own output. Full table: `evidence/pool-100-paired-2026-08-26.md`.
+
+**The three unreachable answers came back. `in pool` went 94% → 100%.** They sit between rank 50 and 100, so the embedding places them near their question and nothing was fetching far enough. Not a corpus problem and not an embedding problem — a fetch-width one, which is the good branch of that test.
+
+**Every arm gained from the wider pool except the one we ship.**
+
+| arm | pool 30 | pool 100 |
+|---|---|---|
+| `hybrid` | 0.647 | **0.697** |
+| `fusion bm25=0.60 anchored:ceiling` | 0.650 | **0.705** |
+| `rerank blend w=0.25` | 0.694 | **0.730** (best) |
+| **`production (Search)`** | **0.660, 8 missed** | **0.660, 8 missed** |
+
+`Search` performs its own retrieval — `candidateKFor(limit, …)` is `limit×3`, raised to `RERANK_POOL` — so `--pool` cannot reach it. It is **structurally excluded** from a ~0.05 MRR gain every other arm collected, and its 8 misses are golds retrieved and ranked, then cut by the PAGE. `limit=10` removes three of them.
+
+That is the first actionable result this ADR has produced, and it is about retrieval width rather than about either default the ADR set out to test.
+
+**And it forces a caveat onto an earlier finding.** The closet prior's measured cost was substantially a narrow-pool artifact: −0.048, −0.039, −0.027 across three runs all at pool 30, and **−0.002 with Δrecall@1 exactly +0.000** at pool 100. Three runs agreeing was weaker evidence than it looked, because all three shared a pool width. The honest statement is "it does nothing measurable at a healthy pool width", not "it costs recall". It stays off either way.
+
+**`rrf` now reads "worse by 0.01–0.16", and this record does not claim that as the fusion verdict.** It is a second look at a hypothesis this ADR pre-registered against chasing; the pool change was made for a different, pre-specified reason. The defensible number is the gap — `hybrid` 0.697 and `ceiling` 0.705 against `rrf` 0.645 — not a "vs best" verdict whose baseline is selected from its own table.
+
 ## Existing Primitives Audit
 
 | Primitive | Where | Reused? |
