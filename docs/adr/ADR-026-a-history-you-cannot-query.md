@@ -82,7 +82,20 @@ status=current   after    SEARCH … idx_kg_triples_team_valid_to  (team_id=? AN
 status=ended     after    SEARCH … idx_kg_triples_team_valid_to  (team_id=?)          scan — inequality
 ```
 
-One additive `CREATE INDEX`, no data rewrite. It serves the **default** path, which is the one every agent takes. `status=ended` stays a tenant scan because `<>` cannot use the index; that is the rare audit query and it is acceptable at this size.
+One additive `CREATE INDEX`, no data rewrite. `status=ended` stays a tenant scan because `<>` cannot use the index; that is the rare audit query and it is acceptable at this size.
+
+**⚠ Corrected at implementation, 2026-08-25 — this section claimed the index "serves the **default** path, which is the one every agent takes", and that was wrong.** The three rows above measure the **status-only** shape: `team_id` plus endedness and nothing else. That is `KGCounts`, not the default query. The default query is an **entity lookup**, which already had a selective index — and measured against 300 facts with no `ANALYZE` (production's condition, because nothing in this repo runs it), adding `idx_kg_triples_team_valid_to` made the planner resolve the entity lookup *through it*:
+
+```
+team_id AND subject AND valid_to='',  index present, no ANALYZE
+  SEARCH kg_triples USING INDEX idx_kg_triples_team_valid_to (team_id=? AND valid_to=?)
+```
+
+An empty `valid_to` matches ~96% of a tenant's rows; a subject matches a handful. **So the index added to make the default path cheaper made it read almost the whole tenant** — and it printed `SEARCH … USING INDEX`, on the column it was filtering, throughout. That is this ADR's own Risk row about `SCAN`-grepping gates, one level deeper: the plan named an index *and the right column*, and was still the wrong plan.
+
+The fix is a unary `+` on `valid_to` in the entry-point queries, SQLite's documented "this term may not drive an index", which leaves the value untouched. Two spellings now encode which term is meant to find the rows: `kgStatusScope` writes `+valid_to` because it always *refines* a subject, object or predicate; `kgCurrentQuery` writes `valid_to` plainly because there endedness is the only selective term, and that is the one shape the new index exists for. `TestStatusFilterRefinesTheEntryPointRatherThanReplacingIt` is what keeps the distinction; removing the `+` turns it red on all three entry points.
+
+With `ANALYZE` the planner chooses correctly on its own, so this is a no-stats artefact — but no-stats is what production is, and an index whose benefit depends on statistics nobody collects is a Follow-up, not an assumption.
 
 **⚠ And the index is a trap for one query it also speeds up.** A date *range* on `valid_to` becomes `(team_id=? AND valid_to>? AND valid_to<?)` — fully indexed, fast, **and wrong**, for the reason in the next section. Speed is what would make it look right. The index ships together with the rule that range filters stay out of SQL.
 
@@ -213,6 +226,7 @@ T1 ships with the old default deliberately, so the filter is exercised in produc
 | The default flip breaks a caller relying on ended facts | Med | Med | `withheld` names what was removed and the parameter that restores it; T4 is one revertible line, separate from T1 |
 | `withheld` is computed and never printed | Med | Med | T3 asserts the number, not the field's presence. `printSupersessionGate`'s near-miss explanation was computed and discarded for weeks — 246 characters produced, 0 printed — and only a test reading the value caught it |
 | A gate greps for `SCAN` and passes on an unindexed filter | **High** | Med | T2 and T5 assert the filtered column appears in the constraint list. Six measured query shapes all print `SEARCH … USING INDEX`; only two are indexed on the column they filter |
+| The new index CAPTURES the entity lookup and makes the default path slower | **Materialised** | **High** | Found while implementing T2, not predicted here — see §2. `valid_to` is the least selective equality this table has (~96% of rows), so with no `ANALYZE` the planner preferred it over `subject`. Fixed with a unary `+` in `kgStatusScope`; `TestStatusFilterRefinesTheEntryPointRatherThanReplacingIt` pins all three entry points and goes red without it |
 | `current` keeps meaning open-ended while reading as "true now" | Low | Med | Documented in §Existing Primitives and in the field's description. A future-dated `valid_to` is the case that exposes it — reachable via `KGAdd` and written by nothing today |
 | 3.4% is quoted later as the benefit and the ADR reads as overselling | Med | Low | The ratio and its three caveats are in Context, and the decision is explicitly not resting on it |
 
@@ -233,3 +247,4 @@ No migration to reverse, no backfill, no index rebuild beyond the one `DROP`.
 - **The two deferred indexes** — `(team_id, source_drawer_id)` when drawer→facts becomes a standalone question, `(team_id, valid_from)` when the entity-free timeline's temp B-tree stops being negligible. Name a row count, not a feeling.
 - **Paging on the entity-free timeline.** `kgTimelineLimit = 100` with no paging; a trail you can only see the first hundred rows of is a sample. Cut here for scope, unchanged in urgency.
 - **Generalise the `EXPLAIN QUERY PLAN` gate.** T2 and T5 pin the KG's entry points; every other table has query shapes nobody has checked, and `idx_kg_triples_team_predicate` proves the reverse case exists too — an index nothing uses is as invisible as a filter nothing indexes.
+- **Decide whether this database should have statistics at all.** Nothing runs `ANALYZE`, so every plan in this repo is chosen by SQLite's no-stats heuristics — which is how a new index silently captured the query it was meant to help (§2). The unary `+` fixes that one shape; it does not answer the general question, and every future index carries the same risk until someone does. Trigger: the next index added to a table that already has a selective one. Note that `ANALYZE` is not free to adopt blindly either — it makes plans depend on when it last ran, which is a different failure mode, not an absent one.

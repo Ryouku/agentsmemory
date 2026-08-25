@@ -221,33 +221,54 @@ func (r *Repo) InvalidateKGTriples(ctx context.Context, teamID, subject, predica
 }
 
 // kgStatusScope narrows a triple query to one half of a fact's life, or leaves it
-// whole for KGStatusAll.
+// whole for KGStatusAll. It is a REFINEMENT of a more selective entry point —
+// a subject, object or predicate — never the term that finds the rows.
 //
 // Both directions are exact comparisons against the empty string, which is this
 // schema's "not yet ended" sentinel (00010_kg.sql chose it over NULL so a Go string
-// column never has to scan NULL). That exactness is what makes the endedness test
-// safe to index: it never compares two temporal values, so the mixed date-only and
-// datetime formats KGAdd stores verbatim cannot affect the result. A *range* over
-// valid_to has no such protection — see ADR-026 §2b, and do not push one into SQL.
+// column never has to scan NULL). That exactness is why the endedness test is safe
+// to index at all: it never compares two temporal values, so the mixed date-only
+// and datetime formats KGAdd stores verbatim cannot affect the result. A *range*
+// over valid_to has no such protection — see ADR-026 §2b, and do not push one
+// into SQL.
+//
+// ⚠ The unary + on valid_to is load-bearing, and MEASURED rather than assumed. It
+// makes the term unusable by an index (SQLite's documented meaning) while leaving
+// the value untouched. Without it, idx_kg_triples_team_valid_to CAPTURES this
+// query: nothing in this repo runs ANALYZE, so with no stats the planner preferred
+// the newest usable index and resolved an entity lookup through valid_to instead
+// of through subject. An empty valid_to matches ~96% of a tenant's rows and a subject
+// matches a handful, so the index added to make the default path cheaper made it
+// read almost the whole tenant. The plan still printed
+// `SEARCH … USING INDEX … (team_id=? AND valid_to=?)` throughout — an index, on
+// the column being filtered, and still the wrong one. See TestStatusFilterRefines
+// TheEntryPointRatherThanReplacingIt, which is what stops this regressing.
 func kgStatusScope(db *gorm.DB, status string) *gorm.DB {
 	switch status {
 	case KGStatusCurrent:
-		return db.Where("valid_to = ''")
+		return db.Where("+valid_to = ''")
 	case KGStatusEnded:
 		return db.Where("valid_to <> ''")
 	}
 	return db
 }
 
-// kgTriples loads a team's triples on one endpoint column, narrowed by status.
+// kgTripleQuery builds the statement every triple lookup issues: the tenant, one
+// endpoint column, and the status scope. It is a builder rather than inline SQL so
+// a test can render the SHIPPED statement through a dry-run session and read its
+// query plan, instead of asserting against a hand-copied echo that can drift.
 //
 // column is interpolated into the SQL, so it takes only the package-internal
 // literals its exported wrappers pass; it is never reachable from a caller's input.
+func (r *Repo) kgTripleQuery(ctx context.Context, teamID, column, value, status string) *gorm.DB {
+	return kgStatusScope(r.db.WithContext(ctx).Model(&kgTripleRow{}).
+		Where("team_id = ? AND "+column+" = ?", teamID, value), status)
+}
+
+// kgTriples loads a team's triples on one endpoint column, narrowed by status.
 func (r *Repo) kgTriples(ctx context.Context, teamID, column, value, status string) ([]kgTripleRow, error) {
 	var rows []kgTripleRow
-	err := kgStatusScope(r.db.WithContext(ctx).
-		Where("team_id = ? AND "+column+" = ?", teamID, value), status).
-		Find(&rows).Error
+	err := r.kgTripleQuery(ctx, teamID, column, value, status).Find(&rows).Error
 	return rows, err
 }
 
@@ -257,9 +278,7 @@ func (r *Repo) kgTriples(ctx context.Context, teamID, column, value, status stri
 // fetched.
 func (r *Repo) kgTriplesCount(ctx context.Context, teamID, column, value, status string) (int64, error) {
 	var n int64
-	err := kgStatusScope(r.db.WithContext(ctx).Model(&kgTripleRow{}).
-		Where("team_id = ? AND "+column+" = ?", teamID, value), status).
-		Count(&n).Error
+	err := r.kgTripleQuery(ctx, teamID, column, value, status).Count(&n).Error
 	return n, err
 }
 
@@ -315,6 +334,17 @@ func (r *Repo) KGTimeline(ctx context.Context, teamID, eid string) ([]kgTripleRo
 	return rows, nil
 }
 
+// kgCurrentQuery is the team-wide "which facts are still true" statement: the
+// tenant plus endedness, with no more selective term to lean on.
+//
+// This is the shape idx_kg_triples_team_valid_to exists to serve, and the ONLY one
+// — so unlike kgStatusScope it writes valid_to plainly, without the unary + that
+// keeps the endedness test from driving an index. The two spellings encode which
+// term is meant to find the rows, and TestStatusCurrentIsIndexed pins this half.
+func (r *Repo) kgCurrentQuery(ctx context.Context, teamID string) *gorm.DB {
+	return r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ? AND valid_to = ''", teamID)
+}
+
 // KGCounts returns the entity count, total triples, and current (not-ended) triple
 // count for a team — the numeric half of kg_stats.
 func (r *Repo) KGCounts(ctx context.Context, teamID string) (entities, triples, current int64, err error) {
@@ -324,7 +354,7 @@ func (r *Repo) KGCounts(ctx context.Context, teamID string) (entities, triples, 
 	if err = r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ?", teamID).Count(&triples).Error; err != nil {
 		return
 	}
-	err = r.db.WithContext(ctx).Model(&kgTripleRow{}).Where("team_id = ? AND valid_to = ''", teamID).Count(&current).Error
+	err = r.kgCurrentQuery(ctx, teamID).Count(&current).Error
 	return
 }
 
