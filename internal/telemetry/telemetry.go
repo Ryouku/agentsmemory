@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -34,10 +34,11 @@ import (
 // filed under, so a collector can filter this process from others.
 const InstrumentationName = "github.com/atvirokodosprendimai/agentsmemory"
 
-// StdoutEndpoint is the Config.Endpoint value that pretty-prints traces to
-// stderr instead of talking to a collector. It is how an operator watches a
-// single request's path without standing Jaeger up. Metrics stay silent on this
-// path: a 15s metric dump drowns the trace a human is reading.
+// StdoutEndpoint is the Config.Endpoint value that prints a compact stage tree
+// to stderr instead of talking to a collector. It is how an operator watches a
+// single request's path — including which file:line started each stage — without
+// standing Jaeger up. Metrics stay silent on this path: a 15s metric dump
+// drowns the trace a human is reading.
 const StdoutEndpoint = "stdout"
 
 // Outcome is the closed vocabulary ADR-025 requires of every semantic stage:
@@ -58,6 +59,48 @@ const (
 	// served decision did not complete.
 	FailedClosed Outcome = "failed_closed"
 )
+
+// Bypass/fail reasons. Closed vocabulary so a collector can group "why this
+// stage did not contribute" without free-text cardinality. These are the join
+// key between RankingProfile() and a dumped tree: a profile that says
+// closet-boost=0.00 must produce am.reason=scale_zero, or the wire is a lie.
+const (
+	// ReasonOff is a generic "the feature is not in force".
+	ReasonOff = "off"
+	// ReasonScaleZero is closet scale 0 — the prior is configured off.
+	ReasonScaleZero = "scale_zero"
+	// ReasonWeightZero is rerank weight ≤ 0.
+	ReasonWeightZero = "weight_zero"
+	// ReasonBandZero is recency band 0.
+	ReasonBandZero = "band_zero"
+	// ReasonNoReranker means no cross-encoder client is configured.
+	ReasonNoReranker = "no_reranker"
+	// ReasonSkipSQLite is SkipTelemetry: OTEL still runs, search_events does not.
+	ReasonSkipSQLite = "skip_sqlite"
+	// ReasonEmpty is nothing to score or hydrate.
+	ReasonEmpty = "empty"
+	// ReasonLexical is evidence selection staying on the lexical control.
+	ReasonLexical = "lexical"
+	// ReasonError is an endpoint or storage failure.
+	ReasonError = "error"
+	// ReasonScoreCount is rerank returning the wrong number of scores.
+	ReasonScoreCount = "score_count"
+	// ReasonSemanticFailed is semantic evidence falling back to lexical.
+	ReasonSemanticFailed = "semantic_failed"
+	// ReasonEnough is retrieve stopping because it has candidateK memories.
+	ReasonEnough = "enough"
+	// ReasonExhausted is retrieve stopping because the backend returned a short page.
+	ReasonExhausted = "exhausted"
+	// ReasonMaxDistance is retrieve stopping because the prefix is already too far.
+	ReasonMaxDistance = "max_distance"
+	// ReasonWidenCeiling is retrieve hitting the doubling safety stop.
+	ReasonWidenCeiling = "widen_ceiling"
+)
+
+// AttrReason records why a stage bypassed or failed-open. Pass it to End.
+func AttrReason(reason string) attribute.KeyValue {
+	return attribute.String("am.reason", reason)
+}
 
 // Semantic stage names. These are the span names a collector groups by, and the
 // feature identifiers the unused-feature counters use. A test that Search emits
@@ -108,6 +151,10 @@ const (
 	StageDelete = "am.drawer.delete"
 	// StageMine is mining a blob into drawers.
 	StageMine = "am.mine"
+	// StageEvalCase is one eval question scored across every arm.
+	StageEvalCase = "am.eval.case"
+	// StageEvalArm is one ranking arm of an eval case.
+	StageEvalArm = "am.eval.arm"
 )
 
 // SearchStages is the set of child stages one Search parent must emit, in the
@@ -133,7 +180,7 @@ func SearchStages() []string {
 // global noop provider in place, so an unset flag is silence rather than a
 // collector nobody stood up.
 type Config struct {
-	// Endpoint is empty (off), "stdout" (pretty traces on stderr), or an OTLP
+	// Endpoint is empty (off), "stdout" (compact stage tree on stderr), or an OTLP
 	// HTTP collector URL such as http://localhost:4318.
 	Endpoint string
 	// ServiceName is the resource `service.name`. Empty becomes "agentsmemory".
@@ -168,17 +215,10 @@ func Setup(ctx context.Context, cfg Config) (shutdown func(context.Context) erro
 		mp *metric.MeterProvider
 	)
 	if strings.EqualFold(endpoint, StdoutEndpoint) {
-		exp, err := stdouttrace.New(
-			stdouttrace.WithPrettyPrint(),
-			stdouttrace.WithWriter(os.Stderr),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("otel stdout trace exporter: %w", err)
-		}
 		tp = sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 			sdktrace.WithSampler(sdktrace.AlwaysSample()),
-			sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+			sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(newTreeExporter(os.Stderr))),
 		)
 	} else {
 		traceExp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))

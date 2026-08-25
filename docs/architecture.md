@@ -77,7 +77,7 @@ nothing, so this column is the one to distrust first.
 | `internal/dataexport` | adapter | the export manifest or redaction changes | dashboard export |
 | `internal/wingbundle` | adapter | the wing bundle format changes | wing export/import |
 | `internal/config` | infra | a setting is added or removed | `configFromCmd` |
-| `internal/telemetry` | infra | how traces and feature counters are exported | `telemetry.Setup`, Search stages, MCP `traceTool`, outbound HTTP |
+| `internal/telemetry` | infra | how traces and feature counters are exported | `telemetry.Setup`, Search stages, stdout stage tree, MCP `traceTool`, outbound HTTP |
 | `internal/mcptest` | test-support | the end-to-end harness changes | tests only (ADR-008) |
 | `internal/archguard` | test-support | a dependency rule changes | tests only (this doc's gate) |
 | `internal/doclint` | tooling | the doc-comment rule changes | tests only |

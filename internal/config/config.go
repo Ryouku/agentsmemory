@@ -247,9 +247,10 @@ type Config struct {
 	HTTPTimeout time.Duration
 
 	// OTELEndpoint is the OpenTelemetry export target. "" (the default) leaves
-	// tracing off — the noop provider, no collector required. "stdout" pretty-prints
-	// traces to stderr so an operator can watch one request's path. Any other
-	// value is an OTLP HTTP collector URL (http://localhost:4318).
+	// tracing off — the noop provider, no collector required. "stdout" prints a
+	// compact stage tree to stderr (file:line, outcome, reason) so an operator
+	// can compare RankingProfile() to what actually ran. Any other value is an
+	// OTLP HTTP collector URL (http://localhost:4318).
 	//
 	// This is ADR-025 PR-E: operational execution evidence. It must not change a
 	// served decision. A collector that is down drops observability, not search.

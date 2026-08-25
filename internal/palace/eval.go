@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 	"gorm.io/gorm"
 )
 
@@ -970,12 +973,21 @@ type caseOutcome struct {
 // emits exactly 0, but a logit backend can, and the abstention data must not
 // quietly drop the case that lands there.
 func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase, arms []EvalArm, poolSize int) (caseOutcome, error) {
-	vec, err := s.embed.EmbedOne(ctx, c.Query)
+	caseCtx, caseSpan := telemetry.Start(ctx, telemetry.StageEvalCase, attribute.Int("am.arms", len(arms)))
+	caseOut := telemetry.Ran
+	defer func() { caseSpan.End(caseOut) }()
+
+	embedCtx, embedSpan := telemetry.Start(caseCtx, telemetry.StageEmbed)
+	vec, err := s.embed.EmbedOne(embedCtx, c.Query)
 	if err != nil {
+		embedSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+		caseOut = telemetry.FailedClosed
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("embed eval query: %w", err)
 	}
-	hits, rows, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
+	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
+	hits, rows, err := s.searchCandidates(caseCtx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
 	if err != nil {
+		caseOut = telemetry.FailedClosed
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval candidate pool: %w", err)
 	}
 
@@ -1030,9 +1042,11 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			// operator to raise --pool, misdiagnosing stale case data as a
 			// retrieval failure. Found by adversarial review, minutes after a
 			// full re-mine had made it live.
+			caseOut = telemetry.FailedClosed
 			return caseOutcome{TopDistance: -1}, fmt.Errorf(
 				"eval case %q: its expected drawer %s no longer exists — the corpus was re-mined since this case file was generated; regenerate the cases", c.Query, id)
 		default:
+			caseOut = telemetry.FailedClosed
 			return caseOutcome{TopDistance: -1}, fmt.Errorf("load eval gold %s: %w", id, err)
 		}
 	}
@@ -1124,13 +1138,15 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		Query: c.Query, Wing: c.Wing, Limit: len(hits), SkipTelemetry: true,
 	}
 	for _, arm := range arms {
+		armCtx, armSpan := telemetry.Start(caseCtx, telemetry.StageEvalArm, attribute.String("am.arm", string(arm)))
 		switch arm {
 		case ArmProduction, ArmProductionDeep:
-			page, err := s.Search(ctx, teamID, SearchQuery{
+			page, err := s.Search(armCtx, teamID, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: productionLimit(arm),
 				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
 			})
 			if err != nil {
+				armSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 				break
 			}
 			if len(page) > 0 {
@@ -1145,43 +1161,55 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				prodTops[arm] = prodTop{page[0].RerankScore, gap, spread, dGap, dSpread, page[0].Reranked}
 			}
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
+			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
 		case ArmContextual:
-			ctxHits, err := s.vectors.Search(ctx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
+			ctxHits, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {
+				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+				caseOut = telemetry.FailedClosed
 				return caseOutcome{TopDistance: -1}, fmt.Errorf("contextual index search: %w", err)
 			}
 			if len(ctxHits) == 0 {
+				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
 				break
 			}
 			ctxIDs := make([]string, len(ctxHits))
 			for i, h := range ctxHits {
 				ctxIDs[i] = h.ID
 			}
-			ctxRows, err := s.repo.GetMany(ctx, teamID, ctxIDs)
+			ctxRows, err := s.repo.GetMany(armCtx, teamID, ctxIDs)
 			if err != nil {
+				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+				caseOut = telemetry.FailedClosed
 				return caseOutcome{TopDistance: -1}, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			hybrid := s.serviceForArm(ArmHybrid)
-			page, _, err := hybrid.rankRetrieved(ctx, teamID, c.Query, SearchQuery{
+			page, _, err := hybrid.rankRetrieved(armCtx, teamID, c.Query, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: len(ctxHits), SkipTelemetry: true,
 			}, vec, ctxHits, ctxRows)
 			if err != nil {
+				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+				caseOut = telemetry.FailedClosed
 				return caseOutcome{TopDistance: -1}, err
 			}
 			out[arm], _ = scorePage(page, goldSet, nil)
+			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
 		default:
 			svc := s.serviceForArm(arm)
 			if svc == nil {
+				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonOff))
 				break
 			}
-			page, reranked, err := svc.rankRetrieved(ctx, teamID, c.Query, poolQuery, vec, hits, rows)
+			page, reranked, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows)
 			if err != nil {
+				armSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 				break
 			}
 			if svc.rerank != nil && svc.rerankWeight > 0 && !reranked {
 				rerankFailed = true
 			}
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
+			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
 		}
 	}
 	// Production's score, or nothing. There is deliberately no fallback to the

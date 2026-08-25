@@ -964,8 +964,8 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	embedCtx, embedSpan := telemetry.Start(searchCtx, telemetry.StageEmbed)
 	vec, err := s.embed.EmbedOne(embedCtx, query)
 	if err != nil {
-		embedSpan.End(telemetry.FailedClosed)
-		parent.End(telemetry.FailedClosed)
+		embedSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+		parent.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 		// Recall genuinely cannot proceed — a query has to become a vector — so
 		// unlike filing this fails. Name the cause, because the same outage lets
 		// writes succeed (queued), and an agent seeing one work and the other not
@@ -999,7 +999,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 
 	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
-		rec.End(telemetry.Bypassed)
+		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
 		parent.Set(attribute.Int("am.count", len(results)))
 		return results, nil
 	}
@@ -1048,13 +1048,17 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// served configuration has to collapse the same way or it is measuring a
 	// pipeline nobody runs.
 	_, collapseSpan := telemetry.Start(ctx, telemetry.StageCollapse)
-	collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
-	if err != nil {
-		collapseSpan.End(telemetry.FailedClosed)
-		return nil, false, err
+	if len(survivors) == 0 {
+		collapseSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty), attribute.Int("am.count", 0))
+	} else {
+		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
+		if err != nil {
+			collapseSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+			return nil, false, err
+		}
+		collapseSpan.End(telemetry.Ran, attribute.Int("am.count", len(collapsed)))
+		survivors = collapsed
 	}
-	collapseSpan.End(telemetry.Ran, attribute.Int("am.count", len(collapsed)))
-	survivors = collapsed
 
 	// Closet boost: search the team's closets with the same query and let the
 	// best-matching closets lift the rank of the drawers from their source. Closets
@@ -1072,7 +1076,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		boosts[i] = closetBoostBySource[h.Drawer.SourceFile]
 		dates[i] = h.Drawer.ContentDate
 	}
-	_, fusionSpan := telemetry.Start(ctx, telemetry.StageFusion, attribute.String("am.fusion", s.fusionModeName()))
+	_, fusionSpan := telemetry.Start(ctx, telemetry.StageFusion, s.fusionAttrs()...)
 	ranked := s.fusionRanker()(query, docs, dists, boosts)
 	fusionSpan.End(telemetry.Ran, attribute.Int("am.count", len(ranked)))
 
@@ -1081,7 +1085,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		ranked = reorderByRecency(ranked, dates, s.recencyBand)
 		recencySpan.End(telemetry.Ran, attribute.Float64("am.band", s.recencyBand))
 	} else {
-		recencySpan.End(telemetry.Bypassed)
+		recencySpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonBandZero))
 	}
 
 	// Stage 4: cross-encode the shortlist. The fusion above is a cheap proxy built
@@ -1186,8 +1190,15 @@ func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery st
 // distinguish. Blending keeps both; handing over discards one.
 func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
 	rerankCtx, sp := telemetry.Start(ctx, telemetry.StageRerank, attribute.Float64("am.weight", weight))
-	if s.rerank == nil || len(ranked) == 0 || weight <= 0 {
-		sp.End(telemetry.Bypassed)
+	switch {
+	case s.rerank == nil:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonNoReranker))
+		return ranked, false
+	case len(ranked) == 0:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
+		return ranked, false
+	case weight <= 0:
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonWeightZero))
 		return ranked, false
 	}
 	pool := min(s.rerankPool, len(ranked))
@@ -1201,13 +1212,13 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		semanticDocs, err := s.semanticRerankDocuments(rerankCtx, evidenceQuery, queryVector, survivors, ranked[:pool], docs)
 		if err != nil {
 			slog.Warn("semantic evidence selection failed, falling back to lexical evidence", "error", err, "candidates", pool)
-			evSpan.End(telemetry.FailedOpen)
+			evSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonSemanticFailed))
 		} else {
 			docs = semanticDocs
 			evSpan.End(telemetry.Ran, attribute.Int("am.pool", pool))
 		}
 	} else {
-		evSpan.End(telemetry.Bypassed)
+		evSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonLexical))
 	}
 
 	scores, err := s.rerank.Rerank(rerankCtx, rerankQuery, docs)
@@ -1216,12 +1227,12 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass
 		// would be exactly as wrong as the weight-0 case this fix is about.
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
-		sp.End(telemetry.FailedOpen, attribute.Int("am.pool", pool))
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError), attribute.Int("am.pool", pool))
 		return ranked, false
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
-		sp.End(telemetry.FailedOpen, attribute.Int("am.pool", pool), attribute.Int("am.got", len(scores)))
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonScoreCount), attribute.Int("am.pool", pool), attribute.Int("am.got", len(scores)))
 		return ranked, false
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))

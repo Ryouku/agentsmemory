@@ -2,6 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -32,6 +35,7 @@ func Start(ctx context.Context, name string, attrs ...attribute.KeyValue) (conte
 	if id := SearchIDFrom(ctx); id != "" {
 		attrs = append([]attribute.KeyValue{attribute.String("am.search_id", id)}, attrs...)
 	}
+	attrs = append(attrs, callSiteAttrs()...)
 	ctx, span := Tracer(ctx).Start(ctx, name, trace.WithAttributes(attrs...))
 	Inc(ctx, name, CounterEligible)
 	return ctx, &Span{span: span, name: name, ctx: ctx, outcome: Ran}
@@ -76,4 +80,45 @@ func (s *Span) End(outcome Outcome, attrs ...attribute.KeyValue) {
 		}
 		s.span.End()
 	})
+}
+
+// Event records a named decision inside a stage (a retrieve widening round,
+// a fusion input count). Events are how a dump shows the loop ran without a
+// span per iteration.
+func (s *Span) Event(name string, attrs ...attribute.KeyValue) {
+	if s == nil {
+		return
+	}
+	s.span.AddEvent(name, trace.WithAttributes(attrs...))
+}
+
+// callSiteAttrs is the join key between a dumped span and the source that
+// started it. Caller(2) skips this helper and Start, landing on the palace
+// (or MCP) call site. Paths are repo-relative so they are stable across machines
+// and are not home-directory leaks.
+func callSiteAttrs() []attribute.KeyValue {
+	pc, file, line, ok := runtime.Caller(2)
+	if !ok {
+		return nil
+	}
+	fn := runtime.FuncForPC(pc).Name()
+	if i := strings.LastIndex(fn, "/internal/"); i >= 0 {
+		fn = fn[i+1:]
+	} else if i := strings.LastIndex(fn, "/cmd/"); i >= 0 {
+		fn = fn[i+1:]
+	}
+	return []attribute.KeyValue{
+		attribute.String("am.code.file", repoRel(file)),
+		attribute.Int("am.code.line", line),
+		attribute.String("am.code.func", fn),
+	}
+}
+
+func repoRel(file string) string {
+	for _, mark := range []string{"/internal/", "/cmd/", "/clients/"} {
+		if i := strings.Index(file, mark); i >= 0 {
+			return filepath.ToSlash(file[i+1:])
+		}
+	}
+	return filepath.ToSlash(filepath.Base(file))
 }

@@ -79,7 +79,53 @@ func TestStdoutExporterWritesToStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(src, []byte("WithWriter(os.Stderr)")) {
+	if !bytes.Contains(src, []byte("newTreeExporter(os.Stderr)")) {
 		t.Error("stdout exporter does not write to stderr; traces would drown the eval table on stdout")
+	}
+}
+
+func TestStartRecordsCallSite(t *testing.T) {
+	ctx, sr := recorder(t)
+	_, sp := Start(ctx, StageEmbed)
+	sp.End(Ran)
+
+	got := map[string]string{}
+	for _, a := range sr.Ended()[0].Attributes() {
+		got[string(a.Key)] = a.Value.Emit()
+	}
+	if got["am.code.file"] != "internal/telemetry/span_test.go" {
+		t.Errorf("call site file = %q, want the test — Caller(2) must skip Start", got["am.code.file"])
+	}
+	if got["am.code.line"] == "" || got["am.code.line"] == "0" {
+		t.Errorf("call site line = %q", got["am.code.line"])
+	}
+}
+
+func TestEventRecordsInsideStage(t *testing.T) {
+	ctx, sr := recorder(t)
+	_, sp := Start(ctx, StageRetrieve)
+	sp.Event("widen", attribute.Int("am.k", 8), attribute.String("am.stop", ReasonEnough))
+	sp.End(Ran)
+
+	evs := sr.Ended()[0].Events()
+	if len(evs) != 1 || evs[0].Name != "widen" {
+		t.Fatalf("events = %v, want one widen", evs)
+	}
+	found := false
+	for _, a := range evs[0].Attributes {
+		if a.Key == "am.stop" && a.Value.AsString() == ReasonEnough {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("widen event missing am.stop")
+	}
+}
+
+func TestSearchStagesDoesNotIncludeEval(t *testing.T) {
+	for _, name := range SearchStages() {
+		if name == StageEvalCase || name == StageEvalArm {
+			t.Errorf("%s is an eval wrapper, not a Search stage — putting it in SearchStages would fail every non-eval Search", name)
+		}
 	}
 }

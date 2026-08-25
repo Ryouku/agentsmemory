@@ -322,7 +322,7 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 	if scale == 0 {
 		// The prior is off: skip the closet vector search too, not just the
 		// arithmetic — this is one network call per search.
-		sp.End(telemetry.Bypassed)
+		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonScaleZero))
 		return boosts
 	}
 	// No filter: a closet summarises a whole source, so its boost is not scoped to
@@ -330,7 +330,7 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 	// filtered on their own way in.
 	hits, err := s.vectors.Search(closetCtx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
 	if err != nil {
-		sp.End(telemetry.FailedOpen)
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 		return boosts
 	}
 	if len(hits) == 0 {
@@ -341,9 +341,9 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 	for i, h := range hits {
 		ids[i] = h.ID
 	}
-	rows, err := s.repo.ClosetsByIDs(ctx, teamID, ids)
+	rows, err := s.repo.ClosetsByIDs(closetCtx, teamID, ids)
 	if err != nil {
-		sp.End(telemetry.FailedOpen)
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 		return boosts
 	}
 	seen := map[string]struct{}{}

@@ -247,4 +247,4 @@ Three things are not automatic, in the order they will bite you:
 
 ## Unreleased
 
-OpenTelemetry runtime telemetry (ADR-025 PR-E). `--otel-endpoint` / `AGENTSMEMORY_OTEL_ENDPOINT`: empty=off, `stdout` pretty-prints traces to stderr, otherwise an OTLP HTTP collector URL. Search emits semantic stage spans (`embed` → `retrieve` → `hydrate` → `collapse` → `closet` → `fusion` → `recency` → `rerank` → `record`) with `ran|bypassed|failed_open|failed_closed`. MCP tools, inbound HTTP, and outbound embed/rerank/Qdrant clients are wrapped. `search_id` is the SQLite `search_events.id`. Telemetry does not change ranking.
+OpenTelemetry runtime telemetry (ADR-025 PR-E). `--otel-endpoint` / `AGENTSMEMORY_OTEL_ENDPOINT`: empty=off, `stdout` prints a compact stage tree to stderr (call site, outcome, reason), otherwise an OTLP HTTP collector URL. Search stages carry `am.reason` on bypass/fail, retrieve `widen` events, and structured ranking knobs so a dump can be compared to `RankingProfile()`. Eval nests `am.eval.case` / `am.eval.arm`. Telemetry does not change ranking.
