@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -139,6 +140,10 @@ type Service struct {
 	rerank       Reranker
 	rerankPool   int
 	rerankWeight float64
+	// rerankNorm names how a raw cross-encoder score is brought onto a scale
+	// comparable with the fused score. Empty means RerankNormMinMax, so an
+	// unconfigured service behaves exactly as it did before this field existed.
+	rerankNorm string
 	// bm25Auto scales the lexical fusion weight per query by its measured lexical
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
 	bm25Auto bool
@@ -295,6 +300,31 @@ func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
 		s.memoryEvidenceSelector = semanticMemoryEvidenceSelector
 	}
 	return s
+}
+
+// WithRerankNorm selects how raw cross-encoder scores are normalised before the
+// blend, and returns s for chaining. An unknown or empty name resolves to
+// min-max, which is what the service did before the option existed.
+//
+// Same post-construction-setter contract as WithReranker: call before the
+// service is shared.
+func (s *Service) WithRerankNorm(name string) *Service {
+	switch name {
+	case RerankNormSigmoid, RerankNormRank:
+		s.rerankNorm = name
+	default:
+		s.rerankNorm = RerankNormMinMax
+	}
+	return s
+}
+
+// RerankNormName reports the resolved normaliser, so am_status and the eval
+// table name the same thing the blend actually used.
+func (s *Service) RerankNormName() string {
+	if s.rerankNorm == "" {
+		return RerankNormMinMax
+	}
+	return s.rerankNorm
 }
 
 // MemoryEvidenceSelectorName reports the resolved operator-facing selector.
@@ -1292,7 +1322,7 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		return ranked, false
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
-	return BlendRerank(ranked, scores, weight), true
+	return BlendRerankWith(ranked, scores, weight, s.rerankNorm), true
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
@@ -1327,6 +1357,145 @@ func (s *Service) RerankScoresFor(ctx context.Context, query string, survivors [
 // not depend on the weight: an eval comparing several weights was calling the
 // cross-encoder once per weight with identical inputs, which multiplied the
 // slowest step in the pipeline by the number of arms for no information at all.
+// Rerank-score normalisers. The name is what an eval arm selects and what
+// am_status reports, so it is operator-facing and must stay stable.
+const (
+	// RerankNormMinMax rescales the pool's rerank scores to [0,1] by min-max.
+	// It is the original behaviour and is SCALE-FREE: a pool whose scores differ
+	// by 0.001 and one whose scores differ by 10 both come out spanning the full
+	// range, so a cross-encoder that is indifferent is indistinguishable from one
+	// that is certain. On a small pool it also forces the extremes to exactly
+	// {0,1}, which at weight 0.5 makes an opposed pair tie and discards the
+	// cross-encoder entirely.
+	RerankNormMinMax = "minmax"
+	// RerankNormSigmoid maps each raw logit through 1/(1+e^-x) independently of
+	// the pool. It PRESERVES MAGNITUDE: indifferent scores land together near 0.5
+	// and contribute almost nothing, so the fused evidence decides — which is the
+	// honest reading of "the cross-encoder has no opinion" — while a confident
+	// score still separates. It imports a scale assumption, since a logit is not a
+	// calibrated probability, so it is measured as an arm rather than assumed.
+	RerankNormSigmoid = "sigmoid"
+	// RerankNormRank uses position alone, ignoring score magnitude. It cannot
+	// amplify noise, because a 0.001 gap and a 10.0 gap produce the same steps —
+	// but it still forces the extremes to {0,1}, so it does NOT fix the tie. It is
+	// here to separate the two halves of the defect in the measurement.
+	RerankNormRank = "rank"
+)
+
+// normalizeSigmoid maps raw cross-encoder logits into (0,1) per element.
+//
+// Unlike normalizeScores this is POOL-INDEPENDENT, which is the entire point: a
+// candidate's normalised value does not change because a different candidate was
+// retrieved alongside it, so the blend can tell "all of these look equally good
+// to me" from "this one is clearly best".
+func normalizeSigmoid(in []float64) []float64 {
+	out := make([]float64, len(in))
+	for i, v := range in {
+		out[i] = 1 / (1 + math.Exp(-v))
+	}
+	return out
+}
+
+// normalizeRank replaces each score with its position in the pool, best = 1.
+//
+// Scale-free by construction, so it cannot turn a rounding difference into a
+// decisive one. It still maps the best and worst to 1 and 0, so it does not cure
+// the weight-0.5 tie; the two failures are separable and this arm separates them.
+func normalizeRank(in []float64) []float64 {
+	out := make([]float64, len(in))
+	if len(in) < 2 {
+		for i := range out {
+			out[i] = 1
+		}
+		return out
+	}
+	idx := make([]int, len(in))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return in[idx[a]] > in[idx[b]] })
+	last := float64(len(in) - 1)
+	for pos, i := range idx {
+		out[i] = 1 - float64(pos)/last
+	}
+	return out
+}
+
+// normalizeBlendAxes applies the named policy to both blend inputs, defaulting to
+// min-max on both so an unset field reproduces the original behaviour exactly.
+func normalizeBlendAxes(rerank, fused []float64, norm string) (rerankNorm, fusedNorm []float64) {
+	switch norm {
+	case RerankNormSigmoid:
+		// Magnitude-preserving on both: a logit through sigmoid, an RRF score
+		// scaled by the pool max. An indifferent cross-encoder lands flat near 0.5
+		// and lets the fused evidence decide; a confident one still separates.
+		return normalizeSigmoid(rerank), normalizeByMax(fused)
+	case RerankNormRank:
+		// Position-only on both: cannot amplify noise, and cannot express
+		// confidence either. It is the control that separates "magnitude mattered"
+		// from "getting off min-max mattered".
+		return normalizeRank(rerank), normalizeRank(fused)
+	default:
+		return normalizeScores(rerank), normalizeScores(fused)
+	}
+}
+
+// normalizeByMax scales a non-negative vector by its maximum, preserving ratios.
+//
+// This is the fused axis's counterpart to sigmoid. RRF scores are all near
+// 1/(k+rank) and therefore CLOSE TOGETHER in absolute terms; min-max stretches
+// whatever gap exists to the full [0,1] range, so two candidates differing by 1.6%
+// arrive at the blend looking as far apart as first and last. Dividing by the max
+// keeps a 1.6% difference a 1.6% difference.
+func normalizeByMax(in []float64) []float64 {
+	out := make([]float64, len(in))
+	mx := 0.0
+	for _, v := range in {
+		if v > mx {
+			mx = v
+		}
+	}
+	if mx <= 0 {
+		for i := range out {
+			out[i] = 1
+		}
+		return out
+	}
+	for i, v := range in {
+		out[i] = v / mx
+	}
+	return out
+}
+
+// BlendRerankWith is BlendRerank under a named normalisation POLICY.
+//
+// The policy governs BOTH axes, because normalising only one is not a smaller
+// change — it is an incoherent one. Measured while building the fixture for
+// ADR-030: sigmoid on the rerank axis alone turned a dead tie into 0.5033 vs
+// 0.4967 and STILL ordered the page against a cross-encoder that had asked for
+// the opposite by the widest margin it can express, because the fused axis was
+// still being min-max stretched to {1, 0}. Both axes are scale-free or neither is.
+func BlendRerankWith(ranked []HybridScore, scores []float64, weight float64, norm string) []HybridScore {
+	pool := len(scores)
+	if pool == 0 || pool > len(ranked) {
+		return ranked
+	}
+	fusedRaw := make([]float64, pool)
+	for i := range fusedRaw {
+		fusedRaw[i] = ranked[i].Fused
+	}
+	rerankNorm, fusedNorm := normalizeBlendAxes(scores, fusedRaw, norm)
+
+	head := make([]HybridScore, pool)
+	for i := range head {
+		head[i] = ranked[i]
+		head[i].Rerank, head[i].Reranked = scores[i], true
+		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
+	}
+	sort.SliceStable(head, func(a, b int) bool { return head[a].Blended > head[b].Blended })
+	return append(head, ranked[pool:]...)
+}
+
 func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []HybridScore {
 	pool := len(scores)
 	if pool == 0 || pool > len(ranked) {

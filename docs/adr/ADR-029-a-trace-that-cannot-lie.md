@@ -89,7 +89,7 @@ Nothing here needs a new span type, a new exporter, or a new configuration surfa
 
 **Two tasks. T3 is withdrawn** — see the amendment above; its defect was refuted by mutation, and its fix would have changed production emission in order to satisfy a gate, which is the wrong direction of causation.
 
-**T1 — the three confirmed lies.** The wing attribution written to `search_events` records what the server resolved and not what the caller asked, and `am_recall_stats` reports on it today. A `wing_source` is captured at the MCP boundary — the only place the caller's intent still exists — and stored alongside the resolved wing, so a per-wing recall number can finally say whether the caller chose that wing or the registration did. The anchor lookup's discarded error and `emptyWingNote`'s collapsed return stop being silent: both silently degrade a page the caller receives, and neither is visible in the response or the trace.
+**T1 — the three confirmed lies.** The wing attribution written to `search_events` records what the server resolved and not what the caller asked, and `am_recall_stats` reports on it today. A `scope_source` is captured at the MCP boundary — the only place the caller's intent still exists — and stored alongside the resolved wing, so a per-wing recall number can finally say whether the caller chose that wing or the registration did. The anchor lookup's discarded error and `emptyWingNote`'s collapsed return stop being silent: both silently degrade a page the caller receives, and neither is visible in the response or the trace.
 
 **T2 — `max_distance` and the drop counts.** The threshold reaches `searchAttrs`; `survivorsFrom` returns its three drop counts and `rankRetrieved` records them at its single call site; the pre-truncation query length reaches the parent span. The wing/room drop count is the point: it is an alarm, not a metric, and it is the one number this pipeline computes and discards.
 
@@ -120,7 +120,7 @@ No module boundary moves and no new package appears. `internal/telemetry` gains 
 
 | Contract | Producing task | Consuming task(s) | Breaking? |
 |----------|----------------|-------------------|-----------|
-| `wing_source` at the MCP boundary and on the `search_events` row | T1 | none in this ADR — `am_recall_stats` consumes it once the column exists | No — additive column and additive attribute; an absent value reads as unknown |
+| `scope_source` at the MCP boundary and on the `search_events` row | T1 | none in this ADR — `am_recall_stats` consumes it once the column exists | No — additive column and additive attribute; an absent value reads as unknown |
 | `scopeDrops` from `survivorsFrom` | T2 | T2 only | No — unexported, both call sites updated in the same task |
 
 The two tasks are contract-independent and both touch `internal/palace/service.go`, so they are ordered rather than parallel. T1 goes first because it is the only defect here with a live consumer: `am_recall_stats` reports per-wing numbers on the ambiguous column today.
@@ -141,7 +141,7 @@ The wing/room drop count becomes an alarm the pipeline can raise on its own. Tod
 
 Cost: one additive column, one boundary attribute, and five integers on spans that already exist. No text, no unbounded cardinality, no per-hit attribute.
 
-**A cutover, not a backfill.** Rows written before `wing_source` exists carry no value for it, and nothing can recover the caller's intent retrospectively. Every recall statistic spanning the boundary is therefore mixed, and the report has to say so rather than quietly averaging across it.
+**A cutover, not a backfill.** Rows written before `scope_source` exists carry no value for it, and nothing can recover the caller's intent retrospectively. Every recall statistic spanning the boundary is therefore mixed, and the report has to say so rather than quietly averaging across it.
 
 ## Out of Scope
 
@@ -150,7 +150,7 @@ Cost: one additive column, one boundary attribute, and five integers on spans th
 - **Backend identity on the span** — `VECTOR_BACKEND` confirmed, `EMBED_BACKEND` refuted (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — it is `cmd/server/main.go` wiring rather than the search path and earns its own record)
 - **The confirmed tail findings** — the adaptive BM25 weight's resolved value, the whole-memory-to-400-rune degradation, `SearchQuery.Context` presence, `closetBoostsAt`'s three discard paths, the evidence stage's window counts, `am_list_drawers`' wing narrowing (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — all confirmed, none of them make a span lie)
 - **Any change to what `recordSearch` does on failure** (permanent: its documented invariant is correct, and `doctorSchema` is already the deliberate detector for the failure it hides)
-- **Re-running the historical recall statistics under the corrected attribution** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — rows written before `wing_source` exists cannot be re-attributed, so the honest outcome is a cutover date, not a backfill)
+- **Re-running the historical recall statistics under the corrected attribution** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — rows written before `scope_source` exists cannot be re-attributed, so the honest outcome is a cutover date, not a backfill)
 - **Acting on a non-zero out-of-scope drop count** (deferred: `docs/adr/BACKLOG.md` §"From ADR-029" — T2 makes the divergence visible; deciding what the server does about it has a blast radius this ADR does not take on)
 - **Sampling, exporters, or collector configuration** (permanent: untouched; this ADR changes what is recorded, never how it is transported)
 - **Any change to ranking, scoring, or the retrieval unit** (permanent: ADR-024 owns the ranking unit; every survivor, score and order is byte-identical before and after this ADR)

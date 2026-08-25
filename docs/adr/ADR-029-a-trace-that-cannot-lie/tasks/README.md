@@ -18,7 +18,7 @@ The two tasks are contract-independent — no task consumes anything another pro
 | Task | Goal | Produces | Consumes | Status | Acceptance |
 |------|------|----------|----------|--------|------------|
 | T1 | A span that reports success only for work that succeeded | `telemetry.ReasonTimeout`; `Repo.recordSearch` returning `error`; honest outcomes on four spans | none | pending | `go test ./internal/palace/ -run "TestRecordStageReportsAWriteThatFailed\|TestRerankTimeoutIsNotReportedAsAnOutage\|TestEvidenceReportsHowManyDocumentsItActuallySelected\|TestRerankSaysWhetherItReorderedAnything"` + `go test ./internal/mcpserver/ -run "TestAnchorFailureReachesTheToolSpan\|TestEmptyWingLookupFailureIsNotSilence"` |
-| T2 | What was asked, what was searched, and what was dropped | `am.limit_requested`, `am.query_runes`, `am.query_truncated`, `am.max_distance`, `am.wing_source`; `scopeDrops` from `survivorsFrom` | none | pending | `go test ./internal/palace/ -run "TestRequestedLimitSurvivesTheClamp\|TestTruncatedQueryLeavesEvidence\|TestScopeDropsAreCounted\|TestScopeDropsLandOnTheArmSpanForEvalArms"` + `go test ./internal/mcpserver/ -run TestWingSourceDistinguishesCallerFromServer` |
+| T2 | What was asked, what was searched, and what was dropped | `am.limit_requested`, `am.query_runes`, `am.query_truncated`, `am.max_distance`, `am.scope_source`; `scopeDrops` from `survivorsFrom` | none | pending | `go test ./internal/palace/ -run "TestRequestedLimitSurvivesTheClamp\|TestTruncatedQueryLeavesEvidence\|TestScopeDropsAreCounted\|TestScopeDropsLandOnTheArmSpanForEvalArms"` + `go test ./internal/mcpserver/ -run TestWingSourceDistinguishesCallerFromServer` |
 
 ## Withdrawn
 

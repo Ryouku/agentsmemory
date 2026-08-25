@@ -1,6 +1,6 @@
 # ADR-030: A blend that cannot tell confidence from noise
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-25
 **Owner:** Zy
 **Spec:** None — no spec stage; grounded in a live page served by the deployed container on 2026-08-25, an isolated arithmetic probe over `BlendRerank`, and 648 reranked recalls in the deployed `search_events` table.

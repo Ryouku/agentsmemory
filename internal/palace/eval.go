@@ -61,6 +61,15 @@ const (
 	// the candidate for replacing an inherited 0.6/0.4 split with something that
 	// needs no tuning at all.
 	ArmRRF EvalArm = "rrf"
+	// ArmBlendSigmoid is the served arm with the rerank axis normalised by
+	// sigmoid instead of min-max, so a cross-encoder that is indifferent
+	// contributes almost nothing rather than being stretched to the full range.
+	ArmBlendSigmoid EvalArm = "rrf+rerank norm=sigmoid"
+	// ArmBlendRank is the served arm with the rerank axis normalised by POSITION.
+	// It cannot amplify a rounding difference into a decisive one, and it still
+	// forces the extremes to {0,1} — so it separates the two halves of the defect:
+	// if sigmoid wins and rank does not, the magnitude information is what mattered.
+	ArmBlendRank EvalArm = "rrf+rerank norm=rank"
 	// ArmRRFReranked is RRF with the cross-encoder on top, so the fusion choice
 	// and the rerank choice can be read independently.
 	ArmRRFReranked EvalArm = "rrf+rerank"
@@ -767,6 +776,10 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 		return c.WithBM25Weight(false, hybridBM25Weight).WithClosetBoost(1).WithRerankWeight(weight)
 	case ArmRRF:
 		return c.WithFusion("rrf")
+	case ArmBlendSigmoid:
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormSigmoid)
+	case ArmBlendRank:
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormRank)
 	case ArmRRFReranked:
 		return c.WithFusion("rrf").WithRerankWeight(weight)
 	case ArmAdaptive:
@@ -872,6 +885,13 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
 	// missing once already — built, documented, and never appended — which an
 	// adversarial review caught and no table did.
+	// The blend-normalisation arms go in with the other pool arms, BEFORE the
+	// production arms: TestEvalArmsKeepProductionLast requires the arm that scores
+	// the served path to be last in the table, so a reader comparing rows always
+	// finds production at the bottom.
+	if rerank {
+		arms = append(arms, ArmBlendSigmoid, ArmBlendRank)
+	}
 	arms = append(arms, ArmProduction, ArmProductionDeep, ArmProductionRetrieve)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
@@ -954,7 +974,8 @@ func ArmScope(arm EvalArm) SupersessionScope {
 	case ArmContextual:
 		return ScopeOwnIndex
 	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
-		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF:
+		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF,
+		ArmBlendSigmoid, ArmBlendRank:
 		return ScopePool
 	}
 	// The swept families are minted at run time — bm25Arm, rerankArm and
