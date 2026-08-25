@@ -141,6 +141,18 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		if asOf != "" {
 			out["as_of"] = asOf
 		}
+		// A filtered page must say what it filtered rather than presenting itself
+		// as the whole. ADR-010's argument is the reason this is never silent: a
+		// session about to redo a rejected thing does not know to ask for history
+		// — that is precisely what it does not know. So the keys appear only when
+		// something was actually removed, which makes their presence informative,
+		// and the hint names the parameter that brings it back.
+		if res.Withheld > 0 {
+			out["withheld"] = map[string]int64{res.WithheldStatus: res.Withheld}
+			out["hint"] = fmt.Sprintf(
+				"%d %s fact(s) not shown — pass status:%q to see them, or status:%q for both.",
+				res.Withheld, res.WithheldStatus, res.WithheldStatus, palace.KGStatusAll)
+		}
 		return jsonResult(out), nil
 	})
 }

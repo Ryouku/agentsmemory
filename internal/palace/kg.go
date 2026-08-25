@@ -400,12 +400,15 @@ type KGQueryInput struct {
 // Withheld is the count the status filter removed, taken from the store rather
 // than recomputed from the rows — a filtered query never fetches what it dropped,
 // so re-deriving the number would mean re-running the filter with the opposite
-// answer and would be a second place to be wrong.
+// answer and would be a second place to be wrong. WithheldStatus names what those
+// rows are, so the surface reporting them does not have to re-derive the
+// complement and risk disagreeing with the count beside it.
 type KGQueryResult struct {
-	Entity   string
-	Facts    []KGFact
-	Status   string
-	Withheld int64
+	Entity         string
+	Facts          []KGFact
+	Status         string
+	Withheld       int64
+	WithheldStatus string
 }
 
 // KGFact is one fact a query/timeline returns, with display names resolved and the
@@ -582,7 +585,7 @@ func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (
 	asOfKey := temporalStartKey(ao)
 	dropped := kgComplementStatus(status)
 
-	out := KGQueryResult{Entity: ent, Status: status}
+	out := KGQueryResult{Entity: ent, Status: status, WithheldStatus: dropped}
 	if direction == "outgoing" || direction == "both" {
 		rows, err := s.repo.KGTriplesBySubject(ctx, teamID, eid, status)
 		if err != nil {
