@@ -18,7 +18,7 @@ The two tasks are independent in content and touch the same file, so they are or
 | Task | Goal | Produces | Consumes | Status | Acceptance |
 |------|------|----------|----------|--------|------------|
 | T1 | Return the recall's identifier, and accept it back | `search_id` on the `am_search` response; the optional `search_id` argument on `am_get_drawer` | none | done | `go test ./internal/mcptest/ -run "TestSearchResponseCarriesItsSearchID\|TestGetDrawerSchemaAdvertisesSearchID\|TestGetDrawerIgnoresAnUnknownSearchID"` |
-| T2 | Expose the score the order was actually decided by | `blended_score` on each `am_search` hit | none | pending | `go test ./internal/mcpserver/ -run TestSearchToolDescriptionSaysBlendedIsPoolRelative` + `go test ./internal/mcptest/ -run TestHitCarriesTheScoreItWasOrderedBy` |
+| T2 | Expose the score the order was actually decided by | `blended_score` on each `am_search` hit | none | done | `go test ./internal/mcpserver/ -run "TestSearchToolDescriptionSaysBlendedIsPoolRelative\|TestRenderedHitCarriesTheBlendedValueNotTheRerankScore"` + `go test ./internal/palace/ -run TestHitCarriesTheScoreItWasOrderedBy` |
 
 ## Not a task here
 

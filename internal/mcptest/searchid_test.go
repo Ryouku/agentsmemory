@@ -45,12 +45,12 @@ func TestSearchResponseCarriesItsSearchID(t *testing.T) {
 	h := mcptest.New(t)
 
 	h.MustCall(t, "am_add_drawer", map[string]any{
-		"wing": "wing_searchid", "room": "decisions",
+		"wing": "wing_alpha", "room": "decisions",
 		"content": "the recall identifier is minted once per search and stored as the event row's key",
 	})
 
 	id, hits := pageOf(t, h.MustCall(t, "am_search", map[string]any{
-		"query": "recall identifier minted once per search", "wing": "wing_searchid", "limit": 5,
+		"query": "recall identifier minted once per search", "wing": "wing_alpha", "limit": 5,
 	}))
 	if len(hits) == 0 {
 		t.Fatal("the populated search returned no hits, so this case proves nothing about a page that found something")
@@ -61,7 +61,7 @@ func TestSearchResponseCarriesItsSearchID(t *testing.T) {
 	}
 
 	emptyID, emptyHits := pageOf(t, h.MustCall(t, "am_search", map[string]any{
-		"query": "nothing in this palace resembles this query at all", "wing": "wing_searchid_absent", "limit": 5,
+		"query": "nothing in this palace resembles this query at all", "wing": "wing_never_written", "limit": 5,
 	}))
 	if len(emptyHits) != 0 {
 		t.Fatalf("expected an empty page for an absent wing, got %d hits — the assertion below is about the empty case", len(emptyHits))
@@ -131,11 +131,11 @@ func TestGetDrawerIgnoresAnUnknownSearchID(t *testing.T) {
 	h := mcptest.New(t)
 
 	h.MustCall(t, "am_add_drawer", map[string]any{
-		"wing": "wing_searchid_fetch", "room": "decisions",
+		"wing": "wing_beta", "room": "decisions",
 		"content": "a fetch quoting an unknown recall identifier still returns the memory it asked for",
 	})
 	_, hits := pageOf(t, h.MustCall(t, "am_search", map[string]any{
-		"query": "fetch quoting an unknown recall identifier", "wing": "wing_searchid_fetch", "limit": 1,
+		"query": "fetch quoting an unknown recall identifier", "wing": "wing_beta", "limit": 1,
 	}))
 	if len(hits) == 0 {
 		t.Fatal("no hit to fetch, so the assertion below would be vacuous")

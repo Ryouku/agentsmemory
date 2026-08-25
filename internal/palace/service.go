@@ -1173,7 +1173,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
+		hit.RerankScore, hit.Reranked, hit.Blended = r.Rerank, r.Reranked, r.Blended
 		if hit.ChunksMatched == 0 {
 			hit.ChunksMatched = 1
 		}

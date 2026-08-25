@@ -167,6 +167,15 @@ type SearchHit struct {
 	// perfectly ordinary value. Anything deciding whether a score is PRESENT —
 	// an abstention gate, or the eval calibrating one — must read this.
 	Reranked bool
+	// Blended is the value the page was ORDERED by: BlendRerank's weighted
+	// combination of the pool-normalised fused and rerank scores. It is not a
+	// third opinion to weigh against the other two — it is the one the sort used.
+	//
+	// Pool-relative by construction, so it compares hits WITHIN a page and means
+	// nothing across pages. Zero when this hit was not reranked, for the same
+	// reason RerankScore is: a hit outside the scored pool was ordered by the
+	// fused score alone and has no blend.
+	Blended float64
 }
 
 // memoryOf returns the id of the MEMORY a drawer belongs to: its parent when it

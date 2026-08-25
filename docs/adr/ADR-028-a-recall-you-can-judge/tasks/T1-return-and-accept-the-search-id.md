@@ -126,3 +126,4 @@ Stop and ask if surfacing the id from `Search` cannot be done without changing w
   FAIL
   ```
 - 2026-08-25 · 84d6ecc* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:e9384385f841db4ae2fdd618d24241a38d4bf1632bfea1aa1e872213d7272575
+- 2026-08-25 · e9299bb* · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c ' …` · acceptance-sha256:e9384385f841db4ae2fdd618d24241a38d4bf1632bfea1aa1e872213d7272575

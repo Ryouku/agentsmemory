@@ -462,6 +462,29 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 	})
 }
 
+// newSearchHitView maps a domain hit onto the view an agent receives.
+//
+// Extracted from the loop it used to be inlined in, because an inline composite
+// literal is unreachable from a test: a mutant that populated blended_score from
+// RerankScore — the exact confusion ADR-028 T2 exists to end — SURVIVED the
+// task's fence, since nothing could assert what the RENDER produced. The
+// ordering property was covered in the domain and the field's presence by the
+// reflect gate, and neither can see a wrong assignment between them.
+func newSearchHitView(h palace.SearchHit) searchHitView {
+	return searchHitView{
+		drawerView:    toView(h.Drawer),
+		MemoryID:      h.MemoryID,
+		Score:         h.Score,
+		BM25:          h.BM25,
+		ClosetBoost:   h.ClosetBoost,
+		Distance:      h.Distance,
+		RerankScore:   h.RerankScore,
+		Reranked:      h.Reranked,
+		Blended:       h.Blended,
+		ChunksMatched: h.ChunksMatched,
+	}
+}
+
 // searchHitView is one ranked search result: the drawer plus its scores.
 type searchHitView struct {
 	drawerView
@@ -490,6 +513,17 @@ type searchHitView struct {
 	// three of them merged. A hit that says reranked:false is a hit the
 	// cross-encoder did not score, stated.
 	Reranked bool `json:"reranked"`
+	// Blended is the score the page was ORDERED by — BlendRerank's weighted
+	// combination of the pool-normalised fused and rerank scores. It is here
+	// because without it a returned order is unexplainable from the response: a
+	// page is routinely NOT monotonic in rerank_score, which is correct (the
+	// fused score is the better judge of vocabulary and carries half the weight)
+	// and reads exactly like a reranker that silently did not run. Reported as a
+	// suspected bug on 2026-08-25 and diagnosable only by reading BlendRerank.
+	//
+	// omitempty for the same reason rerank_score is: a hit outside the scored
+	// pool has no blend, and 0.0 would claim it had one.
+	Blended float64 `json:"blended_score,omitempty"`
 	// ChunksMatched is how many chunks of this memory were in the ranked pool.
 	// A memory that matched in four places is stronger evidence than one that
 	// matched in one, and ADR-013's collapse would otherwise destroy that signal
@@ -548,7 +582,7 @@ type anchorView struct {
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
 func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
-		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
+		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance. Each hit carries blended_score: the value the page was actually ordered by, combining the cross-encoder and the fused lexical/vector score. It is POOL-RELATIVE — comparable between hits on one page, meaningless across pages, and not to be averaged. A page is often not monotonic in rerank_score, which is the blend working rather than a reranker that failed."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour."), searchWingProperty()),
@@ -591,7 +625,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched}
+			views[i] = newSearchHitView(h)
 			ids[i] = h.MemoryID
 			fullContent := h.MemoryContent
 			if fullContent == "" {
