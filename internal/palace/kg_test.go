@@ -38,25 +38,25 @@ func TestKGAddQueryDedup(t *testing.T) {
 	}
 
 	// Query outgoing: predicate is normalized to works_at; current is true.
-	facts, _, err := svc.KGQuery(ctx, team, "Alice", "", "both")
+	q, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Direction: "both"})
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	f := findFact(facts, "works_at", "Acme")
+	f := findFact(q.Facts, "works_at", "Acme")
 	if f == nil {
-		t.Fatalf("expected Alice works_at Acme, got %+v", facts)
+		t.Fatalf("expected Alice works_at Acme, got %+v", q.Facts)
 	}
 	if !f.Current || f.Direction != "outgoing" {
 		t.Fatalf("fact should be current+outgoing: %+v", *f)
 	}
 
 	// Incoming from the object side resolves the subject name.
-	in, _, err := svc.KGQuery(ctx, team, "Acme", "", "incoming")
+	in, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Acme", Direction: "incoming"})
 	if err != nil {
 		t.Fatalf("query incoming: %v", err)
 	}
-	if g := findFact(in, "works_at", "Acme"); g == nil || g.Subject != "Alice" {
-		t.Fatalf("incoming should show Alice as subject, got %+v", in)
+	if g := findFact(in.Facts, "works_at", "Acme"); g == nil || g.Subject != "Alice" {
+		t.Fatalf("incoming should show Alice as subject, got %+v", in.Facts)
 	}
 }
 
@@ -73,25 +73,25 @@ func TestKGInvalidateAndAsOf(t *testing.T) {
 	}
 
 	// After invalidation the fact is historical, not current.
-	facts, _, _ := svc.KGQuery(ctx, team, "Alice", "", "both")
-	f := findFact(facts, "works_at", "Acme")
+	res, _ := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Direction: "both"})
+	f := findFact(res.Facts, "works_at", "Acme")
 	if f == nil || f.Current || f.ValidTo != "2025-06-01" {
-		t.Fatalf("fact should be ended 2025-06-01: %+v", facts)
+		t.Fatalf("fact should be ended 2025-06-01: %+v", res.Facts)
 	}
 
 	// as_of mid-window: in effect.
-	mid, _, _ := svc.KGQuery(ctx, team, "Alice", "2024-06-01", "both")
-	if findFact(mid, "works_at", "Acme") == nil {
+	mid, _ := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", AsOf: "2024-06-01", Direction: "both"})
+	if findFact(mid.Facts, "works_at", "Acme") == nil {
 		t.Fatal("fact should be in effect as of 2024-06-01")
 	}
 	// as_of after the end: not in effect.
-	after, _, _ := svc.KGQuery(ctx, team, "Alice", "2025-12-01", "both")
-	if findFact(after, "works_at", "Acme") != nil {
+	after, _ := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", AsOf: "2025-12-01", Direction: "both"})
+	if findFact(after.Facts, "works_at", "Acme") != nil {
 		t.Fatal("fact should NOT be in effect as of 2025-12-01 (ended)")
 	}
 	// as_of before the start: not in effect.
-	before, _, _ := svc.KGQuery(ctx, team, "Alice", "2023-01-01", "both")
-	if findFact(before, "works_at", "Acme") != nil {
+	before, _ := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", AsOf: "2023-01-01", Direction: "both"})
+	if findFact(before.Facts, "works_at", "Acme") != nil {
 		t.Fatal("fact should NOT be in effect as of 2023-01-01 (not yet started)")
 	}
 
@@ -99,9 +99,74 @@ func TestKGInvalidateAndAsOf(t *testing.T) {
 	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Globex", "2025-06-01", "", "", "", ""); err != nil {
 		t.Fatalf("post-invalidate add: %v", err)
 	}
-	now, _, _ := svc.KGQuery(ctx, team, "Alice", "2025-12-01", "outgoing")
-	if findFact(now, "works_at", "Globex") == nil {
-		t.Fatalf("the new current fact should be in effect: %+v", now)
+	now, _ := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", AsOf: "2025-12-01", Direction: "outgoing"})
+	if findFact(now.Facts, "works_at", "Globex") == nil {
+		t.Fatalf("the new current fact should be in effect: %+v", now.Facts)
+	}
+}
+
+// TestEndedFactIsAbsentFromCurrentQuery is ADR-026 T1's gate.
+//
+// It asserts ABSENCE, which is the only assertion that can fail when the filter is
+// removed. The pre-ADR-026 tool returned every fact ever recorded and tagged the
+// dead ones current:false, so a test that merely queried and found its fact passed
+// identically before and after — the behaviour under test was the reader's
+// discipline, not the server's. Delete the status wiring and this goes red on the
+// current branch; the `all` branch below is what stops it from passing by returning
+// nothing at all.
+func TestEndedFactIsAbsentFromCurrentQuery(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-1"
+
+	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Acme", "2024-01-01", "", "", "", ""); err != nil {
+		t.Fatalf("add ended-to-be: %v", err)
+	}
+	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Globex", "2025-06-01", "", "", "", ""); err != nil {
+		t.Fatalf("add survivor: %v", err)
+	}
+	if _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2025-06-01"); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+
+	current, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Status: KGStatusCurrent})
+	if err != nil {
+		t.Fatalf("current: %v", err)
+	}
+	if findFact(current.Facts, "works_at", "Acme") != nil {
+		t.Fatalf("the retracted fact must not be returned at status=current: %+v", current.Facts)
+	}
+	if findFact(current.Facts, "works_at", "Globex") == nil {
+		t.Fatalf("the open-ended fact must survive status=current: %+v", current.Facts)
+	}
+
+	ended, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Status: KGStatusEnded})
+	if err != nil {
+		t.Fatalf("ended: %v", err)
+	}
+	if findFact(ended.Facts, "works_at", "Acme") == nil {
+		t.Fatalf("status=ended is the audit direction and must return the retracted fact: %+v", ended.Facts)
+	}
+	if findFact(ended.Facts, "works_at", "Globex") != nil {
+		t.Fatalf("status=ended must not return open-ended facts: %+v", ended.Facts)
+	}
+
+	all, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Status: KGStatusAll})
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if findFact(all.Facts, "works_at", "Acme") == nil || findFact(all.Facts, "works_at", "Globex") == nil {
+		t.Fatalf("status=all must return both: %+v", all.Facts)
+	}
+
+	// An omitted status is status=all until T4 flips it. Pinned so the flip is a
+	// visible test change rather than a silent one.
+	def, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "Alice"})
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if len(def.Facts) != len(all.Facts) {
+		t.Fatalf("the service default must be %q: got %d facts, all returns %d", KGStatusAll, len(def.Facts), len(all.Facts))
 	}
 }
 
@@ -152,7 +217,12 @@ func TestKGValidation(t *testing.T) {
 		t.Fatal("empty subject should be rejected")
 	}
 	// Bad direction is rejected.
-	if _, _, err := svc.KGQuery(ctx, team, "A", "", "sideways"); err == nil {
+	if _, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "A", Direction: "sideways"}); err == nil {
 		t.Fatal("invalid direction should be rejected")
+	}
+	// So is a status outside the vocabulary — a typo must not silently widen the
+	// query back to every fact, which is the failure the default flip exists to end.
+	if _, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "A", Status: "expired"}); err == nil {
+		t.Fatal("invalid status should be rejected")
 	}
 }

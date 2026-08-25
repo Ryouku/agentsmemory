@@ -49,10 +49,11 @@ func TestKGReplaceSourceIdempotent(t *testing.T) {
 	if res2.Purged != 2 || res2.Filed != 1 {
 		t.Fatalf("re-run should purge 2 and file 1: %+v", res2)
 	}
-	facts, _, err := svc.KGQuery(ctx, team, "cache", "", "outgoing")
+	q, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "cache", Direction: "outgoing"})
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
+	facts := q.Facts
 	if findFact(facts, "uses", "redis") != nil {
 		t.Fatalf("the first run's triple should be gone after the re-run: %+v", facts)
 	}
@@ -212,17 +213,17 @@ func TestKGReplaceSourceSparesHandFiledFacts(t *testing.T) {
 	if res.Purged != 1 {
 		t.Fatalf("re-replace must purge only the extractor's 1 row, purged %d", res.Purged)
 	}
-	facts, _, err := svc.KGQuery(ctx, team, "cache", "", "")
+	q, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: "cache"})
 	if err != nil {
 		t.Fatalf("query hand-filed: %v", err)
 	}
 	survived := false
-	for _, f := range facts {
+	for _, f := range q.Facts {
 		if f.Predicate == "owned_by" {
 			survived = true
 		}
 	}
 	if !survived {
-		t.Fatalf("the hand-filed fact must survive extraction re-runs, got %+v", facts)
+		t.Fatalf("the hand-filed fact must survive extraction re-runs, got %+v", q.Facts)
 	}
 }

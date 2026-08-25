@@ -10,6 +10,20 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// kgQueryDefaultStatus is the endedness kg_query applies when the caller names
+// none. It is ONE literal in ONE place on purpose: ADR-026 flips it from "all" to
+// "current" as a separate, revertible commit, and reverting must be this line and
+// nothing else. Anything that needs to branch on the default is a sign the filter
+// logic leaked out of palace.KGQuery, where it belongs.
+const kgQueryDefaultStatus = palace.KGStatusAll
+
+// kgStatusParamDescription is BUILT from the palace constants rather than
+// restating them, so a status the service accepts can never drift from the list
+// the agent is told about.
+var kgStatusParamDescription = fmt.Sprintf(
+	"Which half of a fact's life to return: %q (open-ended, not retracted), %q (retracted — the audit direction), or %q. Default %q. This is filtered SERVER-SIDE, so what it removes never reaches your context; it selects on whether a fact was ever ended, which is a different question from as_of's \"was it in effect at that moment\", and the two compose.",
+	palace.KGStatusCurrent, palace.KGStatusEnded, palace.KGStatusAll, kgQueryDefaultStatus)
+
 // registerKG wires the temporal knowledge-graph tools: kg_add / kg_invalidate
 // (write facts and end them), kg_query / kg_timeline (read, optionally as-of a
 // point in time), and kg_stats. All are tenant-scoped via admit.
@@ -99,6 +113,7 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		mcp.WithString("entity", mcp.Required(), mcp.Description("The entity to look up.")),
 		mcp.WithString("as_of", mcp.Description("Only facts in effect at this instant (YYYY-MM-DD or datetime).")),
 		mcp.WithString("direction", mcp.Description("\"outgoing\", \"incoming\", or \"both\" (default).")),
+		mcp.WithString("status", mcp.Description(kgStatusParamDescription)),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -110,11 +125,19 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		asOf := req.GetString("as_of", "")
-		facts, ent, err := drawers.KGQuery(ctx, t.TeamID, entity, asOf, req.GetString("direction", "both"))
+		res, err := drawers.KGQuery(ctx, t.TeamID, palace.KGQueryInput{
+			Entity:    entity,
+			AsOf:      asOf,
+			Direction: req.GetString("direction", "both"),
+			Status:    req.GetString("status", kgQueryDefaultStatus),
+		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out := map[string]any{"entity": ent, "facts": facts, "count": len(facts)}
+		out := map[string]any{
+			"entity": res.Entity, "facts": res.Facts, "count": len(res.Facts),
+			"status": res.Status,
+		}
 		if asOf != "" {
 			out["as_of"] = asOf
 		}
