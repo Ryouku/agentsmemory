@@ -278,7 +278,7 @@ Normal operation. Recall before you act, persist before you stop.
    have to know. Everything else resolves from it, **by traversal, not by search**:
 
    ```
-   am_list_drawers(wing:"wing_agentmemories", room:"llm_init")  # the root names itself
+   am_list_drawers(wing:"wing_agentmemories", room:"llm_init")  # several drawers; see below
    am_kg_query(entity:"<the root drawer's own id>", direction:"outgoing")
    am_get_drawer(id, whole:true)                                # once per must.* edge
    ```
@@ -291,6 +291,12 @@ Normal operation. Recall before you act, persist before you stop.
    2026-08-25: two sessions each found load-bearing material inside a `must.*`
    drawer whose label sounded unrelated to their task, and would have cherry-picked
    it away. `ref.*` edges are on demand.
+
+   ⚠ **The room holds several drawers and the listing does not flag which is the
+   root.** It is the one whose content opens `WHAT MUST I LOAD AT THE START OF A
+   SESSION?` (its `source_file` begins `INIT —`). Take **that** drawer's own id for
+   the `am_kg_query` above; the siblings are reached as edges, so do not traverse
+   from one of them.
 
    ⚠ **Zero edges means the query failed open, not that nothing is filed** —
    `am_kg_query` returns `count: 0` with no error for an unrecognised entity.
@@ -319,6 +325,14 @@ Normal operation. Recall before you act, persist before you stop.
    conventions for the stack you're touching. This repo is Go, so `effective-go`
    at minimum; add `cqrs` when the work is live/realtime or fans out across
    subagents.
+
+   ⚠ **Load the BODIES of `human-decisions` and `memory-orchestration` every
+   session, both of them, whatever your task is.** A description is not a body.
+   The descriptions here are unusually dense, which makes substituting them feel
+   sufficient — a session on 2026-08-25 did exactly that, having just resisted the
+   identical shortcut on the `must.*` tier, and only noticed afterwards. It is the
+   same error one layer over: you are judging what you can skip using the knowledge
+   you skipped.
 
 **Recall mid-session too, not just at the start.** Before any broad grep over
 unfamiliar code, `am_search` for the symbol or subsystem first and grep only the
