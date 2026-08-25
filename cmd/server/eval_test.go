@@ -1055,3 +1055,14 @@ func TestSupersessionVerdictNamesTheRunsPool(t *testing.T) {
 		t.Errorf("the verdict does not name the pool the run used:\n%s", buf.String())
 	}
 }
+
+// TestProductionRetrieveKMatchesEvalPool keeps the retrieve-k arm's floor and
+// the eval --pool default as one number. The arm exists to measure "same
+// retrieve as the ablation pool, default page"; if the two 50s drift, the row
+// answers a question nobody asked.
+func TestProductionRetrieveKMatchesEvalPool(t *testing.T) {
+	if palace.ProductionRetrieveK != defaultEvalPool {
+		t.Errorf("ProductionRetrieveK=%d, defaultEvalPool=%d — the retrieve-k arm and --pool must stay the same width",
+			palace.ProductionRetrieveK, defaultEvalPool)
+	}
+}

@@ -231,6 +231,13 @@ type Config struct {
 	// as "use the default" and re-enables it.
 	ClosetBoost float64
 
+	// RetrieveK is a floor on how many distinct memories Search fetches before
+	// ranking, independent of the page --limit. 0 (the default) leaves the
+	// formula in charge: limit×3, raised to RerankPool when a cross-encoder
+	// will actually run. A positive value widens; it never shrinks below that
+	// formula and never changes the page size.
+	RetrieveK int
+
 	// RerankWeight is how much of the final ordering the cross-encoder decides,
 	// with the rest left to the hybrid score it refines. 1 hands it the whole
 	// decision, which measurably loses the lexical evidence a query carries when
@@ -344,6 +351,7 @@ func Default() Config {
 		RerankPool:             10,  // palace.DefaultRerankPool; duplicated to keep config dependency-free
 		RerankWeight:           0.5, // palace.DefaultRerankWeight, chosen by the eval's weight sweep
 		ClosetBoost:            0,
+		RetrieveK:              0,
 		Fusion:                 "rrf",
 		MemoryEvidenceSelector: "lexical",
 		// Spelled here rather than imported: config must not depend on the domain.

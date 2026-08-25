@@ -169,6 +169,7 @@ var debugKeys = []string{
 	"am.scale",
 	"am.band",
 	"am.limit",
+	"am.retrieve_k",
 	"am.search_id",
 	"http.response.status_code",
 }

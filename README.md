@@ -1153,6 +1153,7 @@ All flags have sensible local defaults:
 | `--ollama-model` | `bge-m3` | Embedding model (1024-dim) |
 | `--rerank-url` | *(empty)* | `RERANK_URL` — TEI base URL for cross-encoder re-ranking. Empty disables it |
 | `--rerank-pool` | `50` | `RERANK_POOL` — candidates cross-encoded per search (ignored without `--rerank-url`) |
+| `--retrieve-k` | `0` | `RETRIEVE_K` — floor on how many distinct memories Search retrieves before ranking, independent of the page. `0` (default) uses the formula: `limit×3`, raised to `--rerank-pool` when a cross-encoder will run. Does not change the page size |
 | `--memory-evidence-selector` | `lexical` | `MEMORY_EVIDENCE_SELECTOR` — bounded reranker evidence: literal query coverage or query-time semantic passage selection |
 | `--otel-endpoint` | *(empty)* | `AGENTSMEMORY_OTEL_ENDPOINT` — OpenTelemetry export: empty=off, `stdout` prints a compact stage tree to stderr, otherwise an OTLP HTTP collector URL (`http://localhost:4318`). Does not change search results |
 

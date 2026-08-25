@@ -141,6 +141,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		SearchScope:            strings.TrimSpace(c.String("search-scope")),
 		EmbedURL:               strings.TrimSpace(c.String("embed-url")),
 		ClosetBoost:            c.Float("closet-boost"),
+		RetrieveK:              c.Int("retrieve-k"),
 		Fusion:                 strings.TrimSpace(c.String("fusion")),
 		MemoryEvidenceSelector: strings.TrimSpace(c.String("memory-evidence-selector")),
 		LexNorm:                strings.TrimSpace(c.String("lex-norm")),
@@ -198,6 +199,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.StringFlag{Name: "search-scope", Sources: cli.EnvVars("SEARCH_SCOPE"), Value: def.SearchScope, Usage: "what a recall naming no wing searches: wing (default, the project this MCP was registered for) or workspace (every wing)"},
 		&cli.StringFlag{Name: "embed-url", Sources: cli.EnvVars("EMBED_URL"), Value: def.EmbedURL, Usage: "embedding server base URL when --embed-backend=tei"},
 		&cli.FloatFlag{Name: "closet-boost", Sources: cli.EnvVars("CLOSET_BOOST"), Value: def.ClosetBoost, Usage: "closet curation-prior strength 0..1: 0 off (default), 1 full boost — measured to hurt on mined-transcript corpora and help on curated ones"},
+		&cli.IntFlag{Name: "retrieve-k", Sources: cli.EnvVars("RETRIEVE_K"), Value: def.RetrieveK, Usage: "floor on how many distinct memories Search retrieves before ranking, independent of the page size. 0 (default) uses the formula: limit×3, raised to --rerank-pool when a cross-encoder will run. Does not change the page size"},
 		&cli.StringFlag{Name: "lex-norm", Sources: cli.EnvVars("LEX_NORM"), Value: def.LexNorm, Usage: "how raw lexical scores are normalised before fusion: 'page-max' (default — scale so the page's best lexical match reads 1.0), 'ceiling' or 'saturating' (measure against what the QUERY could have attained, so the lexical channel stays quiet when nothing in the page matches well). DOES NOTHING when --fusion=rrf: rank fusion combines positions rather than magnitudes, so there is no lexical magnitude to normalise, and DOES NOTHING when --bm25-weight=0: at zero lexical weight there is no lexical contribution to scale"},
 		&cli.StringFlag{Name: "fusion", Sources: cli.EnvVars("FUSION"), Value: def.Fusion, Usage: "how vector and lexical evidence combine: 'rrf' (default) fuses the two RANKINGS by reciprocal rank, so neither score's scale can drown the other; 'linear' blends the two SCORES weighted by --bm25-weight. Under rrf both --bm25-weight and --lex-norm are inert, because rank fusion combines positions rather than magnitudes"},
 		&cli.StringFlag{Name: "memory-evidence-selector", Sources: cli.EnvVars("MEMORY_EVIDENCE_SELECTOR"), Value: def.MemoryEvidenceSelector, Usage: "bounded evidence sent to the cross-encoder: lexical (default/control) or semantic (query-time passage embeddings across the whole memory). Inert without --rerank-url"},
@@ -859,6 +861,11 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 	if cfg.ClosetBoost != defaultClosetBoost {
 		say("closet boost: scaled to %.2f (%.2f is the shipped default; 1.00 is the full curation prior)",
 			cfg.ClosetBoost, defaultClosetBoost)
+	}
+	drawers = drawers.WithRetrieveK(cfg.RetrieveK)
+	if cfg.RetrieveK > 0 {
+		say("retrieve-k: floor %d (0 is formula-only — limit×3, raised to rerank-pool when a cross-encoder will run)",
+			cfg.RetrieveK)
 	}
 	// An unrecognized value is reported rather than silently ignored, the same way
 	// --bm25-weight reports one below. Fusion is chosen by an operator who ran the

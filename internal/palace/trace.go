@@ -38,6 +38,9 @@ func searchAttrs(s *Service, q SearchQuery, limit int) []attribute.KeyValue {
 		attribute.Float64("am.rerank_weight", s.rerankWeight),
 		attribute.Int("am.rerank_pool", s.rerankPool),
 	}
+	if floor := withRetrieveFloors(0, q.RetrieveK, s.retrieveK); floor > 0 {
+		attrs = append(attrs, attribute.Int("am.retrieve_k", floor))
+	}
 	if !s.fusionRRF {
 		attrs = append(attrs, linearFusionAttrs(s)...)
 	}

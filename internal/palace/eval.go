@@ -76,6 +76,41 @@ const (
 	ArmProduction EvalArm = "production (Search)"
 )
 
+// ProductionRetrieveK is the retrieve-width floor the production retrieve-k arm
+// asks Search for. It matches cmd/server's defaultEvalPool so the table can
+// compare "same retrieve as the ablation pool, default page" without the two
+// 50s drifting. The page Limit stays DefaultSearchLimit.
+const ProductionRetrieveK = 50
+
+// ArmProductionRetrieve is Service.Search at DefaultSearchLimit with a
+// retrieve-k floor of ProductionRetrieveK. The page-cut row could not tell a
+// ranking cut from a retrieve that never fetched the gold; this arm asks for
+// the same page agents get and the fetch width the ablation already uses.
+var ArmProductionRetrieve = EvalArm(fmt.Sprintf("production (Search) retrieve-k=%d", ProductionRetrieveK))
+
+// productionRetrieveFloor is the retrieve-k an arm asks Search for.
+//
+// Zero means "leave candidateKFor in charge". Only ArmProductionRetrieve
+// returns ProductionRetrieveK; the default and deep page arms stay formula-only
+// so the table still measures the served fetch.
+func productionRetrieveFloor(arm EvalArm) int {
+	if arm == ArmProductionRetrieve {
+		return ProductionRetrieveK
+	}
+	return 0
+}
+
+// isProductionSearchArm reports whether evalCase scores arm through
+// Service.Search (page-scoped production) rather than a Clone of rankRetrieved.
+func isProductionSearchArm(arm EvalArm) bool {
+	switch arm {
+	case ArmProduction, ArmProductionDeep, ArmProductionRetrieve:
+		return true
+	default:
+		return false
+	}
+}
+
 // productionDeepLimit is the second page size the production path is measured at.
 //
 // ArmProduction asks for DefaultSearchLimit, which is what a caller that passes no
@@ -693,8 +728,7 @@ func parseAnchored(arm EvalArm) (EvalArm, string, bool) {
 // arm is scored by rankRetrieved rather than a parallel ranker. Production
 // and contextual arms retrieve on a different path and return nil.
 func (s *Service) serviceForArm(arm EvalArm) *Service {
-	switch arm {
-	case ArmProduction, ArmProductionDeep, ArmContextual:
+	if isProductionSearchArm(arm) || arm == ArmContextual {
 		return nil
 	}
 	c := s.Clone()
@@ -782,7 +816,7 @@ func fusionRankerFor(arm EvalArm, base float64) func(query string, docs []string
 func armIsScoreFusion(arm EvalArm) bool {
 	switch arm {
 	case ArmVector, ArmRRF, ArmRRFReranked, ArmContextual, ArmProduction, ArmProductionDeep,
-		ArmHybridRerank, ArmReranked:
+		ArmProductionRetrieve, ArmHybridRerank, ArmReranked:
 		return false
 	}
 	for _, w := range rerankSweep {
@@ -838,7 +872,7 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
 	// missing once already — built, documented, and never appended — which an
 	// adversarial review caught and no table did.
-	arms = append(arms, ArmProduction, ArmProductionDeep)
+	arms = append(arms, ArmProduction, ArmProductionDeep, ArmProductionRetrieve)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -913,9 +947,10 @@ const (
 // for every ScopePool one, and calling that a retrieval failure sends the reader
 // after the embedding when nothing was ever missing from the pool.
 func ArmScope(arm EvalArm) SupersessionScope {
-	switch arm {
-	case ArmProduction, ArmProductionDeep:
+	if isProductionSearchArm(arm) {
 		return ScopePage
+	}
+	switch arm {
 	case ArmContextual:
 		return ScopeOwnIndex
 	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
@@ -1139,10 +1174,11 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 	}
 	for _, arm := range arms {
 		armCtx, armSpan := telemetry.Start(caseCtx, telemetry.StageEvalArm, attribute.String("am.arm", string(arm)))
-		switch arm {
-		case ArmProduction, ArmProductionDeep:
+		switch {
+		case isProductionSearchArm(arm):
 			page, err := s.Search(armCtx, teamID, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: productionLimit(arm),
+				RetrieveK:   productionRetrieveFloor(arm),
 				MaxDistance: DefaultMaxDistance, SkipTelemetry: true,
 			})
 			if err != nil {
@@ -1162,7 +1198,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			}
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
 			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
-		case ArmContextual:
+		case arm == ArmContextual:
 			ctxHits, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))

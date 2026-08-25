@@ -207,6 +207,13 @@ type Service struct {
 	// rather than a second reorder beside it. ADR-004 keeps production off.
 	recencyBand float64
 
+	// retrieveK is a floor on how many distinct memories Search fetches before
+	// ranking, independent of the page Limit. Zero (the default) leaves the
+	// fetch at candidateKFor: limit×3, raised to rerankPool only when a
+	// cross-encoder will actually run. A positive floor widens; it never
+	// shrinks below that formula, and it never changes the page size.
+	retrieveK int
+
 	// mineLocks serializes concurrent mines of the same (team, source) within this
 	// process, so two re-mines cannot interleave their purge-then-write and leave
 	// both content versions behind. It is the in-process analogue of the frozen
@@ -330,6 +337,18 @@ func (s *Service) WithClosetBoost(scale float64) *Service {
 	return s
 }
 
+// WithRetrieveK sets a floor on how many distinct memories Search retrieves
+// before ranking. k <= 0 turns the floor off and leaves candidateKFor in
+// charge. Same post-construction-setter contract as WithReranker: call before
+// the service is shared across goroutines.
+func (s *Service) WithRetrieveK(k int) *Service {
+	if k < 0 {
+		k = 0
+	}
+	s.retrieveK = k
+	return s
+}
+
 // WithBM25Weight configures the lexical half of fusion: auto scales it per query,
 // otherwise base is used as a fixed weight. Out-of-range bases keep the default.
 func (s *Service) WithBM25Weight(auto bool, base float64) *Service {
@@ -432,8 +451,12 @@ func (s *Service) RankingProfile() string {
 	if s.rerank != nil {
 		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
 	}
-	return fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
+	profile := fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
 		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
+	if s.retrieveK > 0 {
+		profile += fmt.Sprintf(" retrieve-k=%d", s.retrieveK)
+	}
+	return profile
 }
 
 // LexNormName reports the normaliser in force, so startup and am_status can state
@@ -890,6 +913,11 @@ type SearchQuery struct {
 	// touch the embedding, because widening the query vector would quietly change
 	// which candidates are retrieved rather than how they are ordered.
 	Context string
+	// RetrieveK is a per-call floor on how many distinct memories this search
+	// fetches before ranking. Zero leaves the process default (and, when that
+	// is also zero, the candidateKFor formula). It widens only; a value below
+	// the formula is ignored. The page Limit is unchanged.
+	RetrieveK int
 }
 
 // rerankQuery returns the text the cross-encoder scores against: the (already
@@ -984,7 +1012,10 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// is. (This used to over-fetch 10 000 candidates and drop the non-matching
 	// ones here — a cost that grew with the palace and was paid on every scoped
 	// search, which is every search once wings are per-project.)
-	candidateK := candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight)
+	candidateK := withRetrieveFloors(
+		candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight),
+		q.RetrieveK, s.retrieveK,
+	)
 	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
@@ -1154,6 +1185,17 @@ func candidateKFor(limit int, rerankConfigured bool, rerankPool int, rerankWeigh
 	k := limit * hybridCandidateMultiplier
 	if rerankConfigured && rerankWeight > 0 && k < rerankPool {
 		k = rerankPool
+	}
+	return k
+}
+
+// withRetrieveFloors raises k to the largest positive floor. Zero and negative
+// floors are ignored, so a caller cannot shrink the fetch below candidateKFor.
+func withRetrieveFloors(k int, floors ...int) int {
+	for _, f := range floors {
+		if f > k {
+			k = f
+		}
 	}
 	return k
 }

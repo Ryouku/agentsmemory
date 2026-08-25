@@ -248,3 +248,5 @@ Three things are not automatic, in the order they will bite you:
 ## Unreleased
 
 OpenTelemetry runtime telemetry (ADR-025 PR-E). `--otel-endpoint` / `AGENTSMEMORY_OTEL_ENDPOINT`: empty=off, `stdout` prints a compact stage tree to stderr (call site, outcome, reason), otherwise an OTLP HTTP collector URL. Search stages carry `am.reason` on bypass/fail, retrieve `widen` events, and structured ranking knobs so a dump can be compared to `RankingProfile()`. Eval nests `am.eval.case` / `am.eval.arm`. Telemetry does not change ranking.
+
+`--retrieve-k` / `RETRIEVE_K`: floor on how many distinct memories Search fetches before ranking, independent of the page `--limit`. Default `0` leaves the existing formula (`limit×3`, raised to rerank-pool when a cross-encoder will run). The eval adds `production (Search) retrieve-k=50` so the table can measure the same retrieve as the ablation pool at the default page of five. Production ranking is unchanged until the operator sets the floor.
