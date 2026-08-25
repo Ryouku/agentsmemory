@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"log/slog"
+
 	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
@@ -718,7 +720,22 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// has since changed is the one failure mode a confident agent cannot catch
 		// on its own — it reads as knowledge either way.
 		stale := 0
-		if anchors, err := drawers.AnchorsForMemories(ctx, t.TeamID, ids); err == nil {
+		anchors, anchorErr := drawers.AnchorsForMemories(ctx, t.TeamID, ids)
+		if anchorErr != nil {
+			// Fails OPEN — a page without staleness marks beats no page at all — but
+			// it must not fail SILENTLY. Every `stale` flag vanishes from the response
+			// and the enclosing am.tool span still ends `ran`, because traceTool
+			// inspects only the handler's Go error and res.IsError, and both are clean
+			// here. So a page whose staleness marking was lost is indistinguishable,
+			// to the caller AND to the trace, from one where nothing was stale — and
+			// staleness is the single failure mode a confident agent cannot catch on
+			// its own, since a recalled sentence about changed code reads as knowledge
+			// either way.
+			telemetry.Annotate(ctx, attribute.Bool("am.anchors_failed", true))
+			slog.Warn("anchor lookup failed; page returned without staleness marks",
+				"error", anchorErr, "memories", len(ids))
+		}
+		if anchorErr == nil {
 			for i := range views {
 				for _, a := range anchors[ids[i]] {
 					views[i].Anchors = append(views[i].Anchors, anchorView{

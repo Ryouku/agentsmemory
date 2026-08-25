@@ -30,6 +30,16 @@ func searchAttrs(s *Service, q SearchQuery, limit int) []attribute.KeyValue {
 		attribute.Bool("am.has_wing", strings.TrimSpace(q.Wing) != ""),
 		attribute.Bool("am.has_room", strings.TrimSpace(q.Room) != ""),
 		attribute.Int("am.limit", limit),
+		// The RAW request beside the served value. am.limit is post-clamp, so a
+		// caller asking for 5000 and one asking for 100 emitted an identical
+		// am.limit=100 and the delta — the only thing that says a request was
+		// altered — existed nowhere.
+		attribute.Int("am.limit_requested", q.Limit),
+		// The boundary that removes candidates outright, and the one retrieval knob
+		// this set omitted. retrieveStop can already end the widening loop with
+		// reason=max_distance, so the trace named the STOP without ever naming the
+		// threshold it compared against.
+		attribute.Float64("am.max_distance", q.MaxDistance),
 		attribute.String("am.fusion", s.fusionModeName()),
 		attribute.Float64("am.closet_scale", s.closetBoostScale),
 		attribute.Float64("am.recency_band", s.recencyBand),

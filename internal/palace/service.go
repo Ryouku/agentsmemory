@@ -997,8 +997,11 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	// Cap by runes, not bytes: the contract caps queries at 250 characters, and a
 	// byte slice could split a multibyte rune into invalid UTF-8 before it reaches
 	// the embedder and tokenizer.
+	queryRunes := len([]rune(query))
+	truncated := false
 	if r := []rune(query); len(r) > 250 {
 		query = string(r[:250])
+		truncated = true
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -1016,7 +1019,15 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	// searchCtx is the parent every stage (and outbound HTTP) must Start from.
 	// Starting siblings from the pre-Search ctx leaves them parentless — which
 	// is how the first eval dump shipped a forest of roots instead of a tree.
-	searchCtx, parent := telemetry.Start(ctx, telemetry.StageSearch, searchAttrs(s, q, limit)...)
+	attrs := append(searchAttrs(s, q, limit),
+		// A LENGTH, never the text — ADR-025 keeps query text off spans. The pair
+		// answers "did the embedder, the lexical channel and the cross-encoder all
+		// see the question the caller actually asked?", which nothing could answer
+		// before: a query cut mid-sentence left no evidence that the embedded text
+		// differed from what was sent.
+		attribute.Int("am.query_runes", queryRunes),
+		attribute.Bool("am.query_truncated", truncated))
+	searchCtx, parent := telemetry.Start(ctx, telemetry.StageSearch, attrs...)
 	defer parent.End(telemetry.Ran)
 
 	embedCtx, embedSpan := telemetry.Start(searchCtx, telemetry.StageEmbed)
@@ -1119,7 +1130,18 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// same filter to know how many DISTINCT memories a widening round found, and
 	// therefore whether to widen again. Two copies of a scope predicate is how a
 	// stale one survives, so both paths call survivorsFrom instead.
-	survivors, _ := survivorsFrom(hits, rows, q)
+	survivors, _, drops := survivorsFrom(hits, rows, q)
+	// Recorded HERE and nowhere else: this is the single call over the final pool.
+	// Annotate paints the span currently on ctx — the am.search parent for a served
+	// recall, an eval arm's own span for an arm — which is the correct per-caller
+	// attribution, and the reason the counts are returned rather than taken inside
+	// the (pure, context-free) predicate.
+	if drops.Any() {
+		telemetry.Annotate(ctx,
+			attribute.Int("am.dropped_orphan", drops.Orphan),
+			attribute.Int("am.dropped_out_of_scope", drops.OutOfScope),
+			attribute.Int("am.dropped_over_distance", drops.OverDistance))
+	}
 
 	// Collapse HERE, before scoring, so every consumer of rankRetrieved ranks
 	// memories. Eval pool arms call this on a Clone: an arm reconstructing the
