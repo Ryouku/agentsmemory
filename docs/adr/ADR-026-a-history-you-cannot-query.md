@@ -1,44 +1,29 @@
-# ADR-026: A history you cannot query is not a history
+# ADR-026: Ask for current facts, and stop paying for the dead ones
 
 **Status:** Proposed
 **Date:** 2026-08-25
 **Owner:** unassigned
-**Spec:** None — no spec stage; grounded in probes against the live graph recorded on issue #23.
-**Cross-references:** ADR-004 (supersession is the graph's acceptance criterion — this ADR **amends one clause of its Out of Scope**, see the Amendment section), ADR-010 (supersede, do not overwrite — owns the drawer half and the `reason` field), ADR-007 (no number without its population), ADR-006 (a knob that does nothing must say when), ADR-014 (the shipped default is the measured one), ADR-024 (precedent for a default change that reaches every caller), `internal/palace/kg.go:418` (`KGQuery`), `:491` (`KGTimeline`), `:532` (`Current`), `:553` (`inEffectAt`), `internal/mcpserver/kg.go:95`, issue #23
-**Numbering:** next free after ADR-025. Pull request #24 claims ADR-022 and ADR-023 and is still open; ADR-024 and ADR-025 are taken on `main`. This ADR takes 026 and claims nothing else.
-**Invalidates:** none — checked. It **amends** one clause of ADR-004's Out of Scope rather than invalidating a decision: ADR-004's bar, pre-registered arm, interval rule, case floor and verdict branches are all untouched, and so is the write path it exists to protect. It takes over items 1–3 of issue #23; item 4 stays with ADR-010.
-**Served-path change:** **Yes — a default change.** `am_kg_query` and `am_kg_timeline` return open-ended facts by default instead of every fact ever recorded, and every filtered response carries the count of what it withheld plus the parameter that restores it. `am_search`, ranking, the drawer path, the storage schema and the write tools are untouched.
+**Spec:** None — no spec stage; grounded in probes against the live graph and `EXPLAIN QUERY PLAN` against the real table, recorded inline.
+**Cross-references:** ADR-004 (supersession is the graph's acceptance criterion — this ADR **amends one clause of its Out of Scope**, approved by M 2026-08-25), ADR-010 (supersede, do not overwrite — owns the drawer half and the `reason` field), ADR-006 (a knob that does nothing must say when), ADR-007 (no number without its population), ADR-014 (the shipped default is the measured one), ADR-024 (precedent for a default change reaching every caller), `internal/palace/kg.go:366` (raw temporal storage), `:418` (`KGQuery`), `:532` (`Current`), `:553` (`inEffectAt`), `db/migrations/00010_kg.sql`, issue #23
+**Numbering:** next free after ADR-025. PR #24 still claims ADR-022 and ADR-023; ADR-024 and ADR-025 are taken on `main`.
+**Invalidates:** none — checked. It **amends** one clause of ADR-004's Out of Scope: the bar, pre-registered arm, interval rule, case floor, verdict branches and the entire write path are untouched. It closes items 1 and part of 3 of issue #23; the rest is listed in Follow-ups with triggers.
+**Served-path change:** **Yes — a default change.** `am_kg_query` returns open-ended facts by default instead of every fact ever recorded, and any response that filtered something reports what it withheld and the parameter that restores it. `am_kg_query` also gains a `predicate` filter and returns three fields it already stores. `am_search`, ranking, drawers and the write tools are untouched.
 
-## Amendment to ADR-004 (this ADR does not proceed without it)
+## Amendment to ADR-004 — decided
 
-ADR-004 is **Accepted** and its Out of Scope list says:
+ADR-004 is **Accepted** and its Out of Scope list reads:
 
 > - Any change to `kg_add` / `kg_invalidate` / `kg_query` behaviour (**permanent**: the write path is what is being judged, and changing it mid-measurement invalidates the measurement)
 
-Taken literally that forbids this ADR outright, and `permanent` is not `deferred` — in ADR-004's own vocabulary a deferred item becomes reachable through a `justified` verdict while a permanent one never does. This cannot be written around. It is amended here or this ADR is abandoned.
+**Decided by M, 2026-08-25: amend it to name only `kg_add` / `kg_invalidate`.** M's words: *"i vote to modify kg_query"*. The rejected alternative was leaving the clause intact and closing issue #23 as blocked — recorded because a decision without its alternative reads as preference and gets reopened.
 
-**Proposed amendment: narrow the clause to `kg_add` / `kg_invalidate`.** Two reasons; the second is load-bearing.
+The reasoning put to M, and it is **an inference rather than a reconstruction of intent**: the clause's own rationale names only the write path, and ADR-004's founding premise is that *"`Service.Search` … never touches a triple"*. No eval arm reads the graph, so a read-side filter cannot move the number the gate reads in either direction. If the clause was meant to cover reads deliberately, only its author can say so.
 
-1. **The clause's own rationale names only the write path** — *"the write path is what is being judged, and changing it mid-measurement invalidates the measurement."* `kg_query` is a read. The rationale does not reach it; the enumeration swept it in.
-
-2. **The supersession measurement cannot observe `kg_query` at all**, and ADR-004 establishes this itself as the premise of its whole argument: *"nothing in the retrieval path reads the graph … `Service.Search` goes embed → vector search → fusion → closet boost → rerank and never touches a triple."* The gate scores where a superseded **drawer** lands in `am_search`. No arm calls `KGQuery`. Changing how the graph is queried cannot move the number the gate reads, in either direction.
-
-**What stays untouched so the measurement holds:** `kg_add`, `kg_invalidate`, `tripleID`, `CurrentTripleID`, the schema, and the meaning of `valid_from` / `valid_to`. Every fact this graph holds before the change is the same fact after it. Only the questions you may ask change.
-
-**Decided by M, 2026-08-25: amend.** M's words: *"i vote to modify kg_query"*. The rejected alternative was leaving the clause as written and closing issue #23 as blocked on ADR-004 — recorded here because a decision without its alternative reads as preference and gets reopened. T0 carries the edit into ADR-004 itself; T1–T5 are authorised by it and by nothing else.
+**T0 carries the edit.** Nothing else in this ADR is authorised by anything else.
 
 ## Context
 
-The write side is already a proper append-only bitemporal log. This matters because it locates the gap on the read side rather than in the model:
-
-- `tripleID(subID, pred, objID, validFrom, recordedAt)` hashes the validity start **and** the record time, so the same `subject → predicate → object` written at two moments is two rows. It appends; it never overwrites.
-- `KGInvalidate` sets `valid_to` and never deletes.
-- `CurrentTripleID` dedups only on `valid_to = ''`, so a fact can end and later resume, each stint its own row.
-- `valid_from` is backdatable, so history can be recorded retroactively.
-
-**You cannot ask it anything.** `am_kg_query` takes `entity`, `as_of`, `direction`; `am_kg_timeline` takes an entity. `current` appears in every response and in no request.
-
-The default applies no temporal filter at all (`internal/palace/kg.go:553`):
+`am_kg_query(entity: "X")` — what an agent naturally writes, and what this repo's own `llm_init` bootstrap instructs every session to write — returns **every fact ever recorded about X**, dead ones included, tagged `current:false` and left for the reader to honour. The default applies no temporal filter at all (`kg.go:553`):
 
 ```go
 func inEffectAt(row kgTripleRow, asOfKey string) bool {
@@ -47,164 +32,82 @@ func inEffectAt(row kgTripleRow, asOfKey string) bool {
 	}
 ```
 
-So `am_kg_query(entity: "X")` — what an agent naturally writes, and what this repo's own `llm_init` bootstrap drawer instructs every session to write — returns every fact ever recorded about X, dead ones included, tagged `current:false` and left for the reader to honour. In a memory server whose argument is that accumulation is affordable **because ended records stop competing**, the cost lands exactly where the argument says it will not: the agent's context window.
+`current` appears in every response and in no request. In a store whose argument is that accumulation is affordable **because ended records stop competing**, the cost lands exactly where the argument says it will not: the agent's context window.
 
-### Three predicates wearing one word, and they disagree
+### How much this actually saves today, measured
 
-This is why "add a `current` boolean" is the wrong patch. `current` is computed at output time as `Current: row.ValidTo == ""` (`kg.go:532`). That is **open-ended**, which is not **in effect now**, which is not **in effect at T**.
+**1,363 triples, 1,316 current, 47 expired — 3.4%** (`am_kg_stats`, 2026-08-25).
 
-| Fact | `current` | `as_of: <today>` | Verdict |
-|---|---|---|---|
-| Never ended | `true` | returned | agree |
-| Ended 2026-08-20 | `false` | not returned | agree |
-| Ended **today**, date-only `valid_to` | `false` | **returned** | disagree — `temporalEndKey` pads a date-only `valid_to` to `T23:59:59Z`, so as-of exclusion lags `current` by up to a day |
-| `valid_to` set to a **future** date | **`false`** | returned | `current` is wrong in substance: the fact is true right now and reports itself as not current |
+So the immediate token saving is small, and this ADR does not rest on it. Claiming a large win from 3.4% would be the precise failure ADR-004 exists to prevent: a plausible number carrying a decision it cannot support. The case is narrower and does not depend on the ratio:
 
-The last row is latent rather than observed — nothing in the corpus schedules a future expiry — but `valid_to` is a free parameter on `KGAdd`, reachable by any caller, and nothing rejects it. Naming it now is cheaper than meeting it as a wrong answer later.
+1. **Correctness of the default.** An agent that reads a retracted fact and acts on it is wrong regardless of how many such facts there are. Today nothing in the tool stops that; `current:false` is a convention the reader must honour, not something the server enforces.
+2. **The ratio only grows.** 3.4% is what a young graph looks like. Every retraction is permanent and every session adds more.
+3. **The mean is not where the cost lands.** An entity corrected repeatedly is exactly the entity an agent queries when it is confused, and it carries a far worse ratio than the corpus mean. Nobody has measured that tail; it is named here rather than claimed.
 
-**So `current` means open-ended.** This ADR keeps that meaning and stops the word implying the other two, rather than silently redefining a field already on the wire.
+### Filtering belongs on the server
 
-### The audit questions that are inexpressible at any price
-
-`KGTimeline` orders by `valid_from = '' ASC, valid_from ASC, id ASC`, and nothing anywhere sorts or filters on `valid_to`. So *"what expired this week?"* — the most natural audit question there is — cannot be asked. *"What did we learn this week?"* is only approximable by reading a timeline and filtering by eye. And the entity-free whole-graph timeline stops at `kgTimelineLimit = 100` with no paging: a trail you can only ever see the first hundred rows of is a sample, not a trail.
+The filter exists to keep dead facts out of the **agent's context**, so it must run before serialisation. A `current` flag the client filters on has already cost the tokens — the bytes crossed the wire and entered the window. That is the difference between this and the status quo, and it is the whole point.
 
 ## Existing Primitives Audit
 
-- **`inEffectAt`** (`kg.go:553`) — the point-in-time predicate. Reused unchanged as `as_of`. Its `asOfKey == "" → true` early return is not a bug: it is correct for "no as_of was asked". The defect is that no other filter exists to take over when it abstains.
-- **`temporalStartKey` / `temporalEndKey`** — normalise a date-only bound to the start and end of its day. Reused verbatim for the new window bounds, so `started_from: 2026-08-01` includes from `T00:00:00Z` and `ended_to: 2026-08-07` includes through `T23:59:59Z`. Inclusive at both ends, which is what a human means by "between the 1st and the 7th" and is already how `as_of` behaves.
-- **The two direction loops in `KGQuery`** (`kg.go:447`, `:463`) — already `if !inEffectAt(row, asOfKey) { continue }`. The new predicates are further conditions in the same place. Filtering stays in Go: rows are already fetched by entity, the set is small, and pushing down is a change of shape for no measured gain (ADR-009 is the standing rule against tuning on unmeasured belief).
-- **`KGCounts`** (`kg.go:276`) — already owns the SQL form of exactly this predicate: `Where("team_id = ? AND valid_to = ''", teamID)`. "Open-ended" is therefore already expressed once in this repo; this ADR reuses that vocabulary rather than inventing a second one, which is the mistake ADR-010 warns about for validity windows generally.
-- **`kgFact` / `KGFact.Current`** (`kg.go:532`) — the output-side flag. Kept, with its documentation corrected to say **open-ended**. Deliberately not renamed: it is on the wire and agents read it.
-- **`kgTimelineLimit = 100`** (`kg.go:31`) — becomes the default page size rather than a ceiling. The constant stays; what changes is that it can be paged past.
-- **The "no silent truncation" discipline** — `printSupersessionTable` refuses to print an all-zero block and says why; ADR-007 requires a mechanism with no input to report that it did not measure. Reused as the rule governing the default flip, not as code.
+- **`inEffectAt`** (`kg.go:553`) — the point-in-time predicate. Untouched. Its `asOfKey == "" → true` early return is correct for "no `as_of` was asked"; the defect is that nothing else filters when it abstains.
+- **`KGCounts`** (`kg.go:276`) — already owns the SQL form of exactly this predicate: `Where("team_id = ? AND valid_to = ''", teamID)`. "Open-ended" is already expressed once in the repo, so this ADR reuses that vocabulary rather than inventing a second one. It is also an existing unindexed caller that T2's index speeds up for free.
+- **`idx_kg_triples_team_predicate`** (`00010_kg.sql`) — **an index queried by nothing.** `KGQuery` fetches by subject and object only. The schema was built for predicate lookups and the query layer never arrived, so T5 costs no migration.
+- **`kgFact` / `KGFact.Current`** (`kg.go:532`) — the output flag, computed as `row.ValidTo == ""`. Kept, with its doc corrected to say **open-ended** (see Risks). Not renamed: it is a live contract agents read.
+- **`kgTripleRow.ExtractedAt`, `.SourceDrawerID`, `.SourceFile`** — written on every fact (`kg.go:367`), returned by nothing. `SourceCloset` sits beside them and *is* returned. T6.
 
 ## Decision
 
-The argument list is **derived from the stored columns**, one default changes, and the default may never withhold silently.
+Three things, and an index. Nothing else.
 
-### 0. The argument list is derived from the schema, and a gate keeps it that way
+### 1. `status` — endedness, filtered on the server
 
-The question this ADR was asked to settle is *"what arguments will we need, so this is the last modification?"* — and the answer is not a better guess. **A query surface is complete when every stored column has a recorded decision about whether you can ask about it.** Anything else is foresight, and foresight is what runs out.
+`status` = `current` | `ended` | `all`.
 
-So the arguments are derived by walking `kgTripleRow` rather than imagined, and the derivation is enforced by a test rather than left as an intention:
+- `current` — `valid_to = ''`, open-ended records. **The new default.**
+- `ended` — `valid_to <> ''`, closed records. The audit direction.
+- `all` — today's behaviour, explicitly asked for.
 
-| Column | Askable as | Verdict |
-|---|---|---|
-| `team_id` | — | **Never.** Scoping comes from the authenticated session; a caller-supplied team is a tenancy hole, not a filter |
-| `id` | — | **Excluded on purpose.** `am_kg_query` is an entity lookup. Fetch-by-triple-id is a different tool with a different shape; recorded so its absence is a decision |
-| `subject` | `entity` + `direction: outgoing` | covered by the existing pair |
-| `predicate` | **`predicate`** | **MISSING TODAY — added here.** `predicate` is a required argument on `kg_add` and `kg_invalidate` and appears on `kg_query` nowhere, so *"what `retracts` edges exist?"* and *"what does X `depends_on`?"* are unanswerable. The graph's own vocabulary is the one dimension you cannot select on |
-| `object` | `entity` + `direction: incoming` | covered |
-| `valid_from` | `started_from` / `started_to` | §3 |
-| `valid_to` | `ended_from` / `ended_to`, `status` | §1, §3 |
-| `confidence` | — | **Excluded, with a reason, and revisit when it becomes true.** `KGAdd` hardcodes `Confidence: 1.0` (`kg.go:366`) and nothing writes any other value, so the column is a constant. A `min_confidence` over a constant is a knob that does nothing — precisely ADR-006's defect — and it would read as a working filter. Reachable only once `kg-extract` runs at scale and varies it, which ADR-004 gates |
-| `source_closet` | `source_closet` | §8 |
-| `source_file` | `source_file` | §8 |
-| `source_drawer_id` | **`source_drawer_id`** | **Added here.** The inverse lookup: *"which facts did this memory assert?"* Pairs with §5 returning it — a field you can read but not select on is half a capability |
-| `extracted_at` | `recorded_from` / `recorded_to` | §5 |
+A tri-state rather than a boolean because *"show me only the retracted ones"* is a real question, and a boolean whose absence means "both" is a tri-state wearing a boolean's clothes.
 
-**The gate is what makes this the last modification, not the table.** `TestEveryTripleColumnHasAQueryDecision` walks `kgTripleRow`'s fields and requires each to be reachable as a filter, returned on `KGFact`, or named in an explicit exclusion map carrying a reason. A column added tomorrow fails the build until somebody decides which it is.
+### 2. An index for the default path — `(team_id, valid_to)`
 
-Derived rather than hand-listed, deliberately: this repository already learned that a hand-maintained mirror is one migration away from the hole it closed, and the existing `TestEveryConfigFieldIsPopulatedAndRead` and `TestEveryFlagIsRead` are the same shape. A hand-written list of columns would need updating by exactly the person who forgot to.
-
-### 0b. A filter may be an ENTRY POINT only where an index supports it
-
-An argument list derived from the columns (§0) is only half the design. The other half is that **a filter over an unindexed column is a scan wearing a filter's clothes**, and the schema decides which is which. Measured with `EXPLAIN QUERY PLAN` against the real table on 2026-08-25:
+Measured with `EXPLAIN QUERY PLAN` on the real schema, 2026-08-25:
 
 ```
-subject='s'            SEARCH USING idx_kg_triples_team_subject   (team_id=? AND subject=?)
-predicate='retracts'   SEARCH USING idx_kg_triples_team_predicate (team_id=? AND predicate=?)
-source_drawer_id='d'   SEARCH USING idx_kg_triples_team_predicate (team_id=?)
-valid_to BETWEEN …     SEARCH USING idx_kg_triples_team_predicate (team_id=?)
-extracted_at > …       SEARCH USING idx_kg_triples_team_predicate (team_id=?)
-ORDER BY valid_from    SEARCH (team_id=?) + USE TEMP B-TREE FOR ORDER BY
+status=current   before   SEARCH … idx_kg_triples_team_predicate (team_id=?)          tenant scan
+status=current   after    SEARCH … idx_kg_triples_team_valid_to  (team_id=? AND valid_to=?)   indexed
+status=ended     after    SEARCH … idx_kg_triples_team_valid_to  (team_id=?)          scan — inequality
 ```
 
-**⚠ Read the constraint list, never the verb.** All six lines say `SEARCH … USING INDEX`. Only the first two are indexed on the column being filtered; the rest use an index to narrow to the tenant and then walk every row that team owns. A gate that greps for `SCAN` passes on all six and proves nothing — the same shape as a test asserting a call still returns something.
+One additive `CREATE INDEX`, no data rewrite. It serves the **default** path, which is the one every agent takes. `status=ended` stays a tenant scan because `<>` cannot use the index; that is the rare audit query and it is acceptable at this size.
 
-Three existing indexes, from `db/migrations/00010_kg.sql`:
+**⚠ And the index is a trap for one query it also speeds up.** A date *range* on `valid_to` becomes `(team_id=? AND valid_to>? AND valid_to<?)` — fully indexed, fast, **and wrong**, for the reason in the next section. Speed is what would make it look right. The index ships together with the rule that range filters stay out of SQL.
 
-```sql
-CREATE INDEX idx_kg_triples_team_subject   ON kg_triples (team_id, subject);
-CREATE INDEX idx_kg_triples_team_object    ON kg_triples (team_id, object);
-CREATE INDEX idx_kg_triples_team_predicate ON kg_triples (team_id, predicate);
-```
+### 2b. Why `status` is indexable when a date range is not
 
-**`(team_id, predicate)` is indexed and queried by nothing.** `KGQuery` fetches by subject and object only. The schema was built for predicate lookups and the query layer never arrived — the same unreachable-capability class as §5's three columns, one layer down.
-
-**So the rule, and it costs no migration:**
-
-- **Entry points** — `entity` (subject/object) and **`predicate`**. Both are two-column index matches today. A query must supply at least one.
-- **Refinements** — `status`, the three window pairs, and the provenance filters. Applied in Go **after** an entry point has narrowed the rows, exactly where `inEffectAt` already runs. Over a handful of rows they cost nothing and need no index.
-- **A refinement may not be the only filter.** `am_kg_query` with `source_drawer_id` and no entity or predicate is a per-tenant scan, and the tool refuses it rather than serving it slowly — ADR-007's principle that a mechanism should decline rather than answer badly.
-
-**What this buys:** *"show me every `retracts` edge"* becomes a first-class indexed query by making `entity` optional when `predicate` is supplied. Zero migration, zero new index, using a structure that has been sitting unused since `00010_kg.sql`.
-
-**What it defers, and the trigger for each:**
-
-| Wanted as an entry point | Index it would need | Ship when |
-|---|---|---|
-| drawer → facts (`source_drawer_id` alone) | `(team_id, source_drawer_id)` | someone asks it standalone; today it refines an entity query |
-| entity-free timeline ordering | `(team_id, valid_from)` | the temp B-tree matters — negligible at ~1,300 triples, name a row count rather than a feeling |
-| any date range as an entry point | `(team_id, valid_to)` etc. | **blocked, not merely deferred — see §0c** |
-
-The first two are one additive `CREATE INDEX`, no data rewrite, safe to add later. That is the difference between a **column** added ahead of its writer (§6, refused) and an **index** added ahead of its query: the column is a contract, the index is an optimisation, and only one of them lies to a reader when it is empty. The third is a different case entirely.
-
-### 0c. Dates cannot be indexed here, and the reason is correctness rather than cost
-
-`KGAdd` stores `valid_from` and `valid_to` **exactly as supplied** (`kg.go:366`). It normalises them only to reject an inverted interval, never for storage. So the column holds a mixture: `2026-08-25` beside `2026-08-25T09:00:00Z`.
-
-The comparison is what that costs. SQLite compares TEXT as bytes, so a shorter string that is a prefix sorts first — measured in a scratch database on 2026-08-25:
+`KGAdd` stores `valid_from` and `valid_to` **exactly as supplied** (`kg.go:366`), normalising them only to reject an inverted interval. So the column mixes `2026-08-25` with `2026-08-25T09:00:00Z`. SQLite compares TEXT as bytes and a shorter prefix sorts first — measured:
 
 ```
 window [2026-08-01T00:00:00Z .. 2026-08-07T23:59:59Z]
   2026-08-01T09:00:00Z   MATCHED
   2026-08-07             MATCHED
-  2026-08-07T09:00:00Z   MATCHED
   2026-08-01             DROPPED   ← a date-only value ON the lower bound
 ```
 
-A fact ending on the first day of the window is silently excluded from it. Only for date-only values, only at the lower boundary — which is to say, invisible to any test written with datetime fixtures, and wrong on exactly the rows an agent files by hand.
+A fact ending on the window's first day is silently excluded. Only for date-only values, only at the lower edge — invisible to any test written with datetime fixtures, and wrong on exactly the rows a human files by hand.
 
-**Today's behaviour is nonetheless correct, and how it manages that is the whole point.** `inEffectAt` normalises *both* sides at comparison time — `temporalStartKey(row.ValidFrom)` against a `temporalStartKey(ao)` argument (`kg.go:434`). The correctness lives in Go, per row, at the moment of comparison. **An index cannot do that**: it compares the stored bytes, and the stored bytes are not canonical.
+**`status` is unaffected, and that is why it can be indexed.** `valid_to = ''` is an exact byte comparison against the empty string. Format never enters it. A range comparison against a mixed-format column is what breaks, and this ADR does not ship one.
 
-So the ordering of work is forced, and it is not a preference:
+Today's `as_of` is nonetheless correct, and how it manages that is the constraint: `inEffectAt` normalises **both sides** at comparison time (`temporalStartKey(row.ValidFrom)` against a normalised argument, `kg.go:434`). The correctness lives in Go, per row. An index cannot do that — it compares stored bytes. Indexing any date column therefore requires normalising on write plus a backfill, which changes `kg_add` and is out of scope by the Amendment. Follow-ups records the order.
 
-1. **Date filters stay Go-side refinements.** Not for performance — pushing them into SQL would be *wrong*, and wrong in a way that returns fewer rows rather than erroring.
-2. **Indexing a date column requires normalising on write first**, plus a backfill of existing rows. That changes `kg_add`, which this ADR's own Amendment deliberately leaves out of scope so ADR-004's measurement stays intact.
-3. **Therefore it is a separate ADR**, listed in Follow-ups. Attempting it here would trade the one guarantee that made the Amendment defensible.
+### 3. The default flips to `current` — and says so, every time
 
-**Which repairs an inconsistency in an earlier draft of this document.** *"What expired this week"* is the motivating question of issue #23 and it is entity-free, so relegating date filters to refinements-behind-an-entry-point would have made the headline feature unaskable across the graph. It is answerable, and the route is `am_kg_timeline` with no entity: an explicit, bounded, tenant-scoped scan with the date filter applied in Go, paged by T5. At ~1,300 triples that is correct and cheap. The number at which it stops being cheap belongs in Follow-ups as a row count, not as a feeling.
-
-### 1. Endedness — `status`
-
-`status` = `current` | `ended` | `all`.
-
-- `current` — `valid_to == ''`, open-ended records.
-- `ended` — `valid_to != ''`, closed records.
-- `all` — no endedness filter; today's behaviour.
-
-### 2. Point in time — `as_of`, unchanged
-
-Existing semantics and implementation. It answers *"what did we believe at T"*, which no combination of the other filters expresses, because a record that has since ended still satisfies it.
-
-### 3. Windows — `started_from` / `started_to` / `ended_from` / `ended_to`
-
-Four explicit bounds rather than a `from`/`to` pair plus a mode selector. `ended_from`+`ended_to` is *"what expired this week"*; `started_from`+`started_to` is *"what did we learn this week"*. Each bound names the dimension it bounds, so no parameter changes another parameter's meaning.
-
-**All filters compose by AND.** No precedence to learn, and no combination is an error: `status=ended` with `started_from` last month is *"things we learned last month that have since been retracted"* — a real and good question.
-
-A fact with an empty `valid_from` is matched by no `started_*` bound, and one with an empty `valid_to` by no `ended_*` bound. An unbounded record is not "before all dates"; it is undated, and returning it from a dated window would be the same class of error as counting a vacuous pair in ADR-004.
-
-### 4. The default flips to `current` — and says so, every time
-
-`status` defaults to `current` on both tools. That is what makes the accumulation argument true rather than merely stated.
-
-But hiding history by default collides with the reason the history exists, and ADR-010 has already written the collision down:
+Hiding history by default collides with the reason the history exists, and ADR-010 already wrote the collision down:
 
 > A session about to redo a rejected thing does not know to ask for history — that is precisely what it does not know.
 
-So the withholding is never silent. Every response that filtered anything carries what it removed:
+So the withholding is never silent. Any response that filtered something carries what it removed:
 
 ```json
 { "entity": "…", "facts": [ … ], "count": 3,
@@ -212,171 +115,119 @@ So the withholding is never silent. Every response that filtered anything carrie
   "hint": "7 ended fact(s) not shown — pass status:\"all\" or status:\"ended\" to see them" }
 ```
 
-`withheld` is present only when a filter removed something, so the key's presence is itself information. This is ADR-007's rule applied to retrieval: **a filtered set reports what it filtered rather than presenting itself as the whole.** An agent reading `count: 3` is now reading a number that told it what it left out.
+`withheld` appears only when something was removed, so the key's presence is itself information. This is ADR-007's rule applied to retrieval: **a filtered set reports what it filtered rather than presenting itself as the whole.**
 
-### 5. Transaction time — surface `extracted_at`, and filter on it
+### 4. `predicate` — free, and the graph's own vocabulary
 
-`kgTripleRow` carries `extracted_at`, written on every fact (`kg.go:367`, `ExtractedAt: now`). `KGFact` has no such field and no tool returns it. **The graph has recorded transaction time since it was built and has never been able to report it.**
+`predicate` is a **required** argument on `kg_add` and `kg_invalidate` and appears on `kg_query` nowhere, so the one dimension nothing can select on is the vocabulary the graph is built from. *"Show me every `retracts` edge"* — how you audit what the team has changed its mind about — is a scan by eye today.
 
-That matters more than a missing convenience, because valid time and transaction time answer different questions and this store has only ever been able to answer one:
+`idx_kg_triples_team_predicate` already indexes it as a two-column match, so `predicate` is an **entry point**: supplying it makes `entity` optional. Zero migration, zero new index, using a structure that has been sitting unused since `00010_kg.sql`.
 
-| Question | Dimension | Today |
-|---|---|---|
-| What was true on D? | valid (`valid_from`/`valid_to`) | `as_of` |
-| What did we **know** on D? | transaction (`extracted_at`) | inexpressible |
-| When did we learn a fact we recorded was already wrong? | both | inexpressible |
+### 5. Surface three columns that are already written
 
-So `extracted_at` joins the wire as `recorded_at`, with `recorded_from` / `recorded_to` bounds normalised exactly like the others. **No migration**: the column exists and is populated.
+`recorded_at` (from `extracted_at`), `source_drawer_id` and `source_file` are stored on every fact and returned by nothing, while `source_closet` beside them is returned.
 
-Two more columns are in the same state and ship with it — `source_drawer_id` and `source_file` are stored on every fact and returned by nothing, while `source_closet` beside them is returned. `source_drawer_id` is the costly one: every fact knows which memory asserted it, and no agent can ask. This is the "a column written and never returned" class the palace already named on 2026-08-23, and checked 2026-08-25 it is not claimed by ADR-022, which was rewritten on 2026-08-24 and is about a memory carrying its own scope.
+`extracted_at` is **transaction time**: the graph has been half-bitemporal since it was built and unable to say so. *"What was true on D"* is answerable via `as_of`; *"what did we **know** on D"* is not, from data already on disk. `source_drawer_id` is the other cost — every fact knows which memory asserted it and no agent can ask.
 
-**Why this belongs in this ADR rather than a later one.** It is the same contract, changed once. Adding valid-time filters now and transaction-time filters later is two breaking passes over the same tool for one coherent capability, and the second would have no better argument than the first.
-
-### 6. What is deliberately NOT added, and why the schema stops here
-
-Asked directly — *what will we need in future, so this is the last modification?* — the honest answer has three tiers, and the middle one is a trap this repository has fallen into repeatedly.
-
-**Free now (stored, unreachable):** `extracted_at`, `source_drawer_id`, `source_file`. Covered by §5. No migration, no writer, pure surfacing.
-
-**Needs a column AND a writer, so it lands with the writer, not here:**
-
-| Field | Purpose | Where it belongs |
-|---|---|---|
-| `reason` | why a fact ended — ADR-010's *"the gap that actually costs money"* | ADR-010. It also changes `am_kg_invalidate`, which the Amendment above deliberately leaves out of scope |
-| `ended_by` | which agent or human retracted it | with `reason`; an audit trail wants both or neither |
-| `superseded_by` | explicit link to the replacing fact, instead of today's workaround of filing supersession as triples between drawer ids (issue #34) | ADR-010, or its own once supersession is justified |
-
-**These are not added speculatively, and the reason is this repository's own defect record.** A nullable column added ahead of its writer is a capability that is finished and unreachable — the class `AGENTS.md` is built around, and the class §5 is fixing three live instances of. Shipping `reason` empty today would mean explaining in six months why the graph has a reason column that is always blank, which is strictly worse than not having it.
-
-**The counter-argument, stated fairly:** batching schema changes avoids repeat migrations. It is answered by what a migration actually costs here — gorm `AutoMigrate` over SQLite, where a nullable column is close to free. The expensive things are breaking the wire contract twice and carrying dead fields, and neither is helped by adding columns early. So the **contract** is designed once (§1–§5, additive-only response keys); the **schema** grows when something writes to it.
-
-**Deliberately never:** wing-scoping the graph. KG facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. That is a decision with a test behind it, not an omission, and reversing it is its own ADR — noted here because "facts are workspace-wide while drawers are wing-scoped" is raised as a defect often enough (issue #34 among them) that its absence from this ADR should be visibly on purpose.
-
-### 7. Selecting on predicate and provenance
-
-The derivation in §0 surfaces four arguments that have nothing to do with time, and they belong here rather than in a follow-up because they come from the same walk of the same table and change the same signature.
-
-- **`predicate`** — the important one, and per §0b an **entry point**: supplying it makes `entity` optional, so *"show me every `retracts` edge"* becomes a first-class indexed query rather than a scan by eye. The graph's relationships are its vocabulary (`retracts`, `supersedes`, `qualifies`, `depends_on`) and today an agent can write one and never select on it, while `idx_kg_triples_team_predicate` sits unused. Exact match, after the same name validation `kg_add` already applies to predicates.
-- **`source_drawer_id`** — *"which facts did this memory assert?"* Issue #34 records supersession being filed as triples between **drawer ids** precisely because there was no other way to connect a fact to the note behind it; this makes the intended direction askable.
-- **`source_file`**, **`source_closet`** — the same question one level coarser: *"what did this mining run assert?"* Cheap, symmetric with the two above, and they close out the provenance columns so §0's gate has a decision for every one.
-
-All four compose by AND with the temporal filters, same as everything else. None of them needs a migration.
-
-### 8. Paging on the entity-free timeline
-
-`am_kg_timeline` with no entity gains `limit` and `offset` and reports the total it paged through. Without this the filters are half-useful: *"what expired this week"* that silently stops at 100 rows is the truncation §4 exists to forbid, one layer down.
+Returning them is additive and needs no migration. **Filtering** on them is not in this ADR (Follow-ups): they have no index, so a filter would be a per-tenant scan, and unlike `status` there is no measured demand yet.
 
 ## Alternatives Considered
 
-- **`from`/`to` plus a `window_on: started|ended|overlapped` selector.** Fewer parameters; rejected on house precedent. A mode flag that changes what two other parameters mean is one name for two facts. `internal/palace/eval.go` records the same call made the other way — `DistGap` was named separately from `TopGap` because "a gap over cross-encoder logits and a gap over cosine distances are different quantities on different scales" — and notes one-name-for-two-facts as a defect that file had already carried twice.
-- **Bare `from`/`to` meaning overlap.** Simplest, and insufficient: overlap cannot express *"what expired this week"*, which is the question the issue turns on. A fact that started in 2024 and ended Tuesday overlaps every window you could name.
-- **`current: true` as a boolean instead of a tri-state.** Cannot express *"only the retracted ones"*, which is the audit direction; and a boolean whose absence means "both" is a tri-state wearing a boolean's clothes.
-- **Renaming the wire field `current` to `open_ended`.** More accurate, rejected: it is a live contract agents read, and this would trade it for a word. The documentation is corrected instead; a rename can ride a future breaking change.
-- **Keep the default at `all` (non-breaking).** This is the status quo, which is the thing being fixed. Recorded because if T4 is rejected in review, T1–T3 and T5 still stand and the issue is most of the way closed.
-- **Default to `current` and stay quiet.** Rejected on ADR-010's argument quoted in §4.
-- **Push the filters into SQL.** Deferred, not rejected — see Follow-ups.
+- **A `current: true` boolean instead of tri-state `status`.** Cannot express the audit direction; rejected in §1.
+- **Keeping the default at `all` (non-breaking).** This is the status quo, which is the thing being fixed. Recorded because if T4 is rejected in review, T1–T3 and T5–T6 still stand on their own.
+- **Defaulting to `current` and staying quiet.** Rejected on ADR-010's argument, quoted in §3.
+- **Client-side filtering on the existing `current` flag.** Rejected: the bytes have already crossed the wire and entered the context window, which is the entire cost being removed.
+- **Shipping the date-window filters (`started_*` / `ended_*` / `recorded_*`) in this ADR.** Drafted and cut. They are Go-side and cheap, but the demand is one assertion on issue #23 while the default's cost is continuous and measured. Follow-ups, with a trigger.
+- **Renaming the wire field `current` to `open_ended`.** More accurate, and it trades a live contract for a word. Documentation corrected instead.
+- **A partial index `WHERE valid_to = ''`.** Smaller, and it serves only `status=current`; the plain two-column index serves the equality test and leaves `status=ended` no worse. Not worth the asymmetry at this size.
 
 ## Component / Boundary Impact
 
-| Component | Change | Boundary crossed |
+| Component | Change | Boundary |
 |---|---|---|
-| `internal/palace` (`KGQuery`, `KGTimeline`) | Signatures take a filter value instead of a bare `asOf string`. Filtering stays in the existing direction loops | Service API, internal only |
-| `internal/mcpserver` (`registerKGQuery`, `registerKGTimeline`) | New optional parameters; response gains `status`, `withheld`, `hint` | **Agent-facing MCP contract** |
-| `internal/store`, migrations, schema | **None** — no column added, no row rewritten, no migration | not crossed |
+| `db/migrations` | one additive `CREATE INDEX` | schema, no data rewrite |
+| `internal/palace` (`KGQuery`) | takes a status + predicate filter; SQL predicate for `status=current` | Service API, internal |
+| `internal/mcpserver` (`registerKGQuery`) | new optional params; response gains `status`, `withheld`, `hint`, and three already-stored fields | **agent-facing MCP contract** |
 | `Service.Search`, ranking, drawers | **None** — the retrieval path never reads a triple and still does not | not crossed |
-| `kg_add`, `kg_invalidate` | **None** — deliberately, so ADR-004's measurement is unaffected | not crossed |
+| `kg_add`, `kg_invalidate`, storage semantics | **None** — deliberately, so ADR-004's measurement is unaffected | not crossed |
 
 ## Wiring & Contract Changes
 
-Stated per parameter, because a parameter documented and unconsumed is the defect class this repository is named after.
+| Parameter | Read by | Default | When omitted |
+|---|---|---|---|
+| `status` | `KGQuery` endedness predicate | `all` at T1, **`current` at T4** | T1–T3: today's behaviour. T4: open-ended only, with `withheld` |
+| `predicate` | exact match on the indexed column; makes `entity` optional | none | every predicate |
+| `entity`, `as_of`, `direction` | unchanged | unchanged | unchanged |
 
-| Parameter | Tool | Read by | Default | Behaviour when omitted |
-|---|---|---|---|---|
-| `status` | `kg_query`, `kg_timeline` | `KGQuery` / `KGTimeline` endedness predicate | `all` at T1, **`current` at T4** | T1–T3: today's behaviour. T4: open-ended only, with `withheld` |
-| `as_of` | both | `inEffectAt` (unchanged) | none | no point-in-time filter |
-| `started_from`, `started_to` | both | `valid_from` bound via `temporalStartKey`/`temporalEndKey` | none | no start-window filter |
-| `ended_from`, `ended_to` | both | `valid_to` bound, same normalisation | none | no end-window filter |
-| `recorded_from`, `recorded_to` | both | `extracted_at` bound, same normalisation | none | no transaction-time filter |
-| `predicate` | both | exact match on `predicate` | none | every predicate |
-| `source_drawer_id` | both | exact match on `source_drawer_id` | none | every source |
-| `source_file`, `source_closet` | both | exact match on their columns | none | every source |
-| `limit`, `offset` | `kg_timeline` (entity-free) | repo query | `kgTimelineLimit` / 0 | first 100, as today |
+Response additions, all additive keys so a later field cannot break a caller: `status` (always, echoing what was applied), `withheld` and `hint` (only when something was removed), `recorded_at`, `source_drawer_id`, `source_file`.
 
-**Not exposed, and each recorded in §0 with a reason:** `team_id` (tenancy, never caller-supplied), `id` (a different tool's shape), `confidence` (a constant — a filter over it would be a knob that does nothing).
-
-Response additions, all additive keys so a later field cannot break a caller: `status` (always, echoing what was applied), `withheld` (only when something was removed), `hint` (only alongside `withheld`), `total` (entity-free timeline only), and three fields that are already stored and were never returned — `recorded_at` (from `extracted_at`), `source_drawer_id`, `source_file`.
+**Not exposed, each on purpose:** `team_id` (tenancy comes from the session; a caller-supplied team is a hole, not a filter), `id` (fetch-by-triple-id is a different tool's shape), `confidence` (`KGAdd` hardcodes `1.0` at `kg.go:366` and nothing writes another value — a filter over a constant is a knob that does nothing, ADR-006; revisit when `kg-extract` varies it, which ADR-004 gates).
 
 ## Inter-task Contracts
 
-- **T1 publishes the filter value** that T2, T3 and T5 extend — a single struct carrying `Status`, `AsOf` and the four bounds, passed to both service methods. T2 and T5 add fields to it; neither invents a parallel parameter list. Published as Go code before T2 starts, so the contract is checkable with `go doc` rather than agreed in prose.
-- **T3 depends on T1's filter returning a count of what it dropped**, not only the surviving rows. T1 must therefore return `(facts, dropped, err)` shaped so that T3 has a number to report. A T1 that discards the count forces T3 to re-filter, and a second filter is a second place to be wrong.
-- **T4 changes only a default**, never a predicate. If T4 needs to touch filter logic, T1 was wrong and the fix belongs there.
-- **T5 is independent of T1–T4** and may land in any order relative to them.
+- **T1 publishes the filter value** T4 and T5 extend — one struct carrying `Status` and `Predicate`, passed to `KGQuery`. Published as Go code before T4 starts, so the contract is checkable with `go doc` rather than agreed in prose.
+- **T1 must return the count of what it dropped**, not only the surviving rows: `(facts, dropped, err)`. T3 has nothing to report otherwise, and re-filtering to recover the number is a second place to be wrong.
+- **T4 changes only a default value.** If T4 needs to touch filter logic, T1 was wrong and the fix belongs there.
+- **T2, T5 and T6 are independent** of each other and of T1's ordering.
 
 ## Implementation
 
-| # | Task | Surface | Gate |
-|---|---|---|---|
-| T0 | **Amend ADR-004's Out of Scope clause** to `kg_add` / `kg_invalidate`, recording the reasoning in ADR-004 itself | `docs/adr/ADR-004-*.md` | Human sign-off. Nothing below starts until this lands |
-| T1 | `status` on both service methods and both tools, default `all` | palace + mcpserver | `TestEndedFactIsAbsentFromCurrentQuery` — add a fact, invalidate it, assert absent under `current` and present under `all`; delete the wiring and watch it go red |
-| T2 | `started_from/to`, `ended_from/to` | palace + mcpserver | `TestEndedWindowFiltersOnValidTo` — point the predicate at `valid_from` and it must fail. A window test that passes against either column tests nothing |
-| T3 | `withheld` + `hint` on every filtered response | mcpserver | `TestFilteredResponseReportsWhatItWithheld` — assert the withheld **number** equals what was removed |
-| T4 | **Flip the default to `current`** | mcpserver | `TestDefaultQueryIsCurrentOnly`, plus a release note per ADR-014 |
-| T5 | `limit`/`offset`/`total` on the entity-free timeline | palace + mcpserver | `TestTimelinePagesPastTheDefaultLimit` — assert row 101 is reachable |
-| T6 | Surface `recorded_at`, `source_drawer_id`, `source_file`; add `recorded_from/to` | palace + mcpserver | see T7 |
-| T7 | `predicate` as an **entry point** (`entity` becomes optional when it is given) + the three provenance filters as refinements, **and the derived gate** | palace + mcpserver | `TestEveryTripleColumnHasAQueryDecision` — walk `kgTripleRow` by reflection; each field must be a filter argument, a returned `KGFact` field, or in an exclusion map carrying a reason. Prove it by adding a dummy column and watching the build go red. This is what makes §0 true rather than aspirational |
-| T8 | Refuse a refinement-only query, **except a date filter on the entity-free timeline**, which is the sanctioned bounded scan (§0c) | mcpserver | `TestRefinementWithoutAnEntryPointIsRefused` — `source_drawer_id` with no `entity` and no `predicate` must error; and `TestTimelineAcceptsADateWindowWithNoEntity`, so the refusal does not eat the feature the ADR exists for |
-| T8b | Pin the date-only boundary case | palace | `TestDateOnlyBoundIsIncludedAtTheWindowEdge` — a fact with `valid_to` `2026-08-01` must be returned by a window starting `2026-08-01`. Mutate by comparing raw strings instead of `temporalEndKey`-normalised ones and it must go red. This is the case a datetime fixture cannot see |
-| T9 | Pin the entry points to real index use | palace | `TestEntryPointFiltersAreIndexed` — run `EXPLAIN QUERY PLAN` per entry-point shape and assert the **filtered column appears in the index constraint list**, not merely that the output says `SEARCH`. Mutate by dropping `idx_kg_triples_team_predicate` and it must go red; a test grepping for `SCAN` stays green through that and is worthless |
+| # | Task | Gate |
+|---|---|---|
+| T0 | Amend ADR-004's Out of Scope clause to `kg_add` / `kg_invalidate`, recording the reasoning there | Approved by M; nothing else starts until it lands |
+| T1 | `status` on `KGQuery` and `am_kg_query`, default `all` | `TestEndedFactIsAbsentFromCurrentQuery` — add a fact, invalidate it, assert absent under `current` and present under `all`; delete the wiring and watch it go red |
+| T2 | `CREATE INDEX idx_kg_triples_team_valid_to ON kg_triples (team_id, valid_to)` | `TestStatusCurrentIsIndexed` — `EXPLAIN QUERY PLAN` must show **`valid_to` in the constraint list**, not merely the word `SEARCH`. Mutate by dropping the index and it must go red; a test grepping for `SCAN` stays green through that and is worthless |
+| T3 | `withheld` + `hint` on every filtered response | `TestFilteredResponseReportsWhatItWithheld` — assert the withheld **number** equals what was removed |
+| T4 | Flip the default to `current` | `TestDefaultQueryIsCurrentOnly`, plus a release note per ADR-014 |
+| T5 | `predicate` as an entry point (`entity` optional when supplied) | `TestPredicateOnlyQueryIsIndexed` — same constraint-list assertion as T2, against the existing predicate index |
+| T6 | Return `recorded_at`, `source_drawer_id`, `source_file` | `TestEveryStoredTripleColumnIsReturnedOrExcluded` — walk `kgTripleRow` by reflection; each field must be returned on `KGFact` or named in an exclusion map carrying a reason. Derived, not hand-listed, so a column added tomorrow enters the check in the commit that creates it. Prove it by adding a dummy column and watching the build go red |
 
-T1 ships with the old default deliberately, so the filters can be exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
+T1 ships with the old default deliberately, so the filter is exercised in production before the default moves. T4 is a separate, revertible commit for the same reason.
 
 ## Consequences
 
-- **Positive:** the default query stops spending context on retracted facts, which is the claim the storage model already makes. The audit questions the log was built to answer become askable. The `current` / `as_of` disagreement becomes documented rather than latent.
+- **Positive:** the default query stops returning retracted facts, and stops returning them *before* they cost context. The graph's own vocabulary becomes selectable. Three columns stop being written-and-invisible. `KGCounts` gets faster for free.
 - **Negative:** T4 is a breaking change to the agent-facing contract. A caller relying on the default returning ended facts gets fewer, mitigated only by `withheld` and a release note. ADR-024's default change also owes a release note that has not been written — after T4 that debt is two, and they should ship together.
-- **Neutral:** the write path, schema, ranking and every stored fact are untouched; `as_of` behaves exactly as today; T1–T3 and T5 are additive and break nothing.
+- **Neutral:** the write path, storage semantics, ranking and every stored fact are untouched; `as_of` behaves exactly as today; T1–T3 and T5–T6 are additive.
+- **Honest:** the measured saving today is 3.4% of facts. The decision rests on the default being *correct*, not on the current ratio (Context).
 
 ## Out of Scope
 
-- **Drawer validity windows and recall returning only current drawers** (deferred: ADR-010, Proposed, 0 of 3 — this ADR is the graph half only; the two must agree in vocabulary, and ADR-010 already commits to reusing `valid_to == ''` verbatim).
-- **A `reason` on invalidation** (permanent here: ADR-010's "third gap" owns it, and it changes `am_kg_invalidate`, which the Amendment deliberately leaves untouched — issue #23 item 4).
-- **Semantic search over the graph** (deferred: `am_kg_query` is an exact entity lookup via `normalizeEntityID`; `am_search` is vector search over drawers with no graph access, so a fact cannot be found without already knowing its entity name. A missing capability, not a missing filter — its own issue).
+- **Date-window filters** `started_from/to`, `ended_from/to`, `recorded_from/to` (deferred: drafted, cut for lack of demand — Follow-ups carries the trigger).
+- **Filtering on the provenance columns** surfaced by T6 (deferred: no index, no measured demand; returning them is the half that is justified).
+- **Drawer validity windows and recall returning only current drawers** (deferred: ADR-010, Proposed, 0 of 3 — this is the graph half only, and the two must share the `valid_to == ''` vocabulary).
+- **A `reason` on invalidation** (permanent here: ADR-010's "third gap" owns it, and it changes `am_kg_invalidate`, which the Amendment leaves untouched — issue #23 item 4).
+- **New columns** `reason`, `ended_by`, `superseded_by` (permanent here: a nullable column added ahead of its writer is the unreachable-capability defect this repo is named after, and §Existing Primitives lists three live instances. The **contract** is designed once; the **schema** grows when something writes to it).
+- **Semantic search over the graph** (deferred: `am_kg_query` is an exact entity lookup; a fact cannot be found without knowing its entity name. A missing capability, not a missing filter — its own issue).
 - **Wiring a graph read into `Service.Search`** (permanent: ADR-004 owns it, reachable only through a `justified` verdict — issue #34).
-- **Populating the graph at corpus scale with `kg-extract`** (deferred: ADR-004 gates it).
-- **Entity quality** (deferred: issue #41 — the graph harvests Go identifiers, `Repo`, `Fatalf`, `Errorf` topping the degree table. A measurement problem, not a filtering one. Stated honestly: better filters over bad entities return bad facts faster).
+- **Wing-scoping the graph** (permanent: facts are workspace-wide and `TestKnowledgeGraphIsWorkspaceWideNotWingScoped` pins it. A decision with a test behind it, raised as a defect often enough that its absence here should be visibly deliberate).
+- **Entity quality** (deferred: issue #41 — the graph harvests Go identifiers, `Repo` and `Fatalf` topping the degree table. Stated honestly: a better filter over bad entities returns bad facts faster).
 
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| The Amendment is rejected and the work is wasted | Med | Low | T0 is first and blocks everything; nothing is built before the decision |
-| The default flip breaks an agent relying on ended facts | Med | Med | `withheld` names what was removed and the parameter that restores it; T4 is one revertible line, separate from T1–T3 |
-| `withheld` is computed and never printed | Med | Med | T3's gate asserts the number, not the field's presence. `printSupersessionGate`'s near-miss explanation was computed and thrown away for weeks — 246 characters produced, 0 printed — and only a test reading the value caught it |
-| Six parameters is a surface an agent gets wrong | Med | Low | Each is independent and conjunctive; no invalid combination exists to document, and the tool description carries one example per audit question |
-| Window bounds read as exclusive | Low | Med | Inclusive at both ends, matching `as_of`'s existing day-padding; stated in the parameter descriptions and asserted at the boundary instant in T2 |
-| `current` keeps meaning open-ended while reading as "true now" | Low | Med | Documented in Context and in the field's description; a future `valid_to` is the case that would expose it and nothing writes one today |
-| Filters ship over entities that are Go identifiers (#41) | High | Low | Out of scope and stated; this ADR makes the graph askable, not correct |
+| The T2 index makes an incorrect date range *fast*, inviting someone to push range filters into SQL | Med | **High** | §2b states it beside the index; the silent-drop measurement is in this document rather than in a commit message, and Follow-ups fixes the order |
+| The default flip breaks a caller relying on ended facts | Med | Med | `withheld` names what was removed and the parameter that restores it; T4 is one revertible line, separate from T1 |
+| `withheld` is computed and never printed | Med | Med | T3 asserts the number, not the field's presence. `printSupersessionGate`'s near-miss explanation was computed and discarded for weeks — 246 characters produced, 0 printed — and only a test reading the value caught it |
+| A gate greps for `SCAN` and passes on an unindexed filter | **High** | Med | T2 and T5 assert the filtered column appears in the constraint list. Six measured query shapes all print `SEARCH … USING INDEX`; only two are indexed on the column they filter |
+| `current` keeps meaning open-ended while reading as "true now" | Low | Med | Documented in §Existing Primitives and in the field's description. A future-dated `valid_to` is the case that exposes it — reachable via `KGAdd` and written by nothing today |
+| 3.4% is quoted later as the benefit and the ADR reads as overselling | Med | Low | The ratio and its three caveats are in Context, and the decision is explicitly not resting on it |
 
 ## Rollback
 
-Per task, and cheap by construction because nothing is written differently.
+- **T1, T3, T5, T6** — additive parameters and response keys over unchanged storage. Rollback is deleting them; nothing was written in a new shape.
+- **T2** — `DROP INDEX`. No data change; queries return to a tenant scan.
+- **T4** — the one that can hurt, and built to be revertible: a single default value in the tool registration. Reverting restores `all` and every caller sees today's behaviour on the next request. This is why it is separate from T1.
+- **T0** — an ADR edit; reverting restores the clause verbatim and the tasks stop being authorised.
 
-- **T1–T3, T5** — additive parameters over unchanged storage. Rollback is deleting the parameters and their handlers; no data was written in a new shape, so nothing needs migrating back and no stored fact changes meaning.
-- **T4** — the one that can hurt, and the one designed to be revertible: it is a single default value in the tool registration. Reverting restores `all` and every caller sees today's behaviour on the next request. This is why it is a separate commit from T1.
-- **T6** — surfacing only. Rollback is removing three response keys; the columns were already written and stay written, so nothing is lost either way.
-- **T0** — an ADR edit; reverting restores ADR-004's clause verbatim and the tasks stop being authorised.
-
-No migration, no backfill, no index rebuild in either direction.
+No migration to reverse, no backfill, no index rebuild beyond the one `DROP`.
 
 ## Follow-ups
 
-- **Push the filters into SQL** if an entity's row count ever makes the Go-side filter measurable. Not now: unmeasured, and ADR-009 is the standing rule against tuning on belief. §0b's entry-point rule is what keeps the Go-side filter over a small set in the first place.
-- **The two deferred indexes** in §0b — `(team_id, source_drawer_id)` and `(team_id, valid_from)` — each with its named trigger. An additive `CREATE INDEX` with no data rewrite, so neither needs deciding now.
-- **Normalise temporal values on write, then index them** — the prerequisite §0c identifies, and its own ADR because it changes `kg_add` and needs a backfill. Three parts, in this order: canonicalise `valid_from` / `valid_to` / `extracted_at` to `YYYY-MM-DDTHH:MM:SSZ` at the write path; backfill existing rows; only then `CREATE INDEX (team_id, valid_to)` and push date filters into SQL. Doing any of it out of order produces the silent boundary drop in §0c, in production, on the rows an agent hand-filed.
-- **The row count at which the entity-free timeline scan stops being acceptable.** §0c sanctions it at ~1,300 triples. Nobody has measured where it stops, and ADR-009's rule says the number must come from this corpus rather than from a feeling. Until then it is bounded by T5's paging.
-- **Generalise the `EXPLAIN QUERY PLAN` gate.** T9 pins the KG's entry points; every other table in this repo has query shapes nobody has checked, and `idx_kg_triples_team_predicate` sat indexed-and-unqueried long enough to prove the reverse case exists too — an index nothing uses is as invisible as a filter nothing indexes.
-- **Reconcile `current` and `as_of` at the boundary instant** — the day-lag in the Context table. Documented here; a fix means deciding whether `temporalEndKey`'s end-of-day padding is right for `valid_to`, which touches the write path's semantics and therefore waits for ADR-004's measurement.
-- **A `withheld` convention for `am_search`** — if reporting what a filter removed is right here, it is likely right for wing/room-scoped recall too. Worth its own look rather than generalising from one case.
-- **The two owed release notes** (ADR-024's default change and this ADR's T4) should ship together, since both change what a caller receives with no flag set.
-- **Revisit the entity-free timeline's shape** once #41 decides what an entity is. Paging a trail of Go identifiers is paging noise.
+- **Date-window filters**, cut from this ADR. Trigger: someone asks *"what expired this week"* against the real corpus and cannot. They are Go-side refinements over an entry-point-narrowed set, need no index, and break nothing — a small ADR or an issue, not this one.
+- **Normalise temporal values on write, then index them.** The prerequisite §2b identifies, and its own ADR because it changes `kg_add` and needs a backfill. Strict order: canonicalise `valid_from`/`valid_to`/`extracted_at` to `YYYY-MM-DDTHH:MM:SSZ` at the write path → backfill → *only then* index and push date filters into SQL. Out of order ships §2b's silent boundary drop into production, on the rows a human hand-filed.
+- **Measure the tail, not the mean.** Context claims an entity corrected repeatedly carries a far worse expired ratio than the corpus's 3.4%. Nobody has measured it. That number is what would justify or deflate this ADR's premise, and per ADR-009 it must come from this corpus.
+- **The two deferred indexes** — `(team_id, source_drawer_id)` when drawer→facts becomes a standalone question, `(team_id, valid_from)` when the entity-free timeline's temp B-tree stops being negligible. Name a row count, not a feeling.
+- **Paging on the entity-free timeline.** `kgTimelineLimit = 100` with no paging; a trail you can only see the first hundred rows of is a sample. Cut here for scope, unchanged in urgency.
+- **Generalise the `EXPLAIN QUERY PLAN` gate.** T2 and T5 pin the KG's entry points; every other table has query shapes nobody has checked, and `idx_kg_triples_team_predicate` proves the reverse case exists too — an index nothing uses is as invisible as a filter nothing indexes.
