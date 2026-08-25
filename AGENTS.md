@@ -304,6 +304,26 @@ Normal operation. Recall before you act, persist before you stop.
    ⚠ **`llm_init` is the one room small enough to list.** `am_list_drawers` caps at
    ~22-25 chunks and silently spills the rest to a file that never enters your
    context, so it is never how you load anything else.
+
+   **Then sweep the retractions — one call, and it is not optional:**
+
+   ```
+   am_kg_query(predicate: "retracts")     # then "supersedes", then "qualifies"
+   ```
+
+   ⚠ **A correction attaches to the drawer it corrects, as an INCOMING edge, and
+   nothing above would ever show it to you.** `am_search` does not check
+   supersession either. So a session that executes the traversal perfectly still
+   reads whatever the tier got wrong and believes it. This is not hypothetical: on
+   2026-08-25 a `must.*` drawer asserted that production served pre-memory-ranking
+   code and that nothing had been tagged in a release — both retracted, both still
+   read as current by anyone following the steps above alone.
+
+   Predicate-without-entity is an entry point in its own right, so **one call
+   returns every retraction in the workspace** — nine of them at the time of
+   writing, a few hundred bytes. Match the objects against the ids you just
+   fetched. Cross-check anything that disagrees against the artifact, never against
+   whichever drawer you happen to like.
 4. `am_search(<task>, wing: "wing_agentmemories")` — past decisions and rationale
    for the work in front of you. This is the *only* source of cross-session *why*;
    don't reconstruct from code what memory explains.
