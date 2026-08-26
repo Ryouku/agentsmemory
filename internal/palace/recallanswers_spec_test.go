@@ -334,12 +334,16 @@ func TestAnEndedFactIsNeverPresentedAsCurrent(t *testing.T) {
 	// The block must carry the live answer and not the dead one. 14 facts on the
 	// live palace are already ended and unfiltered by search today, so this is a
 	// real population, not a hypothetical.
+	// Compared CANONICALLY, not on display names: one triple is returned by a
+	// two-directional walk and the endpoint the walk did not start from falls
+	// back to its entity id when name resolution misses, so a display-name
+	// comparison depends on which view happened to survive dedup.
 	var sawCurrent, sawEnded bool
 	for _, f := range page.Facts.Facts {
-		switch f.Object {
-		case "new scheduler":
+		switch CanonicalFact(f.Subject, f.Predicate, f.Object) {
+		case CanonicalFact("Ledger", "runs on", "new scheduler"):
 			sawCurrent = true
-		case "old scheduler":
+		case CanonicalFact("Ledger", "runs on", "old scheduler"):
 			sawEnded = true
 		}
 		if f.ValidTo != "" {

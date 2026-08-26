@@ -171,3 +171,42 @@ func CorpusDigest(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// CanonicalFact renders a fact as the stable key an eval case is scored against:
+// "subject|predicate|object", with the predicate normalised the way the store
+// normalises it.
+//
+// Stable is the operative word. A triple's id hashes validFrom and recordedAt, so
+// the same fact re-added a second later has a different id — a corpus keyed on
+// ids decays silently, every case simply beginning to miss, which reads as the
+// retrieval getting worse rather than as the corpus going stale.
+func CanonicalFact(subject, predicate, object string) string {
+	// Endpoints are normalised to their ENTITY IDS, not left as display names.
+	//
+	// One triple is returned twice by a two-directional walk — once outgoing from
+	// its subject, once incoming to its object — and the endpoint the walk did
+	// not start from is name-resolved separately. When that resolution misses it
+	// falls back to the id, so the same fact arrives as
+	// "ledger service|owns|invoice_numbering" and "ledger_service|owns|invoice
+	// numbering". Keyed on display names those are two different facts, neither
+	// equal to a gold written either way.
+	//
+	// Normalising both ends makes the key independent of which direction found
+	// the fact and of whether the display name resolved at all.
+	return normalizeEntityID(subject) + "|" + normalizePredicate(predicate) + "|" + normalizeEntityID(object)
+}
+
+// rankOfFact returns the 1-based position of the gold fact in a returned block,
+// or 0 when it never arrived — the same convention every other arm's rank uses,
+// which is what lets the fact arm feed BootstrapMRR and PairedDelta unchanged.
+func rankOfFact(facts []KGFact, gold string) int {
+	if gold == "" {
+		return 0
+	}
+	for i, f := range facts {
+		if CanonicalFact(f.Subject, f.Predicate, f.Object) == gold {
+			return i + 1
+		}
+	}
+	return 0
+}

@@ -149,7 +149,12 @@ func (s *Service) factsFor(ctx context.Context, teamID, wing string, vec []float
 	elsewhere := map[string]bool{}
 	seen := map[string]bool{}
 	for _, f := range candidates {
-		key := f.Subject + "\x00" + f.Predicate + "\x00" + f.Object
+		// Deduped on the CANONICAL form, so the same triple seen outgoing and
+		// incoming collapses to one entry. Keyed on display names it did not: the
+		// far endpoint of each view is resolved separately and falls back to its
+		// id when resolution misses, so one fact was returned twice under two
+		// different spellings.
+		key := CanonicalFact(f.Subject, f.Predicate, f.Object)
 		if seen[key] {
 			continue
 		}

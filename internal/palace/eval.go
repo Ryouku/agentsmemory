@@ -306,11 +306,17 @@ type EvalCase struct {
 	// construction; a real query can be answered by several memories, and
 	// scoring only one of them turns valid answers into retrieval errors.
 	ExpectAny []string `json:",omitempty"`
-	// ExpectTriple is the id of the kg_triple that answers this case, used by
-	// CatFact cases and ArmFactRetrieval. It is additive and `omitempty`: case
-	// files written before ADR-036 carry no such key and must keep loading
-	// unchanged, which a required field would have broken silently on every
-	// existing corpus.
+	// ExpectTriple is the fact that answers this case, written canonically as
+	// "subject|predicate|object" and NOT as a triple id.
+	//
+	// The id was the obvious choice and it is wrong: tripleID hashes
+	// validFrom+recordedAt, so re-adding the same fact at a different moment
+	// yields a different id. A corpus keyed on ids goes stale the first time the
+	// palace is rebuilt, and it goes stale SILENTLY — every case simply starts
+	// missing, which reads as the retrieval getting worse.
+	//
+	// Additive and `omitempty`: case files written before ADR-036 carry no such
+	// key and keep loading unchanged.
 	ExpectTriple string `json:",omitempty"`
 	Wing         string // optional scope, mirroring how the query would really be run
 	Category     string // one of the Cat* values; empty is treated as CatSingle
@@ -1305,6 +1311,21 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			}
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
 			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
+		case arm == ArmFactRetrieval:
+			// Without this branch the arm falls to `default`, where serviceForArm
+			// returns nil and the case is BYPASSED — so the arm appears in every
+			// table, passes every registration gate, and can never produce a
+			// number. That is this repository's characteristic defect and T1
+			// shipped with it until a cross-check ran the arm rather than
+			// reading it.
+			block, err := s.factsFor(armCtx, teamID, c.Wing, vec, nil)
+			if err != nil {
+				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+				caseOut = telemetry.FailedClosed
+				return caseOutcome{TopDistance: -1}, fmt.Errorf("fact retrieval: %w", err)
+			}
+			out[arm] = rankOfFact(block.Facts, c.ExpectTriple)
+			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(block.Facts)))
 		case arm == ArmContextual:
 			ctxHits, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {

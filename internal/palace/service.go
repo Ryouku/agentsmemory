@@ -679,28 +679,43 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
 			return AddResult{}, fmt.Errorf("save drawers (embedding deferred): %w", err)
 		}
+		// The edge attaches here TOO. This branch returns early, and the first
+		// version of T6 attached below it — so a memory filed while the embedder
+		// was down became a permanent orphan. That is precisely the memory a
+		// later session most needs to find, and the vector index it is waiting
+		// for is not what makes it reachable by traversal.
+		s.attachDerivedEdgeTo(ctx, teamID, drawers)
 		return AddResult{Drawers: drawers, PendingEmbedding: true}, nil
 	}
 	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
 		return AddResult{}, err
 	}
-	// The edge is attached to the ROOT chunk only. A memory is chunked, and one
-	// edge per chunk would multiply a single filing into as many graph rows as it
-	// happened to split into — inflating the very count this is measured by. The
-	// root is the unit a recall returns.
-	//
-	// A failure here does not fail the filing. The text is the memory; the edge
-	// is only how it is reached, and losing the write because the graph refused
-	// would be the worse trade — the same reasoning the deferred-embedding path
-	// already makes.
-	if len(drawers) > 0 {
-		if err := s.attachDerivedEdge(ctx, teamID, drawers[0]); err != nil {
-			logAttachFailure(ctx, drawers[0].ID, err)
-		} else {
-			drawers[0].HasEdge, drawers[0].EdgeDerived = true, true
-		}
-	}
+	s.attachDerivedEdgeTo(ctx, teamID, drawers)
 	return AddResult{Drawers: drawers}, nil
+}
+
+// attachDerivedEdgeTo makes a freshly written set of chunks reachable by
+// traversal. EVERY write path calls it — Add's normal branch, Add's deferred
+// branch, and the import path — because a capability reachable on the one path
+// somebody tested is this repository's characteristic defect, and T6 shipped
+// with exactly that shape before a cross-check found the other two.
+//
+// The edge goes on the ROOT chunk only. A memory is chunked, and one edge per
+// chunk would multiply a single filing into as many graph rows as it happened to
+// split into, inflating the very count this is measured by.
+//
+// Failure is logged, never fatal. The text is the memory; the edge is only how it
+// is reached, and losing a filing because the graph refused would be the worse
+// trade — the same reasoning the deferred-embedding branch already makes.
+func (s *Service) attachDerivedEdgeTo(ctx context.Context, teamID string, drawers []Drawer) {
+	if len(drawers) == 0 {
+		return
+	}
+	if err := s.attachDerivedEdge(ctx, teamID, drawers[0]); err != nil {
+		logAttachFailure(ctx, drawers[0].ID, err)
+		return
+	}
+	drawers[0].HasEdge, drawers[0].EdgeDerived = true, true
 }
 
 // logAttachFailure records a derived-edge attachment that did not happen. It is
