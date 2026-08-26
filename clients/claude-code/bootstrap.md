@@ -337,6 +337,39 @@ whenever the answer would change what you do next:
   local list is not an absent skill** — check the catalogue before you decide the
   team has no convention and fall back to your own judgement.
 
+## What these tools do silently
+
+Four behaviours return a confident WRONG answer rather than an error. None of them
+raise anything; each looks like success at the call site, which is why every one of
+them cost a real session before it was written down.
+
+⚠**A MEMORY LONGER THAN ONE CHUNK CANNOT BE EDITED.** Content is split at roughly
+1600 characters, and `am_update_drawer` then REFUSES every change — content, wing
+*and* room — to any drawer of a multi-chunk memory, because moving or rewriting one
+chunk leaves the others live with the old text, still embedded and still returned by
+search. The error names the remedy: delete the memory and file it again as one
+piece. So decide before you write which kind of memory this is — a RECORD, written
+once and any length you like, or a DOCUMENT you intend to maintain, which has to
+stay under about 1600 characters to remain editable at all.
+
+⚠**`am_kg_add` NEVER CHECKS THAT YOUR ENTITIES EXIST.** It validates the shape of
+the three values and stores the edge. So a drawer id you shortened, truncated or
+retyped does not fail — it silently creates a NEW node, and the edge you meant to
+weave now points at nothing. **Ids are full length, always**, copied rather than
+typed.
+
+⚠**`am_get_drawer` RETURNS ONE CHUNK, AND IT LOOKS COMPLETE.** A memory past the
+chunk size is stored as several drawers sharing a parent, and a search hands back
+only the one that matched. Pass `whole: true` whenever you mean to READ a memory
+rather than merely confirm it exists.
+
+⚠**A DRAWER WITH NO EDGE IS AN ORPHAN** — findable by search, invisible to
+traversal, and it will still turn up in *your* search, which is exactly why the
+agent who filed it believes it is reachable. `am_add_drawer` and `am_kg_add` in
+Step 4 are not two options to choose between; they are the two halves of one write.
+File the memory, then weave at least one edge to it, or the only way anyone reaches
+it later is by guessing the words you happened to use.
+
 ## Step 2 — Plan
 
 Build the structured, multi-step plan directly from the loaded context, using
