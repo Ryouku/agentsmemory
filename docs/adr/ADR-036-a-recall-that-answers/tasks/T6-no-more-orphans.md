@@ -71,9 +71,32 @@ ancestors' 0 still run, so a regression in what T6 was built on is still caught.
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · 1f282da · exit 1 · `set -o pipefail …` · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
+  ```
+  --- FAIL: TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked (0.00s)
+      recallanswers_spec_test.go:175: F-11 not implemented: every drawer gets an edge at write time; a derived edge is marked as derived and never overwrites an authored one
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.018s
+  --- FAIL: TestAddDrawerResultReportsItsEdge (0.00s)
+      recallanswers_reach_test.go:92: ADR-036 T6 not implemented: am_add_drawer's rendered result says whether the drawer has an edge and whether it was derived
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.018s
+  FAIL
+  ```
+- 2026-08-26 · 1f282da* · exit 0 · `set -o pipefail …` · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
 
 ## Mutation Log
+
+- 2026-08-26 · 1f282da* · mutant killed · exit 1 · `internal/palace/kg.go` · turn the containment edge into a self-loop: the row still exists and is still marked derived, but nothing can traverse to the drawer · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
+- 2026-08-26 · 1f282da* · mutant inconclusive · exit 1 · `internal/palace/kg.go` · stop deferring to an authored edge; a server guess would sit beside a human decision as though equivalent · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
+  ```
+  the fence failed on a build/parse error, not an assertion
+  ```
+- 2026-08-26 · 1f282da* · mutant survived · exit 0 · `internal/palace/kg.go` · invert the deference: yield to a derived edge instead of an authored one, so a server guess overwrites a human decision · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · 1f282da* · mutant killed · exit 1 · `internal/palace/kg.go` · invert the deference: yield to a derived edge instead of an authored one, so a server guess overwrites a human decision · acceptance-sha256:fd51152ec40ae6e3037bbdae87c5d067e6cc46569328c2ddcc0a87e53b50a545
 
 ## Invariants
 

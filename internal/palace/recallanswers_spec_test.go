@@ -172,9 +172,82 @@ func TestAWingReportsItsOwnEntryPoint(t *testing.T) {
 }
 
 func TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked(t *testing.T) {
-	t.Fatal("F-11 not implemented: every drawer gets an edge at write time; a derived edge is marked as derived and never overwrites an authored one")
-}
+	ctx := context.Background()
+	const team = "t-f11"
+	svc := newTestService(t)
 
+	filed, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "we chose the boring option because it fails loudly"})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(filed.Drawers) == 0 {
+		t.Fatal("nothing filed")
+	}
+	root := filed.Drawers[0]
+
+	// REACHABILITY, not the presence of a row. A marked self-loop satisfies "the
+	// drawer has an edge" completely while making nothing findable — which is the
+	// state the corpus is already in: measured 2026-08-26, 57 of 1,985 drawers
+	// carried an edge and 0 were reachable as a triple OBJECT.
+	t.Run("the drawer is reachable from its room node", func(t *testing.T) {
+		q, err := svc.KGQuery(ctx, team, KGQueryInput{
+			Entity:    DerivedEdgeSubject("wing_acme", "decisions"),
+			Direction: "outgoing",
+		})
+		if err != nil {
+			t.Fatalf("traverse from the room node: %v", err)
+		}
+		var found bool
+		for _, f := range q.Facts {
+			if f.Object == root.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("walking out from the room node did not reach the drawer; %d facts, none naming it as object", len(q.Facts))
+		}
+	})
+
+	// And it must be marked, or derived noise and authored intent become one
+	// population that can be neither counted nor removed.
+	t.Run("the edge says it was derived", func(t *testing.T) {
+		if !root.HasEdge {
+			t.Error("the filing reports no edge")
+		}
+		if !root.EdgeDerived {
+			t.Error("the edge is not marked derived; a server guess is indistinguishable from a writer's decision")
+		}
+	})
+
+	// An authored edge always wins. Driven at the rule itself rather than through
+	// a re-file: a filed drawer ALREADY carries a derived edge, so a re-file
+	// scenario cannot distinguish "deferred to the author" from "deferred to the
+	// edge that was already there". Measured — inverting the deference survived
+	// that version of this test completely.
+	t.Run("a derived edge never overwrites an authored one", func(t *testing.T) {
+		const placed = "drawer-placed-by-hand"
+		if _, err := svc.KGAdd(ctx, team, "Release Notes", "documents", placed, "", "", "", "", ""); err != nil {
+			t.Fatalf("author an edge: %v", err)
+		}
+
+		if err := svc.attachDerivedEdge(ctx, team, Drawer{ID: placed, Wing: "wing_acme", Room: "decisions"}); err != nil {
+			t.Fatalf("attach: %v", err)
+		}
+
+		q, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: placed, Direction: "incoming"})
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		for _, f := range q.Facts {
+			if f.Predicate == DerivedEdgePredicate {
+				t.Errorf("a derived %q edge was attached to a drawer a writer had already placed", DerivedEdgePredicate)
+			}
+		}
+		if len(q.Facts) != 1 {
+			t.Errorf("drawer carries %d edges, want only the authored one", len(q.Facts))
+		}
+	})
+}
 func TestAFactLookupDistinguishesAbsenceFromFailure(t *testing.T) {
 	ctx := context.Background()
 	const team = "t-f12"

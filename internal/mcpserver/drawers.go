@@ -158,6 +158,14 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 			views[i] = toView(d)
 		}
 		out := map[string]any{"ok": true, "chunks": len(created.Drawers), "drawers": views}
+		// Whether the filing is REACHABLE, not merely stored. Measured 2026-08-26,
+		// 57 of 1,985 drawers carried any edge and 0 were named as a triple
+		// object, so "filed" and "findable by traversal" had quietly become
+		// different things and nothing said which one had just happened.
+		if len(created.Drawers) > 0 {
+			out["has_edge"] = created.Drawers[0].HasEdge
+			out["edge_derived"] = created.Drawers[0].EdgeDerived
+		}
 
 		// Anchors pin the FIRST chunk: it is the parent handle for a multi-chunk
 		// write, and the one search returns as the memory's identity.

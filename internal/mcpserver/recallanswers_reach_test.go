@@ -89,7 +89,12 @@ func TestSearchResultRendersTheCorrectionMark(t *testing.T) {
 // TestAddDrawerResultReportsItsEdge is ADR-036 T6's rung-3 proof. T6 promised
 // this field while naming no mcpserver file at all.
 func TestAddDrawerResultReportsItsEdge(t *testing.T) {
-	t.Fatal("ADR-036 T6 not implemented: am_add_drawer's rendered result says whether the drawer has an edge and whether it was derived")
+	keys := renderedKeysOf(t, "drawers.go", "add_drawer")
+	for _, want := range []string{"has_edge", "edge_derived"} {
+		if !keys[want] {
+			t.Errorf("am_add_drawer's rendered result has no %q key; a caller cannot tell a filed drawer from a reachable one", want)
+		}
+	}
 }
 
 // TestEntryPointToolIsRegisteredAndDiscoverable is ADR-036 T7's rung-3 proof:

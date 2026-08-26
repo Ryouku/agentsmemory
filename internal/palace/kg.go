@@ -172,6 +172,10 @@ type kgTripleRow struct {
 	SourceFile     string  `gorm:"column:source_file"`
 	SourceDrawerID string  `gorm:"column:source_drawer_id"`
 	ExtractedAt    string  `gorm:"column:extracted_at"`
+	// Derived marks an edge the server inferred rather than one a writer
+	// authored. A nil pointer means the row predates the distinction, which is
+	// not the same claim as "authored" — see 00028_kg_triples_derived.sql.
+	Derived *bool `gorm:"column:derived"`
 }
 
 func (kgTripleRow) TableName() string { return "kg_triples" }
@@ -520,6 +524,11 @@ type KGFact struct {
 	SourceDrawerID string  `json:"source_drawer_id,omitempty"`
 	RecordedAt     string  `json:"recorded_at,omitempty"`
 	Current        bool    `json:"current"`
+	// Derived says the SERVER inferred this edge rather than a writer authoring
+	// it. False covers both "authored" and "filed before the distinction
+	// existed" — the row keeps that difference (a NULL), but a reader acting on
+	// a fact only needs to know whether to trust it as somebody's decision.
+	Derived bool `json:"derived,omitempty"`
 }
 
 // kgRowFieldRenames maps a kgTripleRow field to the KGFact field that returns it,
@@ -907,6 +916,7 @@ func kgFact(direction, subject, predicate, object string, row kgTripleRow) KGFac
 		SourceCloset: row.SourceCloset, SourceFile: row.SourceFile,
 		SourceDrawerID: row.SourceDrawerID, RecordedAt: row.ExtractedAt,
 		Current: row.ValidTo == "",
+		Derived: row.Derived != nil && *row.Derived,
 	}
 }
 
@@ -938,4 +948,67 @@ func inEffectAt(row kgTripleRow, asOfKey string) bool {
 		return false
 	}
 	return true
+}
+
+// DerivedEdgePredicate is the one reserved verb a server-derived containment edge
+// uses. It is fixed rather than inferred: a predicate the server picks per drawer
+// would be a vocabulary nobody agreed to, spread across the whole corpus, and
+// unremovable without knowing which verbs were the server's.
+const DerivedEdgePredicate = "holds"
+
+// DerivedEdgeSubject is the node a derived edge hangs a drawer from: the drawer's
+// own room, as a stable label.
+//
+// The room is chosen over the wing because it is the finest scope the drawer
+// already carries, and over a per-drawer node because that would make an edge
+// from a thing to itself — reachable from nothing, which is where the corpus
+// already is.
+func DerivedEdgeSubject(wing, room string) string {
+	return "room:" + wing + "/" + room
+}
+
+// attachDerivedEdge makes a newly filed drawer reachable by traversal.
+//
+// Measured 2026-08-26 on the live palace: 57 of 1,985 drawers carry any edge
+// (2.9%), and 0 are named as a triple OBJECT — so the taxonomy pattern the team's
+// own operating skill is built on has zero adoption in the workspace that wrote
+// it. This is the write-path half of the fix; the existing 1,928 orphans need a
+// backfill, which is deferred with a receipt in BACKLOG.md.
+//
+// An AUTHORED edge always wins. If any triple already names this drawer as its
+// object, nothing is derived: the writer has said where it belongs, and a server
+// guess must not sit beside a human decision as though the two were equivalent.
+func (s *Service) attachDerivedEdge(ctx context.Context, teamID string, d Drawer) error {
+	existing, err := s.repo.KGTriplesByObject(ctx, teamID, normalizeEntityID(d.ID), KGStatusAll, "")
+	if err != nil {
+		return err
+	}
+	for _, row := range existing {
+		if row.Derived == nil || !*row.Derived {
+			return nil // authored; leave it alone
+		}
+	}
+
+	subj := DerivedEdgeSubject(d.Wing, d.Room)
+	subID, objID := normalizeEntityID(subj), normalizeEntityID(d.ID)
+	p := normalizePredicate(DerivedEdgePredicate)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := s.repo.UpsertKGEntity(ctx, teamID, subID, subj, now); err != nil {
+		return err
+	}
+	if err := s.repo.UpsertKGEntity(ctx, teamID, objID, d.ID, now); err != nil {
+		return err
+	}
+	if id, err := s.repo.CurrentTripleID(ctx, teamID, subID, p, objID); err != nil {
+		return err
+	} else if id != "" {
+		return nil
+	}
+	derived := true
+	return s.repo.InsertKGTriple(ctx, kgTripleRow{
+		TeamID: teamID, ID: tripleID(subID, p, objID, "", now),
+		Subject: subID, Predicate: p, Object: objID,
+		Confidence: 1.0, SourceDrawerID: d.ID, ExtractedAt: now,
+		Derived: &derived,
+	})
 }

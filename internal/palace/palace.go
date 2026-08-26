@@ -52,6 +52,12 @@ type Drawer struct {
 	// machinery as add_drawer rather than forking a parallel store.
 	Agent string
 	Topic string
+	// HasEdge and EdgeDerived report whether this drawer is reachable by
+	// traversal and, if so, whether the server inferred the edge or a writer
+	// authored it. They are not persisted: they describe what the filing just
+	// did, so a caller learns it without a second query.
+	HasEdge     bool `json:"has_edge,omitempty"`
+	EdgeDerived bool `json:"edge_derived,omitempty"`
 }
 
 // Dynamics are the L7 "living connection" fields every hallway and tunnel carries:
