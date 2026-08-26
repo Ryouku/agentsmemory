@@ -80,6 +80,30 @@ func TestABlownBudgetIsNotReportedAsAnEndpointError(t *testing.T) {
 		}
 	})
 
+	t.Run("an endpoint that is not there says error, not timeout", func(t *testing.T) {
+		// The case a review on 2026-08-26 showed the first version got wrong.
+		// http.Client.Timeout covers DNS, connect and TLS, so an unroutable endpoint
+		// answers net.Error.Timeout() true and used to be reported as a capacity
+		// signal — telling an operator to lower the pool on a reranker that is
+		// simply absent. 192.0.2.1 is TEST-NET-1 and routes nowhere by definition.
+		//
+		// Whether the platform hangs until the budget expires or refuses
+		// immediately, the verdict must be the same: no connection was ever
+		// obtained, so this is an outage and not a budget problem.
+		svc := newTestService(t).WithReranker(tei.New("http://192.0.2.1:9", 300*time.Millisecond), 5).WithRerankWeight(0.5)
+		mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", Content: "a memory about budgets"})
+
+		status, reason := rerankSpanReason(t, svc, team, SearchQuery{Query: "budgets", Limit: 3, MaxDistance: 1.5})
+		if status != string(telemetry.FailedOpen) {
+			t.Errorf("status = %q, want %q", status, string(telemetry.FailedOpen))
+		}
+		if reason != telemetry.ReasonError {
+			t.Errorf("reason = %q, want %q. The call never reached the model, so its budget was "+
+				"not the binding constraint — reporting capacity here sends the operator to tune "+
+				"a pool on an endpoint that is not answering at all.", reason, telemetry.ReasonError)
+		}
+	})
+
 	t.Run("a sick endpoint still says error", func(t *testing.T) {
 		sick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)

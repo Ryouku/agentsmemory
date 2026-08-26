@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net"
 	"sort"
 	"strings"
 	"time"
@@ -157,6 +156,19 @@ func (s *Service) VectorBackendName() string {
 		return ""
 	}
 	return d.DescribeVectorStore()
+}
+
+// rerankBudgetExceeded is the signal a Reranker raises when ITS OWN budget was
+// the binding constraint — as opposed to an unreachable endpoint, an inherited
+// deadline, or any other failure that happens to consume the same wall clock.
+//
+// Declared here, at the consumer, like Embedder and Reranker themselves: the
+// service depends on the capability rather than on the TEI client that currently
+// provides it. It exists because the shape of the error cannot answer the
+// question — a DNS stall and a slow cross-encoder produce the same
+// timeout-bearing *url.Error, and only the producer knows which one it was.
+type rerankBudgetExceeded interface {
+	RerankBudgetExceeded() bool
 }
 
 // RerankDescriber is an OPTIONAL interface a Reranker may implement to report
@@ -1070,8 +1082,8 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	queryRune := []rune(query)
 	queryRunes := len(queryRune)
 	truncated := false
-	if r := queryRune; len(r) > 250 {
-		query = string(r[:250])
+	if queryRunes > 250 {
+		query = string(queryRune[:250])
 		truncated = true
 	}
 	limit := q.Limit
@@ -1435,15 +1447,19 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass
 		// would be exactly as wrong as the weight-0 case this fix is about.
 		// A blown budget and a sick endpoint both fail open, but they are not the
-		// same incident and they do not have the same fix, so they must not share
-		// a reason code. Both timeout paths are checked because tei arms two: a
-		// context deadline over the whole call, and http.Client.Timeout per
-		// request. The first surfaces as context.DeadlineExceeded, the second as a
-		// *url.Error that only answers net.Error.Timeout — matching one and not
-		// the other would report half of all timeouts as endpoint errors.
+		// same incident and they do not have the same fix, so they must not share a
+		// reason code.
+		//
+		// This asks the RERANKER whether its own budget was the binding constraint,
+		// rather than inspecting the error's shape. An earlier version tested
+		// net.Error.Timeout(), and a review on 2026-08-26 showed why that cannot
+		// hold the promise: http.Client.Timeout covers DNS, connect, TLS and header
+		// reads, so a stalled resolver or an unroutable endpoint answers Timeout()
+		// true and was reported as a capacity signal — sending an operator to lower
+		// the pool on a reranker that is simply not there.
 		reason := telemetry.ReasonError
-		var ne net.Error
-		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		var budget rerankBudgetExceeded
+		if errors.As(err, &budget) && budget.RerankBudgetExceeded() {
 			reason = telemetry.ReasonTimeout
 		}
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool, "reason", reason)

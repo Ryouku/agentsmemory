@@ -3,8 +3,17 @@
 > **Correction, 2026-08-26 — the sentence below is wrong and the tables disprove it.**
 > The two runs did NOT share a ranking configuration. See *Amendment* at the end: corpus
 > B's `rrf+rerank` and `rrf+rerank norm=sigmoid` are bit-identical, which they can only be
-> if both ran the same normaliser, while corpus A's are not. The `--pool 30`, the commit
-> and the palace are unaffected; the normaliser is the one field that differs.
+> if both ran the same normaliser, while corpus A's are not. The normaliser is the one
+> field shown to differ; the `--pool 30`, the commit and the palace are not contradicted by
+> anything in these tables, which is weaker than saying they are unaffected and is all the
+> tables can support.
+>
+> **The corpus-inversion thesis this file exists for is untouched, and structurally so.**
+> Every arm carrying the inversion — `vector`, `hybrid`, `rrf`, the `fusion bm25=*` family —
+> is reconstructed with `rerankWeight = 0` by the same reset block, and `applyRerankWith`
+> returns at `weight <= 0` with `bypassed reason=weight_zero` before the cross-encoder is
+> called at all. Those arms cannot observe `rerankNorm` under any setting. That is a
+> property of the code rather than an assurance about the runs.
 
 Both runs were taken on the same palace, the same day, on commit `3eb4b33`, with the
 ~~same ranking configuration (`fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00
@@ -216,11 +225,19 @@ The conclusion that sigmoid is neutral on real queries is unchanged — it simpl
 one measurement instead of two, and one of the two it was thought to rest on was an arm
 compared with itself.
 
-**Why the served normaliser differed between two runs on one commit is not recoverable.**
-Neither run's startup log survives, and the eval's `ranking:` line — which prints the
-resolved normaliser and would have settled it in one grep — was not captured into this
-file. The likely explanation is that the runs straddled ADR-030 changing the served
-default, but that is an inference about an unrecorded runtime value and is recorded here
-as a cause to suspect, not a finding. **Evidence files from here on should paste the
+**Why the served normaliser differed between two runs on one commit is not recoverable —
+but one candidate cause is now RULED OUT.** Neither run's startup log survives, and the
+eval's `ranking:` line — which prints the resolved normaliser and would have settled it in
+one grep — was not captured into this file.
+
+An earlier version of this amendment offered "the runs straddled ADR-030 changing the
+served default" as the likely cause. **That is disproven by this file's own header.** Both
+runs are recorded on commit `3eb4b33`, and `3eb4b33` is a descendant of `96b505f`, the
+commit that made sigmoid the default — verified with `git merge-base --is-ancestor`. A
+default-configured binary at that commit runs sigmoid in BOTH runs, which would have made
+corpus A's two arms identical as well, and they are not. Whatever differed was
+environmental — `RERANK_NORM` set explicitly for one run, or a stale binary — not the
+commit. The correction is left visible rather than swapped in, because a wrong cause that
+gets quietly replaced teaches nobody why it was wrong. **Evidence files from here on should paste the
 `ranking:` line**, which costs one line and would have made this whole reconstruction a
 lookup.

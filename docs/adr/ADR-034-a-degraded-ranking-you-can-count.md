@@ -2,9 +2,9 @@
 
 **Status:** Proposed
 **Date:** 2026-08-26
-**Owner:** search
+**Owner:** Zy
 **Spec:** None — no spec stage
-**Cross-references:** docs/adr/ADR-029-a-trace-that-cannot-lie.md, docs/adr/ADR-030-a-blend-that-cannot-tell-confidence-from-noise.md, docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md
+**Cross-references:** `docs/adr/ADR-029-a-trace-that-cannot-lie.md`, `docs/adr/ADR-030-a-blend-that-cannot-tell-confidence-from-noise.md`, `docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md`
 **Invalidates:** none — checked. ADR-031 aggregates on `hits > 0 AND reranked = 1` (`internal/palace/recallstats.go:212`), so `reranked` keeps its meaning and its calibration is untouched; this ADR adds a column beside it rather than repurposing it.
 **Served-path change:** `am_recall_stats` gains a breakdown of why reranking did not happen, so an agent or operator reading it can tell a disabled cross-encoder from one timing out. Ranking itself is unchanged — no recall returns different memories in a different order because of this ADR.
 
