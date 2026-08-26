@@ -176,3 +176,63 @@ func itoa(i int) string {
 	}
 	return string(b)
 }
+
+// TestAnEmptyStringIsAValueAndNotAnArray. scalarString used "" as its
+// non-scalar sentinel, so a column of empty strings was indistinguishable from a
+// column of arrays: both reported "more than 25 distinct values" for a field
+// that takes exactly one. Proved by mutation — restoring the single-return
+// sentinel turns this red.
+func TestAnEmptyStringIsAValueAndNotAnArray(t *testing.T) {
+	p, err := ProfileJSONL(strings.NewReader(
+		"{\"status\":\"\"}\n{\"status\":\"\"}\n{\"tags\":[]}\n"), []string{"status", "tags"})
+	if err != nil {
+		t.Fatalf("ProfileJSONL: %v", err)
+	}
+	byName := map[string]Field{}
+	for _, f := range p.Fields {
+		byName[f.Name] = f
+	}
+	if got := byName["status"]; got.Distinct != 1 || len(got.Values) != 1 || got.Values[0] != "" {
+		t.Errorf("status is one distinct value (the empty string); got Distinct=%d Values=%q",
+			got.Distinct, got.Values)
+	}
+	if got := byName["tags"]; got.Values != nil || !got.Compound {
+		t.Errorf("an array has no value set to report and is not a column of values; got "+
+			"Compound=%v Distinct=%d Values=%q", got.Compound, got.Distinct, got.Values)
+	}
+}
+
+// TestABareNullIsNotARow: `null` is valid JSON that decodes into a nil map
+// without an error, so it counted as a row with no fields — and every
+// "present in N of M rows" reading below it was measured against an M that
+// included lines carrying nothing.
+func TestABareNullIsNotARow(t *testing.T) {
+	p, err := ProfileJSONL(strings.NewReader("{\"a\":1}\nnull\n{\"a\":2}\n"), nil)
+	if err != nil {
+		t.Fatalf("ProfileJSONL: %v", err)
+	}
+	if p.Rows != 2 || p.Malformed != 1 {
+		t.Errorf("Rows=%d Malformed=%d; `null` is a line that is not a row", p.Rows, p.Malformed)
+	}
+}
+
+// TestOneValueCannotCarryTheWholeColumn: maxDistinct bounds how MANY values a
+// named field contributes and nothing bounded how big one of them was, so a
+// field named in show_values could carry a multi-kilobyte cell per row into a
+// drawer — and an embedder cuts at its own limit, leaving every field after it
+// stored and unfindable.
+func TestOneValueCannotCarryTheWholeColumn(t *testing.T) {
+	huge := strings.Repeat("a", 4096)
+	p, err := ProfileJSONL(strings.NewReader("{\"blob\":\""+huge+"\"}\n"), []string{"blob"})
+	if err != nil {
+		t.Fatalf("ProfileJSONL: %v", err)
+	}
+	got := p.Fields[0].Values[0]
+	if len(got) > maxValueBytes+len("…(clipped)") {
+		t.Errorf("a reported value is %d bytes; the cap is %d", len(got), maxValueBytes)
+	}
+	if !strings.HasSuffix(got, "…(clipped)") {
+		t.Errorf("the value was shortened without saying so, so a reader takes the fragment for "+
+			"the whole: %q", got)
+	}
+}

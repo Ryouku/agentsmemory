@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxLineBytes bounds one JSONL record. It is generous because a seed row with
@@ -47,6 +48,16 @@ const maxLineBytes = 8 << 20 // 8 MiB
 // this bounds a disclosure someone already chose to make. As a threshold on its
 // own it would be the whole control, and 25 would be a number to argue about.
 const maxDistinct = 25
+
+// maxValueBytes bounds ONE value inside a reported set. maxDistinct bounds how
+// MANY values a field may contribute and says nothing about their size, so a
+// named field holding a long blob in each of twenty-five rows would carry the
+// whole column into a drawer — and an embedder truncates at its own limit, which
+// would leave everything after that value stored and unfindable.
+//
+// 256 bytes is chosen to hold the values a value set is for — codes, statuses,
+// currencies, short names — and to cut the ones it is not.
+const maxValueBytes = 256
 
 // Profile is what one JSONL file says about itself when nobody is asked.
 //
@@ -69,6 +80,14 @@ type Profile struct {
 	// are missing by choice — an unexplained absence reads as "this field has no
 	// interesting values", which is the opposite of what it means.
 	Withheld int
+	// Truncated reports that reading stopped before the end of the file, because
+	// a line exceeded maxLineBytes and a bufio.Scanner cannot resume past a token
+	// it could not hold. Keeping the rows already read is the right call — the
+	// alternative is returning nothing because row 40,000 was oversized — but
+	// nothing about those counts says they are partial, so "one bad line among
+	// 100,000" and "we never saw rows 11 onwards" both surface as Malformed: 1.
+	// This is the difference, and the memory prints it.
+	Truncated bool
 }
 
 // Field is one key observed across the file, with what was seen of it.
@@ -92,8 +111,15 @@ type Field struct {
 	Values []string
 	// Distinct is how many distinct values were seen, capped: once the count
 	// passes maxDistinct it is reported as maxDistinct+1 and Values is dropped,
-	// because counting further would mean holding the column in memory.
+	// because counting further would mean holding the column in memory. It is 0
+	// and meaningless when Compound is set.
 	Distinct int
+	// Compound marks a field that held an object or an array. Such a field has no
+	// value set and no distinct count worth reporting — it is not a column of
+	// values — and saying "more than 25 distinct values" about it, which is what
+	// sharing the overflow flag used to do, is a false statement about the data
+	// rather than a missing one.
+	Compound bool
 	// Earliest and Latest bound the field when every observed value parsed as a
 	// date or timestamp; both are empty otherwise. A date range is the fact most
 	// often wanted about seed data and the one nobody records.
@@ -112,6 +138,7 @@ type fieldStat struct {
 	present   int
 	values    map[string]bool
 	overflow  bool // more than maxDistinct distinct values seen
+	compound  bool // held an object or an array, so there is no value set at all
 	allDates  bool
 	anyDate   bool
 	earliest  time.Time
@@ -151,7 +178,11 @@ func ProfileJSONL(r io.Reader, showValues []string) (Profile, error) {
 			continue
 		}
 		var row map[string]any
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
+		// A bare `null` decodes into a NIL map without an error: it is valid JSON
+		// and not a row, so counting it as one would inflate every "present in N of
+		// M rows" reading below it. Arrays, numbers and strings fail the decode and
+		// land here too.
+		if err := json.Unmarshal([]byte(line), &row); err != nil || row == nil {
 			p.Malformed++
 			continue
 		}
@@ -174,6 +205,10 @@ func ProfileJSONL(r io.Reader, showValues []string) (Profile, error) {
 			return Profile{}, fmt.Errorf("read jsonl: %w", err)
 		}
 		p.Malformed++
+		// Everything after that line is unread, and a row count that stops at 10
+		// looks exactly like a file with 10 rows. Say so rather than let the
+		// profile pass off a prefix as the whole.
+		p.Truncated = true
 	}
 
 	p.Fields, p.Withheld = summarise(stats, quotable)
@@ -189,17 +224,25 @@ func observe(st *fieldStat, v any) {
 	}
 	st.present++
 
-	s := scalarString(v)
-	if s == "" {
+	s, ok := scalarString(v)
+	if !ok {
 		// Objects and arrays have no useful value set or date reading; recording
-		// their rendered form would put row data in a schema report.
+		// their rendered form would put row data in a schema report. Reported
+		// through a second return rather than an empty string, because "" is also a
+		// perfectly good string value — sharing the sentinel made a column of empty
+		// strings indistinguishable from a column of arrays.
 		st.allDates = false
-		st.overflow = true
+		st.compound = true
 		st.values = nil
 		return
 	}
 	if !st.overflow {
-		st.values[s] = true
+		// Clipped on the way IN. maxDistinct bounds how many values are held, and
+		// nothing bounded how big one of them was, so twenty-five multi-megabyte
+		// cells were twenty-five multi-megabyte cells — held in memory, written
+		// into a drawer, and then silently cut off by the embedder's own limit
+		// halfway through, leaving every field after them stored and unfindable.
+		st.values[clip(s)] = true
 		if len(st.values) > maxDistinct {
 			st.overflow = true
 			st.values = nil
@@ -235,9 +278,14 @@ func summarise(stats map[string]*fieldStat, quotable map[string]bool) ([]Field, 
 			f.Types = append(f.Types, t)
 		}
 		sort.Strings(f.Types)
-		if st.overflow {
+		switch {
+		case st.compound:
+			// No value set, no count: the interior of a nested value is out of scope
+			// for this profile, so there is nothing here to disclose or to withhold.
+			f.Compound = true
+		case st.overflow:
 			f.Distinct = maxDistinct + 1
-		} else {
+		default:
 			f.Distinct = len(st.values)
 			if quotable[name] {
 				for v := range st.values {
@@ -308,24 +356,43 @@ func jsonType(v any) string {
 	}
 }
 
-// scalarString renders a scalar for value-set and date purposes, and returns ""
-// for anything compound.
-func scalarString(v any) string {
+// scalarString renders a scalar for value-set and date purposes. The second
+// return is false for anything compound — an object or an array — and is what
+// distinguishes those from a genuine empty string.
+func scalarString(v any) (string, bool) {
 	switch t := v.(type) {
 	case bool:
 		if t {
-			return "true"
+			return "true", true
 		}
-		return "false"
+		return "false", true
 	case float64:
 		// %v keeps integers integral rather than rendering 1 as 1e+00, which is
 		// what a reader of an id or a minor-unit column expects to see.
-		return fmt.Sprintf("%v", t)
+		return fmt.Sprintf("%v", t), true
 	case string:
-		return t
+		return t, true
 	default:
-		return ""
+		return "", false
 	}
+}
+
+// clip shortens one value to maxValueBytes on a rune boundary, marking that it
+// was shortened.
+//
+// The mark matters as much as the cap: an unmarked cut reads as the value the
+// column really holds, and a reader would take a truncated URL or identifier for
+// the whole of it. Cutting on a rune boundary keeps the memory valid UTF-8,
+// which a byte slice of a multi-byte character would not.
+func clip(s string) string {
+	if len(s) <= maxValueBytes {
+		return s
+	}
+	cut := maxValueBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…(clipped)"
 }
 
 // parseDate reports whether s is one of the accepted date forms.

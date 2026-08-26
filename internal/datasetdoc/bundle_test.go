@@ -234,3 +234,73 @@ why   = "because"
 		})
 	}
 }
+
+// TestTheSameDataProducesTheSameDrawerOnEveryDay is the idempotency gate.
+//
+// A drawer's id is a hash of (wing, room, source_file, chunk, CONTENT), and the
+// import path absorbs without purging by source. So anything volatile in the
+// text becomes a NEW memory rather than an update: with the measurement date
+// written into the body, a nightly re-import over an unchanged file filed one
+// more drawer every night, each saying the same thing, and the ADR's claim that
+// a committed mapping file makes re-import a replacement was false.
+//
+// Proved by mutation: writing measuredAt back into drawerFor's text turns this
+// red. The date still travels — as content_date, asserted below — so the profile
+// remains a dated snapshot without the date deciding its identity.
+func TestTheSameDataProducesTheSameDrawerOnEveryDay(t *testing.T) {
+	cfg := mustParse(t, configTOML)
+	files := map[string]string{"data/invoices.jsonl": `{"id":"inv-1","status":"paid","due":"2026-01-15"}`}
+
+	drawerOn := func(day time.Time) wingbundle.Record {
+		t.Helper()
+		var b strings.Builder
+		if _, err := Bundle(cfg, openerFor(files), day, &b); err != nil {
+			t.Fatalf("Bundle: %v", err)
+		}
+		for _, r := range decodeBundle(t, b.String()) {
+			if r.Kind == wingbundle.KindDrawer {
+				return r
+			}
+		}
+		t.Fatal("bundle carried no drawer")
+		return wingbundle.Record{}
+	}
+
+	today := drawerOn(time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC))
+	tomorrow := drawerOn(time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC))
+
+	if today.Content != tomorrow.Content {
+		t.Errorf("the same file profiled on two days produced two different memories, so a "+
+			"re-import files a second drawer instead of replacing the first:\n--- day one ---\n%s\n"+
+			"--- day two ---\n%s", today.Content, tomorrow.Content)
+	}
+	if today.ContentDate != "2026-08-26" || tomorrow.ContentDate != "2026-08-27" {
+		t.Errorf("content_date is %q and %q; the snapshot must still carry the day it was taken",
+			today.ContentDate, tomorrow.ContentDate)
+	}
+}
+
+// TestAPartialReadSaysSoInTheMemory: a line over the size cap ends the scan, and
+// keeping what was already read is the right call — the alternative is returning
+// nothing because row 40,000 was oversized. But a row count that stopped at two
+// looks exactly like a file with two rows, so the drawer has to say which it is.
+func TestAPartialReadSaysSoInTheMemory(t *testing.T) {
+	var f strings.Builder
+	f.WriteString(`{"id":"a"}` + "\n")
+	f.WriteString(`{"id":"` + strings.Repeat("x", maxLineBytes) + `"}` + "\n")
+	for i := 0; i < 100; i++ {
+		f.WriteString(`{"id":"later"}` + "\n")
+	}
+
+	cfg := mustParse(t, configTOML)
+	var out strings.Builder
+	if _, err := Bundle(cfg, openerFor(map[string]string{"data/invoices.jsonl": f.String()}),
+		time.Now().UTC(), &out); err != nil {
+		t.Fatalf("Bundle: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "READING STOPPED EARLY") {
+		t.Errorf("the scan stopped at an oversized line and the memory reports the partial counts "+
+			"as if they were the file:\n%s", body)
+	}
+}

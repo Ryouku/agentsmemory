@@ -111,7 +111,9 @@ type Opener func(path string) (io.ReadCloser, error)
 //
 // measuredAt is passed in rather than read from the clock so a caller can
 // produce a deterministic bundle, and so the date on the drawer is the date of
-// the run rather than of the moment each line happened to be written.
+// the run rather than of the moment each line happened to be written. It becomes
+// the record's content_date and nothing else: a date inside the text would put
+// the day of the run into the drawer's id (see drawerFor).
 //
 // A dataset that cannot be opened is a hard error. Skipping it would leave the
 // mapping file describing a dataset the bundle does not contain, and the import
@@ -163,12 +165,22 @@ func drawerFor(d Dataset, p Profile, measuredAt time.Time) wingbundle.Record {
 	b.WriteString(strings.TrimSpace(d.Why))
 	b.WriteString("\n\n")
 
-	fmt.Fprintf(&b, "MEASURED FROM THE FILE on %s — these are facts about THIS FILE, not "+
-		"constraints the domain guarantees.\n", measuredAt.Format("2006-01-02"))
+	// The measurement DATE is deliberately not written into this text. A drawer's
+	// id is a hash of its content, so a date here would make tomorrow's run over
+	// an unchanged file a different memory — one new drawer per run, each saying
+	// the same thing. It travels as the record's content_date instead, which
+	// every recall returns beside the text, so the snapshot is still dated
+	// without the date deciding the drawer's identity.
+	b.WriteString("MEASURED FROM THE FILE on the date this memory carries — these are facts about " +
+		"THAT FILE, not constraints the domain guarantees.\n")
 	fmt.Fprintf(&b, "· %d rows", p.Rows)
 	if p.Malformed > 0 {
 		fmt.Fprintf(&b, ", ⚠%d line(s) that did not parse as a JSON object — worth checking the "+
 			"export that produced this", p.Malformed)
+	}
+	if p.Truncated {
+		fmt.Fprintf(&b, ", ⚠READING STOPPED EARLY at a line over %d bytes, so every count here "+
+			"describes only the part of the file that was reached", maxLineBytes)
 	}
 	b.WriteString("\n")
 
@@ -178,8 +190,13 @@ func drawerFor(d Dataset, p Profile, measuredAt time.Time) wingbundle.Record {
 			fmt.Fprintf(&b, ", present in %d of %d rows", f.Present, p.Rows)
 		}
 		switch {
+		case f.Compound:
+			// Not "more than 25 distinct values", which is what a shared overflow
+			// flag used to print here: a nested value is not a column of values, and
+			// a false statement about the data is worse than an absent one.
+			b.WriteString(", nested — its interior is not profiled")
 		case f.Values != nil:
-			fmt.Fprintf(&b, ", takes %d value(s) here: %s", f.Distinct, strings.Join(f.Values, ", "))
+			fmt.Fprintf(&b, ", takes %d value(s) here: %s", f.Distinct, quoted(f.Values))
 		case f.Distinct > maxDistinct:
 			fmt.Fprintf(&b, ", more than %d distinct values", maxDistinct)
 		default:
@@ -205,15 +222,37 @@ func drawerFor(d Dataset, p Profile, measuredAt time.Time) wingbundle.Record {
 	return wingbundle.Record{
 		Kind: wingbundle.KindDrawer,
 		Room: d.Room,
-		// The dataset's own path is the identity. Import is idempotent by source,
-		// so re-running after the data changes REPLACES this memory rather than
-		// filing a second one beside it — which is what makes the mapping file
-		// worth committing.
+		// The dataset's own path is the identity, and the id the importer mints is
+		// a hash of it together with this text — so a re-import over UNCHANGED data
+		// upserts the same row however often it runs, which is what makes a
+		// committed mapping file worth committing and a scheduled re-import safe.
+		//
+		// It does NOT replace the memory when the data has changed: the import path
+		// absorbs and never purges by source (a batched migration would otherwise
+		// delete the earlier batches of the source it is still uploading), so a
+		// changed dataset files a NEW profile and yesterday's stays recallable
+		// until someone deletes it. Receipted in docs/adr/BACKLOG.md §"From
+		// ADR-035" rather than papered over here.
 		SourceFile:  d.File,
 		Content:     b.String(),
 		Entities:    entitiesFor(p),
 		ContentDate: measuredAt.Format("2006-01-02"),
 	}
+}
+
+// quoted renders a value set for reading. An empty string is shown as "" rather
+// than as a gap between two commas: "takes 2 value(s) here: , open" reads as a
+// rendering fault instead of what it is — a column that is sometimes blank,
+// which is worth knowing about seed data.
+func quoted(vs []string) string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		if v == "" {
+			v = `""`
+		}
+		out[i] = v
+	}
+	return strings.Join(out, ", ")
 }
 
 // entitiesFor names the field set, so a search for a column name reaches the
