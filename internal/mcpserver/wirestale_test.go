@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
@@ -88,11 +87,12 @@ func (f *wireProbeIndex) SetPayload(context.Context, string, []string, map[strin
 func TestSearchResponseCarriesStaleIndexOnTheWire(t *testing.T) {
 	gdb := graphTestDB(t)
 	idx := &wireProbeIndex{}
-	// A short pair TTL lets the test move the index half behind the source of
-	// truth between two searches: a fresh pair would otherwise be cached and the
-	// second recall would never re-count.
+	// CountTTL=0 makes the cached pair expire immediately, so every recall
+	// re-counts — the test moves the index half behind the source of truth
+	// between two searches and the second recall deterministically sees the
+	// deficit. No wall-clock sleep, no margin for a loaded CI box.
 	cfg := store.DefaultGateConfig()
-	cfg.CountTTL = 20 * time.Millisecond
+	cfg.CountTTL = 0
 	h := store.NewHybridWithConfig(sqlitevec.New(gdb), idx, cfg)
 	drawers := palace.NewService(palace.NewRepo(gdb), graphTestEmbedder{}, h, budgetDim)
 	ctx := auth.WithTenant(context.Background(), tenant.Tenant{
@@ -138,8 +138,6 @@ func TestSearchResponseCarriesStaleIndexOnTheWire(t *testing.T) {
 	idx.mu.Lock()
 	idx.down, idx.count = true, 0
 	idx.mu.Unlock()
-	time.Sleep(25 * time.Millisecond) // let the cached pair expire so the next recall re-counts
-
 	body := search()
 	var decoded struct {
 		Hits []struct {

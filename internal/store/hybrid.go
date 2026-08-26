@@ -200,6 +200,17 @@ func (h *Hybrid) Search(ctx context.Context, namespace string, vector []float32,
 	return res, nil
 }
 
+// countRefreshTimeout bounds a single-flight count refresh. The refresh is
+// shared work: every concurrent caller on the namespace joins whichever one
+// won the race, so it must not inherit any single caller's cancellation — a
+// leader that disconnects mid-count would otherwise fail every waiter with
+// "context canceled", precisely at the TTL-expiry stampede when concurrency is
+// highest. The count therefore runs detached (context.WithoutCancel) with this
+// bound: one namespace count is an indexed query per half, and 5s is an order
+// of magnitude above the query budget while staying far below any client's
+// patience; the bound exists so detached work cannot run forever.
+const countRefreshTimeout = 5 * time.Second
+
 // countPairFor returns the cached population comparison for the namespace,
 // refreshing it when absent or past the TTL. The cache is what keeps the
 // healthy path at one count pair per query rather than one per widening round.
@@ -225,13 +236,20 @@ func (h *Hybrid) countPairFor(ctx context.Context, namespace string) (countPair,
 				err = fmt.Errorf("count refresh panicked: %v", r)
 			}
 		}()
-		expected, err := h.sot.Count(ctx, namespace)
+		// The refresh is shared work, not the leader's work: ctx belongs to
+		// whichever caller happened to win the race, and its cancellation must
+		// not fail the waiters (review round 3, R3-1). Detach and bound it,
+		// keeping the caller's values so tracing and tenant survive — the same
+		// idiom as teiembed's capability probe.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), countRefreshTimeout)
+		defer cancel()
+		expected, err := h.sot.Count(cctx, namespace)
 		if err != nil {
 			// The source of truth could not be counted. Not cached: the next
 			// query retries, and every concurrent caller sees this exact error.
 			return countPair{}, fmt.Errorf("count source of truth: %w", err)
 		}
-		indexed, sampled, err := h.indexCount(ctx, namespace, expected)
+		indexed, sampled, err := h.indexCount(cctx, namespace, expected)
 		if err != nil {
 			// The index half cannot be counted (a wiped or missing collection
 			// answers a count with 404). That is not a population statement — treat

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,12 +14,13 @@ import (
 // tests live in hybrid_gate_test.go with richer fakes; these exist so the
 // cap/single-flight behaviour can be asserted from inside the package.
 type internalSoT struct {
-	mu         sync.Mutex
-	count      int
-	countHook  func() // called at the top of Count, without the lock
-	countErr   error  // returned by Count instead of the count, when set
-	panicCount bool   // Count panics instead of returning, when set
-	countCalls int
+	mu            sync.Mutex
+	count         int
+	countHook     func() // called at the top of Count, without the lock
+	countErr      error  // returned by Count instead of the count, when set
+	panicCount    bool   // Count panics instead of returning, when set
+	countCtxCheck bool   // Count honors ctx cancellation after the hook, like a real SoT
+	countCalls    int
 }
 
 func (f *internalSoT) EnsureNamespace(context.Context, string, int) error { return nil }
@@ -26,7 +28,7 @@ func (f *internalSoT) Upsert(context.Context, string, []Point) error      { retu
 func (f *internalSoT) Search(context.Context, string, []float32, int, Filter) (SearchResult, error) {
 	return SearchResult{}, nil
 }
-func (f *internalSoT) Count(_ context.Context, _ string) (int, error) {
+func (f *internalSoT) Count(ctx context.Context, _ string) (int, error) {
 	f.mu.Lock()
 	f.countCalls++
 	hook := f.countHook
@@ -38,6 +40,11 @@ func (f *internalSoT) Count(_ context.Context, _ string) (int, error) {
 	}
 	if hook != nil {
 		hook()
+	}
+	if f.countCtxCheck {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 	}
 	if err != nil {
 		return 0, err
@@ -288,5 +295,65 @@ func TestCountRefreshPanicDoesNotWedgeWaiters(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("concurrent refreshes never returned after a panic — waiters are wedged")
+	}
+}
+
+// TestCountRefreshDetachesFromLeaderCancellation: the count refresh is shared
+// work, not the leader's work. The singleflight closure captured whichever
+// caller won the race, so a leader that disconnects mid-count (client
+// disconnect, per-request timeout) made every waiter's recall fail with
+// "count source of truth: context canceled" for a reason that had nothing to
+// do with their request — precisely at the TTL-expiry stampede, when
+// concurrency is highest (review round 3, R3-1). The count must run detached
+// from the leader's lifetime: cancel the leader while it is inside the
+// source-of-truth count, and the healthy waiter must still receive the pair.
+func TestCountRefreshDetachesFromLeaderCancellation(t *testing.T) {
+	sot := &internalSoT{count: 1, countCtxCheck: true}
+	idx := &internalIndex{count: 1}
+	h := NewHybridWithConfig(sot, idx, DefaultGateConfig())
+	ttl := DefaultGateConfig().CountTTL
+	h.gate.mu.Lock()
+	h.gate.pair["ns"] = countPair{expected: 1, indexed: 1, at: time.Now().Add(-2 * ttl)}
+	h.gate.mu.Unlock()
+
+	// The leader's truth count blocks until release; the leader's context is
+	// cancelled while it is inside that count, then the count returns.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	sot.countHook = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	started := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	var waiterErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		started <- struct{}{}
+		_, _ = h.countPairFor(leaderCtx, "ns")
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		started <- struct{}{}
+		_, waiterErr = h.countPairFor(context.Background(), "ns")
+	}()
+	<-started
+	<-started
+	<-entered // the leader is inside the truth count
+	cancelLeader()
+	close(release)
+	wg.Wait()
+
+	if waiterErr != nil {
+		if strings.Contains(waiterErr.Error(), "context canceled") {
+			t.Errorf("healthy waiter inherited the leader's cancellation: %v", waiterErr)
+		} else {
+			t.Errorf("healthy waiter failed for an unrelated reason: %v", waiterErr)
+		}
 	}
 }
