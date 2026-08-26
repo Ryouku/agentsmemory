@@ -33,7 +33,7 @@ set -o pipefail
 go test ./internal/palace/ -run 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent' -count=1 2>&1 | tee /tmp/acc36t4.out; rc=$?
 grep -qE "no tests to run|no test files" /tmp/acc36t4.out && exit 1
 [ $rc -eq 0 ] || exit 1
-go test ./... -count=1 -skip 'TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestSearchResultRendersTheCorrectionMark|TestAddDrawerResultReportsItsEdge|TestEntryPointToolIsRegisteredAndDiscoverable|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t4b.out; rc=$?
+go test ./... -count=1 -skip 'TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestSearchResultRendersTheCorrectionMark|TestAddDrawerResultReportsItsEdge|TestEntryPointToolIsRegisteredAndDiscoverable|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t4b.out; rc=$?
 [ $rc -eq 0 ] || exit 1
 ```
 
@@ -46,7 +46,7 @@ The `-skip` list is what makes the repo-wide command SATISFIABLE. All 26 ADR-036
 failing, so an unskipped `go test ./...` stays red until the last task lands and no earlier task
 could record an exit-0 run — a fence that cannot pass blocks its wave as surely as one that cannot
 fail. It skips exactly the stubs owned by tasks T4 does not depend on: T4's own 2 and its
-ancestors' 11 still run, so a regression in what T4 was built on is still caught.
+ancestors' 12 still run, so a regression in what T4 was built on is still caught.
 
 ## Tests
 

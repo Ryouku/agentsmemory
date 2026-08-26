@@ -1,12 +1,12 @@
 # Task ADR-036-T8: The protocol becomes an API, and proves it costs less for the same meaning
 
 **Depends-on:** T7, T3, T5
-**Covers:** F-13, F-14, F-15, F-16, F-19, UC6-S1, UC6-S2, UC6-S3
+**Covers:** F-13, F-14, F-15, F-16, F-17, F-19, UC6-S1, UC6-S2, UC6-S3
 **Estimated scope:** L
 **Owner:** unassigned
 **Produces:** the bootstrap surface
-**Consumes:** `Service.EntryPoint` (T7), `Service.factsFor` (T3), `kg.CorrectionsFor` (T5)
-**Data dependency:** **Needs real data.** F-16 compares against `testdata/bootstrap-baseline-2026-08-26.json` — a FROZEN client transcript this task commits, carrying the call count, the byte and token totals, the tokenizer name and the model build. The fence is hermetic and runs against that file, never a live client.
+**Consumes:** `Service.EntryPoint` (T7), `Service.factsFor` and `palace.WingPolicy` (T3), `kg.CorrectionsFor` (T5)
+**Data dependency:** **Needs real data, and must not commit it.** F-16 compares against `testdata/bootstrap-baseline-manifest-2026-08-26.json` — a REDACTED manifest carrying the call count, byte and token totals, tokenizer name and model build, and no transcript content. The real transcript stays untracked, under the same ADR-003 T2 boundary as T1's corpus. The fence runs against the manifest, never a live client.
 
 ## Goal
 
@@ -17,9 +17,12 @@ One call replaces a client-side protocol measured at ~99KB and 13 calls, and pro
 | File | Change | Why |
 |------|--------|-----|
 | `internal/palace/bootstrap.go` | add | assemble entry point, eager content, on-demand pointers, swept corrections, resolved wing, truncation report |
-| `internal/palace/testdata/bootstrap-baseline-2026-08-26.json` | add | the frozen baseline transcript with its tokenizer and date |
+| `internal/palace/testdata/bootstrap-baseline-manifest-2026-08-26.json` | add | the REDACTED baseline: counts, totals, tokenizer, date — no transcript content |
 | `internal/mcpserver/bootstrap.go` | add | the tool, its name and its schema |
 | `internal/mcpserver/server.go` | edit | register it — the line that SELECTS it |
+| `internal/palace/service.go` | edit | route the fact block through `WingPolicy` — one of the four call sites F-19 counts |
+| `internal/palace/memory_search.go` | edit | route the correction mark through `WingPolicy` — the second call site |
+| `internal/palace/graphquery.go` | edit | route EntryPoint's edges through `WingPolicy` — the third call site |
 | `internal/palace/recallanswers_spec_test.go` | edit | five red tests |
 | `internal/mcpserver/recallanswers_reach_test.go` | edit | the catalogue proof |
 
@@ -29,15 +32,16 @@ One call replaces a client-side protocol measured at ~99KB and 13 calls, and pro
 2. Pin the response CONTRACT first — tool name, request and response schema, which fields are mandatory under truncation, and the truncation ORDER. Without it F-16 is winnable by returning less.
 3. Assemble the response. Corrections come from T5's `CorrectionsFor` — do not write a second sweep.
 4. Bound the response and REPORT what was omitted, INCLUDING how to fetch it. The protocol this replaces lost 74% of a prescribed tier to an unreported cap; a report that says "3 omitted" without saying how to get them repeats it in a politer form.
-5. Apply F-19: ONE wing rule governs the fact block, the sibling pointer, EntryPoint's edges and the bootstrap's inline content. Assert it on cross-wing correction and taxonomy fixtures — a correction target id and an outgoing edge are both ways a foreign wing can leak that a subject/predicate/object check does not see.
-6. Measure F-16 against the frozen baseline: assert SEMANTIC PARITY first (the response carries the same logical payload the 13 calls did), then compare tokens under the named tokenizer. Parity is what stops a tiny useless response winning.
-7. Assert the no-entry-point wing still bootstraps (UC6-S3), with its own step and its own assertion.
+5. Apply F-19 STRUCTURALLY, not behaviourally. Four call sites must invoke `WingPolicy`: the fact block (`service.go`), the correction mark (`memory_search.go`), EntryPoint's edges (`graphquery.go`) and the bootstrap's inline content. Assert it with a spy or a static check that every path CALLS the policy — a behavioural test over fixtures is satisfied by four duplicated filters that happen to agree, which is the state F-19 exists to forbid.
+6. Also assert F-17 here rather than in T7: the bootstrap must not substitute `am_traverse` for direct resolution. T7 can prove `EntryPoint` resolves directly and still leave T8 free to build the bootstrap on a walk whose `max_hops` is inert, with every T7 test green.
+7. Measure F-16 against the redacted manifest: assert SEMANTIC PARITY first — the response carries the same logical payload the 13 calls did — and only then compare tokens under the tokenizer the manifest names. Without parity the cheapest conformant bootstrap is one that returns nothing.
+8. Assert the no-entry-point wing still bootstraps (UC6-S3), with its own step and its own assertion.
 
 ## Acceptance
 
 ```bash
 set -o pipefail
-go test ./internal/palace/ ./internal/mcpserver/ -run 'TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestBootstrapToolIsRegisteredAndDiscoverable' -count=1 2>&1 | tee /tmp/acc36t8.out; rc=$?
+go test ./internal/palace/ ./internal/mcpserver/ -run 'TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestBootstrapToolIsRegisteredAndDiscoverable' -count=1 2>&1 | tee /tmp/acc36t8.out; rc=$?
 grep -qE "no tests to run|no test files" /tmp/acc36t8.out && exit 1
 [ $rc -eq 0 ] || exit 1
 go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent' 2>&1 | tee /tmp/acc36t8b.out; rc=$?
@@ -52,7 +56,7 @@ run ends repo-wide because a task-scoped fence passes while a repo-wide gate fai
 The `-skip` list is what makes the repo-wide command SATISFIABLE. All 26 ADR-036 stubs are committed
 failing, so an unskipped `go test ./...` stays red until the last task lands and no earlier task
 could record an exit-0 run — a fence that cannot pass blocks its wave as surely as one that cannot
-fail. It skips exactly the stubs owned by tasks T8 does not depend on: T8's own 6 and its
+fail. It skips exactly the stubs owned by tasks T8 does not depend on: T8's own 7 and its
 ancestors' 18 still run, so a regression in what T8 was built on is still caught.
 
 ## Tests
@@ -62,8 +66,9 @@ ancestors' 18 still run, so a regression in what T8 was built on is still caught
 | `TestOneCallBootstrapsAWing` | `internal/palace/recallanswers_spec_test.go` | one call returns all six parts; no second call, no hardcoded id; a wing with no entry point still bootstraps | F-13, UC6-S1, UC6-S3 |
 | `TestATruncatedBootstrapSaysWhatItDropped` | `internal/palace/recallanswers_spec_test.go` | a bounded response reports its omissions AND how to fetch them | F-14, UC6-S2 |
 | `TestCorrectionsAreSweptServerSideAcrossAllThreePredicates` | `internal/palace/recallanswers_spec_test.go` | table-driven over retracts, supersedes and qualifies, read incoming, via T5's single resolver | F-15 |
-| `TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces` | `internal/palace/recallanswers_spec_test.go` | semantic parity with the frozen baseline first, then fewer tokens under the named tokenizer | F-16 |
-| `TestOneWingRuleGovernsEveryNewResponsePath` | `internal/palace/recallanswers_spec_test.go` | cross-wing correction targets, taxonomy edges and inline content are all governed by one rule | F-19 |
+| `TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces` | `internal/palace/recallanswers_spec_test.go` | semantic parity with the redacted manifest first, then fewer tokens under the tokenizer it names | F-16 |
+| `TestOneWingRuleGovernsEveryNewResponsePath` | `internal/palace/recallanswers_spec_test.go` | all four paths INVOKE `WingPolicy` — proven by spy or static check, not by agreeing outputs | F-19 |
+| `TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk` | `internal/palace/recallanswers_spec_test.go` | the bootstrap does not substitute multi-hop traversal for direct resolution | F-17 |
 | `TestBootstrapToolIsRegisteredAndDiscoverable` | `internal/mcpserver/recallanswers_reach_test.go` | the tool is in the catalogue with its arguments | F-13 |
 
 ## Reachability
@@ -85,7 +90,8 @@ ancestors' 18 still run, so a regression in what T8 was built on is still caught
 
 - The response is always bounded, always states its omissions, and always says how to fetch them.
 - Eager content is inline; on-demand is a pointer. Inlining everything reproduces the problem this removes.
-- ONE wing rule, one correction sweep. Both are consumed, not reimplemented.
+- ONE wing rule, one correction sweep. Both are consumed, not reimplemented — and F-19 proves the CALL, not the agreement.
+- No transcript content is committed. The manifest is the auditable record; the transcript stays untracked.
 
 ## Risks
 

@@ -38,7 +38,7 @@ func TestAnEndedFactIsNeverPresentedAsCurrent(t *testing.T) {
 }
 
 func TestAFactsWingComesFromItsProvenance(t *testing.T) {
-	t.Fatal("F-8 not implemented: wing membership derives from kg_triples.source_drawer_id; unresolvable provenance means elsewhere, never here")
+	t.Fatal("F-8 not implemented: wing membership derives from kg_triples.source_drawer_id in three states — LOCAL, FOREIGN (wing derivable, named per F-2), UNLOCATABLE (not derivable, counted per F-18). Unresolvable provenance is never LOCAL")
 }
 
 func TestReturningFactsDoesNotChangeDrawerRanking(t *testing.T) {
@@ -73,7 +73,7 @@ func TestCorrectionsAreSweptServerSideAcrossAllThreePredicates(t *testing.T) {
 }
 
 func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
-	t.Fatal("F-16 not implemented: must beat the measured client baseline of 13 calls / ~2.8k output tokens. A bootstrap returning more than it saves has reproduced the problem inside one call")
+	t.Fatal("F-16 not implemented: assert SEMANTIC PARITY with the redacted baseline manifest FIRST, then that it costs fewer output tokens under the tokenizer that manifest names. Without parity the cheapest conformant bootstrap returns nothing")
 }
 
 func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {

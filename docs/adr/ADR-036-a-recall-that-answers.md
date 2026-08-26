@@ -70,8 +70,11 @@ BESIDE the drawer hits — never merged into them, so ranking is unaffected.
 
 **The wing boundary is resolved by a pointer, not a crossing.** `kg_triples` has no wing column and
 the graph is workspace-wide while search is wing-scoped. A wing-scoped recall therefore never
-returns another wing's fact CONTENT, and MUST report that matches exist elsewhere and name those
-wings. Silence is indistinguishable from "nothing is filed", which is the failure this replaces.
+returns another wing's fact CONTENT. For every match it does not own it reports one of two things,
+and never silence: the WING, when provenance makes it derivable and the agent can go and query it;
+or a COUNT, when it does not. The second is the majority case — 90 of 196 triples resolve to a
+drawer, measured 2026-08-26 — so a design that only handled the first would be silent about most
+of what it found, which is the failure this decision exists to remove.
 
 **Corrections apply at read time, marking rather than hiding.** A returned record that is the object
 of `retracts`, `supersedes` or `qualifies` carries that edge and its replacement's id. Hiding is
@@ -134,6 +137,9 @@ Inherited from `docs/specs/2026-08-26-a-recall-that-answers.md` §Contracts Touc
 | `Service.factsFor` returning wing-resolved facts (T3) | T3 | T4, T5, T8 | No — new internal method |
 | `searchEventRow`-style derived-edge marking (T6) | T6 | T7, T8 | No — additive nullable column |
 | `Service.EntryPoint` (T7) | T7 | T8 | No — new internal method |
+| `kg.CorrectionsFor` (T5) | T5 | T8 | No — one incoming sweep, consumed rather than reimplemented |
+| `kg.Resolution` (T2) | T2 | T3, T7 | No — T7 reuses the absence vocabulary rather than inventing a second |
+| `palace.WingPolicy` (T3) | T3 | T5, T7, T8 | No — the single authorization point F-19 requires; four filters that agree today diverge on the path nobody tested |
 
 ## Implementation
 

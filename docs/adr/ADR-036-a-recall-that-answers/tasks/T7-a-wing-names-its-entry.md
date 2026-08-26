@@ -1,11 +1,11 @@
 # Task ADR-036-T7: A wing reports its own entry point, resolved directly
 
-**Depends-on:** T6
-**Covers:** F-10, F-17, UC4-S1, UC4-S2
+**Depends-on:** T6, T2, T3
+**Covers:** F-10, UC4-S1, UC4-S2
 **Estimated scope:** M
 **Owner:** unassigned
 **Produces:** `Service.EntryPoint`
-**Consumes:** the derived-edge contract and marker column (T6)
+**Consumes:** the derived-edge contract and marker column (T6), `kg.Resolution` (T2), `palace.WingPolicy` (T3)
 **Data dependency:** hermetic
 
 ## Goal
@@ -32,10 +32,10 @@ Reaching a wing's taxonomy needs no id the server did not supply, and no graph w
 
 ```bash
 set -o pipefail
-go test ./internal/palace/ ./internal/mcpserver/ -run 'TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestEntryPointToolIsRegisteredAndDiscoverable' -count=1 2>&1 | tee /tmp/acc36t7.out; rc=$?
+go test ./internal/palace/ ./internal/mcpserver/ -run 'TestAWingReportsItsOwnEntryPoint|TestEntryPointToolIsRegisteredAndDiscoverable' -count=1 2>&1 | tee /tmp/acc36t7.out; rc=$?
 grep -qE "no tests to run|no test files" /tmp/acc36t7.out && exit 1
 [ $rc -eq 0 ] || exit 1
-go test ./... -count=1 -skip 'TestFactAnswerableRateIsMeasured|TestFactsOnThePageAreScoredByMRR|TestAFactLookupDistinguishesAbsenceFromFailure|TestAQuestionReachesTheFactThatAnswersIt|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking|TestAnUnlocatableFactIsCountedNotDropped|TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestKGQueryResultRendersResolutionState|TestSearchResultRendersFactsAndTheSiblingPointer|TestSearchResultRendersTheCorrectionMark|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t7b.out; rc=$?
+go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestSearchResultRendersTheCorrectionMark|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t7b.out; rc=$?
 [ $rc -eq 0 ] || exit 1
 ```
 
@@ -47,15 +47,14 @@ run ends repo-wide because a task-scoped fence passes while a repo-wide gate fai
 The `-skip` list is what makes the repo-wide command SATISFIABLE. All 26 ADR-036 stubs are committed
 failing, so an unskipped `go test ./...` stays red until the last task lands and no earlier task
 could record an exit-0 run — a fence that cannot pass blocks its wave as surely as one that cannot
-fail. It skips exactly the stubs owned by tasks T7 does not depend on: T7's own 3 and its
-ancestors' 2 still run, so a regression in what T7 was built on is still caught.
+fail. It skips exactly the stubs owned by tasks T7 does not depend on: T7's own 2 and its
+ancestors' 14 still run, so a regression in what T7 was built on is still caught.
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
 | `TestAWingReportsItsOwnEntryPoint` | `internal/palace/recallanswers_spec_test.go` | entry record and outgoing edges returned; a wing without one says so distinguishably | F-10, UC4-S1, UC4-S2 |
-| `TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk` | `internal/palace/recallanswers_spec_test.go` | resolution does not depend on multi-hop traversal | F-17 |
 | `TestEntryPointToolIsRegisteredAndDiscoverable` | `internal/mcpserver/recallanswers_reach_test.go` | the tool is in the catalogue with its arguments | F-10 |
 
 ## Reachability
@@ -76,7 +75,7 @@ ancestors' 2 still run, so a regression in what T7 was built on is still caught.
 ## Invariants
 
 - No graph walk. A future reader must not "restore" traversal here without first deciding transitive-vs-confined.
-- The absence vocabulary is T2's, not a second one.
+- The absence vocabulary is T2's and the wing rule is T3's. Neither is reimplemented here.
 
 ## Risks
 

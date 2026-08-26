@@ -5,7 +5,7 @@
 **Estimated scope:** M
 **Owner:** unassigned
 **Produces:** `kg.CorrectionsFor` (the incoming three-predicate sweep)
-**Consumes:** `Service.factsFor` (T3)
+**Consumes:** `Service.factsFor` and `palace.WingPolicy` (T3)
 **Data dependency:** hermetic
 
 ## Goal
@@ -28,6 +28,7 @@ A record that has been retracted, superseded or qualified is returned WITH that 
 2. Write `CorrectionsFor` as the single resolver, reading `retracts`, `supersedes` and `qualifies` INCOMING. Outgoing traversal structurally cannot see a correction.
 3. Assert all THREE predicates in a table-driven test. Naming three and asserting one is how `qualifies` was missed on 2026-08-25, when a session that ran only `retracts` shipped a pointer to an ADR that was not on `main`.
 4. Return the record in its normal rank position, carrying the edge and the replacement id. Marking, not hiding — a retraction can itself be wrong.
+5. Route the replacement id through `WingPolicy` before rendering it. A correction target in another wing is a leak that no subject/predicate/object check would catch.
 
 ## Acceptance
 
@@ -36,7 +37,7 @@ set -o pipefail
 go test ./internal/palace/ ./internal/mcpserver/ -run 'TestACorrectedRecordArrivesCarryingItsCorrection|TestSearchResultRendersTheCorrectionMark' -count=1 2>&1 | tee /tmp/acc36t5.out; rc=$?
 grep -qE "no tests to run|no test files" /tmp/acc36t5.out && exit 1
 [ $rc -eq 0 ] || exit 1
-go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestAddDrawerResultReportsItsEdge|TestEntryPointToolIsRegisteredAndDiscoverable|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t5b.out; rc=$?
+go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestAddDrawerResultReportsItsEdge|TestEntryPointToolIsRegisteredAndDiscoverable|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t5b.out; rc=$?
 [ $rc -eq 0 ] || exit 1
 ```
 
@@ -49,7 +50,7 @@ The `-skip` list is what makes the repo-wide command SATISFIABLE. All 26 ADR-036
 failing, so an unskipped `go test ./...` stays red until the last task lands and no earlier task
 could record an exit-0 run — a fence that cannot pass blocks its wave as surely as one that cannot
 fail. It skips exactly the stubs owned by tasks T5 does not depend on: T5's own 2 and its
-ancestors' 11 still run, so a regression in what T5 was built on is still caught.
+ancestors' 12 still run, so a regression in what T5 was built on is still caught.
 
 ## Tests
 
