@@ -5,9 +5,12 @@
 **Owner:** Zy
 **Spec:** `docs/specs/2026-08-26-a-recall-that-answers.md`
 **Cross-references:** `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-004-supersession-not-recall.md`, `docs/adr/ADR-016-a-memory-an-agent-files-must-be-navigable.md`, `docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md`, `docs/architecture.md`
-**Invalidates:** **ADR-004 — this ADR crosses a condition ADR-004 set, and that is UNRESOLVED.** See
-§"The ADR-004 condition" below; the claim previously made here ("none — checked") was wrong and is
-corrected rather than quietly amended, because the whole point of the header is that somebody read it.
+**Invalidates:** **ADR-004's categorical wiring bar, narrowed by owner sign-off 2026-08-26 — see
+§"The ADR-004 condition" below.** This ADR crosses a condition ADR-004 set; the conflict was surfaced
+in review, and M resolved it (*"P1 - i agree with change"*): ADR-004 is amended to its narrower
+reading in the same commit, and its measurement (#34) stands on its own merits. The claim previously
+made here ("none — checked") was wrong and is corrected rather than quietly amended, because the whole
+point of the header is that somebody read it.
 Otherwise:  ADR-001 (abstention) is Accepted with all six tasks pending and is a NON-GOAL here, deliberately not re-decided. ADR-016 is Accepted and executed; F-4 depends on it rather than changing it. ADR-031's calibration aggregate reads `reranked`, which this ADR does not touch. ADR-034 (open PR #61) adds `rerank_skip_reason`; this ADR takes migration `00028` to avoid its `00027`.
 **Served-path change:** `am_search` gains a fact block, a sibling-wing pointer naming wings it did not search, and correction marks on hits; a new one-call bootstrap surface appears. An agent's recall visibly changes.
 
@@ -23,7 +26,9 @@ fact is reachable only by already knowing its entity string.
 carries `- Wiring the graph into Service.Search (deferred: docs/adr/BACKLOG.md)`, and `BACKLOG.md`
 has no entry for it under any wording. `adr-debt` reports 0 unreceipted because the pointer resolves
 to a real file — the exact failure the deferral rule exists to catch, surviving inside the sweep
-built to catch it.
+built to catch it. Delivering it is also what crossed a condition ADR-004 set — see §"The ADR-004
+condition" for how that conflict was surfaced and then resolved, rather than reading this paragraph
+as the whole story.
 
 **A related backlog item's premise is now false, and its expectation was falsified.** BACKLOG item 2
 ("Decide the entity graph: feed it or retire it") argues from *"`Service.Add` does not [call
@@ -97,7 +102,7 @@ retrieval premise is falsified rather than quietly unmet. F-16 is the bootstrap'
 must beat 13 calls / ~2.8k output tokens, measured, or it has reproduced the problem inside one
 call. Every threshold here is valid for THIS corpus and this embedder, never in the abstract.
 
-## The ADR-004 condition — unresolved, and named here rather than decided by implication
+## The ADR-004 condition — named here rather than decided by implication; resolved 2026-08-26
 
 ADR-004 (Accepted) says, categorically:
 
@@ -114,8 +119,8 @@ in the meantime:
 > must NOT be built yet.
 
 **This ADR does both of the things that sentence covers.** T3 wires a graph read into the hot search
-path — `factsFor` on every `SearchPage` — and T4/T5 put `retracts`/`supersedes`/`qualifies` marks onto
-`am_search` hits. ADR-004's own cost justification names the first one in as many words: *"Feeding the
+path — `factsFor` on every `SearchPage`, which T4 extends with both entity vocabularies — and T5 puts
+`retracts`/`supersedes`/`qualifies` marks onto `am_search` hits. ADR-004's own cost justification names the first one in as many words: *"Feeding the
 graph means running `kg-extract` across ~5,020 drawers, wiring a graph read into the hot recall path,
 and keeping the graph fresh."*
 
@@ -130,7 +135,7 @@ a decision, and this repository's protocol is explicit that a conflict between r
 surfaced rather than resolved by implication — which is exactly what "Invalidates: none — checked"
 did, silently, in the header of this document.
 
-**Resolution required before merge, one of:**
+**Resolution was required before merge, one of:**
 
 1. **Run the gate** (#34's actual ask). A `justified` verdict authorises populating and wiring the
    graph *"as its own ADR"*, which this already is — the conflict then dissolves into a satisfied
@@ -142,9 +147,19 @@ did, silently, in the header of this document.
 3. **Amend ADR-004** to the narrower reading above, with the owner's sign-off recorded in both
    documents and #34 updated so it does not rot into contradiction.
 
+**Resolved 2026-08-26 — option 3, by owner sign-off.** M, with this section's three paths in front of
+him: *"P1 - i agree with change"*. The change proceeds without waiting for the gate; ADR-004 carries
+the matching amendment (its Decision sentence and its Out-of-Scope wiring bullet), recorded in the
+same commit as this paragraph, and #34 carries a status update so the measurement's ask survives on
+its own merits — the gate still decides `kg-extract` population and any RANKING use of the graph; it
+no longer bars this ADR's annotations. One honesty note: the owner's words did not name a path
+number; the mapping onto option 3 is the recording agent's, on the grounds that options 1 and 2 both
+hold the change back, so agreement with the change is agreement that ADR-004's condition yields.
+Recorded on M's instruction ("adr and adapt to the current situation").
+
 No gate catches this class: `adr-debt` reported 0 because the pointer resolved, and nothing reads
 SEMANTIC conflict between two accepted records. Review is the only gate here, and review is what
-caught it.
+caught it — and review is also where the resolution arrived.
 
 ## Alternatives Considered
 
