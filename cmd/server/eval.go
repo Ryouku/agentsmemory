@@ -78,6 +78,7 @@ func evalCommand(def config.Config) *cli.Command {
 			&cli.IntFlag{Name: "pool", Value: defaultEvalPool, Usage: "candidates fetched per query; every arm re-orders this same pool"},
 			&cli.BoolFlag{Name: "supersession-gate", Usage: "decide whether the supersession failure is common enough to justify a mechanism against it, from this run's temporal cases. Refuses rather than answering when the evidence is too thin, unhardened, or missing the pre-registered arm"},
 			&cli.Float64Flag{Name: "pair-max-distance", Value: 0.55, Usage: "how close a temporal pair must be before it is offered to the judge (cosine distance; 0 disables the ceiling). Without it, 'nearest older neighbour' is a claim about how sparse the wing is rather than about the two memories"},
+			&cli.StringFlag{Name: "arms", Usage: "run only these arms, comma-separated, matched by exact name or PREFIX (e.g. \"vector,hybrid,rerank blend\" — the last selects the whole weight sweep). Empty runs every arm. The retrieved pool is unchanged, so a filtered run stays comparable arm-for-arm with a full one; what changes is that 'vs best' is the best of the arms PRESENT, and the report says so. A filter matching nothing REFUSES rather than printing an empty table"},
 			&cli.BoolFlag{Name: "contextual", Usage: "also score a contextual-chunk index: each chunk re-embedded with a little of its parent's context, built into a scratch namespace"},
 			&cli.BoolFlag{Name: "allow-degraded", Usage: "run without the reranked arms when the configured reranker fails its preflight, instead of refusing the run. The arms are DROPPED and a warning is recorded — they are never silently scored as plain hybrid, which is what produced one wrong table already"},
 			&cli.IntFlag{Name: "contextual-limit", Value: palace.DefaultContextualLimit, Usage: "how many chunks the contextual experiment covers — it costs an embedding pass and a second copy of those vectors, so it is capped rather than corpus-wide"},
@@ -160,7 +161,7 @@ func runEval(ctx context.Context, c *cli.Command, def config.Config, out io.Writ
 	}
 
 	report, err := svc.drawers.EvaluateWith(ctx, team.ID, cases, c.Int("pool"),
-		palace.EvalOptions{Contextual: c.Bool("contextual"), AllowDegraded: c.Bool("allow-degraded"), CaseSetOrigin: src.Origin},
+		palace.EvalOptions{Contextual: c.Bool("contextual"), AllowDegraded: c.Bool("allow-degraded"), CaseSetOrigin: src.Origin, Arms: splitArms(c.String("arms"))},
 		func(done, total int, query string, elapsed time.Duration) {
 			fmt.Fprintf(out, "  [%2d/%2d] %5.1fs  %s\n", done, total, elapsed.Seconds(), firstLineOf(query, 62))
 		})
@@ -2235,4 +2236,19 @@ func calibrationEligible(cases []palace.EvalCase, styles ...string) (bool, strin
 			"was never checked, so a memory may answer them that nobody looked for", unverified, absent)
 	}
 	return true, ""
+}
+
+// splitArms parses the comma-separated --arms value, dropping empty fields so a
+// trailing comma or a stray space cannot become a pattern that matches nothing.
+func splitArms(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

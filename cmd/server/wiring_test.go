@@ -299,14 +299,18 @@ func TestGatedArmMatchesTheShippedDefaults(t *testing.T) {
 	closetOn := d.ClosetBoost > 0
 
 	// With a reranker configured, which is what the full stack ships.
-	want := palace.ArmRRFReranked
+	// The shipped normaliser is SIGMOID, so the served RRF arm is the one that
+	// says so: rrf+rerank has been the min-max control since the B1 reset, and
+	// the linear arms run min-max too — no linear arm reconstructs a sigmoid
+	// service, which is the honest "" rather than a pipeline nobody runs.
+	want := palace.ArmBlendSigmoid
 	switch {
 	case rrf:
-		want = palace.ArmRRFReranked
+		want = palace.ArmBlendSigmoid
 	case closetOn:
-		want = palace.ArmReranked
+		want = ""
 	default:
-		want = palace.ArmHybridRerank
+		want = ""
 	}
 	if got := palace.SupersessionGatedArm(); got != want {
 		t.Errorf("the supersession gate judges %q, but config.Default() (fusion=%q closet=%.2f) "+

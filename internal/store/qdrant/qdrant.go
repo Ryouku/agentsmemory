@@ -275,3 +275,7 @@ func (c *Client) SetPayload(ctx context.Context, namespace string, ids []string,
 // FilterKeys is the payload every scoped search filters on, exported so the
 // repair path and the boot check cannot drift from what Search actually sends.
 func FilterKeys() []string { return append([]string(nil), filterKeys...) }
+
+// DescribeVectorStore names this backend for a trace, satisfying
+// palace.VectorDescriber.
+func (c *Client) DescribeVectorStore() string { return "qdrant" }

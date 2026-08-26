@@ -72,6 +72,21 @@ services:
       # What a larger pool BUYS is still unmeasured at any size. Raise it if your
       # cross-encoder is on a GPU — and keep RERANK_TIMEOUT above pool x per-doc
       # cost, or every search degrades.
+      #
+      # That per-doc cost now has a number, and it is worse than the sentence
+      # above implies. On a CPU cross-encoder, 60 traced rerank calls at pool 20
+      # took a mean of 11.4s (min 7.3s, max 18.2s) — 44 of the 60 ran longer than
+      # the 10s RERANK_TIMEOUT below. Pool 20 is one batch (maxBatch is 32), so
+      # that is not batching overhead, it is the cost of scoring 20 documents.
+      # An operator who takes the "raise it" advice on CPU therefore does not get
+      # a better ranking, they get the fused order on most searches, because a
+      # blown budget fails open. Nothing measured pool 10, which is what ships
+      # here; do not read these numbers as a verdict on the default.
+      #
+      # This is observable rather than inferred: the search span carries
+      # am.rerank_timeout_ms beside the rerank stage duration, and an overrun
+      # ends that stage failed_open reason=timeout — distinct from reason=error,
+      # which means the endpoint is unwell rather than too slow.
       RERANK_POOL: "10"
       # How much the cross-encoder decides versus the hybrid score it refines.
       # 1.0 lets it overwrite the lexical evidence entirely, which measurably

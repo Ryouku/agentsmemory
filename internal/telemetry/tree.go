@@ -111,6 +111,19 @@ func formatSpan(s sdktrace.ReadOnlySpan) string {
 	if extra := formatAttrs(got, debugKeys); extra != "" {
 		parts = append(parts, extra)
 	}
+	// Then everything else the span carried. debugKeys fixes the ORDER of the
+	// attributes a reader wants first; it must not decide which attributes exist.
+	//
+	// It used to do both, and the cost was measured 2026-08-25: sixteen attributes
+	// were computed on every relevant call and dropped at render, including
+	// am.tool — so a dumped tree showed `am.tool 13ms ran` twice for two DIFFERENT
+	// tools and named neither. A tool span with no children was anonymous. The
+	// others (am.withheld, am.found, am.closets, am.has_wing, am.max_hops, …) were
+	// paid for and never seen. A whitelist also silently swallows every attribute
+	// added after it, which is the same defect arriving on a schedule.
+	if rest := formatOtherAttrs(got); rest != "" {
+		parts = append(parts, rest)
+	}
 	if file := got["am.code.file"]; file != "" {
 		site := file
 		if line := got["am.code.line"]; line != "" {
@@ -127,6 +140,30 @@ func attrsMap(attrs []attribute.KeyValue) map[string]string {
 		got[string(a.Key)] = a.Value.Emit()
 	}
 	return got
+}
+
+// formatSpanHandled are the keys formatSpan renders itself, in its own positions,
+// so formatOtherAttrs must not repeat them.
+var formatSpanHandled = map[string]bool{
+	"am.outcome": true, "am.reason": true, "am.code.file": true, "am.code.line": true,
+}
+
+// formatOtherAttrs renders every am.* attribute that neither debugKeys nor
+// formatSpan already placed, sorted so a dump is stable between runs.
+func formatOtherAttrs(got map[string]string) string {
+	inDebug := make(map[string]bool, len(debugKeys))
+	for _, k := range debugKeys {
+		inDebug[k] = true
+	}
+	var keys []string
+	for k, v := range got {
+		if v == "" || inDebug[k] || formatSpanHandled[k] || !strings.HasPrefix(k, "am.") {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return formatAttrs(got, keys)
 }
 
 func formatAttrs(got map[string]string, keys []string) string {

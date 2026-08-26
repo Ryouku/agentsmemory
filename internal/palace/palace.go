@@ -10,6 +10,8 @@
 // type carries a tenant (TeamID) because storage is tenant-isolated.
 package palace
 
+import "strings"
+
 // Drawer is the atomic memory unit: a single VERBATIM text chunk plus locating
 // metadata. The cardinal rule from the Python tool carries over — a drawer is
 // never a summary; the exact source text is preserved so recall is lossless.
@@ -116,6 +118,18 @@ type Tunnel struct {
 	Dynamics
 }
 
+// SearchResult is one page of recall together with the identity it was recorded
+// under.
+//
+// SearchID is the same value `search_events` holds as that row's primary key,
+// so a page and its durable record join on it with no extra state anywhere. It
+// is present even when Hits is empty: a recall that found nothing still ran,
+// still wrote a row, and is the page an operator most often wants to trace.
+type SearchResult struct {
+	SearchID string
+	Hits     []SearchHit
+}
+
 // SearchHit is one ranked result from hybrid search. Score is the fused rank — a
 // convex blend of vector similarity and lexical BM25, as the Python searcher did
 // (closet boost joins once mining builds closets). BM25 is the raw lexical score
@@ -155,6 +169,15 @@ type SearchHit struct {
 	// perfectly ordinary value. Anything deciding whether a score is PRESENT —
 	// an abstention gate, or the eval calibrating one — must read this.
 	Reranked bool
+	// Blended is the value the page was ORDERED by: BlendRerank's weighted
+	// combination of the pool-normalised fused and rerank scores. It is not a
+	// third opinion to weigh against the other two — it is the one the sort used.
+	//
+	// Pool-relative by construction, so it compares hits WITHIN a page and means
+	// nothing across pages. Zero when this hit was not reranked, for the same
+	// reason RerankScore is: a hit outside the scored pool was ordered by the
+	// fused score alone and has no blend.
+	Blended float64
 }
 
 // memoryOf returns the id of the MEMORY a drawer belongs to: its parent when it
@@ -171,4 +194,45 @@ func memoryOf(d Drawer) string {
 		return d.ParentID
 	}
 	return d.ID
+}
+
+// ValidSearchID reports whether sid has the shape randomID mints: lowercase hex,
+// or the clock fallback "t" followed by digits. It is a shape check, not a
+// lookup — an id for a search that never happened is a client bug worth seeing
+// on a span, whereas an arbitrary string is a leak worth refusing.
+//
+// It lives HERE, beside the minter, rather than at the consumer that validates
+// incoming ids. When the two were apart, nothing tied them together: a review on
+// 2026-08-26 mutated randomID to emit UPPERCASE hex, and every package stayed
+// green while every freshly minted id would have been rejected — and since a
+// rejected id is not counted as adoption, ADR-028's deferral trigger would have
+// read "no client ever sent one" at the exact moment every client was sending
+// one. TestEveryMintedSearchIDIsAcceptedByItsOwnValidator now fails on that.
+//
+// The hex length is a RANGE rather than the 24 randomID currently emits, because
+// the two ways to be wrong are not symmetric: too loose lets an odd id through,
+// too tight silently rejects every real one the moment that length changes.
+func ValidSearchID(sid string) bool {
+	if rest, ok := strings.CutPrefix(sid, "t"); ok && rest != "" && isDigits(rest) {
+		return len(sid) <= 32
+	}
+	if len(sid) < 16 || len(sid) > 32 {
+		return false
+	}
+	for _, r := range sid {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// isDigits reports whether s is non-empty and all ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }

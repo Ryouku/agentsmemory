@@ -322,3 +322,7 @@ func cosine(a []float32, aNorm float64, b []float32) float32 {
 	}
 	return float32(dot / (aNorm * bNorm))
 }
+
+// DescribeVectorStore names this backend for a trace, satisfying
+// palace.VectorDescriber.
+func (s *Store) DescribeVectorStore() string { return "sqlitevec" }

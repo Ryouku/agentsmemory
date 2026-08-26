@@ -48,6 +48,13 @@ var sweptKnobs = []knob{
 		}
 		return c
 	}},
+	// Swept because the eval arms ArmBlendSigmoid and ArmBlendRank score exactly
+	// these values against the served min-max, so an operator changing it can read
+	// a row rather than take somebody's word for it.
+	{"--rerank-norm", []string{"sigmoid", "minmax", "rank"}, func(c config.Config, v string) config.Config {
+		c.RerankNorm = v
+		return c
+	}},
 	{"--rerank-weight", []string{"0.5", "0", "1"}, func(c config.Config, v string) config.Config {
 		switch v {
 		case "0":

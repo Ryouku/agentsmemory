@@ -91,3 +91,14 @@ func (e *Embedder) EmbedOne(ctx context.Context, input string) ([]float32, error
 	}
 	return vecs[0], nil
 }
+
+// DescribeEmbedder names this backend and its model for a span.
+//
+// The window is always 0: Ollama exposes no capability endpoint that states a
+// model's input length, so this backend genuinely cannot report one and says so
+// rather than repeating the 8192 that appears in comments elsewhere in this
+// repository. An absent number is a fact; a guessed one would be the same
+// unmeasured folklore in a new place.
+func (e *Embedder) DescribeEmbedder() (backend, model string, windowTokens int) {
+	return "ollama", e.model, 0
+}

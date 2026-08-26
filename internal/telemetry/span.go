@@ -41,6 +41,21 @@ func Start(ctx context.Context, name string, attrs ...attribute.KeyValue) (conte
 	return ctx, &Span{span: span, name: name, ctx: ctx, outcome: Ran}
 }
 
+// Annotate adds attributes to the stage span already on the context, for a
+// caller that did not start it.
+//
+// It exists because a handler often learns something worth recording about a
+// stage that a wrapper opened — an argument it was given, a branch it took —
+// and the alternative is threading the *Span through every signature. No-op
+// when the context carries no recording span, so an untraced call path costs
+// nothing and cannot panic.
+func Annotate(ctx context.Context, attrs ...attribute.KeyValue) {
+	if len(attrs) == 0 {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attrs...)
+}
+
 // Set records attributes that become known after the stage starts (hit counts,
 // fusion mode, widening rounds). They are applied at End so a panic between
 // Set and End still has a closed span; the attributes themselves survive if

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -111,6 +112,83 @@ type Embedder interface {
 	EmbedOne(ctx context.Context, input string) ([]float32, error)
 }
 
+// EmbedDescriber is an OPTIONAL interface an Embedder may implement to name
+// itself on a span.
+//
+// Optional rather than folded into Embedder because a test fake has nothing
+// useful to say here and should not be forced to invent it. The served backends
+// implement it; anything that does not simply reports no backend, which reads on
+// a trace as "unknown" instead of as a lie.
+//
+// It exists because a distance means nothing without the model that produced it.
+// A trace showing am.dim=1024 is satisfied by bge-m3 through Ollama, bge-m3
+// through TEI, and any other 1024-dimension model an operator pointed
+// OLLAMA_EMBED_MODEL at — three different embedding spaces, one attribute, and
+// every cosine distance in the tree silently incomparable across them.
+type EmbedDescriber interface {
+	// DescribeEmbedder returns the backend name, the model, and the model's input
+	// window in TOKENS when the backend can report it (0 when it cannot). A zero
+	// window is honest: nothing in this repository could previously state one at
+	// all, and a guessed number would be worse than an absent one.
+	DescribeEmbedder() (backend, model string, windowTokens int)
+}
+
+// VectorDescriber is an OPTIONAL interface a store.VectorStore may implement to
+// name the backend serving a recall.
+//
+// It decides pages in the most direct way there is — it IS the index the query
+// runs against — and until now the trace could not say which one answered. That
+// matters most exactly when it is hardest to reason about: the source of truth
+// and the search index are different stores, and a recall served by a behind
+// index looks, in every other attribute, identical to one served by a healthy
+// one.
+type VectorDescriber interface {
+	// DescribeVectorStore names the backend, e.g. "sqlitevec", "qdrant", or
+	// "hybrid(sqlitevec->qdrant)" when a source of truth and an index are paired.
+	DescribeVectorStore() string
+}
+
+// VectorBackendName reports the backend serving recalls, or "" when the store
+// cannot name itself.
+func (s *Service) VectorBackendName() string {
+	d, ok := s.vectors.(VectorDescriber)
+	if !ok {
+		return ""
+	}
+	return d.DescribeVectorStore()
+}
+
+// rerankBudgetExceeded is the signal a Reranker raises when ITS OWN budget was
+// the binding constraint — as opposed to an unreachable endpoint, an inherited
+// deadline, or any other failure that happens to consume the same wall clock.
+//
+// Declared here, at the consumer, like Embedder and Reranker themselves: the
+// service depends on the capability rather than on the TEI client that currently
+// provides it. It exists because the shape of the error cannot answer the
+// question — a DNS stall and a slow cross-encoder produce the same
+// timeout-bearing *url.Error, and only the producer knows which one it was.
+type rerankBudgetExceeded interface {
+	RerankBudgetExceeded() bool
+}
+
+// RerankDescriber is an OPTIONAL interface a Reranker may implement to report
+// the budget it enforces on itself.
+//
+// The budget decides pages, which is why the service wants it: when a rerank
+// call overruns, applyRerankWith fails open and serves the FUSED order instead
+// of the cross-encoder's. The service cannot see that budget otherwise — it
+// holds a Reranker, and the duration lives inside the client that was handed
+// one at construction. Measured 2026-08-26 on a CPU cross-encoder: 44 of 60
+// rerank calls at pool 20 ran longer than the 10s the deployed stack ships,
+// so on that hardware the budget is not a safety net, it is the thing deciding
+// the ranking.
+type RerankDescriber interface {
+	// RerankBudget returns the ceiling on a complete rerank call, or 0 when the
+	// reranker enforces none. Zero is honest rather than a guess: a reranker that
+	// cannot state a budget must not have one invented for it.
+	RerankBudget() time.Duration
+}
+
 // Reranker scores candidate documents against a query with a cross-encoder,
 // returning one score per document IN INPUT ORDER (higher is better). Like
 // Embedder it is declared at the consumer, so the service depends on the
@@ -139,6 +217,14 @@ type Service struct {
 	rerank       Reranker
 	rerankPool   int
 	rerankWeight float64
+	// rerankNorm names how a raw cross-encoder score is brought onto a scale
+	// comparable with the fused score. Empty resolves to DefaultRerankNorm, which
+	// has been SIGMOID since 2026-08-25 — it is not an inert zero value, and
+	// reading it as one is not hypothetical: serviceForArm skipped resetting this
+	// field on the strength of an earlier version of this comment promising
+	// min-max, which silently made the eval's min-max control a second sigmoid
+	// arm. Anything wanting min-max must ask for it by name.
+	rerankNorm string
 	// bm25Auto scales the lexical fusion weight per query by its measured lexical
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
 	bm25Auto bool
@@ -297,6 +383,32 @@ func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
 	return s
 }
 
+// WithRerankNorm selects how raw cross-encoder scores are normalised before the
+// blend, and returns s for chaining. An unknown or empty name resolves to
+// DefaultRerankNorm — sigmoid, not min-max. Passing "" is therefore a request
+// for the current default, never a way back to the pre-option behaviour.
+//
+// Same post-construction-setter contract as WithReranker: call before the
+// service is shared.
+func (s *Service) WithRerankNorm(name string) *Service {
+	switch name {
+	case RerankNormMinMax, RerankNormSigmoid, RerankNormRank:
+		s.rerankNorm = name
+	default:
+		s.rerankNorm = DefaultRerankNorm
+	}
+	return s
+}
+
+// RerankNormName reports the resolved normaliser, so am_status and the eval
+// table name the same thing the blend actually used.
+func (s *Service) RerankNormName() string {
+	if s.rerankNorm == "" {
+		return DefaultRerankNorm
+	}
+	return s.rerankNorm
+}
+
 // MemoryEvidenceSelectorName reports the resolved operator-facing selector.
 func (s *Service) MemoryEvidenceSelectorName() string {
 	if s.memoryEvidenceSelector == semanticMemoryEvidenceSelector {
@@ -449,7 +561,7 @@ func (s *Service) RankingProfile() string {
 	}
 	rerank := "off"
 	if s.rerank != nil {
-		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f)", s.rerankPool, s.rerankWeight)
+		rerank = fmt.Sprintf("on(pool=%d,weight=%.2f,norm=%s)", s.rerankPool, s.rerankWeight, s.RerankNormName())
 	}
 	profile := fmt.Sprintf("fusion=%s lex-weight=%s lex-norm=%s closet-boost=%.2f rerank=%s unit=memory evidence=%s",
 		fusion, lex, lexNorm, s.closetBoostScale, rerank, s.MemoryEvidenceSelectorName())
@@ -959,16 +1071,20 @@ func searchFilter(q SearchQuery) store.Filter {
 // Telemetry never changes ranking: a collector that is down drops observability,
 // not results. SkipTelemetry skips only the SQLite write (eval); OTEL spans
 // still run and hit the noop provider when Setup was not called.
-func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
+func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) (SearchResult, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" {
-		return nil, fmt.Errorf("%w: query is required", ErrInvalidInput)
+		return SearchResult{}, fmt.Errorf("%w: query is required", ErrInvalidInput)
 	}
 	// Cap by runes, not bytes: the contract caps queries at 250 characters, and a
 	// byte slice could split a multibyte rune into invalid UTF-8 before it reaches
 	// the embedder and tokenizer.
-	if r := []rune(query); len(r) > 250 {
-		query = string(r[:250])
+	queryRune := []rune(query)
+	queryRunes := len(queryRune)
+	truncated := false
+	if queryRunes > 250 {
+		query = string(queryRune[:250])
+		truncated = true
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -986,7 +1102,15 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	// searchCtx is the parent every stage (and outbound HTTP) must Start from.
 	// Starting siblings from the pre-Search ctx leaves them parentless — which
 	// is how the first eval dump shipped a forest of roots instead of a tree.
-	searchCtx, parent := telemetry.Start(ctx, telemetry.StageSearch, searchAttrs(s, q, limit)...)
+	attrs := append(searchAttrs(s, q, limit),
+		// A LENGTH, never the text — ADR-025 keeps query text off spans. The pair
+		// answers "did the embedder, the lexical channel and the cross-encoder all
+		// see the question the caller actually asked?", which nothing could answer
+		// before: a query cut mid-sentence left no evidence that the embedded text
+		// differed from what was sent.
+		attribute.Int("am.query_runes", queryRunes),
+		attribute.Bool("am.query_truncated", truncated))
+	searchCtx, parent := telemetry.Start(ctx, telemetry.StageSearch, attrs...)
 	defer parent.End(telemetry.Ran)
 
 	embedCtx, embedSpan := telemetry.Start(searchCtx, telemetry.StageEmbed)
@@ -998,9 +1122,25 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		// unlike filing this fails. Name the cause, because the same outage lets
 		// writes succeed (queued), and an agent seeing one work and the other not
 		// will otherwise conclude the memory itself is broken.
-		return nil, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
+		return SearchResult{}, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
-	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
+	embedAttrs := []attribute.KeyValue{attribute.Int("am.dim", len(vec))}
+	// A distance is only interpretable against the model that produced it, and
+	// am.dim cannot identify one: two different 1024-dimension models are two
+	// different embedding spaces reporting the same number.
+	if d, ok := s.embed.(EmbedDescriber); ok {
+		backend, model, window := d.DescribeEmbedder()
+		embedAttrs = append(embedAttrs,
+			attribute.String("am.embed_backend", backend),
+			attribute.String("am.embed_model", model))
+		if window > 0 {
+			// Only when the backend actually REPORTED it. Absent beats guessed:
+			// every 8192 in this tree is a comment, and ChunkSize is 5% of it on
+			// that authority alone.
+			embedAttrs = append(embedAttrs, attribute.Int("am.embed_window_tokens", window))
+		}
+	}
+	embedSpan.End(telemetry.Ran, embedAttrs...)
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
@@ -1016,23 +1156,33 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 		candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight),
 		q.RetrieveK, s.retrieveK,
 	)
+	// THE fetch width, computed on every recall and until now recorded nowhere.
+	// It is not derivable from the other attributes: candidateKFor is limit*3
+	// raised to rerankPool as a FLOOR, then raised again by any retrieve-k, so
+	// am.limit and am.rerank_pool together still do not say what was asked of the
+	// index.
+	//
+	// Measured 2026-08-26 and the reason this exists: at the shipped limit=5 it is
+	// 15, while an eval arm ranking the same query saw 100 — a gap of 0.027 MRR
+	// and 8 golds no ranking change could reach, invisible on every span.
+	telemetry.Annotate(searchCtx, attribute.Int("am.candidate_k", candidateK))
 	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
-		return nil, err
+		return SearchResult{}, err
 	}
 	q.Limit = limit
 	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
-		return nil, err
+		return SearchResult{}, err
 	}
 
 	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
 		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
 		parent.Set(attribute.Int("am.count", len(results)))
-		return results, nil
+		return SearchResult{SearchID: searchID, Hits: results}, nil
 	}
 	ev := searchEventRow{
 		ID: searchID, TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
@@ -1045,12 +1195,29 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
+		// The signal an abstention threshold can actually use. TopScore above is the
+		// FUSED score, and under rrf that is 1/(60+rank) — rank, not quality.
+		ev.TopRerankScore = results[0].RerankScore
 	}
 	s.repo.recordSearch(ctx, ev)
 	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))
 	parent.Set(attribute.Int("am.count", len(results)))
 
-	return results, nil
+	return SearchResult{SearchID: searchID, Hits: results}, nil
+}
+
+// Search is SearchPage's hits without the page's identity, kept because most
+// callers want exactly that and because widening every one of them — 66 test
+// call sites among them — would have been a large mechanical diff for a
+// page-level field two of them need.
+//
+// It is a projection of SearchPage, not a second implementation: there is one
+// ranking path, no flag selects between them, and this function cannot diverge
+// because it does nothing but drop a field. Reach for SearchPage when the caller
+// needs to name the recall it just ran.
+func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]SearchHit, error) {
+	page, err := s.SearchPage(ctx, teamID, q)
+	return page.Hits, err
 }
 
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
@@ -1072,7 +1239,18 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// same filter to know how many DISTINCT memories a widening round found, and
 	// therefore whether to widen again. Two copies of a scope predicate is how a
 	// stale one survives, so both paths call survivorsFrom instead.
-	survivors, _ := survivorsFrom(hits, rows, q)
+	survivors, _, drops := survivorsFrom(hits, rows, q)
+	// Recorded HERE and nowhere else: this is the single call over the final pool.
+	// Annotate paints the span currently on ctx — the am.search parent for a served
+	// recall, an eval arm's own span for an arm — which is the correct per-caller
+	// attribution, and the reason the counts are returned rather than taken inside
+	// the (pure, context-free) predicate.
+	if drops.Any() {
+		telemetry.Annotate(ctx,
+			attribute.Int("am.dropped_orphan", drops.Orphan),
+			attribute.Int("am.dropped_out_of_scope", drops.OutOfScope),
+			attribute.Int("am.dropped_over_distance", drops.OverDistance))
+	}
 
 	// Collapse HERE, before scoring, so every consumer of rankRetrieved ranks
 	// memories. Eval pool arms call this on a Clone: an arm reconstructing the
@@ -1159,7 +1337,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		hit.Score = r.Fused
 		hit.BM25 = r.BM25
 		hit.ClosetBoost = r.Boost
-		hit.RerankScore, hit.Reranked = r.Rerank, r.Reranked
+		hit.RerankScore, hit.Reranked, hit.Blended = r.Rerank, r.Reranked, r.Blended
 		if hit.ChunksMatched == 0 {
 			hit.ChunksMatched = 1
 		}
@@ -1268,8 +1446,24 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		// A degraded reranker returns FALSE, deliberately. It failed open and the
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass
 		// would be exactly as wrong as the weight-0 case this fix is about.
-		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
-		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError), attribute.Int("am.pool", pool))
+		// A blown budget and a sick endpoint both fail open, but they are not the
+		// same incident and they do not have the same fix, so they must not share a
+		// reason code.
+		//
+		// This asks the RERANKER whether its own budget was the binding constraint,
+		// rather than inspecting the error's shape. An earlier version tested
+		// net.Error.Timeout(), and a review on 2026-08-26 showed why that cannot
+		// hold the promise: http.Client.Timeout covers DNS, connect, TLS and header
+		// reads, so a stalled resolver or an unroutable endpoint answers Timeout()
+		// true and was reported as a capacity signal — sending an operator to lower
+		// the pool on a reranker that is simply not there.
+		reason := telemetry.ReasonError
+		var budget rerankBudgetExceeded
+		if errors.As(err, &budget) && budget.RerankBudgetExceeded() {
+			reason = telemetry.ReasonTimeout
+		}
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool, "reason", reason)
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(reason), attribute.Int("am.pool", pool))
 		return ranked, false
 	}
 	if len(scores) != pool {
@@ -1278,7 +1472,19 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		return ranked, false
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
-	return BlendRerank(ranked, scores, weight), true
+	return BlendRerankWith(ranked, scores, weight, s.RerankNormName()), true
+}
+
+// RerankBudget reports the ceiling the configured reranker enforces on a
+// complete call, or 0 when there is no reranker or it enforces none. It is what
+// puts am.rerank_timeout on the search span, so a trace showing a rerank that
+// took 11s can be read against the budget that was actually in force.
+func (s *Service) RerankBudget() time.Duration {
+	d, ok := s.rerank.(RerankDescriber)
+	if !ok {
+		return 0
+	}
+	return d.RerankBudget()
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,
@@ -1313,6 +1519,155 @@ func (s *Service) RerankScoresFor(ctx context.Context, query string, survivors [
 // not depend on the weight: an eval comparing several weights was calling the
 // cross-encoder once per weight with identical inputs, which multiplied the
 // slowest step in the pipeline by the number of arms for no information at all.
+// Rerank-score normalisers. The name is what an eval arm selects and what
+// am_status reports, so it is operator-facing and must stay stable.
+const (
+	// RerankNormMinMax rescales the pool's rerank scores to [0,1] by min-max.
+	// It is the original behaviour and is SCALE-FREE: a pool whose scores differ
+	// by 0.001 and one whose scores differ by 10 both come out spanning the full
+	// range, so a cross-encoder that is indifferent is indistinguishable from one
+	// that is certain. On a small pool it also forces the extremes to exactly
+	// {0,1}, which at weight 0.5 makes an opposed pair tie and discards the
+	// cross-encoder entirely.
+	RerankNormMinMax = "minmax"
+	// RerankNormSigmoid maps each raw logit through 1/(1+e^-x) independently of
+	// the pool. It PRESERVES MAGNITUDE: indifferent scores land together near 0.5
+	// and contribute almost nothing, so the fused evidence decides — which is the
+	// honest reading of "the cross-encoder has no opinion" — while a confident
+	// score still separates. It imports a scale assumption, since a logit is not a
+	// calibrated probability, so it is measured as an arm rather than assumed.
+	RerankNormSigmoid = "sigmoid"
+	// RerankNormRank uses position alone, ignoring score magnitude. It cannot
+	// amplify noise, because a 0.001 gap and a 10.0 gap produce the same steps —
+	// but it still forces the extremes to {0,1}, so it does NOT fix the tie. It is
+	// here to separate the two halves of the defect in the measurement.
+	RerankNormRank = "rank"
+	// DefaultRerankNorm is the served policy. It is sigmoid rather than min-max
+	// because min-max is scale-free on BOTH axes: it cannot distinguish a
+	// cross-encoder that is certain from one that is indifferent, and on a small
+	// pool at weight 0.5 it makes an opposed pair tie, discarding the
+	// cross-encoder's verdict entirely. Measured on this stack 2026-08-25 — a
+	// served page returned two hits both at blended_score 0.5000 while the closest
+	// hit by cosine distance was placed last.
+	DefaultRerankNorm = RerankNormSigmoid
+)
+
+// normalizeSigmoid maps raw cross-encoder logits into (0,1) per element.
+//
+// Unlike normalizeScores this is POOL-INDEPENDENT, which is the entire point: a
+// candidate's normalised value does not change because a different candidate was
+// retrieved alongside it, so the blend can tell "all of these look equally good
+// to me" from "this one is clearly best".
+func normalizeSigmoid(in []float64) []float64 {
+	out := make([]float64, len(in))
+	for i, v := range in {
+		out[i] = 1 / (1 + math.Exp(-v))
+	}
+	return out
+}
+
+// normalizeRank replaces each score with its position in the pool, best = 1.
+//
+// Scale-free by construction, so it cannot turn a rounding difference into a
+// decisive one. It still maps the best and worst to 1 and 0, so it does not cure
+// the weight-0.5 tie; the two failures are separable and this arm separates them.
+func normalizeRank(in []float64) []float64 {
+	out := make([]float64, len(in))
+	if len(in) < 2 {
+		for i := range out {
+			out[i] = 1
+		}
+		return out
+	}
+	idx := make([]int, len(in))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return in[idx[a]] > in[idx[b]] })
+	last := float64(len(in) - 1)
+	for pos, i := range idx {
+		out[i] = 1 - float64(pos)/last
+	}
+	return out
+}
+
+// normalizeBlendAxes applies the named policy to both blend inputs, defaulting to
+// min-max on both so an unset field reproduces the original behaviour exactly.
+func normalizeBlendAxes(rerank, fused []float64, norm string) (rerankNorm, fusedNorm []float64) {
+	switch norm {
+	case RerankNormSigmoid:
+		// Magnitude-preserving on both: a logit through sigmoid, an RRF score
+		// scaled by the pool max. An indifferent cross-encoder lands flat near 0.5
+		// and lets the fused evidence decide; a confident one still separates.
+		return normalizeSigmoid(rerank), normalizeByMax(fused)
+	case RerankNormRank:
+		// Position-only on both: cannot amplify noise, and cannot express
+		// confidence either. It is the control that separates "magnitude mattered"
+		// from "getting off min-max mattered".
+		return normalizeRank(rerank), normalizeRank(fused)
+	case RerankNormMinMax:
+		return normalizeScores(rerank), normalizeScores(fused)
+	default:
+		return normalizeBlendAxes(rerank, fused, DefaultRerankNorm)
+	}
+}
+
+// normalizeByMax scales a non-negative vector by its maximum, preserving ratios.
+//
+// This is the fused axis's counterpart to sigmoid. RRF scores are all near
+// 1/(k+rank) and therefore CLOSE TOGETHER in absolute terms; min-max stretches
+// whatever gap exists to the full [0,1] range, so two candidates differing by 1.6%
+// arrive at the blend looking as far apart as first and last. Dividing by the max
+// keeps a 1.6% difference a 1.6% difference.
+func normalizeByMax(in []float64) []float64 {
+	out := make([]float64, len(in))
+	mx := 0.0
+	for _, v := range in {
+		if v > mx {
+			mx = v
+		}
+	}
+	if mx <= 0 {
+		for i := range out {
+			out[i] = 1
+		}
+		return out
+	}
+	for i, v := range in {
+		out[i] = v / mx
+	}
+	return out
+}
+
+// BlendRerankWith is BlendRerank under a named normalisation POLICY.
+//
+// The policy governs BOTH axes, because normalising only one is not a smaller
+// change — it is an incoherent one. Measured while building the fixture for
+// ADR-030: sigmoid on the rerank axis alone turned a dead tie into 0.5033 vs
+// 0.4967 and STILL ordered the page against a cross-encoder that had asked for
+// the opposite by the widest margin it can express, because the fused axis was
+// still being min-max stretched to {1, 0}. Both axes are scale-free or neither is.
+func BlendRerankWith(ranked []HybridScore, scores []float64, weight float64, norm string) []HybridScore {
+	pool := len(scores)
+	if pool == 0 || pool > len(ranked) {
+		return ranked
+	}
+	fusedRaw := make([]float64, pool)
+	for i := range fusedRaw {
+		fusedRaw[i] = ranked[i].Fused
+	}
+	rerankNorm, fusedNorm := normalizeBlendAxes(scores, fusedRaw, norm)
+
+	head := make([]HybridScore, pool)
+	for i := range head {
+		head[i] = ranked[i]
+		head[i].Rerank, head[i].Reranked = scores[i], true
+		head[i].Blended = weight*rerankNorm[i] + (1-weight)*fusedNorm[i]
+	}
+	sort.SliceStable(head, func(a, b int) bool { return head[a].Blended > head[b].Blended })
+	return append(head, ranked[pool:]...)
+}
+
 func BlendRerank(ranked []HybridScore, scores []float64, weight float64) []HybridScore {
 	pool := len(scores)
 	if pool == 0 || pool > len(ranked) {
