@@ -1,6 +1,10 @@
 package mcpserver
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+)
 
 // TestOnlyASearchIDShapedValueReachesTheSpan: am.search_id is the one am.*
 // string in the tree that a CLIENT supplies, and ADR-025 keeps query text off
@@ -27,8 +31,8 @@ func TestOnlyASearchIDShapedValueReachesTheSpan(t *testing.T) {
 		{"hex-ish but with a stray character", "0123456789abcdef0123456g", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validSearchID(tc.sid); got != tc.want {
-				t.Errorf("validSearchID(%q) = %v, want %v", tc.sid, got, tc.want)
+			if got := palace.ValidSearchID(tc.sid); got != tc.want {
+				t.Errorf("palace.ValidSearchID(%q) = %v, want %v", tc.sid, got, tc.want)
 			}
 		})
 	}

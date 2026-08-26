@@ -89,7 +89,7 @@ _(populated by `adr-verify --mutant` during execution)_
 
 ## Out of Scope
 
-- `max_distance` as a pool shrinker (deferred: docs/adr/BACKLOG.md)
-- Persisting `blended_score` (deferred: docs/adr/BACKLOG.md)
+- `max_distance` as a pool shrinker (deferred: docs/adr/BACKLOG.md §"From ADR-030")
+- Persisting `blended_score` (deferred: docs/adr/BACKLOG.md §"From ADR-030")
 
 ## Verification Log

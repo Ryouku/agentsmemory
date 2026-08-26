@@ -110,6 +110,6 @@ Stop and ask if fixing the anchor lookup cannot be done without changing the `am
 
 - `am.has_wing`'s three meanings. The capture has to happen at the MCP boundary and is T2's job.
 - Telling the CALLER that anchors failed. This task makes it visible in the trace only; the response-shape question is receipted in `BACKLOG.md` §"From ADR-029".
-- Backend identity on the span (deferred: docs/adr/BACKLOG.md)
+- Backend identity on the span (deferred: docs/adr/BACKLOG.md §"From ADR-029")
 
 ## Verification Log

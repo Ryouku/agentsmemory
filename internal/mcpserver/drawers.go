@@ -293,47 +293,11 @@ func annotateSearchID(ctx context.Context, req mcp.CallToolRequest) {
 	// silence: ADR-028 defers on "the first week a non-test client sends one",
 	// and clients sending malformed ids would otherwise read as no adoption at
 	// all, which is the opposite conclusion.
-	if !validSearchID(sid) {
+	if !palace.ValidSearchID(sid) {
 		telemetry.Annotate(ctx, attribute.Bool("am.search_id_rejected", true))
 		return
 	}
 	telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
-}
-
-// validSearchID reports whether sid has the shape randomID() mints: lowercase
-// hex, or the clock fallback "t" followed by digits. It is a shape check, not a
-// lookup — an id for a search that never happened is a client bug worth seeing
-// on the span, whereas an arbitrary string is a leak worth refusing.
-//
-// The hex length is a RANGE rather than the 24 randomID currently emits, and
-// deliberately so. The two ways to be wrong here are not symmetric: too loose
-// lets a slightly odd id through, while too tight starts silently rejecting
-// every real id the moment that length changes — and since a rejected id is not
-// counted as adoption, ADR-028's trigger would read as "no client ever sent
-// one" when in fact all of them did.
-func validSearchID(sid string) bool {
-	if rest, ok := strings.CutPrefix(sid, "t"); ok && rest != "" && isDigits(rest) {
-		return len(sid) <= 32
-	}
-	if len(sid) < 16 || len(sid) > 32 {
-		return false
-	}
-	for _, r := range sid {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// isDigits reports whether s is non-empty and all ASCII digits.
-func isDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return s != ""
 }
 
 // registerGetDrawer: fetch one drawer by id.

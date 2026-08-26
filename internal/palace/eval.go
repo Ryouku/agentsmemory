@@ -784,15 +784,18 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 	c.closetBoostScale = 0
 	c.rerankWeight = 0
 	c.recencyBand = 0
-	// Reset EXPLICITLY to min-max rather than left to inherit the served value.
-	// Left unset it resolves to DefaultRerankNorm, so `rrf+rerank` — the arm every
-	// table in this corpus reads as the min-max control — ran sigmoid whenever the
-	// server did, scoring identically to `rrf+rerank norm=sigmoid` and putting two
-	// bit-identical rows in the table. A sentence saying sigmoid and min-max are
-	// equivalent was then written into an evidence file and an ADR from a
-	// comparison in which min-max never ran. An arm's knobs must come from the arm,
-	// never from how the box that runs the eval happens to be configured.
-	c.rerankNorm = RerankNormMinMax
+	// rerankNorm is deliberately NOT reset here. The first fix for the min-max
+	// control (e20890e) set it to min-max for EVERY arm, which cured `rrf+rerank`
+	// and broke the production-shaped ones in the same stroke: `hybrid+rerank` is
+	// documented as the closet-OFF reranked arm production actually serves, and
+	// `rerank blend w=*` exists to sweep the WEIGHT — forcing min-max on them
+	// measured a normaliser production does not run, which is the very defect the
+	// fix was for, one arm family over.
+	//
+	// So the rule is per-arm and stated at each case: an arm that NAMES a
+	// normaliser sets it, `rrf+rerank` sets min-max because every table in this
+	// corpus reads it as the min-max control, and a production-shaped arm inherits
+	// the served value BECAUSE that is what makes it production-shaped.
 
 	if band, ok := recencyBandOf(arm); ok {
 		return c.WithBM25Weight(false, hybridBM25Weight).WithRecencyBand(band)
@@ -824,7 +827,11 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 	case ArmBlendRank:
 		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormRank)
 	case ArmRRFReranked:
-		return c.WithFusion("rrf").WithRerankWeight(weight)
+		// The min-max control, named explicitly. Left to inherit it became a second
+		// sigmoid arm whenever the server ran sigmoid — two bit-identical rows that
+		// were written up as "sigmoid scores identically to min-max" from a
+		// comparison in which min-max never ran.
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormMinMax)
 	case ArmAdaptive:
 		return c.WithBM25Weight(true, hybridBM25Weight)
 	case ArmAdaptiveIDF:

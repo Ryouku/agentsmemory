@@ -88,6 +88,6 @@ Stop and ask if the three arms cannot be made to disagree on any small-pool fixt
 ## Out of Scope
 
 - Changing the served normalisation or the default weight (that is T2, and only after this reports).
-- Persisting `blended_score` (deferred: docs/adr/BACKLOG.md)
+- Persisting `blended_score` (deferred: docs/adr/BACKLOG.md §"From ADR-030")
 
 ## Verification Log

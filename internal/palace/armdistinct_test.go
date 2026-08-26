@@ -81,3 +81,52 @@ func TestEvalArmsAreDISTINCTCONFIGURATIONSNotJustDistinctNames(t *testing.T) {
 		seen[profile] = arm
 	}
 }
+
+// TestProductionShapedArmsReconstructTheSERVEDNormaliser is the other half of
+// the arm-configuration contract, and it exists because the first fix for the
+// min-max control broke it.
+//
+// That fix (e20890e) reset rerankNorm to min-max for EVERY cloned arm. It cured
+// `rrf+rerank`, whose name every table in this corpus reads as the min-max
+// control — and simultaneously forced min-max onto `hybrid+rerank`, documented
+// as the closet-OFF reranked arm production actually serves, and onto every
+// `rerank blend w=*` row, which exist to sweep the WEIGHT at a fixed normaliser.
+// Under a served sigmoid those arms then measured a pipeline nobody runs, which
+// is the same defect the fix was for, one arm family over. A cross-encoder
+// spread of 0.500/0.501 that sigmoid preserves is stretched to 0/1 by min-max,
+// so an opposed fused order can flip the winner and a weight conclusion is read
+// off the wrong normaliser.
+//
+// The rule this pins: an arm that NAMES a normaliser has that one, the min-max
+// control has min-max whatever the server is set to, and a production-shaped arm
+// has the SERVED value — because that is what makes it production-shaped.
+func TestProductionShapedArmsReconstructTheSERVEDNormaliser(t *testing.T) {
+	for _, served := range []string{RerankNormSigmoid, RerankNormRank, RerankNormMinMax} {
+		t.Run("served="+served, func(t *testing.T) {
+			svc := newTestService(t).
+				WithReranker(&fakeReranker{budget: 10 * time.Second}, 10).
+				WithRerankWeight(0.5).
+				WithRerankNorm(served)
+
+			for _, tc := range []struct {
+				arm  EvalArm
+				want string
+				why  string
+			}{
+				{ArmHybridRerank, served, "the closet-OFF reranked arm IS the served shape; pinning it to a fixed normaliser measures a pipeline nobody runs"},
+				{ArmReranked, served, "production-shaped, closet on; same argument"},
+				{ArmRRFReranked, RerankNormMinMax, "the min-max control every table in this corpus reads as the baseline — it must not drift with the server"},
+				{ArmBlendSigmoid, RerankNormSigmoid, "the arm names its normaliser"},
+				{ArmBlendRank, RerankNormRank, "the arm names its normaliser"},
+			} {
+				c := svc.serviceForArm(tc.arm)
+				if c == nil {
+					t.Fatalf("%s reconstructed no service", tc.arm)
+				}
+				if got := c.RerankNormName(); got != tc.want {
+					t.Errorf("arm %q normaliser = %q, want %q\n  %s", tc.arm, got, tc.want, tc.why)
+				}
+			}
+		})
+	}
+}
