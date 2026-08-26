@@ -280,9 +280,60 @@ const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder co
 // live palace, and the behaviour worth pinning is "the id reaches the span",
 // which needs no storage at all.
 func annotateSearchID(ctx context.Context, req mcp.CallToolRequest) {
-	if sid := strings.TrimSpace(req.GetString("search_id", "")); sid != "" {
-		telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
+	sid := strings.TrimSpace(req.GetString("search_id", ""))
+	if sid == "" {
+		return
 	}
+	// Every other am.* string in the tree is derived server-side; this one is
+	// whatever a client sent. ADR-025 keeps query text off spans, and a caller
+	// can put query text — or anything else — in this field, so the shape is
+	// checked before the value reaches a collector rather than after.
+	//
+	// A rejected id is recorded as a rejection instead of being dropped in
+	// silence: ADR-028 defers on "the first week a non-test client sends one",
+	// and clients sending malformed ids would otherwise read as no adoption at
+	// all, which is the opposite conclusion.
+	if !validSearchID(sid) {
+		telemetry.Annotate(ctx, attribute.Bool("am.search_id_rejected", true))
+		return
+	}
+	telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
+}
+
+// validSearchID reports whether sid has the shape randomID() mints: lowercase
+// hex, or the clock fallback "t" followed by digits. It is a shape check, not a
+// lookup — an id for a search that never happened is a client bug worth seeing
+// on the span, whereas an arbitrary string is a leak worth refusing.
+//
+// The hex length is a RANGE rather than the 24 randomID currently emits, and
+// deliberately so. The two ways to be wrong here are not symmetric: too loose
+// lets a slightly odd id through, while too tight starts silently rejecting
+// every real id the moment that length changes — and since a rejected id is not
+// counted as adoption, ADR-028's trigger would read as "no client ever sent
+// one" when in fact all of them did.
+func validSearchID(sid string) bool {
+	if rest, ok := strings.CutPrefix(sid, "t"); ok && rest != "" && isDigits(rest) {
+		return len(sid) <= 32
+	}
+	if len(sid) < 16 || len(sid) > 32 {
+		return false
+	}
+	for _, r := range sid {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// isDigits reports whether s is non-empty and all ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // registerGetDrawer: fetch one drawer by id.
@@ -291,7 +342,7 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
 		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
-		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is accepted and not yet recorded — pass it and nothing changes today, which is what lets clients adopt it before the recording lands.")),
+		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is recorded on the request's trace span, not yet stored durably — pass it and nothing changes in what you get back, which is what lets clients adopt it before the durable join lands.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Inert for STORAGE — recording the join durably is its own task with its

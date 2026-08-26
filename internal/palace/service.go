@@ -1042,9 +1042,10 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	// Cap by runes, not bytes: the contract caps queries at 250 characters, and a
 	// byte slice could split a multibyte rune into invalid UTF-8 before it reaches
 	// the embedder and tokenizer.
-	queryRunes := len([]rune(query))
+	queryRune := []rune(query)
+	queryRunes := len(queryRune)
 	truncated := false
-	if r := []rune(query); len(r) > 250 {
+	if r := queryRune; len(r) > 250 {
 		query = string(r[:250])
 		truncated = true
 	}

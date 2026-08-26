@@ -189,7 +189,7 @@ echo "==> otel: the smoke search must have left a trace"
 # is no batch delay — but the tree exporter prints a tree when its ROOT span ends,
 # and that is the same instant the HTTP response is written. A single grep the
 # millisecond curl returns lost that race and failed a deploy whose tracer was
-# demonstrably on. Bounded at ~10s so a genuinely absent span still fails.
+# demonstrably on.
 # 60 half-second attempts, not 20. The first search after a restart runs against a
 # cold cross-encoder: measured 10.9s on 2026-08-25, against a 10s poll, and the
 # gate failed a deploy whose tracing was demonstrably working. A gate that cries

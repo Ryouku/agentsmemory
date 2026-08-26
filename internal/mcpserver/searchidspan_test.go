@@ -102,18 +102,64 @@ func TestGetDrawerHandlerReachesTheAnnotation(t *testing.T) {
 	// prove things about the test.
 	ctx := telemetry.WithProvider(context.Background(), tp)
 	if _, err := traceTool(tool, st.Handler)(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
-		Name: tool, Arguments: map[string]any{"id": "d-1", "search_id": "handlerreached01"},
+		Name: tool, Arguments: map[string]any{"id": "d-1", "search_id": "deadbeefcafe0123"},
 	}}); err != nil {
 		t.Fatalf("handler returned a transport error: %v", err)
 	}
 
 	for _, s := range sr.Ended() {
 		for _, kv := range s.Attributes() {
-			if string(kv.Key) == "am.search_id" && kv.Value.Emit() == "handlerreached01" {
+			if string(kv.Key) == "am.search_id" && kv.Value.Emit() == "deadbeefcafe0123" {
 				return
 			}
 		}
 	}
 	t.Error("the registered am_get_drawer handler did not put the caller's search_id on the span; " +
 		"annotateSearchID can be correct and called by nothing, which is a capability that ships unreachable")
+}
+
+// TestARejectedSearchIDIsCountedNotDropped is the rejection branch's rung-2
+// half. validSearchID being correct is worth nothing if the production wrapper
+// never reaches the rejecting path, and a client's malformed id must leave a
+// mark: ADR-028 defers on "the first week a non-test client sends one", so an
+// id thrown away in silence reads as no adoption rather than as a client bug.
+func TestARejectedSearchIDIsCountedNotDropped(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	srv := server.NewMCPServer("test", "0.0.0", server.WithToolCapabilities(true))
+	registerAll(&registrar{srv: srv}, Deps{})
+
+	const tool = mcpprotocol.ToolPrefix + "get_drawer"
+	st := srv.GetTool(tool)
+	if st.Handler == nil {
+		t.Fatalf("%s is not registered — this check has stopped checking anything", tool)
+	}
+
+	ctx := telemetry.WithProvider(context.Background(), tp)
+	if _, err := traceTool(tool, st.Handler)(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		// Query text in the search_id field is the leak this check exists for:
+		// ADR-025 keeps query text off spans, and this is the one am.* string a
+		// caller supplies.
+		Name: tool, Arguments: map[string]any{"id": "d-1", "search_id": "how do I configure the reranker"},
+	}}); err != nil {
+		t.Fatalf("handler returned a transport error: %v", err)
+	}
+
+	var rejected bool
+	for _, s := range sr.Ended() {
+		for _, kv := range s.Attributes() {
+			if string(kv.Key) == "am.search_id" {
+				t.Errorf("a caller-supplied %q reached the span as am.search_id=%q", "search_id", kv.Value.Emit())
+			}
+			if string(kv.Key) == "am.search_id_rejected" {
+				rejected = true
+			}
+		}
+	}
+	if !rejected {
+		t.Error("a malformed search_id left no mark at all; an id dropped in silence is " +
+			"indistinguishable from a client that never sent one, which is the opposite conclusion")
+	}
 }
