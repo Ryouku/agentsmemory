@@ -181,8 +181,12 @@ type Service struct {
 	rerankPool   int
 	rerankWeight float64
 	// rerankNorm names how a raw cross-encoder score is brought onto a scale
-	// comparable with the fused score. Empty means RerankNormMinMax, so an
-	// unconfigured service behaves exactly as it did before this field existed.
+	// comparable with the fused score. Empty resolves to DefaultRerankNorm, which
+	// has been SIGMOID since 2026-08-25 — it is not an inert zero value, and
+	// reading it as one is not hypothetical: serviceForArm skipped resetting this
+	// field on the strength of an earlier version of this comment promising
+	// min-max, which silently made the eval's min-max control a second sigmoid
+	// arm. Anything wanting min-max must ask for it by name.
 	rerankNorm string
 	// bm25Auto scales the lexical fusion weight per query by its measured lexical
 	// signal; bm25Base is the ceiling. See config.BM25Weight for the evidence.
@@ -344,7 +348,8 @@ func (s *Service) WithMemoryEvidenceSelector(name string) *Service {
 
 // WithRerankNorm selects how raw cross-encoder scores are normalised before the
 // blend, and returns s for chaining. An unknown or empty name resolves to
-// min-max, which is what the service did before the option existed.
+// DefaultRerankNorm — sigmoid, not min-max. Passing "" is therefore a request
+// for the current default, never a way back to the pre-option behaviour.
 //
 // Same post-construction-setter contract as WithReranker: call before the
 // service is shared.

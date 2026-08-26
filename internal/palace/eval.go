@@ -784,6 +784,15 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 	c.closetBoostScale = 0
 	c.rerankWeight = 0
 	c.recencyBand = 0
+	// Reset EXPLICITLY to min-max rather than left to inherit the served value.
+	// Left unset it resolves to DefaultRerankNorm, so `rrf+rerank` — the arm every
+	// table in this corpus reads as the min-max control — ran sigmoid whenever the
+	// server did, scoring identically to `rrf+rerank norm=sigmoid` and putting two
+	// bit-identical rows in the table. A sentence saying sigmoid and min-max are
+	// equivalent was then written into an evidence file and an ADR from a
+	// comparison in which min-max never ran. An arm's knobs must come from the arm,
+	// never from how the box that runs the eval happens to be configured.
+	c.rerankNorm = RerankNormMinMax
 
 	if band, ok := recencyBandOf(arm); ok {
 		return c.WithBM25Weight(false, hybridBM25Weight).WithRecencyBand(band)
