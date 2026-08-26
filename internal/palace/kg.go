@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -615,6 +616,20 @@ func (s *Service) KGAdd(ctx context.Context, teamID, subject, predicate, object,
 	}); err != nil {
 		return KGAddResult{}, err
 	}
+	// Index both endpoint labels so the fact is reachable by a QUESTION, not only
+	// by spelling the entity exactly. This is the incremental half of the
+	// lifecycle: an index built once at backfill is stale by its second day and
+	// never says so — it just answers with yesterday's graph.
+	//
+	// Non-fatal. The fact is written; the label index is only how it is found,
+	// and refusing the write because the embedder is down is the trade this
+	// codebase already declined on the drawer path.
+	for _, e := range []struct{ id, label string }{{subID, subj}, {objID, obj}} {
+		if err := s.IndexEntityLabel(ctx, teamID, e.id, e.label); err != nil {
+			slog.WarnContext(ctx, "entity label not indexed; the fact is stored but unreachable by question",
+				"entity", e.id, "err", err)
+		}
+	}
 	return KGAddResult{TripleID: id, Fact: fact}, nil
 }
 
@@ -1011,4 +1026,43 @@ func (s *Service) attachDerivedEdge(ctx context.Context, teamID string, d Drawer
 		Confidence: 1.0, SourceDrawerID: d.ID, ExtractedAt: now,
 		Derived: &derived,
 	})
+}
+
+// AllKGEntities returns every entity a team owns, for the label backfill.
+//
+// Unpaged deliberately: the whole point is a one-shot index build, and the live
+// palace holds 342 entities (measured 2026-08-26). If a workspace ever grows to
+// where this matters, the backfill is the thing to page, not this read.
+func (r *Repo) AllKGEntities(ctx context.Context, teamID string) ([]kgEntityRow, error) {
+	var rows []kgEntityRow
+	err := r.db.WithContext(ctx).Where("team_id = ?", teamID).Find(&rows).Error
+	return rows, err
+}
+
+// WingsForDrawers resolves specific drawer ids to the wing each is filed in, for
+// WingPolicy. Absent ids are simply omitted, which is what makes a dangling
+// provenance pointer UNLOCATABLE rather than an error.
+//
+// Distinct from DrawerWings, which loads the whole team for the drift check: this
+// one is asked about the handful of ids a single recall's facts point at.
+func (r *Repo) WingsForDrawers(ctx context.Context, teamID string, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// Scanned into a narrow anonymous struct, not []Drawer: Drawer carries an
+	// Entities slice gorm cannot map, and Find would error on a type this query
+	// never asked for.
+	var rows []struct {
+		ID   string
+		Wing string
+	}
+	if err := r.db.WithContext(ctx).Model(&drawerRow{}).Select("id", "wing").
+		Where("team_id = ? AND id IN ?", teamID, ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ID] = row.Wing
+	}
+	return out, nil
 }

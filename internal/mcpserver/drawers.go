@@ -784,6 +784,20 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// found nothing still ran and still wrote its row, and that is the page
 		// most worth tracing. It is the primary key of the search_events row.
 		out := map[string]any{"hits": views, "count": len(views), "search_id": page.SearchID}
+		// The fact block, rendered BESIDE the hits. Three keys, because a match
+		// this recall did not return is reported one of two ways and never as
+		// silence: the WING that holds it, when provenance makes that derivable
+		// and an agent can go and query it, or a COUNT when it does not.
+		//
+		// Silence is indistinguishable from "nothing is filed", which is the
+		// failure this whole surface exists to remove — and on today's corpus the
+		// unplaceable case is the majority: 90 of 196 triples resolve to a drawer,
+		// measured 2026-08-26.
+		if !page.Facts.Empty() {
+			out["facts"] = page.Facts.Facts
+			out["elsewhere_wings"] = page.Facts.ElsewhereWings
+			out["unlocatable_facts"] = page.Facts.Unlocatable
+		}
 		// Say it, rather than letting the caller infer it from a truncation flag on
 		// hits it did not ask to have truncated. A silent cap on a "give me
 		// everything" request is the shape that teaches an agent the palace is

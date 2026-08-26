@@ -78,9 +78,26 @@ ancestors' 5 still run, so a regression in what T3 was built on is still caught.
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · 12c5ad4 · exit 1 · `set -o pipefail …` · acceptance-sha256:7193b4e2232a1c0ccc7adee35e5233fa0a24511ac71abb45a8e5b26a9ddc92e5
+  ```
+      recallanswers_spec_test.go:380: UC1-S1 not implemented: a wing holding a current fact whose subject is semantically close to the question returns that fact in a distinct block beside the drawer hits, without the question naming the entity
+  --- FAIL: TestAnUnlocatableFactIsCountedNotDropped (0.00s)
+      recallanswers_spec_test.go:388: F-18 not implemented: a matching fact whose wing cannot be derived is reported as a count and attributed to no wing
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.022s
+  --- FAIL: TestSearchResultRendersFactsAndTheSiblingPointer (0.00s)
+      recallanswers_reach_test.go:81: ADR-036 T3 not implemented: am_search's rendered result carries the in-wing fact block, the derivable sibling wings, and the unlocatable count
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.019s
+  FAIL
+  ```
+- 2026-08-26 · 12c5ad4* · exit 0 · `set -o pipefail …` · acceptance-sha256:7193b4e2232a1c0ccc7adee35e5233fa0a24511ac71abb45a8e5b26a9ddc92e5
 
 ## Mutation Log
+
+- 2026-08-26 · 12c5ad4* · mutant killed · exit 1 · `internal/palace/wingpolicy.go` · claim a fact with no provenance for the searched wing — on this corpus that is the majority of facts, returned under the wrong project name · acceptance-sha256:7193b4e2232a1c0ccc7adee35e5233fa0a24511ac71abb45a8e5b26a9ddc92e5
+- 2026-08-26 · 12c5ad4* · mutant killed · exit 1 · `internal/palace/factsfor.go` · silently drop facts that cannot be placed; silence is indistinguishable from nothing being filed · acceptance-sha256:7193b4e2232a1c0ccc7adee35e5233fa0a24511ac71abb45a8e5b26a9ddc92e5
+- 2026-08-26 · 12c5ad4* · mutant killed · exit 1 · `internal/palace/wingpolicy.go` · let a sibling wings fact content cross the boundary instead of only its name · acceptance-sha256:7193b4e2232a1c0ccc7adee35e5233fa0a24511ac71abb45a8e5b26a9ddc92e5
 
 ## Invariants
 

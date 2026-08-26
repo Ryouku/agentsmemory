@@ -1202,11 +1202,21 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		return SearchResult{}, err
 	}
 
+	// The fact block is assembled AFTER ranking and never feeds it. A failure
+	// here degrades the answer to drawers-only rather than failing the recall:
+	// the drawers are what a caller had before this existed, and losing them
+	// because the graph refused would be the worse trade.
+	facts, factsErr := s.factsFor(searchCtx, teamID, q.Wing, vec, rows)
+	if factsErr != nil {
+		slog.WarnContext(ctx, "fact block not assembled; recall degraded to drawers only", "err", factsErr)
+		facts = FactBlock{}
+	}
+
 	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
 		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
 		parent.Set(attribute.Int("am.count", len(results)))
-		return SearchResult{SearchID: searchID, Hits: results}, nil
+		return SearchResult{SearchID: searchID, Hits: results, Facts: facts}, nil
 	}
 	ev := searchEventRow{
 		ID: searchID, TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
@@ -1227,7 +1237,7 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))
 	parent.Set(attribute.Int("am.count", len(results)))
 
-	return SearchResult{SearchID: searchID, Hits: results}, nil
+	return SearchResult{SearchID: searchID, Hits: results, Facts: facts}, nil
 }
 
 // Search is SearchPage's hits without the page's identity, kept because most

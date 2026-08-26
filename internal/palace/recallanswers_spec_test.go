@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/db"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
 
 	glebarez "github.com/glebarez/sqlite"
@@ -24,11 +25,37 @@ import (
 // nothing. /quality-harness:adr-execute turns them green one task at a time.
 
 func TestAWingScopedRecallNeverReturnsAnotherWingsFact(t *testing.T) {
-	t.Fatal("F-1 not implemented: a wing-scoped recall must not return the content of a fact belonging to another wing")
+	svc, team, ctx := factWorld(t)
+
+	page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "tell me about the ledger service", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	// The sibling's fact is "ledger service deploys nightly". No part of it may
+	// appear anywhere in the returned facts — not the subject, not the
+	// predicate, not the object.
+	for _, f := range page.Facts.Facts {
+		if f.Predicate == "deploys" || f.Object == "nightly" {
+			t.Errorf("a foreign wing's fact crossed the boundary: %s -> %s -> %s", f.Subject, f.Predicate, f.Object)
+		}
+	}
 }
 
 func TestARecallNamesTheWingsThatHoldTheAnswer(t *testing.T) {
-	t.Fatal("F-2 not implemented: when matching facts exist in other wings, the response must name them and say they can be queried; silence is indistinguishable from 'nothing is filed'")
+	svc, team, ctx := factWorld(t)
+
+	page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "tell me about the ledger service", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !slices.Contains(page.Facts.ElsewhereWings, "wing_alpha") {
+		t.Errorf("a derivable sibling wing holding a match was not named; got %v", page.Facts.ElsewhereWings)
+	}
+	// Naming a wing is a POINTER, not a crossing: the wing's name is all that
+	// may travel.
+	if slices.Contains(page.Facts.ElsewhereWings, "wing_acme") {
+		t.Error("the searched wing was named as an elsewhere-wing; that is not somewhere else")
+	}
 }
 
 func TestACorrectedRecordArrivesCarryingItsCorrection(t *testing.T) {
@@ -160,11 +187,95 @@ func TestAnEndedFactIsNeverPresentedAsCurrent(t *testing.T) {
 }
 
 func TestAFactsWingComesFromItsProvenance(t *testing.T) {
-	t.Fatal("F-8 not implemented: wing membership derives from kg_triples.source_drawer_id in three states — LOCAL, FOREIGN (wing derivable, named per F-2), UNLOCATABLE (not derivable, counted per F-18). Unresolvable provenance is never LOCAL")
+	// Driven at the policy itself, so each of the three states can fail on its
+	// own. Routed through a search, an unlocatable fact and a foreign one both
+	// produce "not in the block" and one assertion would cover both.
+	wings := map[string]string{"d-here": "wing_acme", "d-there": "wing_alpha"}
+	p := NewWingPolicy("wing_acme", func(_ context.Context, id string) (string, bool) {
+		w, ok := wings[id]
+		return w, ok
+	})
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		id   string
+		want WingPlacement
+	}{
+		{"provenance in the searched wing", "d-here", PlacementLocal},
+		{"provenance in a sibling wing", "d-there", PlacementForeign},
+		{"provenance that dangles", "d-gone", PlacementUnlocatable},
+		{"no provenance at all", "", PlacementUnlocatable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := p.Place(ctx, tc.id)
+			if got != tc.want {
+				t.Errorf("Place(%q) = %q, want %q", tc.id, got, tc.want)
+			}
+			if got != PlacementLocal && p.MayReturnContent(got) {
+				t.Errorf("content may be returned for a %q fact; only local content may cross", got)
+			}
+		})
+	}
+
+	// Unresolvable provenance is never LOCAL. That asymmetry is the whole point:
+	// defaulting an unplaceable fact into the searched wing returns another
+	// project's content under this project's name, and on today's corpus it
+	// would do so for the majority of facts.
+	if got, _ := p.Place(ctx, "d-gone"); got == PlacementLocal {
+		t.Error("a dangling pointer was claimed for the searched wing")
+	}
 }
 
 func TestReturningFactsDoesNotChangeDrawerRanking(t *testing.T) {
-	t.Fatal("F-9 not implemented: the fact block is additive — drawer selection and order must be unchanged, so this cannot be confounded with a ranking change")
+	svc, team, ctx := factWorld(t)
+	q := SearchQuery{Wing: "wing_acme", Query: "tell me about the ledger service", Limit: 5}
+
+	withFacts, err := svc.SearchPage(ctx, team, q)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if withFacts.Facts.Empty() {
+		t.Fatal("no fact block at all — this test would then be comparing two identical runs and proving nothing")
+	}
+
+	// The comparison that matters: the same query with the graph unreachable must
+	// select and order the same drawers. F-9 is what keeps this decision
+	// separable from a retrieval change — without it, any later measurement is of
+	// two changes at once.
+	bare := *svc
+	bare.vectors = noEntityIndex{svc.vectors}
+	withoutFacts, err := bare.SearchPage(ctx, team, q)
+	if err != nil {
+		t.Fatalf("search without facts: %v", err)
+	}
+	if !withoutFacts.Facts.Empty() {
+		t.Fatal("the control still produced facts; it is not a control")
+	}
+
+	if len(withFacts.Hits) != len(withoutFacts.Hits) {
+		t.Fatalf("drawer count changed: %d with facts, %d without", len(withFacts.Hits), len(withoutFacts.Hits))
+	}
+	for i := range withFacts.Hits {
+		if withFacts.Hits[i].Drawer.ID != withoutFacts.Hits[i].Drawer.ID {
+			t.Errorf("drawer order changed at %d: %s vs %s", i, withFacts.Hits[i].Drawer.ID, withoutFacts.Hits[i].Drawer.ID)
+		}
+		if withFacts.Hits[i].Score != withoutFacts.Hits[i].Score {
+			t.Errorf("drawer score changed at %d: %v vs %v", i, withFacts.Hits[i].Score, withoutFacts.Hits[i].Score)
+		}
+	}
+}
+
+// noEntityIndex makes the entity namespace look empty, so a recall runs with the
+// graph unreachable and everything else identical. That is the control F-9 needs;
+// comparing against a differently-configured service would compare two things.
+type noEntityIndex struct{ store.VectorStore }
+
+func (n noEntityIndex) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
+	if strings.HasSuffix(namespace, "::kg_entities") {
+		return nil, nil
+	}
+	return n.VectorStore.Search(ctx, namespace, vector, k, filter)
 }
 
 func TestAWingReportsItsOwnEntryPoint(t *testing.T) {
@@ -377,7 +488,37 @@ func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {
 // satisfied by returning no facts at all — an unfalsifiable gate on the one
 // path that has to prove a question ARRIVES somewhere.
 func TestAQuestionReachesTheFactThatAnswersIt(t *testing.T) {
-	t.Fatal("UC1-S1 not implemented: a wing holding a current fact whose subject is semantically close to the question returns that fact in a distinct block beside the drawer hits, without the question naming the entity")
+	svc, team, ctx := factWorld(t)
+
+	// The POSITIVE assertion. UC1-S1 was originally bound to a test asserting
+	// that no FOREIGN fact appears — which returning nothing satisfies
+	// completely. This one requires the fact to actually arrive.
+	page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "who owns invoice numbering", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(page.Facts.Facts) == 0 {
+		t.Fatal("a question that does not name the entity returned no facts at all; the graph is still off the read path")
+	}
+	var found bool
+	for _, f := range page.Facts.Facts {
+		if f.Predicate == "owns" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the in-wing fact did not reach the page; got %d facts: %+v", len(page.Facts.Facts), page.Facts.Facts)
+	}
+
+	// A derived containment edge is plumbing, not an answer. T6 attaches one to
+	// every filed drawer, so without this the block answers "who owns invoice
+	// numbering" with "a room contains a drawer" — and it would do so for every
+	// drawer in the wing.
+	for _, f := range page.Facts.Facts {
+		if f.Derived || f.Predicate == DerivedEdgePredicate {
+			t.Errorf("a server-derived containment edge was returned as an answer: %s -> %s -> %s", f.Subject, f.Predicate, f.Object)
+		}
+	}
 }
 
 // TestAnUnlocatableFactIsCountedNotDropped binds F-18. Of 196 triples measured
@@ -385,7 +526,29 @@ func TestAQuestionReachesTheFactThatAnswersIt(t *testing.T) {
 // placed in any wing is the majority case. Dropping it silently would recreate
 // the exact failure this spec removes: silence that reads as "nothing is filed".
 func TestAnUnlocatableFactIsCountedNotDropped(t *testing.T) {
-	t.Fatal("F-18 not implemented: a matching fact whose wing cannot be derived is reported as a count and attributed to no wing")
+	svc, team, ctx := factWorld(t)
+
+	page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "tell me about the ledger service", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if page.Facts.Unlocatable == 0 {
+		t.Fatal("a fact with no provenance was dropped silently; silence is indistinguishable from \"nothing is filed\", which is the failure this exists to remove")
+	}
+	// Counted, never attributed. It must not appear as content and must not put
+	// a wing name in the pointer.
+	for _, f := range page.Facts.Facts {
+		if f.Predicate == "written_in" {
+			t.Error("an unlocatable fact was returned as in-wing content")
+		}
+	}
+	if !page.Facts.Empty() && len(page.Facts.ElsewhereWings) > 0 {
+		for _, w := range page.Facts.ElsewhereWings {
+			if w == "" {
+				t.Error("an unlocatable fact contributed an empty wing name to the pointer")
+			}
+		}
+	}
 }
 
 // TestOneWingRuleGovernsEveryNewResponsePath binds F-19. The fact block, the
@@ -394,4 +557,41 @@ func TestAnUnlocatableFactIsCountedNotDropped(t *testing.T) {
 // rule that will disagree with itself on the path nobody tested.
 func TestOneWingRuleGovernsEveryNewResponsePath(t *testing.T) {
 	t.Fatal("F-19 not implemented: one wing-authorization rule governs the fact block, the sibling pointer, EntryPoint's edges and the bootstrap's inline content")
+}
+
+// factWorld seeds two wings and three facts: one whose provenance is in the
+// searched wing, one whose provenance is in a sibling, and one with none at all.
+// That is the three-state world F-8 describes, and it is the only shape in which
+// F-1, F-2 and F-18 can each fail independently.
+func factWorld(t *testing.T) (*Service, string, context.Context) {
+	t.Helper()
+	ctx := context.Background()
+	const team = "t-facts"
+	svc := newTestService(t)
+
+	here, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "the ledger service owns invoice numbering"})
+	if err != nil {
+		t.Fatalf("add here: %v", err)
+	}
+	there, err := svc.Add(ctx, team, AddInput{Wing: "wing_alpha", Room: "decisions", Content: "the ledger service is deployed nightly"})
+	if err != nil {
+		t.Fatalf("add there: %v", err)
+	}
+
+	// local: provenance resolves into the searched wing
+	if _, err := svc.KGAdd(ctx, team, "ledger service", "owns", "invoice numbering", "", "", "", "", here.Drawers[0].ID); err != nil {
+		t.Fatalf("kg local: %v", err)
+	}
+	// foreign: provenance resolves into a sibling wing
+	if _, err := svc.KGAdd(ctx, team, "ledger service", "deploys", "nightly", "", "", "", "", there.Drawers[0].ID); err != nil {
+		t.Fatalf("kg foreign: %v", err)
+	}
+	// unlocatable: no provenance at all — the majority case on the live corpus
+	if _, err := svc.KGAdd(ctx, team, "ledger service", "written in", "go", "", "", "", "", ""); err != nil {
+		t.Fatalf("kg unlocatable: %v", err)
+	}
+	if _, err := svc.BackfillEntityLabels(ctx, team); err != nil {
+		t.Fatalf("backfill entity labels: %v", err)
+	}
+	return svc, team, ctx
 }

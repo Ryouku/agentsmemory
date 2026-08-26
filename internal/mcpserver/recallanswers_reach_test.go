@@ -78,7 +78,12 @@ func renderedKeysOf(t *testing.T, file, tool string) map[string]bool {
 
 // TestSearchResultRendersFactsAndTheSiblingPointer is ADR-036 T3's rung-3 proof.
 func TestSearchResultRendersFactsAndTheSiblingPointer(t *testing.T) {
-	t.Fatal("ADR-036 T3 not implemented: am_search's rendered result carries the in-wing fact block, the derivable sibling wings, and the unlocatable count")
+	keys := renderedKeysOf(t, "drawers.go", "search")
+	for _, want := range []string{"facts", "elsewhere_wings", "unlocatable_facts"} {
+		if !keys[want] {
+			t.Errorf("am_search's rendered result has no %q key; the block is built and reaches no agent", want)
+		}
+	}
 }
 
 // TestSearchResultRendersTheCorrectionMark is ADR-036 T5's rung-3 proof.

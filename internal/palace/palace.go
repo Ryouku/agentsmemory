@@ -134,6 +134,11 @@ type Tunnel struct {
 type SearchResult struct {
 	SearchID string
 	Hits     []SearchHit
+	// Facts is the fact block ADR-036 adds BESIDE the hits — in-wing facts, the
+	// sibling wings holding matches this recall did not return, and a count of
+	// the matches it could not place at all. It never reorders Hits: F-9 pins
+	// that, so this cannot be confused with a retrieval change.
+	Facts FactBlock
 }
 
 // SearchHit is one ranked result from hybrid search. Score is the fused rank — a
