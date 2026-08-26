@@ -831,3 +831,31 @@ func (r *Repo) InboxCount(ctx context.Context, teamID, wing, room string) (int, 
 	}
 	return int(n), nil
 }
+
+// DrawersByIDs loads drawers by id, preserving the caller's order.
+//
+// Order is preserved deliberately: the bootstrap's eager tier is what the entry
+// point points at, IN THE ORDER it points at it, and a map-ordered result would
+// make the same wing bootstrap differently on each call. A session comparing two
+// bootstraps would read that as the palace changing.
+func (r *Repo) DrawersByIDs(ctx context.Context, teamID string, ids []string) ([]Drawer, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []drawerRow
+	if err := r.db.WithContext(ctx).
+		Where("team_id = ? AND id IN ?", teamID, ids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[string]Drawer, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = fromRow(row)
+	}
+	out := make([]Drawer, 0, len(ids))
+	for _, id := range ids {
+		if d, ok := byID[id]; ok {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}

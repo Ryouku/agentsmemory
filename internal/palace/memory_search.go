@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
@@ -243,6 +244,19 @@ func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID strin
 		return nil, fmt.Errorf("load logical memories: %w", err)
 	}
 
+	// The correction sweep, once for the whole page. A correction attaches to the
+	// record it corrects as an INCOMING edge, so nothing an outgoing walk does
+	// can see it — which is why a session that bootstraps perfectly still reads
+	// whatever the tier got wrong and believes it.
+	//
+	// Non-fatal: a page that cannot resolve corrections is worse than one that
+	// can, and still better than no page.
+	corrections, cerr := s.CorrectionsFor(ctx, teamID, roots, s.wingPolicyFor(ctx, teamID, q.Wing))
+	if cerr != nil {
+		slog.WarnContext(ctx, "corrections not resolved; the page may present a contradicted record as current", "err", cerr)
+		corrections = nil
+	}
+
 	out := make([]SearchHit, 0, len(roots))
 	for _, root := range roots {
 		representative := best[root]
@@ -264,6 +278,10 @@ func (s *Service) collapseCandidatesToMemories(ctx context.Context, teamID strin
 			representative.MemoryContent = representative.Drawer.Content
 		}
 		representative.ChunksMatched = matched[root]
+		// Marked in its normal rank position. Hiding or demoting a corrected
+		// record would be a ranking decision made on somebody else's assertion,
+		// and a retraction can itself be wrong.
+		representative.Corrections = corrections[normalizeEntityID(root)]
 		out = append(out, representative)
 	}
 	return out, nil

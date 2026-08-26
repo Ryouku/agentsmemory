@@ -82,7 +82,24 @@ const (
 	// eval that reimplements the pipeline can score well while production is
 	// broken, and has: a mis-set rerank URL made every real search silently fall
 	// back to hybrid while the eval's own arms looked fine.
+
 	ArmProduction EvalArm = "production (Search)"
+
+	// ArmFactRetrieval scores whether a question reaches the FACT that answers
+	// it, rather than a drawer that mentions it. It is the instrument ADR-036
+	// exists to build first: kg_triples and kg_entities are consulted nowhere on
+	// the search path, so fact retrieval has never been measured and therefore
+	// could not be improved.
+	//
+	// Its baseline is 0% by construction — nothing returns facts yet — which is
+	// what exempts it from the ~0.01 MRR noise floor measured 2026-08-26 between
+	// two provably identical arms. A non-zero result cannot be noise when the
+	// only alternative is zero.
+	//
+	// It is NOT a fusion arm: it re-scores the same retrieved pool against a
+	// different gold (a triple, not a drawer), so fusionRankerFor returns nil for
+	// it and it may sit after the production arms without displacing them.
+	ArmFactRetrieval EvalArm = "fact retrieval"
 )
 
 // ProductionRetrieveK is the retrieve-width floor the production retrieve-k arm
@@ -235,6 +252,11 @@ const (
 	// CatAbsent: the palace does NOT hold the answer, and the right behaviour is
 	// to return nothing. Untested until now, which means max_distance was folklore.
 	CatAbsent = "absent"
+	// CatFact marks a case whose gold is a kg_triple rather than a drawer. It is
+	// a distinct category rather than a flag because the eval already reports per
+	// category, and an average that mixed fact cases into single-hop would hide
+	// exactly the thing ADR-036 is trying to see.
+	CatFact = "fact"
 )
 
 // CaseSetOrigin values: whether a run replayed questions somebody saved, or
@@ -284,8 +306,20 @@ type EvalCase struct {
 	// construction; a real query can be answered by several memories, and
 	// scoring only one of them turns valid answers into retrieval errors.
 	ExpectAny []string `json:",omitempty"`
-	Wing      string   // optional scope, mirroring how the query would really be run
-	Category  string   // one of the Cat* values; empty is treated as CatSingle
+	// ExpectTriple is the fact that answers this case, written canonically as
+	// "subject|predicate|object" and NOT as a triple id.
+	//
+	// The id was the obvious choice and it is wrong: tripleID hashes
+	// validFrom+recordedAt, so re-adding the same fact at a different moment
+	// yields a different id. A corpus keyed on ids goes stale the first time the
+	// palace is rebuilt, and it goes stale SILENTLY — every case simply starts
+	// missing, which reads as the retrieval getting worse.
+	//
+	// Additive and `omitempty`: case files written before ADR-036 carry no such
+	// key and keep loading unchanged.
+	ExpectTriple string `json:",omitempty"`
+	Wing         string // optional scope, mirroring how the query would really be run
+	Category     string // one of the Cat* values; empty is treated as CatSingle
 	// AbsentVerification records that this case's absence was CHECKED, and how.
 	// Nil means it was not — which is a different fact from "checked and nothing
 	// answered it", and the two are indistinguishable once written to a file
@@ -771,7 +805,7 @@ func parseAnchored(arm EvalArm) (EvalArm, string, bool) {
 // arm is scored by rankRetrieved rather than a parallel ranker. Production
 // and contextual arms retrieve on a different path and return nil.
 func (s *Service) serviceForArm(arm EvalArm) *Service {
-	if isProductionSearchArm(arm) || arm == ArmContextual {
+	if isProductionSearchArm(arm) || arm == ArmContextual || arm == ArmFactRetrieval {
 		return nil
 	}
 	c := s.Clone()
@@ -943,6 +977,11 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 		arms = append(arms, ArmBlendSigmoid, ArmBlendRank)
 	}
 	arms = append(arms, ArmProduction, ArmProductionDeep, ArmProductionRetrieve)
+	// The fact arm goes after production and does not disturb it: it is not a
+	// fusion arm, so TestEvalArmsKeepProductionLast — which forbids a FUSION arm
+	// after production — is unaffected. This append is the line that makes the
+	// arm reachable; TestEveryDeclaredArmIsRegistered fails if it is deleted.
+	arms = append(arms, ArmFactRetrieval)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
 	}
@@ -1021,7 +1060,10 @@ func ArmScope(arm EvalArm) SupersessionScope {
 		return ScopePage
 	}
 	switch arm {
-	case ArmContextual:
+	case ArmContextual, ArmFactRetrieval:
+		// ArmFactRetrieval scores kg_triples, not drawers, so its population is
+		// disjoint from every pool arm's. Printing it in the pool column would
+		// compare a fact miss with a drawer miss as if they were the same event.
 		return ScopeOwnIndex
 	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
 		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF,
@@ -1269,6 +1311,32 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			}
 			out[arm], distractorOut[arm] = scorePage(page, goldSet, distractorSet)
 			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(page)))
+		case arm == ArmFactRetrieval:
+			// Without this branch the arm falls to `default`, where serviceForArm
+			// returns nil and the case is BYPASSED — so the arm appears in every
+			// table, passes every registration gate, and can never produce a
+			// number. That is this repository's characteristic defect and T1
+			// shipped with it until a cross-check ran the arm rather than
+			// reading it.
+			// `rows` is the candidate pool this case already hydrated, so the arm
+			// sees BOTH vocabularies exactly as production does. Passing nil
+			// scored the vector vocabulary alone: T4's on/off comparison could
+			// not run through the arm at all, and the first real answerable-rate
+			// would have understated the served path — a measurement biased
+			// against the very feature it exists to judge.
+			//
+			// It is the POOL rather than the page because this arm produces no
+			// drawer page of its own; production reads the ranked page, which is
+			// a subset, so if the two ever diverge the arm is the more generous
+			// of the pair and the direction of that bias is recorded here.
+			block, err := s.factsFor(armCtx, teamID, c.Wing, vec, rows)
+			if err != nil {
+				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
+				caseOut = telemetry.FailedClosed
+				return caseOutcome{TopDistance: -1}, fmt.Errorf("fact retrieval: %w", err)
+			}
+			out[arm] = rankOfFact(block.Facts, c.ExpectTriple)
+			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(block.Facts)))
 		case arm == ArmContextual:
 			ctxRes, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {
