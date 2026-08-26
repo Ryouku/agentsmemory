@@ -406,6 +406,29 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 	return t, nil, true
 }
 
+// coverageBlockFor builds the am_status coverage block. It mirrors inboxStatus's
+// Known discipline: a failed audit reports as unknown rather than as a number,
+// because a zero report's Coverage() reads 1.0 — indistinguishable from genuine
+// health, in exactly the state (palace in trouble) where the wake-up call matters
+// most. The numbers therefore render only when the audit actually served.
+func coverageBlockFor(drift palace.DriftReport, err error) map[string]any {
+	if err != nil {
+		return map[string]any{
+			"known": false,
+			"note":  "coverage could not be taken this time — this is not an all-clear",
+		}
+	}
+	return map[string]any{
+		"known":      true,
+		"coverage":   drift.Coverage(),
+		"namespaces": drift.CoverageView(),
+		"pending_embedding": map[string]any{
+			"drawers": drift.Pending.Drawers,
+			"closets": drift.Pending.Closets,
+		},
+	}
+}
+
 // registerStatus adds the status tool: the wake-up call. Beyond liveness and the
 // session's team/role/quota, it returns the team's memory overview — total
 // drawers and the wing -> rooms taxonomy with counts — so an agent grounds itself
@@ -482,17 +505,7 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// and am_status is the call every session makes first, so it must not
 		// re-run the sweep per call.
 		drift, driftErr := statusDrift.get(ctx, t.TeamID)
-		coverageBlock := map[string]any{
-			"coverage":   drift.Coverage(),
-			"namespaces": drift.CoverageView(),
-			"pending_embedding": map[string]any{
-				"drawers": drift.Pending.Drawers,
-				"closets": drift.Pending.Closets,
-			},
-		}
-		if driftErr != nil {
-			coverageBlock["note"] = "coverage could not be taken this time — this is not an all-clear"
-		}
+		coverageBlock := coverageBlockFor(drift, driftErr)
 
 		out, _ := json.Marshal(map[string]any{
 			"ok":      true,

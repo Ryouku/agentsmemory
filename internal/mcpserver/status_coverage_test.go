@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/auth"
@@ -83,5 +84,33 @@ func TestAmStatusReportsCoverage(t *testing.T) {
 	}
 	if cov.Namespaces["closets"].Expected != 0 {
 		t.Fatalf("closets expected = %d, want 0 (pending excluded by construction)", cov.Namespaces["closets"].Expected)
+	}
+}
+
+// TestFailedDriftAuditRendersNoCoverageNumber: a coverage number that could not
+// be taken must not render. A zero DriftReport's Coverage() reads 1.0 —
+// indistinguishable from genuine health, in exactly the state (palace in
+// trouble) where the wake-up call matters most. Same Known discipline as the
+// inbox block; this test goes red if the error path ever paints a number.
+func TestFailedDriftAuditRendersNoCoverageNumber(t *testing.T) {
+	got := coverageBlockFor(palace.DriftReport{}, errors.New("truth down"))
+	if known, _ := got["known"].(bool); known {
+		t.Fatal("failed audit reported known: true — a number that could not be taken reads as health")
+	}
+	for _, key := range []string{"coverage", "namespaces", "pending_embedding"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("failed audit rendered %q — must be omitted, not painted as a value", key)
+		}
+	}
+	if got["note"] == nil {
+		t.Fatal("failed audit carries no note — the caller cannot tell all-clear from unknown")
+	}
+
+	healthy := coverageBlockFor(palace.DriftReport{}, nil)
+	if known, _ := healthy["known"].(bool); !known {
+		t.Fatal("healthy audit reported known: false")
+	}
+	if _, ok := healthy["coverage"]; !ok {
+		t.Fatal("healthy audit rendered no coverage number")
 	}
 }

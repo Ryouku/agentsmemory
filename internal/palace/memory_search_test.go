@@ -21,7 +21,7 @@ func TestSurvivorsFromCarriesStaleIndex(t *testing.T) {
 		{ID: "id-2", Score: 0.7},
 	}
 
-	stale, _ := survivorsFrom(hits, rows, SearchQuery{Wing: "w"}, true)
+	stale, _, _ := survivorsFrom(hits, rows, SearchQuery{Wing: "w"}, true)
 	if len(stale) != 2 {
 		t.Fatalf("survivors = %d; want 2", len(stale))
 	}
@@ -31,7 +31,7 @@ func TestSurvivorsFromCarriesStaleIndex(t *testing.T) {
 		}
 	}
 
-	fresh, _ := survivorsFrom(hits, rows, SearchQuery{Wing: "w"}, false)
+	fresh, _, _ := survivorsFrom(hits, rows, SearchQuery{Wing: "w"}, false)
 	for _, h := range fresh {
 		if h.StaleIndex {
 			t.Errorf("hit %s is flagged stale on a healthy read", h.MemoryID)
