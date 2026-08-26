@@ -102,6 +102,6 @@ Stop and ask if the wing source cannot be captured without changing `searchWingF
 ## Out of Scope
 
 - **Alerting or failing on a non-zero out-of-scope drop.** Making the divergence visible is this task; deciding what the server does about it is a separate decision with its own blast radius.
-- The six tail findings and backend identity (deferred: `docs/adr/BACKLOG.md` §"From ADR-029").
+- The six tail findings and backend identity (deferred: docs/adr/BACKLOG.md)
 
 ## Verification Log
