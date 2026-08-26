@@ -1386,6 +1386,121 @@ and `internal/web/wing.go` (the dashboard routes).
 
 ---
 
+## Teaching the palace about a project's data (`import`)
+
+A project's reference and seed data usually ship as JSONL beside the code that
+loads them. The rows end up in a database, which is the right home for rows — it
+answers *"which invoices are overdue"* better than any vector search will.
+
+What no store answers is what the data **means**: why every seeded date falls in
+one quarter, which of twelve status values the data actually exercises, that
+`amount` is minor units. An agent opening the repository can read the rows and
+still not know any of it.
+
+`agentsmemory import` files one memory per dataset, and the memory is two halves:
+
+```bash
+agentsmemory import --config agentsmemory-import.toml --out project.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file project.ndjson --as wing_acme
+
+# Or straight into a running server, self-hosted or hosted:
+agentsmemory import --config agentsmemory-import.toml \
+  --push https://your-host/import --as wing_acme --token "$AGENTSMEMORY_TOKEN"
+```
+
+The mapping file is committed **in the project's own repository**, so a change to
+a dataset and the description of that dataset are reviewed in the same pull
+request:
+
+```toml
+wing = "wing_acme"                       # a default; --as still names it on the way in
+
+[[dataset]]
+file  = "data/invoices.jsonl"            # relative to THIS file, not to the shell
+room  = "schema"
+title = "Invoice seed data"
+why   = """
+Seeded from one anonymised quarter, which is why every due date lands in Q1.
+`amount` is MINOR UNITS — 1200 is twelve euros, not twelve hundred."""
+show_values = ["status", "currency"]     # the ONLY fields whose values are quoted
+```
+
+`why` is required. A dataset drawer carrying only a profile records what a reader
+could have derived from the file, and filing it would spend recall on nothing.
+
+### `show_values` — the only values that leave the file
+
+Every field is measured the same way whether or not you name it: type, how many
+rows carry it, how many distinct values it took, and its date range. But the
+**values themselves are quoted only for the fields listed in `show_values`.**
+
+A drawer is recalled by every agent in the wing, and the server embeds and
+indexes it on arrival. So `status` and `country` and `manager_email` all look
+alike from inside a profiler — twelve distinct strings — and only the person who
+wrote the dataset knows which of them may be published. Naming them is that
+person saying so.
+
+It is an **allowlist, not a list of exclusions**, because the two fail in
+opposite directions and only one failure is recoverable. A column added to the
+dataset next month is merely *absent* from the next memory here; an exclusion
+list written before that column existed *publishes* it. A re-import replaces the
+drawer, but nothing un-embeds what the first one already filed.
+
+The cost is that the omission could be silent, so it isn't: an unnamed field
+still reports its distinct **count**, and the memory says in as many words that
+values were withheld.
+
+```
+· status (string), takes 2 value(s) here: open, paid
+· email (string), 148 distinct value(s), not listed
+
+⚠2 field(s) above were COUNTED AND NOT QUOTED. …
+```
+
+**What lands, and what deliberately does not:**
+
+| Carried | Left behind |
+|---|---|
+| The `why` you wrote, verbatim and first | **The rows.** They are already in the database this same JSONL builds |
+| A profile **measured** on every run: fields, types, row count, distinct counts, date ranges | **The values of any field `show_values` does not name** — counted, never quoted |
+| The value sets of the fields you named in `show_values` | **Vectors** — the bundle is text, the server embeds |
+| A count of the fields whose values were withheld, so the gap is visible | Anything below the first level of a nested object |
+
+The measured half cannot drift from the data, because it is re-derived rather
+than remembered. The written half is the part no tool can infer, which is why it
+goes first: recall returns a *window* around a match, and the half that cannot be
+re-derived has to be the half a snippet finds.
+
+Rows are refused on evidence rather than taste: a larger, more heterogeneous
+corpus retrieves measurably worse, because unrelated entries do not remove the
+answer — they add competitors ahead of it.
+
+### Re-running it
+
+A drawer's id is a hash of where it goes and what it says, and the memory's text
+is a pure function of the dataset — the measurement date rides along as
+`content_date` rather than inside the text. So **re-importing an unchanged file
+is a no-op**, however often it runs: same bytes, same id, one row. That is what
+makes a committed mapping file worth committing and a scheduled re-import safe.
+
+**A changed dataset is a different matter.** The import path absorbs and never
+purges by source — it has to, because a batched migration would otherwise delete
+the earlier batches of the source it is still uploading — so a new profile is
+filed *beside* the old one and yesterday's numbers stay recallable. Delete the
+superseded drawer with `am_delete_drawer` after a real change, until the
+[backlog item](docs/adr/BACKLOG.md) that closes this lands.
+
+Pushing straight to a server takes `--as`, and the CLI refuses the push without
+it: the bundle carries no wing, and `/import` **skips** a record it cannot
+address while still answering 200. The push then reads the endpoint's summary
+rather than its status code, for the same reason — a storage failure is reported
+inside a 200 — and asks it to rebuild the derived graph on the way out.
+
+Implementation: [`internal/datasetdoc`](internal/datasetdoc/) (the profiler,
+the mapping file and the bundle) and `cmd/server/importdata.go` (the CLI).
+
+---
+
 ## Project layout
 
 ```
