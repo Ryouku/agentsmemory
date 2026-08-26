@@ -192,3 +192,53 @@ func TestLocalCatalogAddsOnlyDeleteWing(t *testing.T) {
 		t.Fatalf("local-only tools = %v, want [am_delete_wing]", extra)
 	}
 }
+
+// TestEveryCatalogToolIsNamedInTheReadme: the README's tool table must name every
+// tool the server registers.
+//
+// Its sibling above counts the catalogue and greps the README for the number.
+// That is a proxy, and it went green for five tools nobody had documented —
+// am_bootstrap, am_entry_point, am_list_anchors, am_mark_anchors and
+// am_recall_stats were all registered, all reachable, and absent from the table
+// (measured 2026-08-26 against the running server's tools/list). The count check
+// cannot see that, because a count is satisfied by the number being right while
+// the rows are wrong, and `strings.Contains(readme, "43")` is satisfied by any
+// "43" anywhere in a 1,600-line file.
+//
+// This is the repo's own named defect arriving in its documentation gate: a test
+// that ranges over a proxy rather than the thing it is about. A tool absent from
+// the table is not merely undocumented — it is undiscoverable to the one reader
+// who cannot ask the server, which is the reader the README exists for.
+func TestEveryCatalogToolIsNamedInTheReadme(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	// Only TABLE ROWS count — a line starting with "|". The first version of this
+	// check accepted the name anywhere in the file, and its own mutation survived:
+	// deleting the am_bootstrap row left am_bootstrap named inside the
+	// am_entry_point row's prose, so the gate stayed green with the row gone. That
+	// is the same proxy defect one level up, written by the check meant to fix it.
+	rows := map[string]bool{}
+	for _, line := range strings.Split(string(readme), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			continue
+		}
+		// The tool column is the first cell; a name mentioned in the description
+		// of some other tool's row does not document it either.
+		cells := strings.Split(line, "|")
+		if len(cells) < 2 {
+			continue
+		}
+		for _, name := range fullCatalog(true) {
+			if strings.Contains(cells[1], "`"+name+"`") {
+				rows[name] = true
+			}
+		}
+	}
+	for _, name := range fullCatalog(true) {
+		if !rows[name] {
+			t.Errorf("the server registers %s and no README table row lists it; a tool absent from the table is undiscoverable to a reader who cannot query the server", name)
+		}
+	}
+}
