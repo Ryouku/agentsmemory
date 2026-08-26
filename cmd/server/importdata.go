@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/datasetdoc"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/importer"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
 
 	"github.com/urfave/cli/v3"
@@ -38,9 +41,9 @@ func importCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", Required: true, Usage: "mapping file (TOML) listing each dataset, its room, and what it is for. Dataset paths resolve relative to this file"},
 			&cli.StringFlag{Name: "out", Value: "-", Usage: "write the bundle here ('-' for stdout). Ignored when --push is given and this was not set explicitly"},
-			&cli.StringFlag{Name: "push", Usage: "POST the bundle to a running server's /import instead of writing a file, e.g. https://example.com/import"},
+			&cli.StringFlag{Name: "push", Usage: "POST the bundle to a running server's /import instead of writing a file, e.g. https://example.com/import. https only, except a loopback host"},
 			&cli.StringFlag{Name: "token", Sources: cli.EnvVars(mcpprotocol.TokenEnvVar), Usage: "workspace Bearer token for --push"},
-			&cli.StringFlag{Name: "as", Usage: "wing to file every record into when pushing (the ?as= the endpoint takes). Self-hosted names it with `wing import --as` instead"},
+			&cli.StringFlag{Name: "as", Usage: "wing to file every record into, REQUIRED with --push (the ?as= the endpoint takes): a bundle carries no wing, and the endpoint skips a record it cannot address. Self-hosted names it with `wing import --as` instead"},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			return runImport(ctx, importOptions{
@@ -78,6 +81,20 @@ func runImport(ctx context.Context, o importOptions) error {
 		return fmt.Errorf("--push needs --token (or $%s): /import is behind the same Bearer "+
 			"gate as /mcp", mcpprotocol.TokenEnvVar)
 	}
+	// And the reverse, which is the worse half: a bundle carries no wing, the
+	// endpoint files a record into whatever ?as= names, and the importer SKIPS a
+	// record it cannot address rather than refusing it. So a push with no --as
+	// uploads the whole bundle, stores nothing, and answers 200 — the shape this
+	// repository keeps shipping. `wing import` demands the same flag for the same
+	// reason.
+	if o.push != "" && o.as == "" {
+		return fmt.Errorf("--push needs --as: the bundle carries no wing, so the endpoint would " +
+			"file every dataset into an unnamed wing — which it skips, and still reports success")
+	}
+	target, err := pushTarget(o.push, o.as)
+	if err != nil {
+		return err
+	}
 
 	f, err := os.Open(o.configPath)
 	if err != nil {
@@ -107,11 +124,11 @@ func runImport(ctx context.Context, o importOptions) error {
 		return err
 	}
 
-	if o.push != "" {
-		if err := pushBundle(ctx, o.push, o.token, o.as, buf.Bytes()); err != nil {
+	if target != nil {
+		if err := pushBundle(ctx, target, o.token, buf.Bytes(), n); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "pushed %d dataset(s) to %s\n", n, o.push)
+		fmt.Fprintf(os.Stderr, "pushed %d dataset(s) to %s, filed into %s\n", n, o.push, o.as)
 		if !o.outSet {
 			return nil
 		}
@@ -136,27 +153,79 @@ func writeBundle(out string, body []byte) error {
 		_, err := os.Stdout.Write(body)
 		return err
 	}
-	if err := os.WriteFile(out, body, 0o644); err != nil {
+	// 0600, matching `wing export`: a bundle is a palace's contents in plain text,
+	// and this one holds whatever the mapping file allowed to be quoted out of a
+	// project's data. A world-readable file on a shared host is a disclosure the
+	// mapping file's allowlist was written to prevent.
+	if err := os.WriteFile(out, body, 0o600); err != nil {
 		return fmt.Errorf("write bundle: %w", err)
 	}
 	return nil
 }
 
-// pushBundle POSTs the bundle to a running server's /import.
+// pushTarget resolves --push into the URL the bundle is POSTed to, or nil when
+// there is nothing to push to.
 //
-// The response body is included in a failure because the endpoint explains
-// itself — an expired token and a malformed record produce different messages,
-// and swallowing them would leave an operator with a status code and no lead.
-func pushBundle(ctx context.Context, endpoint, token, as string, body []byte) error {
+// It refuses a cleartext endpoint because the workspace token travels with the
+// request: over plain http the Authorization header is readable by anything on
+// the path, and a leaked workspace token is read/write access to the whole
+// palace. Loopback is exempt — a self-hosted server on this machine has no path
+// to be listened on, and `--local` binds exactly that.
+//
+// recompute=1 is set because this is a single-shot import. Hallways and entity
+// tunnels are DERIVED from the drawers, so without it the new memories are
+// filed but stay outside the graph until something else rebuilds it; the
+// batched migration client sets it on its finalize request for the same reason,
+// and `wing import` passes the same flag straight to Ingest.
+func pushTarget(endpoint, as string) (*url.URL, error) {
+	if endpoint == "" {
+		return nil, nil
+	}
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return fmt.Errorf("parse --push URL: %w", err)
+		return nil, fmt.Errorf("parse --push URL: %w", err)
 	}
-	if as != "" {
-		q := u.Query()
-		q.Set("as", as)
-		u.RawQuery = q.Encode()
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+	default:
+		return nil, fmt.Errorf("--push %s must be an https:// URL (http:// only for a loopback "+
+			"host): the workspace token is sent with the bundle, and in cleartext it is readable "+
+			"by anything between here and the server", endpoint)
 	}
+	q := u.Query()
+	q.Set("as", as)
+	q.Set("recompute", "1")
+	u.RawQuery = q.Encode()
+	return u, nil
+}
+
+// isLoopback reports whether host names this machine, so an http:// endpoint
+// there carries the token no further than the process next door.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// pushBundle POSTs the bundle to a running server's /import and reads what the
+// server says it did.
+//
+// The status code is not the answer, and treating it as one is how a push files
+// nothing and reports success. /import consumes the whole body before replying,
+// so a decode or storage failure comes back inside a 200 as Result.Error, and a
+// record it cannot address is counted into Skipped rather than refused. So the
+// summary is decoded and checked against what was sent: wanted is how many
+// datasets the bundle carried, and anything less than that landing is a failure
+// the operator has to hear about.
+//
+// The response body is included in a transport failure too, because the endpoint
+// explains itself — an expired token and a malformed record produce different
+// messages, and swallowing them would leave an operator with a status code and
+// no lead.
+func pushBundle(ctx context.Context, u *url.URL, token string, body []byte, wanted int) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -166,12 +235,27 @@ func pushBundle(ctx context.Context, endpoint, token, as string, body []byte) er
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("push to %s: %w", endpoint, err)
+		return fmt.Errorf("push to %s: %w", u.Redacted(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("push to %s: %s: %s", endpoint, resp.Status, bytes.TrimSpace(detail))
+		return fmt.Errorf("push to %s: %s: %s", u.Redacted(), resp.Status, bytes.TrimSpace(detail))
+	}
+
+	var res importer.Result
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&res); err != nil {
+		return fmt.Errorf("push to %s: %s, but the summary did not decode, so what was filed is "+
+			"unknown: %w", u.Redacted(), resp.Status, err)
+	}
+	if res.Error != "" {
+		return fmt.Errorf("push to %s: the server answered %s and reported: %s",
+			u.Redacted(), resp.Status, res.Error)
+	}
+	if res.Drawers != wanted {
+		return fmt.Errorf("push to %s: %d of %d dataset(s) were filed (%d skipped) — a skipped "+
+			"record is one the server could not address, so nothing is recallable for it",
+			u.Redacted(), res.Drawers, wanted, res.Skipped)
 	}
 	return nil
 }
