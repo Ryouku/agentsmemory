@@ -88,3 +88,19 @@ func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {
 func TestAQuestionReachesTheFactThatAnswersIt(t *testing.T) {
 	t.Fatal("UC1-S1 not implemented: a wing holding a current fact whose subject is semantically close to the question returns that fact in a distinct block beside the drawer hits, without the question naming the entity")
 }
+
+// TestAnUnlocatableFactIsCountedNotDropped binds F-18. Of 196 triples measured
+// 2026-08-26 only 90 resolve to a drawer, so a fact that matches but cannot be
+// placed in any wing is the majority case. Dropping it silently would recreate
+// the exact failure this spec removes: silence that reads as "nothing is filed".
+func TestAnUnlocatableFactIsCountedNotDropped(t *testing.T) {
+	t.Fatal("F-18 not implemented: a matching fact whose wing cannot be derived is reported as a count and attributed to no wing")
+}
+
+// TestOneWingRuleGovernsEveryNewResponsePath binds F-19. The fact block, the
+// sibling pointer, the entry point's edges and the bootstrap's inline content
+// are four ways out of the server, and a rule re-implemented four times is a
+// rule that will disagree with itself on the path nobody tested.
+func TestOneWingRuleGovernsEveryNewResponsePath(t *testing.T) {
+	t.Fatal("F-19 not implemented: one wing-authorization rule governs the fact block, the sibling pointer, EntryPoint's edges and the bootstrap's inline content")
+}

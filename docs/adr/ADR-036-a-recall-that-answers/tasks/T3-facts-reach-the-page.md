@@ -1,70 +1,79 @@
-# Task ADR-036-T3: Facts reach the page, wing-resolved, as a pointer never a crossing
+# Task ADR-036-T3: Facts reach the page, wing-resolved, in three states
 
 **Depends-on:** T1, T2
-**Covers:** F-1, F-2, F-8, F-9, UC1-S1, UC2-S1, UC2-S2
+**Covers:** F-1, F-2, F-8, F-9, F-18, UC1-S1, UC2-S1, UC2-S2
 **Estimated scope:** L
 **Owner:** unassigned
-**Produces:** `Service.factsFor` (wing-resolved facts)
-**Consumes:** the fact-retrieval arm (T1), absence-vs-failure (T2)
+**Produces:** `Service.factsFor` (wing-resolved facts in three states)
+**Consumes:** the fact-retrieval arm (T1), `kg.Resolution` (T2)
 **Data dependency:** hermetic
 
 ## Goal
 
-A question reaches a fact in its own wing, and learns that matches exist in wings it did not search — without seeing their content.
+A question reaches a fact in its own wing, learns which OTHER wings hold matches it may query, and is told how many matches exist that cannot be placed at all.
 
 ## Affected Files
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/palace/service.go` | edit | embed entity labels; resolve wing from provenance; add the fact block |
-| `internal/palace/palace.go` | edit | the fields carrying facts and the sibling-wing pointer |
+| `internal/palace/service.go` | edit | embed entity labels; resolve wing from provenance; build the three-state fact block |
+| `internal/palace/palace.go` | edit | the fields carrying facts, the sibling pointer and the unlocatable count |
+| `internal/palace/entityvectors.go` | add | the entity-label vector lifecycle: initial backfill, upsert on KG write, delete on KG delete — under its own namespace |
 | `internal/mcpserver/drawers.go` | edit | render them — the line that makes them DISCOVERABLE |
-| `internal/palace/recallanswers_spec_test.go` | edit | four red tests |
+| `internal/palace/recallanswers_spec_test.go` | edit | six red tests |
+| `internal/mcpserver/recallanswers_reach_test.go` | edit | the render-site proof |
 
 ## Ordered Steps
 
-1. Confirm the four tests are RED.
-2. Embed entity labels into the existing vector store under a distinct namespace.
-3. Resolve a fact's wing through `source_drawer_id`; unresolvable provenance means "elsewhere", never "here".
-4. Return in-wing facts as a block BESIDE the drawer hits, and name the sibling wings holding the rest.
+1. Confirm all seven tests are RED.
+2. Embed entity labels into the existing vector store under a DISTINCT namespace, and write the lifecycle explicitly: backfill existing entities once, upsert on `am_kg_add`, remove on delete. An index that is only ever written at backfill is stale by its second day.
+3. Resolve a fact's wing through `source_drawer_id` into exactly three states — LOCAL, FOREIGN (name the wing), UNLOCATABLE (count it). Unresolvable provenance is never LOCAL.
+4. Return in-wing facts as a block BESIDE the drawer hits; name the derivable sibling wings; report the unlocatable count.
 5. Assert drawer selection and order are byte-identical before and after.
+6. Assert the POSITIVE case: a question that does not name the entity returns the in-wing fact. UC1-S1 was previously bound to a negative assertion that returning nothing satisfied.
 
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestAQuestionReachesTheFactThatAnswersIt|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking' -count=1 2>&1 | tee /tmp/acc36t3.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t3.out && go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t3b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t3b.out
+set -o pipefail
+go test ./internal/palace/ ./internal/mcpserver/ -run 'TestAQuestionReachesTheFactThatAnswersIt|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking|TestAnUnlocatableFactIsCountedNotDropped|TestSearchResultRendersFactsAndTheSiblingPointer' -count=1 2>&1 | tee /tmp/acc36t3.out; rc=$?
+grep -qE "no tests to run|no test files" /tmp/acc36t3.out && exit 1
+[ $rc -eq 0 ] || exit 1
+go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces|TestOneWingRuleGovernsEveryNewResponsePath|TestSearchResultRendersTheCorrectionMark|TestAddDrawerResultReportsItsEdge|TestEntryPointToolIsRegisteredAndDiscoverable|TestBootstrapToolIsRegisteredAndDiscoverable' 2>&1 | tee /tmp/acc36t3b.out; rc=$?
+[ $rc -eq 0 ] || exit 1
 ```
 
-The new tests run ALONE first, so the already-green suite in the second command cannot carry the
-verdict by itself. The fence ends with the whole repo because a task-scoped fence passes while a
-repo-wide gate fails — measured on this corpus 2026-08-25.
+`set -o pipefail` and the explicit `$rc` checks are the gate; the output grep only catches the
+empty-filter case. Parsing output alone passes a test binary that fails without printing a matched
+`FAIL` line. The new tests run ALONE first so the green suite cannot carry the verdict, and the
+run ends repo-wide because a task-scoped fence passes while a repo-wide gate fails.
 
-The `-skip` list is what makes that second command SATISFIABLE. All 18 ADR-036 stubs are committed
-failing, so an unskipped `go test ./...` stays red until the last task lands — every earlier task
-would be unable to record an exit-0 run, and a fence that cannot pass blocks its wave as effectively
-as one that cannot fail. Verified 2026-08-26: 18 `--- FAIL` lines in `./internal/palace` before any
-of this ADR is built. The list skips exactly the stubs owned by tasks this one does NOT depend on;
-T3's own 5 and its ancestors' 3 still run, so the fence still
-catches a regression in anything T3 was built on top of.
+The `-skip` list is what makes the repo-wide command SATISFIABLE. All 26 ADR-036 stubs are committed
+failing, so an unskipped `go test ./...` stays red until the last task lands and no earlier task
+could record an exit-0 run — a fence that cannot pass blocks its wave as surely as one that cannot
+fail. It skips exactly the stubs owned by tasks T3 does not depend on: T3's own 7 and its
+ancestors' 4 still run, so a regression in what T3 was built on is still caught.
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestAQuestionReachesTheFactThatAnswersIt` | `internal/palace/recallanswers_spec_test.go` | a question not naming the entity returns the in-wing fact in a distinct block — the POSITIVE assertion UC1-S1 lacked | UC1-S1 |
-| `TestAWingScopedRecallNeverReturnsAnotherWingsFact` | `internal/palace/recallanswers_spec_test.go` | no foreign wing's subject, predicate or object appears anywhere in the response | F-1 |
-| `TestARecallNamesTheWingsThatHoldTheAnswer` | `internal/palace/recallanswers_spec_test.go` | sibling wings holding matches are named and said to be queryable | F-2 |
-| `TestAFactsWingComesFromItsProvenance` | `internal/palace/recallanswers_spec_test.go` | wing derives from `source_drawer_id`; unresolvable means elsewhere | F-8 |
+| `TestAQuestionReachesTheFactThatAnswersIt` | `internal/palace/recallanswers_spec_test.go` | a question not naming the entity returns the in-wing fact in a distinct block — the positive assertion UC1-S1 lacked | UC1-S1 |
+| `TestAWingScopedRecallNeverReturnsAnotherWingsFact` | `internal/palace/recallanswers_spec_test.go` | no foreign wing's subject, predicate or object appears anywhere | F-1, UC2-S2 |
+| `TestARecallNamesTheWingsThatHoldTheAnswer` | `internal/palace/recallanswers_spec_test.go` | every DERIVABLE sibling wing is named; omitting one that is derivable fails | F-2, UC2-S1 |
+| `TestAFactsWingComesFromItsProvenance` | `internal/palace/recallanswers_spec_test.go` | the three states are distinguished; unresolvable is never local | F-8 |
+| `TestAnUnlocatableFactIsCountedNotDropped` | `internal/palace/recallanswers_spec_test.go` | a match whose wing cannot be derived is counted, not silently dropped | F-18 |
 | `TestReturningFactsDoesNotChangeDrawerRanking` | `internal/palace/recallanswers_spec_test.go` | drawer selection and order are unchanged | F-9 |
+| `TestSearchResultRendersFactsAndTheSiblingPointer` | `internal/mcpserver/recallanswers_reach_test.go` | the block, the wings and the count reach the rendered result | F-2, F-18 |
 
 ## Reachability
 
 | Rung | How this task shows it |
 |------|------------------------|
-| 1 — exists | the five tests |
-| 2 — something selects it | the `Search` call site building the block; mutation: drop it and the fact block disappears |
-| 3 — the caller can discover it | the fields appear in the rendered tool result, not only on the Go struct |
-| 4 — it is used | T1's answerable-rate, whose baseline is 0% by construction |
+| 1 — exists | the six palace tests |
+| 2 — something selects it | the `Search` call site; and the entity-vector lifecycle hook on `am_kg_add` — mutation: delete either and a test goes red |
+| 3 — the caller can discover it | the mcpserver test; a palace test cannot observe a render site |
+| 4 — it is used | T1's answerable-rate over the frozen corpus, whose baseline is 0% by construction |
 
 ## Verification Log
 
@@ -76,15 +85,17 @@ catches a regression in anything T3 was built on top of.
 
 - Ranking is untouched — F-9 is what stops this being confounded with a retrieval change.
 - No foreign wing content, ever. The pointer names wings; it never carries facts.
+- Three states, always. A fact is LOCAL, FOREIGN or UNLOCATABLE — never defaulted into the searched wing.
 
 ## Risks
 
-- Reachability caps at 46% (90 of 196 triples resolve to a drawer, measured 2026-08-26). A low answerable-rate is expected and is not evidence the retrieval failed.
+- Provenance caps location at 46% (90 of 196 triples resolve, measured 2026-08-26), so most matches are UNLOCATABLE. That is why F-18 exists: the majority case must be reportable, not an edge case that gets dropped.
+- The sibling pointer discloses which wings hold a match for a query. This workspace is one tenant, so that is inside the trust boundary — but it is a disclosure, and F-19 (T8) is where the single rule governing it lands.
 
 ## Out of Scope
 
 - Adding a `wing` column to `kg_triples` (deferred: docs/adr/BACKLOG.md)
-- Changing the reranker or fusion (permanent: ADR-030 and ADR-034 own that area.)
+- Changing the reranker or fusion (permanent: ADR-030 — a blend that cannot tell confidence from noise — and ADR-034 own that area; both verified present 2026-08-26.)
 
 ## Stop Condition
 

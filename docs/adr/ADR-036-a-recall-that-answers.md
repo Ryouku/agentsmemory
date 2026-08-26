@@ -137,20 +137,56 @@ Inherited from `docs/specs/2026-08-26-a-recall-that-answers.md` §Contracts Touc
 
 ## Implementation
 
-See `tasks/README.md`. Eight tasks in three waves.
+See `tasks/README.md`. Eight tasks in four waves.
+
+A cold read-only review (different lineage, no team memory) returned REJECT against the first
+draft with 14 findings. Four were spot-checked against source before any edit and all four held, so
+the rest were worked rather than argued. What changed, and why it is recorded here rather than
+quietly fixed:
+
+- **UC1-S1 — the happy path of this entire decision — was bound to a NEGATIVE assertion.** "A
+  question reaches the fact that answers it" was bound to a test asserting no FOREIGN wing's fact
+  appears, which returning nothing satisfies completely. Now bound to a positive stub.
+- **Six of the 26 stubs moved to `internal/mcpserver`.** Five tasks claimed "delete the render line
+  and the test goes red" while naming only `package palace` tests, which call the service directly —
+  precisely what an unwired caller also does. That claim was false as written.
+- **F-2 and F-8 contradicted each other for 54% of facts.** F-8 called unresolvable provenance
+  "elsewhere"; F-2 demanded the response NAME the wings holding elsewhere-matches. For the 106
+  triples with no resolvable wing, no name exists. This was not an authoring slip but an undecided
+  requirement, so it went back to the user rather than being answered here. Resolved as three
+  states, and F-18 is the new fact that carries the third.
+- **F-19 is new**: one wing-authorization rule governs the fact block, the sibling pointer, the entry
+  point's edges and the bootstrap's inline content. A correction target's id and an outgoing
+  taxonomy edge are both routes a foreign wing can leak that a subject/predicate/object check
+  cannot see.
+- **T5 now PRODUCES the correction sweep and T8 consumes it.** Both had independently implemented
+  the same incoming three-predicate walk, which is two rules that diverge on the path nobody tested.
+- **T6 defines the derived edge's subject, predicate, object and attachment root**, and its test
+  proves TRAVERSAL rather than existence — a marked self-loop satisfied the original wording while
+  making nothing reachable.
+- **T1 and T8 commit FROZEN, dated corpora.** Both had a real-data requirement and a hermetic gate,
+  a combination the gate cannot see: the fence goes green while the actual requirement is unmet.
+- **F-16 asserts semantic parity before it compares tokens.** Without that, the bootstrap wins its
+  own cost gate by returning less.
 
 ## Consequences
 
 - **Positive:** a question can reach a fact, and a recall stops being silent about answers it did
   not search. The client-side protocol shrinks by roughly the half that is traversal instructions.
-- **Positive:** every claim here is measurable before it is believed — T1 exists precisely so that
-  nothing after it can report an improvement without an instrument.
+- **Positive:** every FACT-RETRIEVAL claim here is measurable before it is believed — T1 exists so
+  nothing after it can report such an improvement without an instrument. The scope is deliberate:
+  T2's four-state lookup and T6's write-path edges are correctness work proven by a test rather than
+  a score, so they do not wait on a measurement that would say nothing about them.
 - **Negative:** the bootstrap encodes a WORKFLOW, not just data. A wrong tier split or sweep is
   expensive to walk back once clients depend on it. F-14 and F-16 are what make that observable
   early.
-- **Negative:** F-8's 46% ceiling means over half of today's facts stay unreachable from a
-  wing-scoped recall until provenance improves. That is a write-path problem this ADR does not
-  solve.
+- **Negative:** F-8's 46% ceiling means over half of today's facts cannot be placed in any wing.
+  They are not hidden — F-18 requires them counted — but they cannot be routed to, and that is a
+  write-path problem this ADR does not solve.
+- **Negative:** T6 fixes the write path only. The 1,928 existing orphans stay orphaned, so the live
+  corpus is still ~97% unreachable by traversal when T7 ships. T6 precedes T7 so the edge CONTRACT
+  is settled before an entry point indexes against it — not because T6 delivers coverage. The
+  backfill is deferred with a receipt.
 - **Neutral:** ranking is untouched. F-9 pins it, so this cannot be confused with a retrieval change.
 
 ## Out of Scope
