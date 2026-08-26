@@ -253,7 +253,10 @@ func repoRoot(t *testing.T) string {
 // judgement.
 var exampleWings = map[string]bool{
 	"wing_a": true, "wing_abc": true, "wing_acme": true, "wing_acme-billing": true,
-	"wing_acme_laravel": true, "wing_acme-legacy": true, "wing_acme-old": true,
+	// ADR-036 T7: a wing that deliberately does not exist, so a test can assert
+	// that having no entry point is reported as a fact rather than an error.
+	"wing_no_such_place": true,
+	"wing_acme_laravel":  true, "wing_acme-legacy": true, "wing_acme-old": true,
 	"wing_acmee": true, "wing_agentmemories": true,
 	"wing_alpha": true, "wing_anchor": true, "wing_anything": true, "wing_api": true,
 	"wing_app": true, "wing_atlas": true, "wing_atomic": true, "wing_b": true,

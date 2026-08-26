@@ -132,7 +132,30 @@ func TestAddDrawerResultReportsItsEdge(t *testing.T) {
 // TestEntryPointToolIsRegisteredAndDiscoverable is ADR-036 T7's rung-3 proof:
 // the tool must appear in the catalogue with its arguments, not merely exist.
 func TestEntryPointToolIsRegisteredAndDiscoverable(t *testing.T) {
-	t.Fatal("ADR-036 T7 not implemented: the entry-point tool is registered and appears in the catalogue with its arguments")
+	// Rung 3. A handler that serves the tool is not enough: an agent consults the
+	// CATALOGUE, so a tool the catalogue omits is one nobody will ever call — and
+	// no behavioural test can see that, because a test that calls the tool passes
+	// either way.
+	src, err := os.ReadFile("kg.go")
+	if err != nil {
+		t.Fatalf("read kg.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `newTool("entry_point"`) {
+		t.Error("no entry_point tool is declared")
+	}
+	if !strings.Contains(body, "registerEntryPoint(reg,") {
+		t.Error("registerEntryPoint is never called from registerKG; the tool exists and nothing registers it")
+	}
+	keys := renderedKeysOf(t, "kg.go", "entry_point")
+	for _, want := range []string{"node", "edges", "resolution"} {
+		if !keys[want] {
+			t.Errorf("the entry_point result has no %q key", want)
+		}
+	}
+	if !strings.Contains(body, `mcp.WithString("wing", mcp.Required()`) {
+		t.Error("the wing argument is not advertised as required; an agent reading the schema cannot know to send it")
+	}
 }
 
 // TestBootstrapToolIsRegisteredAndDiscoverable is ADR-036 T8's rung-3 proof. A

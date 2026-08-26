@@ -12,6 +12,36 @@ import (
 // ADR-008 opens with. Entries are added by T3 and T4.
 var scenarios = []mcptest.Scenario{
 	{
+		// ADR-036 T7. Two calls, because a one-call scenario proves only that the
+		// handler returned something: the drawer is FILED first, then the entry
+		// point is asked, so the assertion is that the front door actually reaches
+		// what was put behind it.
+		Name:  "a wing reports its own entry point, and it reaches what was filed there",
+		Tools: []string{"am_add_drawer", "am_entry_point"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			filed := h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_scenario", "room": "llm_init",
+				"content": "WHAT MUST I LOAD AT THE START OF A SESSION? Start here.",
+			})
+			if !contains(filed, "has_edge") {
+				t.Errorf("a filed drawer did not report whether it is reachable:\n%s", filed)
+			}
+			out := h.MustCall(t, "am_entry_point", map[string]any{"wing": "wing_scenario"})
+			if !contains(out, "room:wing_scenario/llm_init") {
+				t.Errorf("the wing did not name its own entry node:\n%s", out)
+			}
+			if !contains(out, "edges") {
+				t.Errorf("the entry point reported no edges; it is a door onto a wall:\n%s", out)
+			}
+			// A wing that has no entry point says so rather than erroring — the
+			// distinction T2's vocabulary exists to carry.
+			empty := h.MustCall(t, "am_entry_point", map[string]any{"wing": "wing_no_such_place"})
+			if !contains(empty, "unknown_term") {
+				t.Errorf("a wing with no entry point did not say so distinguishably:\n%s", empty)
+			}
+		},
+	},
+	{
 		Name:  "a filed memory is recalled by the question it answers",
 		Tools: []string{"am_add_drawer", "am_search"},
 		Run: func(t *testing.T, h *mcptest.Harness) {

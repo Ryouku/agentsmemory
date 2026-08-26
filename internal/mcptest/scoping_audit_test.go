@@ -120,6 +120,7 @@ func TestEveryReadToolDeclaresItsWingScope(t *testing.T) {
 		"am_kg_query":            "the knowledge graph is workspace-wide by contract and has a separate behavioural gate",
 		"am_kg_stats":            "knowledge-graph statistics share the graph's workspace boundary",
 		"am_kg_timeline":         "the knowledge-graph timeline shares the graph's workspace boundary",
+		"am_entry_point":         "wing is a REQUIRED argument, so there is no unscoped call for a probe to make; the entry node's outgoing edges are additionally filtered through palace.WingPolicy, which is the same rule the fact block and the correction sweep obey",
 	}
 
 	tools, err := b.ListToolDefinitions(t)

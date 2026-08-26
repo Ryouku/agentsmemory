@@ -33,6 +33,7 @@ func registerKG(reg *registrar, drawers *palace.Service, usageSvc *usage.Service
 	registerKGQuery(reg, drawers, usageSvc)
 	registerKGStats(reg, drawers, usageSvc)
 	registerKGTimeline(reg, drawers, usageSvc)
+	registerEntryPoint(reg, drawers, usageSvc)
 }
 
 func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
@@ -209,5 +210,32 @@ func registerKGTimeline(reg *registrar, drawers *palace.Service, usageSvc *usage
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return jsonResult(map[string]any{"entity": label, "timeline": facts, "count": len(facts)}), nil
+	})
+}
+
+// registerEntryPoint exposes a wing's front door.
+//
+// The reg.add call is the line that makes it REACHABLE, and the catalogue entry
+// that call produces is what makes it DISCOVERABLE — an agent consults the
+// catalogue, and a tool the handler serves but the catalogue omits is one nobody
+// will ever call.
+func registerEntryPoint(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+	tool := newTool("entry_point",
+		mcp.WithDescription("Where to START in a wing. Returns the wing's entry node and what it points at, so a session needs no id from a skill file and no multi-hop walk to begin. A wing with no entry point says so, distinguishably from an error."),
+		mcp.WithString("wing", mcp.Required(), mcp.Description("The wing whose entry point to resolve.")),
+	)
+	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, errResult, ok := admit(ctx, usageSvc)
+		if !ok {
+			return errResult, nil
+		}
+		res, err := drawers.EntryPoint(ctx, t.TeamID, req.GetString("wing", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return jsonResult(map[string]any{
+			"wing": res.Wing, "node": res.Node, "edges": res.Edges,
+			"resolution": string(res.Resolution),
+		}), nil
 	})
 }

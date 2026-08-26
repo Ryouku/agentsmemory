@@ -809,7 +809,7 @@ tarball needs the same treatment.
 
 ### The server is inert without the protocol
 
-Connecting the MCP gives your agent 41 tools and **no reason to call any of
+Connecting the MCP gives your agent 42 tools and **no reason to call any of
 them**. Nothing about a tool catalogue tells an agent to recall before it acts or
 to write down what it learned; without that instruction the memory simply never
 gets opened. Delegation comes in three layers, and self-hosting only gets you the

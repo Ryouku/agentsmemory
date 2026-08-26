@@ -403,3 +403,73 @@ func intersectSorted(a, b []string) []string {
 	}
 	return out
 }
+
+// EntryRoom is the room a wing's entry point lives in by convention.
+//
+// A convention rather than a schema column: which room a team calls its front
+// door is a team decision, and the server's job is to RESOLVE it, not to bless
+// it. The name matches what this workspace's own operating skill already uses,
+// so an existing palace answers without being rebuilt.
+const EntryRoom = "llm_init"
+
+// EntryPointResult is a wing's front door: the node an agent starts from and
+// what that node points at.
+type EntryPointResult struct {
+	// Wing is the wing this answers for, echoed so a caller cannot mistake whose
+	// entry point it is holding.
+	Wing string `json:"wing"`
+	// Node is the entry node's identifier, empty when the wing has none.
+	Node string `json:"node,omitempty"`
+	// Edges are the entry node's OUTGOING edges — what it holds.
+	Edges []KGFact `json:"edges,omitempty"`
+	// Resolution reuses T2's vocabulary rather than inventing a second way to say
+	// "nothing here". unknown_term means this wing has no entry point at all,
+	// which is a fact about the wing and not an error; known_term_no_facts means
+	// it has one that points at nothing yet.
+	Resolution KGResolution `json:"resolution"`
+}
+
+// EntryPoint resolves a wing's entry node and its outgoing edges DIRECTLY.
+//
+// Deliberately not via Traverse. `am_traverse`'s max_hops is provably inert: the
+// `via` set is an intersection carried forward, so a node at hop >= 2 can only be
+// admitted if it shares a wing with everything on the path already — which the
+// hop-1 neighbours have already satisfied. Verified 2026-08-26 from this
+// workspace's own llm_init root (25 nodes, all hop <= 1) and from a leaf drawer in
+// the same room (10 nodes, all hop 1). Building a front door on a walk that
+// silently returns only hop 1 would look like it worked.
+//
+// Fixing traverse is out of scope and stays that way for a reason: whether
+// traversal should be transitive across wings or confined to the start node's own
+// is an unmade product decision, and those are different products.
+func (s *Service) EntryPoint(ctx context.Context, teamID, wing string) (EntryPointResult, error) {
+	out := EntryPointResult{Wing: wing}
+	node := DerivedEdgeSubject(wing, EntryRoom)
+
+	q, err := s.KGQuery(ctx, teamID, KGQueryInput{
+		Entity: node, Direction: "outgoing", Status: KGStatusCurrent,
+	})
+	if err != nil {
+		return EntryPointResult{}, err
+	}
+	out.Resolution = q.Resolution
+	if q.Resolution == KGResolutionUnknownTerm {
+		// The wing has no entry point. That is a fact about the wing, reported
+		// distinguishably from an error and from an entry point that is merely
+		// empty — three different situations a bare count of zero would merge.
+		return out, nil
+	}
+	out.Node = node
+
+	// Every edge goes through the wing rule before it is returned. An entry
+	// point's outgoing edge can name a record in another wing, and that is a
+	// crossing no fact-content check would see.
+	policy := s.wingPolicyFor(ctx, teamID, wing)
+	for _, f := range q.Facts {
+		placement, _ := policy.Place(ctx, f.SourceDrawerID)
+		if policy.MayReturnContent(placement) {
+			out.Edges = append(out.Edges, f)
+		}
+	}
+	return out, nil
+}

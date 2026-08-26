@@ -68,9 +68,24 @@ ancestors' 14 still run, so a regression in what T7 was built on is still caught
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · fe0a696 · exit 1 · `set -o pipefail …` · acceptance-sha256:ae6a65a0229b000c2a2dd1b3ad4a29fab0e2df1b7779d61b3c99484464d2e4aa
+  ```
+  --- FAIL: TestAWingReportsItsOwnEntryPoint (0.00s)
+      recallanswers_spec_test.go:449: F-10 not implemented: a wing must report its entry record and outgoing taxonomy edges, so reaching a taxonomy never needs an id the server did not supply
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.016s
+  --- FAIL: TestEntryPointToolIsRegisteredAndDiscoverable (0.00s)
+      recallanswers_reach_test.go:135: ADR-036 T7 not implemented: the entry-point tool is registered and appears in the catalogue with its arguments
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.016s
+  FAIL
+  ```
+- 2026-08-26 · fe0a696* · exit 0 · `set -o pipefail …` · acceptance-sha256:ae6a65a0229b000c2a2dd1b3ad4a29fab0e2df1b7779d61b3c99484464d2e4aa
 
 ## Mutation Log
+
+- 2026-08-26 · fe0a696* · mutant killed · exit 1 · `internal/mcpserver/kg.go` · declare the tool and never register it; the palace test stays green and only the catalogue check sees it · acceptance-sha256:ae6a65a0229b000c2a2dd1b3ad4a29fab0e2df1b7779d61b3c99484464d2e4aa
+- 2026-08-26 · fe0a696* · mutant killed · exit 1 · `internal/palace/graphquery.go` · stop distinguishing a wing with no entry point from one whose entry point is merely empty · acceptance-sha256:ae6a65a0229b000c2a2dd1b3ad4a29fab0e2df1b7779d61b3c99484464d2e4aa
 
 ## Invariants
 

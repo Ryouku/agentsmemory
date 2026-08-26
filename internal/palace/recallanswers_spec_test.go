@@ -446,7 +446,63 @@ func (n noEntityIndex) Search(ctx context.Context, namespace string, vector []fl
 }
 
 func TestAWingReportsItsOwnEntryPoint(t *testing.T) {
-	t.Fatal("F-10 not implemented: a wing must report its entry record and outgoing taxonomy edges, so reaching a taxonomy never needs an id the server did not supply")
+	ctx := context.Background()
+	const team = "t-f10"
+	svc := newTestService(t)
+
+	// A drawer filed into the entry room gets its containment edge from T6, which
+	// is what gives the wing a front door at all.
+	root, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "WHAT MUST I LOAD AT THE START OF A SESSION?"})
+	if err != nil {
+		t.Fatalf("add root: %v", err)
+	}
+
+	t.Run("a wing names its own entry point", func(t *testing.T) {
+		res, err := svc.EntryPoint(ctx, team, "wing_acme")
+		if err != nil {
+			t.Fatalf("entry point: %v", err)
+		}
+		if res.Node == "" {
+			t.Fatal("the wing reports no entry node; a session would still need an id from a skill file")
+		}
+		if len(res.Edges) == 0 {
+			t.Fatal("the entry node points at nothing; it is a door onto a wall")
+		}
+		var reaches bool
+		for _, e := range res.Edges {
+			if e.Object == root.Drawers[0].ID {
+				reaches = true
+			}
+		}
+		if !reaches {
+			t.Errorf("the entry point does not reach the record filed in its own room; %d edges", len(res.Edges))
+		}
+		if res.Resolution != KGResolutionMatched {
+			t.Errorf("resolution = %q, want %q", res.Resolution, KGResolutionMatched)
+		}
+	})
+
+	t.Run("a wing with no entry point says so", func(t *testing.T) {
+		res, err := svc.EntryPoint(ctx, team, "wing_alpha")
+		if err != nil {
+			t.Fatalf("a wing without an entry point returned an ERROR; having no front door is a fact about the wing, not a failure: %v", err)
+		}
+		if res.Node != "" {
+			t.Errorf("a wing with no entry room reported node %q", res.Node)
+		}
+		if res.Resolution != KGResolutionUnknownTerm {
+			t.Errorf("resolution = %q, want %q — absence must be distinguishable from an entry point that is merely empty", res.Resolution, KGResolutionUnknownTerm)
+		}
+	})
+
+	// The absence vocabulary is T2's, not a second one invented here. Two ways to
+	// say "nothing" is how a caller ends up handling one and not the other.
+	t.Run("absence reuses the lookup vocabulary", func(t *testing.T) {
+		res, _ := svc.EntryPoint(ctx, team, "wing_alpha")
+		if !slices.Contains([]KGResolution{KGResolutionMatched, KGResolutionKnownTermNoFact, KGResolutionUnknownTerm}, res.Resolution) {
+			t.Errorf("resolution %q is outside T2's vocabulary", res.Resolution)
+		}
+	})
 }
 
 func TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked(t *testing.T) {
