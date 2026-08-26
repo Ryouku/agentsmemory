@@ -274,8 +274,30 @@ Normal operation. Recall before you act, persist before you stop.
 2. `am_status` — workspace identity (`mode` + `workspace`), palace shape, quota.
    This repo's wing is **`wing_agentmemories`**; if it is not in the list yet,
    this is the first session here and your first write creates it.
-3. **Your root is `wing_agentmemories`, room `llm_init`** — the only address you
-   have to know. Everything else resolves from it, **by traversal, not by search**:
+3. **Try `am_bootstrap` first — it does steps 3 and 4 in one call, server-side.**
+
+   ```
+   am_bootstrap(wing:"wing_agentmemories")
+   ```
+
+   It resolves the wing's entry node, inlines its first records, returns pointers
+   to the rest, and sweeps the corrections attached to any of them — the whole
+   hand-executed protocol below, without the hardcoded root id and without the
+   three predicate queries.
+
+   ⚠ **It can honestly return nothing, and you must read that correctly.**
+   `resolution: "unknown_term"` means the wing has no entry point — not that the
+   call failed and not that the wing is empty. The entry node is a derived edge
+   written when a drawer is written, so a wing whose `llm_init` drawers predate
+   that mechanism has none, and **`wing_agentmemories` is currently such a wing**
+   (verified 2026-08-26 against the live server: `unknown_term`). Backfilling
+   existing corpora is filed in `BACKLOG.md` and has not run.
+
+   **So until that backfill runs, the traversal below is still how you get in.**
+   Do not read the one-call path as permission to skip it.
+
+   **The manual traversal** — the only address you have to know is the root,
+   and everything else resolves from it **by traversal, not by search**:
 
    ```
    am_list_drawers(wing:"wing_agentmemories", room:"llm_init")  # several drawers; see below

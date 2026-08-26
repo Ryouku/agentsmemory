@@ -164,7 +164,12 @@ exposes same-named tools — without the client seeing two tools of the same nam
 | `am_traverse` / `am_graph_stats` / `am_recompute_graph` | ✅ | Walk the room↔wing graph, summarise it, rebuild hallways + entity tunnels |
 | `am_kg_add` / `am_kg_invalidate` / `am_kg_query` / `am_kg_stats` / `am_kg_timeline` | ✅ | Temporal knowledge graph — subject→predicate→object facts with validity windows, queryable as-of a point in time |
 | `am_list_skills` / `am_update_skill` | ✅ | List the team's centralised skills; create/version-bump a skill body (writer/admin) |
+| `am_bootstrap` | ✅ | Start a session in one call: a wing's entry node, its first records inlined, pointers to the rest, and the corrections attached to any of them. Replaces a hand-executed multi-call traversal. **Returns `resolution: "unknown_term"` on a wing whose `llm_init` drawers were filed before the derived room edges shipped** — those edges are written when a drawer is written, and existing corpora are not backfilled |
+| `am_entry_point` | ✅ | Where to START in a wing: the entry node and what it points at. Edges naming a record in another wing are dropped and counted in `refused`, never listed. Same `unknown_term` condition as `am_bootstrap` |
+| `am_list_anchors` / `am_mark_anchors` | ✅ | Code anchors pinned to a memory — list them, or re-check them against the tree and mark the drawers whose code has since changed |
+| `am_recall_stats` | ✅ | What recall actually did: counts and score distributions over recorded searches, including why a cross-encoder did not order a page |
 | `am_merge_wing` / `am_memories_filed_away` | ✅ | Fold wings together; summarise what the team has filed |
+| `am_delete_wing` | ✅ | **Self-hosted only.** Permanently delete one wing and everything filed in it — drawers, closets, hallways, and every tunnel with an endpoint in it. Knowledge-graph facts are left untouched. `confirm` must be the wing's own name; any other value is refused and reports what the delete would have removed |
 | `sync`, `hook_settings` | ⛔ | Not ported — single-user-local (on-disk source pruning / local hook config) with no multi-tenant meaning |
 
 ---
@@ -1538,6 +1543,30 @@ go test ./...      # unit tests (skill scoping + role gate, qdrant naming)
 
 `goose` owns the schema; `gorm` is the query layer only (`AutoMigrate` is never
 called). Schema changes are additive migrations under `db/migrations/`.
+
+**Migration numbers are allocated at merge, never at authoring**, because a
+per-branch uniqueness check cannot see another branch. Plain `goose.Up` refuses a
+pending migration sitting below the database's maximum applied version, so when
+two branches both add one, whichever merges SECOND renumbers.
+
+That renumber has a cost, and it lands on you rather than on production: if you
+ran the branch locally, your database already applied that file under its OLD
+number, so goose sees the new number as unapplied and re-runs the same SQL. For
+an `ADD COLUMN` that is `duplicate column name`, and the server exits on a
+migrate error — a crash loop on the next start. A fresh or production database
+never sees it, and no test can, because tests migrate from empty.
+
+The repair is to record the new version as applied, after checking your schema
+already holds what it would create:
+
+```bash
+sqlite3 agentsmemory.db \
+  "INSERT INTO goose_db_version (version_id, is_applied, tstamp) VALUES (<new>, 1, datetime('now'));"
+```
+
+Numbering therefore has deliberate gaps — `00027` is one, freed when ADR-034's
+migration became `00029` at merge. A gap is a record that a renumber happened,
+not an error.
 
 ---
 
