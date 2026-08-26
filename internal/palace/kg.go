@@ -1122,7 +1122,13 @@ func (s *Service) CorrectionsFor(ctx context.Context, teamID string, recordIDs [
 				continue
 			}
 			c := Correction{Predicate: pred}
-			placement, wing := policy.Place(ctx, row.SourceDrawerID)
+			// Authorized on row.Subject — the correcting record, whose id is what
+			// ReplacementID exposes — and not on row.SourceDrawerID, which is
+			// merely where the fact was extracted from. The two are independent,
+			// so checking provenance both disclosed foreign replacements (local
+			// provenance, foreign corrector) and suppressed local ones (absent
+			// provenance, local corrector).
+			placement, wing := policy.Place(ctx, row.Subject)
 			if policy.MayReturnContent(placement) {
 				c.ReplacementID = row.Subject
 			} else if placement == PlacementForeign {

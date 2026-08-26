@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
@@ -443,6 +444,13 @@ type EntryPointResult struct {
 // traversal should be transitive across wings or confined to the start node's own
 // is an unmade product decision, and those are different products.
 func (s *Service) EntryPoint(ctx context.Context, teamID, wing string) (EntryPointResult, error) {
+	// A wing is REQUIRED here, and "required" in a tool schema only means the key
+	// is present — an empty string satisfies it. Left unchecked, WingPolicy reads
+	// an empty viewer as "unscoped" and treats every resolvable record as local,
+	// which turns a missing argument into a cross-wing read.
+	if strings.TrimSpace(wing) == "" {
+		return EntryPointResult{}, fmt.Errorf("%w: entry_point needs a wing", ErrInvalidInput)
+	}
 	out := EntryPointResult{Wing: wing}
 	node := DerivedEdgeSubject(wing, EntryRoom)
 
@@ -461,12 +469,19 @@ func (s *Service) EntryPoint(ctx context.Context, teamID, wing string) (EntryPoi
 	}
 	out.Node = node
 
-	// Every edge goes through the wing rule before it is returned. An entry
-	// point's outgoing edge can name a record in another wing, and that is a
-	// crossing no fact-content check would see.
+	// Every edge is authorized on the identifier it EXPOSES — f.Object, the
+	// record the edge names — and not on f.SourceDrawerID, which is where the
+	// edge came from.
+	//
+	// The two are independent: provenance is optional and describes the drawer a
+	// fact was extracted from, while the object is the drawer being pointed at.
+	// An edge whose provenance is local and whose target is foreign passed a
+	// provenance check and disclosed the foreign id, and the comment that used to
+	// sit here named that exact threat while the code beneath it checked the
+	// other identifier.
 	policy := s.wingPolicyFor(ctx, teamID, wing)
 	for _, f := range q.Facts {
-		placement, _ := policy.Place(ctx, f.SourceDrawerID)
+		placement, _ := policy.Place(ctx, f.Object)
 		if policy.MayReturnContent(placement) {
 			out.Edges = append(out.Edges, f)
 		}

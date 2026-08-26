@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // BootstrapTier separates content that travels INLINE from content that travels
@@ -82,6 +83,12 @@ const bootstrapEagerLimit = 10
 // WingPolicy. Two implementations of the same rule diverge on the path nobody
 // tested, and here that path would be a tenancy boundary.
 func (s *Service) Bootstrap(ctx context.Context, teamID, wing string) (BootstrapResult, error) {
+	// Required means present, not non-empty: an empty wing would make WingPolicy
+	// read every resolvable record as local. Refused at the service boundary so
+	// the guarantee does not depend on which caller got there.
+	if strings.TrimSpace(wing) == "" {
+		return BootstrapResult{}, fmt.Errorf("%w: bootstrap needs a wing", ErrInvalidInput)
+	}
 	out := BootstrapResult{Wing: wing}
 
 	// Direct resolution, not a graph walk. am_traverse's max_hops is inert, so a
@@ -127,6 +134,14 @@ func (s *Service) Bootstrap(ctx context.Context, teamID, wing string) (Bootstrap
 		}
 	}
 	for _, id := range deferred {
+		// A pointer names an id AND the call that fetches it, so an unauthorized
+		// pointer is actionable disclosure rather than an inert string. Placed
+		// like every other exit.
+		placement, _ := policy.Place(ctx, id)
+		if !policy.MayReturnContent(placement) {
+			out.Truncation.Omitted++
+			continue
+		}
 		out.OnDemand = append(out.OnDemand, BootstrapPointer{
 			ID: id, Tier: TierOnDemand, Fetch: "am_get_drawer",
 		})
