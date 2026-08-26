@@ -399,3 +399,104 @@ func TestADRNumbersAreUnique(t *testing.T) {
 		seen[m[1]] = base
 	}
 }
+
+// evidenceCitation is one `file:target` reference inside an evidence document.
+type evidenceCitation struct {
+	doc    string
+	file   string
+	target string
+	line   int
+}
+
+// citedEvidenceDocs are the documents whose file references are load-bearing:
+// their whole authority is that a reader can go and look. Add a document here
+// when it starts citing code.
+var citedEvidenceDocs = []string{"docs/evidence/search-path-variable-map.md"}
+
+// TestEvidenceCitationsResolve: a document that cites code must cite code that
+// exists, and must cite it in a form that survives an edit somewhere else.
+//
+// The search-path variable map was written 2026-08-26 and was partly false
+// within the day. It cited file:LINE, and a change that inserted about a hundred
+// lines into internal/palace/service.go left all 34 of its service.go references
+// pointing at `}`, at a blank line, and at an unrelated `return nil`. The rest of
+// the map — rank.go, memory_search.go, mine.go, config.go — was still exact,
+// which is what makes the failure mode clear: nothing was wrong with the
+// document except that line numbers are not a stable address.
+//
+// So this gate refuses line numbers outright rather than checking them. That is
+// the same rule this product already applies to its own memories: am_add_drawer
+// tells callers to paste the exact code and not a line number, "line numbers move
+// on every edit above them". A gate that verified line numbers would go red on
+// every insertion anywhere above a citation, and a gate that cries wolf is one
+// people learn to skip.
+func TestEvidenceCitationsResolve(t *testing.T) {
+	root := repoRoot(t)
+	// path.go:target — the target runs to a backtick, a comma, whitespace or a
+	// closing paren, which is how the map already writes them.
+	// The anchor is a SINGLE IDENTIFIER. The first version of this gate allowed
+	// anything up to whitespace, which silently truncated 81 of 83 anchors to
+	// their first word — so `service.go:func candidateKFor(` was checked as
+	// "func", which appears everywhere, and a rename of candidateKFor did not
+	// turn it red. A gate written to catch unfalsifiable documentation that is
+	// itself unfalsifiable is worse than none, because it is also reassuring.
+	//
+	// Requiring one identifier makes the anchor unambiguous inside a markdown
+	// table cell, where a multi-word anchor cannot be delimited reliably.
+	cite := regexp.MustCompile(`((?:internal|cmd|db|clients)/[A-Za-z0-9_./-]+\.(?:go|sql|yml|yaml)):([A-Za-z0-9_.]+)`)
+	// Anything cited with a space after the colon is the truncation bug returning.
+	loose := regexp.MustCompile(`((?:internal|cmd|db|clients)/[A-Za-z0-9_./-]+\.(?:go|sql|yml|yaml)):[A-Za-z0-9_.]* [A-Za-z0-9_]`)
+
+	var cites []evidenceCitation
+	for _, doc := range citedEvidenceDocs {
+		b, err := os.ReadFile(filepath.Join(root, doc))
+		if err != nil {
+			t.Fatalf("read %s: %v", doc, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if m := loose.FindString(line); m != "" {
+				t.Errorf("%s:%d cites %q — the anchor must be a SINGLE IDENTIFIER with no spaces, "+
+					"or it cannot be delimited in a table cell and this check silently verifies "+
+					"only its first word.", doc, i+1, m)
+			}
+			for _, m := range cite.FindAllStringSubmatch(line, -1) {
+				cites = append(cites, evidenceCitation{doc: doc, file: m[1], target: m[2], line: i + 1})
+			}
+		}
+	}
+	if len(cites) == 0 {
+		t.Fatal("no citations found in any cited evidence document — this check has stopped checking anything")
+	}
+
+	for _, c := range cites {
+		if isLineNumberTarget(c.target) {
+			t.Errorf("%s:%d cites %s:%s — a LINE NUMBER.\n"+
+				"  Line numbers are not a stable address: an edit anywhere above moves them, and the\n"+
+				"  document then points at unrelated code while still looking authoritative. Cite a\n"+
+				"  symbol or a short verbatim snippet instead, e.g. %s:candidateKFor.",
+				c.doc, c.line, c.file, c.target, c.file)
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(root, c.file))
+		if err != nil {
+			t.Errorf("%s:%d cites %s, which does not exist: %v", c.doc, c.line, c.file, err)
+			continue
+		}
+		if !strings.Contains(string(src), c.target) {
+			t.Errorf("%s:%d cites %s:%s, and %q appears nowhere in that file.\n"+
+				"  Either the code was renamed or removed, or the citation was never right.",
+				c.doc, c.line, c.file, c.target, c.target)
+		}
+	}
+}
+
+// isLineNumberTarget reports whether a citation target is a bare line number or
+// line range, which is exactly what this gate exists to refuse.
+func isLineNumberTarget(target string) bool {
+	for _, r := range target {
+		if (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return target != ""
+}
