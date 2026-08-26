@@ -1,6 +1,6 @@
 # Spec: Reach a fact by asking a question
 
-> **Date:** 2026-08-26 · **Status:** Draft
+> **Date:** 2026-08-26 · **Status:** Ready-for-ADR
 > **Owner:** Zy · **Becomes:** ADR-NNN (unassigned)
 > **Gate:** Status may become Ready-for-ADR only after `spec-verify --spec docs/specs/2026-08-26-a-recall-that-answers.md` exits 0.
 > **Cross-references:** `docs/adr/ADR-001-recall-answers-or-abstains.md` (abstention — Accepted, all six tasks pending), `docs/adr/ADR-016-a-memory-an-agent-files-must-be-navigable.md` (entity stamping — executed), `docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md`
@@ -214,6 +214,9 @@ relate one record to another.
 | A sibling-wing pointer discloses project names across wings | Low | Low | Facts are workspace-wide and a workspace is one tenant, so the names disclosed are that tenant's own; verified against `am_kg_add`'s documented scope |
 | Facts crowd drawers out of the page | Med | Med | F-8 pins that drawer selection and order are unchanged; the fact block is additive |
 | The fact block is built, correct, and never read | Med | High | F-5 is the rung-4 measurement; an arm that scores zero retrieved facts fails rather than reporting a score |
+| **F-8 caps fact reachability at 46%.** Measured 2026-08-26 against the live palace: 196 triples, 106 carry `source_drawer_id`, and only **90 resolve to an existing drawer**. The other 54% are treated as "elsewhere" and are invisible to every wing-scoped recall | High | High | This is F-5's ceiling, stated up front so a 46% result reads as the instrument working rather than the feature failing. Raising it is a write-path question, not a retrieval one |
+| **16 provenance pointers are dangling** — they name a drawer that does not exist (106 carry an id, 90 resolve) | Med | Med | F-8 treats an unresolvable pointer as "elsewhere", so a dangling id degrades reachability rather than leaking across wings |
+| **97.1% of drawers are orphans.** Measured 2026-08-26: 1,985 drawers, 57 with any edge. And **0 drawers are named as a triple OBJECT**, so the pointer pattern this spec's F-10 is modelled on has zero adoption in this workspace | High | High | F-11 addresses it at the write path in this same spec; F-10 shipped alone would index 2.9% of the palace |
 | Derived edges invent taxonomy the writer did not choose, and S-8 says the extraction side derives nothing measurable today — so derived edges could be noise that makes traversal worse | Med | High | F-11 requires derived edges to be MARKED, which is what makes the noise measurable and removable; the orphan rate and the derived/authored split are both reportable numbers |
 | F-10's entry point indexes a palace where ≥90% of drawers are orphans (1,974 drawers vs 196 triples, measured 2026-08-26) | High | Med | F-11 addresses the write path in the same spec, so the index is not shipped against a corpus it cannot cover |
 | F-2's pointer is built on a lookup that fails open, so "no facts in this wing" may mean "the lookup did not resolve" | High | High | F-12 makes the two distinguishable and is a precondition of F-2 rather than an independent nicety |
@@ -221,10 +224,6 @@ relate one record to another.
 | A correction edge is itself wrong, and marking it entrenches an error | Low | Med | F-3 marks rather than hides, so the superseded record and its correction are both visible |
 
 ## Open Questions
-
-| Question | Owner | Blocks |
-|----------|-------|--------|
-| Exact fraction of the 196 live triples carrying a resolvable `source_drawer_id`. Sampled 100 via `am_kg_timeline` on 2026-08-26: present on many, ABSENT on a substantial minority — those carrying only `source_file`, or neither. Enough to proceed (F-8's default is safe either way), not enough to predict F-5's ceiling. | Zy | F-5's expected ceiling, not F-8's safety |
 
 ## Verify
 
