@@ -183,10 +183,30 @@ func TestBootstrapToolIsRegisteredAndDiscoverable(t *testing.T) {
 		t.Error("registerBootstrap is never called; the tool exists and nothing registers it — the exact defect this ADR exists to remove")
 	}
 
-	keys := renderedKeysOf(t, "bootstrap.go", "bootstrap")
-	for _, want := range []string{"entry_point", "eager", "on_demand", "corrections", "truncation"} {
-		if !keys[want] {
-			t.Errorf("the bootstrap result has no %q key", want)
+	// The emitted keys live in palace.BootstrapResult.WireShape, which is
+	// deliberately the ONE place the shape is written: the handler returned a
+	// hand-built map and the cost gate marshalled the struct, so the two could
+	// drift while the gate kept passing on a response that no longer matched.
+	shape, shapeErr := os.ReadFile("../palace/bootstrap.go")
+	if shapeErr != nil {
+		t.Fatalf("read palace/bootstrap.go: %v", shapeErr)
+	}
+	shapeBody := string(shape)
+	i := strings.Index(shapeBody, "func (r BootstrapResult) WireShape()")
+	if i < 0 {
+		t.Fatal("WireShape not found — the emitted shape has moved and this check has stopped checking anything")
+	}
+	region := shapeBody[i:]
+	if j := strings.Index(region, "\n}\n"); j > 0 {
+		region = region[:j]
+	}
+	for _, want := range []string{"entry_point", "eager", "on_demand", "corrections", "truncation", "wing"} {
+		if !strings.Contains(region, strconv.Quote(want)) {
+			t.Errorf("the emitted bootstrap shape has no %q key", want)
 		}
+	}
+	// And the handler must actually return it, or the shape is a decoration.
+	if !strings.Contains(string(src), "res.WireShape()") {
+		t.Error("the bootstrap handler does not return WireShape; the emitted response and the measured one can drift apart")
 	}
 }

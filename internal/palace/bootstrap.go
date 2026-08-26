@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -196,50 +197,106 @@ func LoadBootstrapBaseline(path string) (BootstrapBaseline, error) {
 	return b, nil
 }
 
-// bootstrapParityParts are the things the 13-call protocol delivered, which any
-// replacement must also deliver.
+// The parts the 13-call protocol delivered. Any replacement must deliver each
+// one that the wing actually has, and this list is the canonical spelling of them
+// so a test and the checker cannot drift apart.
+const (
+	parityEntryPoint  = "entry point"
+	parityWing        = "resolved wing"
+	parityEager       = "eager content"
+	parityPointers    = "on-demand pointers"
+	parityCorrections = "corrections"
+	parityTruncation  = "truncation report"
+)
+
+// BootstrapOffer is what the wing HAS, independent of what the response carried.
 //
-// This list is what makes F-16 falsifiable. A token comparison alone rewards a
-// response that returns less, and the cheapest conformant bootstrap would be one
-// that returns nothing at all — so parity is asserted first and the cost
-// comparison only runs when it holds.
-var bootstrapParityParts = []string{
-	"entry point", "eager content", "on-demand pointers", "corrections", "resolved wing", "truncation report",
+// Parity needs both halves. Checking the response alone is either vacuous — an
+// empty wing legitimately carries no eager content, so nothing can be demanded —
+// or wrong, because demanding content from an empty wing fails a correct answer.
+// Comparing against the offer is what makes "did it deliver the same payload"
+// answerable.
+type BootstrapOffer struct {
+	Records     int
+	Corrections int
 }
 
 // MissingParityParts names the parts of the replaced protocol this response does
-// not carry. Empty means parity holds.
-func (r BootstrapResult) MissingParityParts() []string {
+// not carry, given what the wing had to offer. Empty means parity holds.
+//
+// An earlier version checked only the entry point, a non-empty wing, and one
+// truncation condition — so removing eager assembly, pointer assembly or the
+// correction sweep entirely still passed, and F-16 degraded into a bare token
+// comparison that the cheapest response wins by returning nothing.
+func (r BootstrapResult) MissingParityParts(offer BootstrapOffer) []string {
 	var missing []string
 	if r.EntryPoint.Resolution == "" {
-		missing = append(missing, "entry point")
+		missing = append(missing, parityEntryPoint)
 	}
-	// Eager content and pointers are parity when the wing HAS content to place;
-	// an empty wing legitimately carries neither, and demanding them would make
-	// a correct answer fail.
 	if r.Wing == "" {
-		missing = append(missing, "resolved wing")
+		missing = append(missing, parityWing)
+	}
+	// A wing with records must deliver them, as inline content or as pointers.
+	// Which of the two is the tier split's business; that NEITHER is empty when
+	// the wing has records is parity's.
+	if offer.Records > 0 {
+		if len(r.Eager) == 0 && len(r.OnDemand) == 0 {
+			missing = append(missing, parityEager)
+		}
+		if len(r.Eager)+len(r.OnDemand)+r.Truncation.Omitted < offer.Records {
+			missing = append(missing, parityPointers)
+		}
+	}
+	// Corrections the graph holds for these records must arrive. This is the part
+	// the client-side protocol needed three separate predicate queries for, and
+	// dropping it silently is the failure that made a perfect bootstrap read
+	// something already contradicted.
+	if offer.Corrections > 0 && len(r.Corrections) == 0 {
+		missing = append(missing, parityCorrections)
 	}
 	// The truncation report is unconditional: its absence is exactly the failure
 	// that lost 74% of a tier unnoticed.
 	if r.Truncation.Omitted > 0 && r.Truncation.HowToFetch == "" {
-		missing = append(missing, "truncation report")
+		missing = append(missing, parityTruncation)
 	}
 	return missing
 }
 
-// ApproxOutputTokens estimates this response's output cost.
+// WireShape is the response as the MCP layer actually emits it.
 //
-// Approximate and deliberately crude: ~4 bytes per token is the well-known rough
-// ratio for English under byte-pair tokenizers, and the comparison it feeds is
-// against a baseline nearly an order of magnitude larger. A precise tokenizer
-// would add a dependency to sharpen a number whose decision does not turn on
-// precision — but if this ever gets close to the baseline, that is the moment to
-// stop estimating and count properly.
-func (r BootstrapResult) ApproxOutputTokens() int {
-	raw, err := json.Marshal(r)
+// The token comparison used to marshal the internal struct, which carries
+// `omitempty` on nearly every field and a different shape from the map the tool
+// handler builds. So it measured something no caller ever receives, and measured
+// it smaller. A cost gate must count the bytes that leave the process.
+func (r BootstrapResult) WireShape() map[string]any {
+	return map[string]any{
+		"wing":        r.Wing,
+		"entry_point": r.EntryPoint,
+		"eager":       r.Eager,
+		"on_demand":   r.OnDemand,
+		"corrections": r.Corrections,
+		"truncation":  r.Truncation,
+	}
+}
+
+// OutputTokens estimates this response's cost in tokens, counting the JSON the
+// MCP layer emits.
+//
+// The estimate is ~4 bytes per token and it FAILS CLOSED: a marshal error returns
+// the largest possible count rather than zero, because a cost gate that reports
+// "free" when it cannot measure is a gate that passes hardest exactly when
+// something is wrong.
+//
+// Crude on purpose, and honest about it: 4 bytes/token is a rough English
+// average and is optimistic for ids and non-English text. It is adequate only
+// because the baseline it is compared against is nearly an order of magnitude
+// larger. If a response ever lands within ~2x of the baseline, stop estimating
+// and tokenize with the manifest's named tokenizer — the error bar would then be
+// wider than the margin, and the gate would be asserting something it cannot see.
+func (r BootstrapResult) OutputTokens() int {
+	raw, err := json.Marshal(r.WireShape())
 	if err != nil {
-		return 0
+		return math.MaxInt32
 	}
 	return len(raw) / 4
 }

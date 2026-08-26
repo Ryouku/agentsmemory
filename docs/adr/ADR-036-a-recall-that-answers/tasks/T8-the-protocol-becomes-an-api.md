@@ -110,6 +110,13 @@ ancestors' 18 still run, so a regression in what T8 was built on is still caught
   the fence passed with the mechanism broken
   ```
 - 2026-08-26 · 762592a* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · hollow out the parity check so F-16 becomes a bare token comparison, which the cheapest response wins by returning nothing · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+- 2026-08-26 · 94eac55* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · delete eager assembly — the response inlines nothing · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+- 2026-08-26 · 94eac55* · mutant survived · exit 0 · `internal/palace/bootstrap.go` · never defer anything: records past the eager bound vanish, named by no pointer · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · 94eac55* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · drop the correction sweep: a perfect bootstrap serves a record already contradicted · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+- 2026-08-26 · 94eac55* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · truncate without deferring: records past the eager bound vanish, named by no pointer and counted in no omission · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
 
 ## Invariants
 

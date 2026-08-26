@@ -31,13 +31,9 @@ func registerBootstrap(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{
-			"wing":        res.Wing,
-			"entry_point": res.EntryPoint,
-			"eager":       res.Eager,
-			"on_demand":   res.OnDemand,
-			"corrections": res.Corrections,
-			"truncation":  res.Truncation,
-		}), nil
+		// The SAME shape the cost gate measures. Two hand-written maps drift, and
+		// the drift is invisible: the gate keeps passing while the response it
+		// claims to measure grows.
+		return jsonResult(res.WireShape()), nil
 	})
 }

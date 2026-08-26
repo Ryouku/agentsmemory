@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -834,9 +835,27 @@ func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 	ctx := context.Background()
 	const team = "t-f16"
 	svc := newTestService(t)
-	if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "WHAT MUST I LOAD AT THE START OF A SESSION? Read these first."}); err != nil {
-		t.Fatalf("add: %v", err)
+
+	// A fixture with all four shapes — eager, deferred, corrected and truncated —
+	// because a parity gate exercised only on a one-record wing cannot observe an
+	// assembly path being removed. Measured: with a single entry, deleting eager,
+	// pointer or correction assembly still passed "semantic parity".
+	var ids []string
+	for i := 0; i < bootstrapEagerLimit+3; i++ {
+		res, err := svc.Add(ctx, team, AddInput{
+			Wing: "wing_acme", Room: EntryRoom,
+			Content: fmt.Sprintf("start-here entry %d, with enough text to be a real memory", i),
+		})
+		if err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+		ids = append(ids, res.Drawers[0].ID)
 	}
+	// One of them is corrected by another, so the sweep has something to find.
+	if _, err := svc.KGAdd(ctx, team, ids[1], "supersedes", ids[0], "", "", "", "", ids[1]); err != nil {
+		t.Fatalf("correct: %v", err)
+	}
+	offer := BootstrapOffer{Records: len(ids), Corrections: 1}
 
 	baseline, err := LoadBootstrapBaseline(filepath.Join("testdata", "bootstrap-baseline-manifest-2026-08-26.json"))
 	if err != nil {
@@ -850,7 +869,7 @@ func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 
 	// PARITY FIRST. Without it the cheapest conformant bootstrap is one that
 	// returns nothing, and this gate would reward exactly that.
-	missing := res.MissingParityParts()
+	missing := res.MissingParityParts(offer)
 	if len(missing) > 0 {
 		t.Fatalf("the bootstrap does not carry the same logical payload as the %d calls it replaces; missing: %v", baseline.Calls, missing)
 	}
@@ -871,9 +890,17 @@ func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 			{"omissions with no way to fetch them",
 				BootstrapResult{Wing: "wing_acme", EntryPoint: EntryPointResult{Resolution: KGResolutionMatched},
 					Truncation: BootstrapTruncation{Omitted: 3}}, "truncation report"},
+			{"a wing with records that delivered none",
+				BootstrapResult{Wing: "wing_acme", EntryPoint: EntryPointResult{Resolution: KGResolutionMatched}}, "eager content"},
+			{"records dropped without being pointed at",
+				BootstrapResult{Wing: "wing_acme", EntryPoint: EntryPointResult{Resolution: KGResolutionMatched},
+					Eager: make([]Drawer, 2)}, "on-demand pointers"},
+			{"corrections the graph holds and the response dropped",
+				BootstrapResult{Wing: "wing_acme", EntryPoint: EntryPointResult{Resolution: KGResolutionMatched},
+					Eager: make([]Drawer, 5)}, "corrections"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				got := tc.res.MissingParityParts()
+				got := tc.res.MissingParityParts(BootstrapOffer{Records: 5, Corrections: 1})
 				if !slices.Contains(got, tc.want) {
 					t.Errorf("a response missing %q passed parity; got %v", tc.want, got)
 				}
@@ -889,7 +916,7 @@ func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 	if baseline.Tokenizer == "" || baseline.Date == "" {
 		t.Fatal("the baseline names no tokenizer or no date; an undated cost comparison is unfalsifiable a month later")
 	}
-	if got := res.ApproxOutputTokens(); got >= baseline.OutputTokens {
+	if got := res.OutputTokens(); got >= baseline.OutputTokens {
 		t.Errorf("bootstrap costs %d output tokens against a baseline of %d under %s; a bootstrap that returns more than it saves has reproduced the problem inside one call",
 			got, baseline.OutputTokens, baseline.Tokenizer)
 	}
