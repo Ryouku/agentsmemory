@@ -107,12 +107,17 @@ func (s *Service) entityMatches(ctx context.Context, teamID string, vec []float3
 	if k <= 0 {
 		return nil, nil
 	}
-	hits, err := s.vectors.Search(ctx, entityNamespace(teamID), vec, k, nil)
+	res, err := s.vectors.Search(ctx, entityNamespace(teamID), vec, k, nil)
 	if err != nil {
 		// A missing namespace is "no entities indexed yet", not a failure. Every
 		// palace is in that state until the first backfill runs, and refusing the
 		// whole recall for it would make the feature impossible to roll out.
 		return nil, nil
 	}
-	return hits, nil
+	// res.StaleIndex is deliberately dropped here rather than propagated. A
+	// degraded index is reported on the RECALL that served the hits (ADR-033);
+	// this lookup only decides which entity labels a question is near, and a
+	// second staleness signal from it would mark a page stale for a reason the
+	// reader cannot act on.
+	return res.H, nil
 }

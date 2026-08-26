@@ -328,11 +328,12 @@ func (s *Service) closetBoostsAt(ctx context.Context, teamID string, vec []float
 	// No filter: a closet summarises a whole source, so its boost is not scoped to
 	// the wing/room a search happens to be narrowed to — the drawers it lifts are
 	// filtered on their own way in.
-	hits, err := s.vectors.Search(closetCtx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
+	searchRes, err := s.vectors.Search(closetCtx, closetNamespace(teamID), vec, len(closetRankBoosts), nil)
 	if err != nil {
 		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 		return boosts
 	}
+	hits := searchRes.H
 	if len(hits) == 0 {
 		sp.End(telemetry.Ran, attribute.Int("am.count", 0))
 		return boosts

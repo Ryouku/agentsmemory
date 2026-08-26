@@ -313,6 +313,12 @@ type Service struct {
 	graphLocks *keyedMutex
 }
 
+// Repo exposes the underlying repository. Tool layers hold the Service, and
+// seeding or inspection paths (the mcpserver test harness) legitimately need
+// the repo; keeping the field private and exposing this accessor keeps that
+// one door explicit.
+func (s *Service) Repo() *Repo { return s.repo }
+
 // NewService wires the collaborators. dim is the embedding width used to create a
 // tenant's vector namespace on first write (the actual width of returned vectors
 // is authoritative and used in Add; dim is only the seed/fallback).
@@ -1240,13 +1246,13 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	// 15, while an eval arm ranking the same query saw 100 — a gap of 0.027 MRR
 	// and 8 golds no ranking change could reach, invisible on every span.
 	telemetry.Annotate(searchCtx, attribute.Int("am.candidate_k", candidateK))
-	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
+	hits, rows, stale, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return SearchResult{}, err
 	}
 	q.Limit = limit
-	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
+	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows, stale)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return SearchResult{}, err
@@ -1316,7 +1322,7 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
 // Eval arms that reconstruct a served configuration call it on a Clone rather
 // than reimplementing fusion, closet boost, recency, rerank, or collapse.
-func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, error) {
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer, stale bool) ([]SearchHit, bool, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = DefaultSearchLimit
@@ -1332,7 +1338,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// same filter to know how many DISTINCT memories a widening round found, and
 	// therefore whether to widen again. Two copies of a scope predicate is how a
 	// stale one survives, so both paths call survivorsFrom instead.
-	survivors, _, drops := survivorsFrom(hits, rows, q)
+	survivors, _, drops := survivorsFrom(hits, rows, q, stale)
 	// Recorded HERE and nowhere else: this is the single call over the final pool.
 	// Annotate paints the span currently on ctx — the am.search parent for a served
 	// recall, an eval arm's own span for an arm — which is the correct per-caller
@@ -1847,10 +1853,11 @@ func (s *Service) CheckDuplicate(ctx context.Context, teamID, content string, th
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("embed content: %w", err)
 	}
-	hits, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
+	searchRes, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("vector search: %w", err)
 	}
+	hits := searchRes.H
 	if len(hits) == 0 {
 		return DuplicateResult{IsDuplicate: false}, nil
 	}

@@ -119,16 +119,17 @@ func doctorIndex(ctx context.Context, cfg config.Config, slug string, out io.Wri
 // is a report that quietly stops saying anything.
 func reportDrift(out io.Writer, report palace.DriftReport) error {
 	pending := ""
-	if report.Pending > 0 {
-		pending = fmt.Sprintf(" (%d more await a first embedding, which is a queue and not a fault)", report.Pending)
+	if total := report.Pending.Drawers + report.Pending.Closets; total > 0 {
+		pending = fmt.Sprintf(" (%d more await a first embedding, which is a queue and not a fault)", total)
 	}
 	if report.Clean() {
-		fmt.Fprintf(out, "index: %d drawer(s) checked, every stored point agrees with its row%s\n", report.Checked, pending)
+		fmt.Fprintf(out, "index: %d drawer(s) and %d closet(s) checked, every stored point agrees with its row%s\n",
+			report.Checked.Drawers, report.Checked.Closets, pending)
 		return nil
 	}
 
-	fmt.Fprintf(out, "index: %d drawer(s) checked, %d stored point(s) disagree with their row%s\n\n",
-		report.Checked, report.Total, pending)
+	fmt.Fprintf(out, "index: %d drawer(s) and %d closet(s) checked, %d stored point(s) disagree with their row%s\n\n",
+		report.Checked.Drawers, report.Checked.Closets, report.Total, pending)
 	for _, d := range report.Drifted {
 		if d.Missing {
 			fmt.Fprintf(out, "  %-16s %s  ABSENT — no point at all, filed in %q\n", d.Store, d.DrawerID, d.Actual)
