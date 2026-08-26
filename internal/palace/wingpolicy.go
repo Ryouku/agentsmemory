@@ -34,6 +34,13 @@ const (
 // outgoing edges, and the bootstrap's inline content. Four filters that agree the
 // day they are written diverge on the path nobody tested, and the one that
 // diverges is a tenancy leak rather than a formatting bug.
+// NOT SAFE FOR CONCURRENT USE. wingPolicyFor gives each call its own instance
+// with its own resolution cache, and no caller fans out today — verified
+// 2026-08-26 across service.go, memory_search.go, eval.go, bootstrap.go and
+// graphquery.go, with `go test -race` clean. That safety is held by CONVENTION,
+// not by construction: a future caller that resolves several records in parallel
+// would race on the cache and the tests would not show it. Give such a caller its
+// own policy, or put a mutex here before sharing one.
 type WingPolicy struct {
 	// Viewer is the wing being searched. Empty means an unscoped recall, where
 	// every resolvable fact is local by definition.
