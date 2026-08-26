@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -131,6 +132,24 @@ type EmbedDescriber interface {
 	// window is honest: nothing in this repository could previously state one at
 	// all, and a guessed number would be worse than an absent one.
 	DescribeEmbedder() (backend, model string, windowTokens int)
+}
+
+// RerankDescriber is an OPTIONAL interface a Reranker may implement to report
+// the budget it enforces on itself.
+//
+// The budget decides pages, which is why the service wants it: when a rerank
+// call overruns, applyRerankWith fails open and serves the FUSED order instead
+// of the cross-encoder's. The service cannot see that budget otherwise — it
+// holds a Reranker, and the duration lives inside the client that was handed
+// one at construction. Measured 2026-08-26 on a CPU cross-encoder: 44 of 60
+// rerank calls at pool 20 ran longer than the 10s the deployed stack ships,
+// so on that hardware the budget is not a safety net, it is the thing deciding
+// the ranking.
+type RerankDescriber interface {
+	// RerankBudget returns the ceiling on a complete rerank call, or 0 when the
+	// reranker enforces none. Zero is honest rather than a guess: a reranker that
+	// cannot state a budget must not have one invented for it.
+	RerankBudget() time.Duration
 }
 
 // Reranker scores candidate documents against a query with a cross-encoder,
@@ -1384,8 +1403,20 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		// A degraded reranker returns FALSE, deliberately. It failed open and the
 		// page is the fused order, so a telemetry row claiming a cross-encoder pass
 		// would be exactly as wrong as the weight-0 case this fix is about.
-		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool)
-		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError), attribute.Int("am.pool", pool))
+		// A blown budget and a sick endpoint both fail open, but they are not the
+		// same incident and they do not have the same fix, so they must not share
+		// a reason code. Both timeout paths are checked because tei arms two: a
+		// context deadline over the whole call, and http.Client.Timeout per
+		// request. The first surfaces as context.DeadlineExceeded, the second as a
+		// *url.Error that only answers net.Error.Timeout — matching one and not
+		// the other would report half of all timeouts as endpoint errors.
+		reason := telemetry.ReasonError
+		var ne net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+			reason = telemetry.ReasonTimeout
+		}
+		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool, "reason", reason)
+		sp.End(telemetry.FailedOpen, telemetry.AttrReason(reason), attribute.Int("am.pool", pool))
 		return ranked, false
 	}
 	if len(scores) != pool {
@@ -1395,6 +1426,18 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
 	return BlendRerankWith(ranked, scores, weight, s.RerankNormName()), true
+}
+
+// RerankBudget reports the ceiling the configured reranker enforces on a
+// complete call, or 0 when there is no reranker or it enforces none. It is what
+// puts am.rerank_timeout on the search span, so a trace showing a rerank that
+// took 11s can be read against the budget that was actually in force.
+func (s *Service) RerankBudget() time.Duration {
+	d, ok := s.rerank.(RerankDescriber)
+	if !ok {
+		return 0
+	}
+	return d.RerankBudget()
 }
 
 // RerankScoresFor fetches cross-encoder scores for the head of a fused ranking,

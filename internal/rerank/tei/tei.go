@@ -188,6 +188,11 @@ func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]fl
 	return scores, nil
 }
 
+// RerankBudget returns the ceiling this client enforces on a complete Rerank
+// call, satisfying palace.RerankDescriber so the search span can record the
+// budget beside the duration it bounds.
+func (c *Client) RerankBudget() time.Duration { return c.budget }
+
 // rerankBatch scores one batch of at most maxBatch texts, returning the scores
 // in the batch's own input order.
 func (c *Client) rerankBatch(ctx context.Context, query string, texts []string) ([]float64, error) {

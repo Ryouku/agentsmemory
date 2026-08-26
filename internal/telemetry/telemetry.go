@@ -83,6 +83,12 @@ const (
 	ReasonLexical = "lexical"
 	// ReasonError is an endpoint or storage failure.
 	ReasonError = "error"
+	// ReasonTimeout is a call that exceeded its own budget rather than failing.
+	// It is separate from ReasonError because the two have opposite fixes: a
+	// timeout says the work did not fit the budget (lower the pool or raise the
+	// budget), an error says the endpoint is unwell (go look at it). Collapsed
+	// into one reason, an operator watching search degrade cannot tell which.
+	ReasonTimeout = "timeout"
 	// ReasonScoreCount is rerank returning the wrong number of scores.
 	ReasonScoreCount = "score_count"
 	// ReasonSemanticFailed is semantic evidence falling back to lexical.

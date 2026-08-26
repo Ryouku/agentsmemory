@@ -53,6 +53,13 @@ func searchAttrs(s *Service, q SearchQuery, limit int) []attribute.KeyValue {
 		// a trace without it cannot say which ordering rule produced the page.
 		attribute.String("am.rerank_norm", s.RerankNormName()),
 	}
+	if budget := s.RerankBudget(); budget > 0 {
+		// The ceiling that decides whether the cross-encoder's order survives at
+		// all. Without it a reader sees `am.search.rerank 11427ms failed_open` and
+		// cannot tell a slow box from a pool too large for its budget — the trace
+		// records how long the call took and, until now, never what it was allowed.
+		attrs = append(attrs, attribute.Int64("am.rerank_timeout_ms", budget.Milliseconds()))
+	}
 	if floor := withRetrieveFloors(0, q.RetrieveK, s.retrieveK); floor > 0 {
 		attrs = append(attrs, attribute.Int("am.retrieve_k", floor))
 	}

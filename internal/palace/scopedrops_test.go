@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
@@ -172,7 +173,7 @@ func TestScopeDropsCountEachCauseSeparately(t *testing.T) {
 // to do, which is how a stage list became both the subject and the authority of
 // its own check earlier in this corpus.
 func TestKnobsThatDecideThePageAreAllOnTheParentSpan(t *testing.T) {
-	svc := newTestService(t).WithReranker(&fakeReranker{}, 50).WithRerankWeight(0.5)
+	svc := newTestService(t).WithReranker(&fakeReranker{budget: 10 * time.Second}, 50).WithRerankWeight(0.5)
 	const team = "team-knobs"
 	mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", Content: "a memory about knob coverage"})
 
@@ -190,6 +191,7 @@ func TestKnobsThatDecideThePageAreAllOnTheParentSpan(t *testing.T) {
 		{"am.rerank_weight", "how much of the order it decided"},
 		{"am.rerank_norm", "HOW its score was scaled — min-max discards magnitude, sigmoid preserves it"},
 		{"am.rerank_pool", "how many candidates it actually scored"},
+		{"am.rerank_timeout_ms", "the ceiling that decides whether the cross-encoder's order survives at all — measured 2026-08-26, 44 of 60 calls at pool 20 ran past the 10s the deployed stack ships, so on CPU this knob, not the weight, was picking the ranking"},
 		{"am.evidence", "which text the cross-encoder was shown"},
 		{"am.closet_scale", "the closet prior's weight"},
 		{"am.recency_band", "the recency reorder's width"},
