@@ -1133,7 +1133,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("embed eval query: %w", err)
 	}
 	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
-	hits, rows, err := s.searchCandidates(caseCtx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
+	hits, rows, stale, err := s.searchCandidates(caseCtx, teamID, SearchQuery{Wing: c.Wing}, vec, poolSize)
 	if err != nil {
 		caseOut = telemetry.FailedClosed
 		return caseOutcome{TopDistance: -1}, fmt.Errorf("eval candidate pool: %w", err)
@@ -1338,12 +1338,13 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			out[arm] = rankOfFact(block.Facts, c.ExpectTriple)
 			armSpan.End(telemetry.Ran, attribute.Int("am.count", len(block.Facts)))
 		case arm == ArmContextual:
-			ctxHits, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
+			ctxRes, err := s.vectors.Search(armCtx, contextualNamespace(teamID), vec, poolSize, searchFilter(SearchQuery{Wing: c.Wing}))
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 				caseOut = telemetry.FailedClosed
 				return caseOutcome{TopDistance: -1}, fmt.Errorf("contextual index search: %w", err)
 			}
+			ctxHits := ctxRes.H
 			if len(ctxHits) == 0 {
 				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
 				break
@@ -1361,7 +1362,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			hybrid := s.serviceForArm(ArmHybrid)
 			page, _, _, err := hybrid.rankRetrieved(armCtx, teamID, c.Query, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: len(ctxHits), SkipTelemetry: true,
-			}, vec, ctxHits, ctxRows)
+			}, vec, ctxHits, ctxRows, ctxRes.StaleIndex)
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 				caseOut = telemetry.FailedClosed
@@ -1375,7 +1376,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonOff))
 				break
 			}
-			page, reranked, _, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows)
+			page, reranked, _, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows, stale)
 			if err != nil {
 				armSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 				break
@@ -1479,7 +1480,7 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 	if err != nil {
 		return nil, fmt.Errorf("embed query for pooling: %w", err)
 	}
-	hits, rows, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: wing}, vec, poolSize)
+	hits, rows, stale, err := s.searchCandidates(ctx, teamID, SearchQuery{Wing: wing}, vec, poolSize)
 	if err != nil {
 		return nil, fmt.Errorf("pool candidate search: %w", err)
 	}
@@ -1496,7 +1497,7 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 		}
 		page, _, _, err := svc.rankRetrieved(ctx, teamID, query, SearchQuery{
 			Query: query, Wing: wing, Limit: perArm, SkipTelemetry: true,
-		}, vec, hits, rows)
+		}, vec, hits, rows, stale)
 		if err != nil {
 			return
 		}
@@ -1575,10 +1576,11 @@ func (s *Service) OlderNeighbor(ctx context.Context, teamID string, d Drawer, po
 	// The same retrieval seam evalCase uses, scoped to the drawer's own wing: a
 	// superseded fact and its correction belong to one project, and a cross-wing
 	// "pair" would be two projects coincidentally near in embedding space.
-	hits, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: d.Wing}))
+	res, err := s.vectors.Search(ctx, teamID, vec, poolSize, searchFilter(SearchQuery{Wing: d.Wing}))
 	if err != nil {
 		return Drawer{}, false, fmt.Errorf("temporal pair search: %w", err)
 	}
+	hits := res.H
 	ids := make([]string, len(hits))
 	for i, h := range hits {
 		ids[i] = h.ID

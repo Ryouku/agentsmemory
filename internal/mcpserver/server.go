@@ -407,6 +407,29 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 	return t, nil, true
 }
 
+// coverageBlockFor builds the am_status coverage block. It mirrors inboxStatus's
+// Known discipline: a failed audit reports as unknown rather than as a number,
+// because a zero report's Coverage() reads 1.0 — indistinguishable from genuine
+// health, in exactly the state (palace in trouble) where the wake-up call matters
+// most. The numbers therefore render only when the audit actually served.
+func coverageBlockFor(drift palace.DriftReport, err error) map[string]any {
+	if err != nil {
+		return map[string]any{
+			"known": false,
+			"note":  "coverage could not be taken this time — this is not an all-clear",
+		}
+	}
+	return map[string]any{
+		"known":      true,
+		"coverage":   drift.Coverage(),
+		"namespaces": drift.CoverageView(),
+		"pending_embedding": map[string]any{
+			"drawers": drift.Pending.Drawers,
+			"closets": drift.Pending.Closets,
+		},
+	}
+}
+
 // registerStatus adds the status tool: the wake-up call. Beyond liveness and the
 // session's team/role/quota, it returns the team's memory overview — total
 // drawers and the wing -> rooms taxonomy with counts — so an agent grounds itself
@@ -414,6 +437,12 @@ func admit(ctx context.Context, usageSvc *usage.Service) (tenant.Tenant, *mcp.Ca
 // taxonomy read is best-effort: a status call still succeeds (with an empty
 // overview) if the aggregation fails, so liveness never depends on it.
 func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, workspaces WorkspaceLookup, local bool) {
+	// One cache for the server, shared by every session: the wake-up call runs
+	// the coverage audit at most once per driftTTL per team instead of on every
+	// first call of every session.
+	statusDrift := newDriftCache(func(ctx context.Context, teamID string) (palace.DriftReport, error) {
+		return drawers.IndexDrift(ctx, teamID)
+	}, driftTTL)
 	tool := newTool("status",
 		mcp.WithDescription("Wake-up call: the workspace this MCP session is scoped to (name, slug, and whether the server is self-hosted or hosted) plus your role, the memory overview (total drawers + the wing→rooms taxonomy with counts), and remaining monthly quota. Check the workspace to confirm you are talking to the palace you think you are — an empty wing list means nothing has been written yet, NOT that you are in the wrong place."),
 	)
@@ -469,6 +498,16 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 		}
 
+		// Serving coverage: the one number a session's mandated first call should
+		// carry about whether its search index is behind its source of truth.
+		// Best-effort like the blocks around it: a drift failure leaves a note
+		// rather than failing the wake-up call, and nothing here is a write.
+		// Read through a per-team TTL cache: the audit is a two-sided O(N) sweep,
+		// and am_status is the call every session makes first, so it must not
+		// re-run the sweep per call.
+		drift, driftErr := statusDrift.get(ctx, t.TeamID)
+		coverageBlock := coverageBlockFor(drift, driftErr)
+
 		out, _ := json.Marshal(map[string]any{
 			"ok":      true,
 			"team_id": t.TeamID,
@@ -482,6 +521,7 @@ func registerStatus(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			"default_wing":  defaultWing,
 			"total_drawers": total,
 			"wings":         tax.Wings, // [{wing, drawers, rooms:[{wing, room, drawers}]}]
+			"coverage":      coverageBlock,
 			"inbox":         inbox,
 			"usage": map[string]any{
 				"used_this_month": st.Used,

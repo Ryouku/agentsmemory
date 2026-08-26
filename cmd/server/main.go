@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1099,9 +1100,11 @@ func buildVectorStoreWith(cfg config.Config, gdb *gorm.DB, reconcile bool) (stor
 		}
 		hybrid := store.NewHybrid(sot, index)
 		if reconcile {
-			if err := reconcileChromem(context.Background(), sot, index, hybrid); err != nil {
+			report, err := reconcileChromem(context.Background(), sot, index, hybrid)
+			if err != nil {
 				return nil, err
 			}
+			log.Print(report.String())
 		}
 		log.Printf("chromem index: %s", dir)
 		return hybrid, nil
@@ -1285,25 +1288,88 @@ func publishedLoopback() bool {
 // Only wholly empty namespaces are replayed. An index that merely fell behind is
 // a different problem (rebuild it deliberately by deleting the directory), and
 // re-writing every vector on every boot would make startup scale with the palace.
-func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chromemvec.Index, hybrid *store.Hybrid) error {
+// Partial fall-behind is not repaired here — it is NAMED here, because an index
+// at 800 of 1000 points boots clean today and nothing reports the 200 missing
+// (ADR-033 R2's population check catches it at search time instead).
+func reconcileChromem(ctx context.Context, sot store.SourceOfTruth, index *chromemvec.Index, hybrid *store.Hybrid) (ReconcileReport, error) {
+	var report ReconcileReport
 	namespaces, err := sot.Namespaces(ctx)
 	if err != nil {
-		return fmt.Errorf("list source-of-truth namespaces: %w", err)
+		return report, fmt.Errorf("list source-of-truth namespaces: %w", err)
 	}
 	for _, ns := range namespaces {
-		indexed, err := index.Count(ns)
+		indexed, err := index.Count(ctx, ns)
 		if err != nil {
-			return fmt.Errorf("count chromem namespace %q: %w", ns, err)
+			return report, fmt.Errorf("count chromem namespace %q: %w", ns, err)
 		}
-		if indexed > 0 {
+		expected, err := sot.Count(ctx, ns)
+		if err != nil {
+			return report, fmt.Errorf("count source-of-truth namespace %q: %w", ns, err)
+		}
+		if indexed == 0 {
+			if err := hybrid.Rebuild(ctx, ns); err != nil {
+				return report, fmt.Errorf("rebuild chromem namespace %q: %w", ns, err)
+			}
+			report.Rebuilt = append(report.Rebuilt, ns)
 			continue
 		}
-		if err := hybrid.Rebuild(ctx, ns); err != nil {
-			return fmt.Errorf("rebuild chromem namespace %q: %w", ns, err)
+		switch {
+		case indexed < expected:
+			if report.Under == nil {
+				report.Under = map[string]int{}
+			}
+			report.Under[ns] = expected - indexed
+		case indexed > expected:
+			if report.Over == nil {
+				report.Over = map[string]int{}
+			}
+			report.Over[ns] = indexed - expected
 		}
-		log.Printf("chromem index: rebuilt namespace %q from the SQLite source of truth", ns)
 	}
-	return nil
+	return report, nil
+}
+
+// ReconcileReport names what a boot reconcile found per namespace. The empty
+// case (rebuilt) is the repair; the under and over cases are what used to be
+// invisible. indexed > expected is not necessarily corruption — the embed
+// worker upserts a vector before stamping embedded_at, so during a normal async
+// batch the index briefly holds points whose rows are still pending — but it is
+// always worth a line at boot.
+type ReconcileReport struct {
+	Rebuilt []string       // wholly-empty namespaces replayed from the source of truth
+	Under   map[string]int // partial fall-behind: namespace -> points missing from the index
+	Over    map[string]int // namespace -> points the index holds beyond the source of truth
+}
+
+// String renders the report the way an operator reads a boot log: one line when
+// nothing was found, one clause per namespace when it was.
+func (r ReconcileReport) String() string {
+	if len(r.Rebuilt) == 0 && len(r.Under) == 0 && len(r.Over) == 0 {
+		return "chromem index: every namespace already holds a point"
+	}
+	var parts []string
+	if len(r.Rebuilt) > 0 {
+		parts = append(parts, fmt.Sprintf("rebuilt %d empty namespace(s): %s", len(r.Rebuilt), strings.Join(r.Rebuilt, ", ")))
+	}
+	for _, ns := range sortedReportNamespaces(r.Under) {
+		parts = append(parts, fmt.Sprintf("namespace %q is %d point(s) behind the source of truth", ns, r.Under[ns]))
+	}
+	for _, ns := range sortedReportNamespaces(r.Over) {
+		parts = append(parts, fmt.Sprintf("namespace %q holds %d point(s) the source of truth does not", ns, r.Over[ns]))
+	}
+	return "chromem index reconcile: " + strings.Join(parts, "; ")
+}
+
+// sortedReportNamespaces returns the keys of m in sorted order, so the boot
+// log's namespace clauses render identically run to run — a random map order
+// would make the same report diff differently between boots.
+func sortedReportNamespaces(m map[string]int) []string {
+	ns := make([]string, 0, len(m))
+	for n := range m {
+		ns = append(ns, n)
+	}
+	sort.Strings(ns)
+	return ns
 }
 
 // openDB opens a pure-Go (no cgo) SQLite database through gorm's glebarez

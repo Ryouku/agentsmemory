@@ -444,9 +444,9 @@ func TestReturningFactsDoesNotChangeDrawerRanking(t *testing.T) {
 // comparing against a differently-configured service would compare two things.
 type noEntityIndex struct{ store.VectorStore }
 
-func (n noEntityIndex) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) ([]store.Hit, error) {
+func (n noEntityIndex) Search(ctx context.Context, namespace string, vector []float32, k int, filter store.Filter) (store.SearchResult, error) {
 	if strings.HasSuffix(namespace, "::kg_entities") {
-		return nil, nil
+		return store.SearchResult{}, nil
 	}
 	return n.VectorStore.Search(ctx, namespace, vector, k, filter)
 }
