@@ -18,6 +18,28 @@ import (
 // disagree.
 const maxCandidateWidening = 8
 
+// scopeDrops counts what the scope rule removed, split by cause.
+//
+// The three are NOT interchangeable. OutOfScope is an ALARM rather than a metric:
+// the wing/room comparison is documented as redundant when the index honoured the
+// filter, and kept solely so a stale index cannot surface another wing's memory —
+// so a non-zero count there means the vector index and the durable rows have
+// diverged. Orphan is the same divergence seen from the other side (an index row
+// whose drawer is gone). OverDistance is the caller's own max_distance boundary
+// and is ordinary.
+//
+// Without the split, all three plus chunk-to-memory collapse are one number: a
+// trace showing retrieve count=200 and collapse count=3 reads identically whether
+// 200 chunks belonged to 3 memories or 197 were thrown away.
+type scopeDrops struct {
+	Orphan       int
+	OutOfScope   int
+	OverDistance int
+}
+
+// Any reports whether the predicate dropped anything at all.
+func (d scopeDrops) Any() bool { return d.Orphan+d.OutOfScope+d.OverDistance > 0 }
+
 // survivorsFrom applies the scope rule to a retrieved prefix: it drops orphan
 // vectors, rows outside the wing/room the caller asked for, and rows beyond the
 // distance boundary, preserving the index's closest-first order. It also reports
@@ -30,26 +52,30 @@ const maxCandidateWidening = 8
 // rule surfaces another wing's memory.
 //
 // The index filter is an optimization; the durable row remains the authority.
-func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]SearchHit, int) {
+func survivorsFrom(hits []store.Hit, rows map[string]Drawer, q SearchQuery) ([]SearchHit, int, scopeDrops) {
 	survivors := make([]SearchHit, 0, len(hits))
 	distinct := make(map[string]struct{}, len(hits))
+	var drops scopeDrops
 	for _, h := range hits {
 		d, ok := rows[h.ID]
 		if !ok {
+			drops.Orphan++
 			continue // orphan vector (row deleted) — skip
 		}
 		if !drawerMatchesSearch(d, q) {
+			drops.OutOfScope++
 			continue
 		}
 		distance := distanceFromScore(h.Score)
 		if q.MaxDistance > 0 && distance > q.MaxDistance {
+			drops.OverDistance++
 			continue
 		}
 		memoryID := memoryOf(d)
 		survivors = append(survivors, SearchHit{Drawer: d, MemoryID: memoryID, Distance: distance})
 		distinct[memoryID] = struct{}{}
 	}
-	return survivors, len(distinct)
+	return survivors, len(distinct), drops
 }
 
 // searchCandidates resolves a vector prefix to the rows behind it. It widens the
@@ -132,7 +158,11 @@ func (s *Service) searchCandidates(ctx context.Context, teamID string, q SearchQ
 		// than survivors is what lets rankRetrieved keep the signature the eval
 		// arms depend on — they share one retrieved pool across arms, so a
 		// per-arm retrieval would confound the comparison they exist to make.
-		_, distinct := survivorsFrom(hits, rows, q)
+		// Drops are DISCARDED here on purpose: this call runs once per widening
+		// round, so recording them would multiply the counts by the number of rounds.
+		// rankRetrieved calls the same predicate once over the final pool and records
+		// them there.
+		_, distinct, _ := survivorsFrom(hits, rows, q)
 
 		stop := retrieveStop(distinct, candidateK, len(hits), k, q, hits)
 		widen := []attribute.KeyValue{

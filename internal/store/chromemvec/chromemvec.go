@@ -402,3 +402,7 @@ func (i *Index) Count(namespace string) (int, error) {
 	}
 	return col.Count(), nil
 }
+
+// DescribeVectorStore names this backend for a trace, satisfying
+// palace.VectorDescriber.
+func (i *Index) DescribeVectorStore() string { return "chromem" }

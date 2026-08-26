@@ -158,6 +158,24 @@ Telemetry is best-effort and must not change the served decision. Export failure
 
 Do not stack all production fixes into one review. Each confirmed residual is a logical commit with its observation and mutant evidence. A PR may reduce a ratchet; only the PR that reaches zero changes that axis to `enforced`.
 
+## Alternatives Considered
+
+*Added 2026-08-25. The section was absent, not empty. The entries below are EXTRACTED from arguments
+this ADR already makes in its own Decision and Consequences — they are not reconstructed after the
+fact. An alternative nobody recorded weighing cannot be recovered, and inventing one would be the
+fabrication the Mutation Log exists to prevent. If options were weighed that are not listed here,
+they belong here and only the author can add them.*
+
+- **The status quo — coverage claims scattered across test logs, ADR tables and reviewer memory:**
+  rejected because a claim held in three places at once is a claim nobody can check. This ADR's own
+  Consequences state the aim as "one report shows residual coverage instead of scattering it across
+  test logs, ADR tables and reviewer memory".
+- **Ordinary line or branch coverage as the instrument:** rejected because the states this ADR cares
+  about are semantic and a coverage percentage collapses them. Its Consequences name five that must
+  stay distinguishable — "implemented", "selectable", "selected", "effective" and "failed open" —
+  and its Out of Scope draws the same boundary: only declared semantic decisions are instrumented,
+  never every source-level branch.
+
 ## Runner self-contract
 
 Before an adapter may protect production, the runner’s own tests must prove:
@@ -224,7 +242,32 @@ ADR-025 is complete only when:
 
 ## Implementation
 
-See `ADR-025-executable-contract-axes/tasks/README.md`.
+*Amended 2026-08-25: the `tasks/` directory held a README and no task files — a plan, never task
+files. It is inlined here so the record is self-contained, and the directory removed rather than
+back-filled with six task files written to match code that already shipped.*
+
+> **Amended 2026-08-25.** The rows below were a plan, not task files: none was ever
+> written, while T1's design shipped anyway as `internal/contractaxis` (a runner with a
+> 15-test mutation suite, imported by no production package). They are kept here as prose
+> so the intended scope survives, and deliberately NOT re-written as task files after the
+> fact — a plan invented to match code that already shipped is the same fabrication the
+> Mutation Log exists to prevent. Re-scoping this record is a decision for its owner.
+
+- **T1** — Add `internal/contractaxis`, named per-item cases, exact residual reports, typed exceptions and disposable mutation execution
+- **T2** — Make every live MCP tool observable and derive adapter policy from one catalogue
+- **T3** — Bind commands, flags, environment, config fields and eval arms to real behavioural effects
+- **T4** — Bind schema, stores, assets/hooks, routes and exports to outer observations
+- **T5** — Trace semantic runtime decisions without making sampled traces the source of population claims
+- **T6** — Run the same data contract in two other stacks and decide whether to extract a standalone tool
+
+**Planned sequence** (prose for the same reason as above — these are not task files):
+
+1. T1 — runner and inventory — no dependencies (track A)
+2. T2 — MCP closure and adapter parity — after T1 (track B)
+3. T3 — CLI/config/eval axes — after T1 (track C)
+4. T4 — persistence/installer/web axes — after T1 (track D)
+5. T5 — runtime execution telemetry axis — after T1, T3 (track E)
+6. T6 — three-stack extraction decision — after T2, T3, T4, T5 (track later decision)
 
 ## Rollback
 

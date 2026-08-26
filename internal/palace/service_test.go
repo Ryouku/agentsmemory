@@ -15,6 +15,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"time"
 )
 
 // fakeEmbedder turns text into a deterministic bag-of-bytes histogram vector:
@@ -85,7 +86,13 @@ func newTestServiceWith(t *testing.T, embedder Embedder) *Service {
 type fakeReranker struct {
 	err    error
 	called int
+	budget time.Duration
 }
+
+// RerankBudget satisfies RerankDescriber so a fixture can put a budget on the
+// span. A zero budget means "states none" and emits nothing, matching a
+// reranker that enforces no ceiling.
+func (f *fakeReranker) RerankBudget() time.Duration { return f.budget }
 
 func (f *fakeReranker) Rerank(_ context.Context, query string, docs []string) ([]float64, error) {
 	f.called++

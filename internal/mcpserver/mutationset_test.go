@@ -31,6 +31,11 @@ var writeCalls = map[string]bool{
 // is rejected below, so the list cannot be used to excuse a method that stopped
 // writing (or never did).
 var incidentalWrites = map[string]string{
+	// SearchPage is where that row is actually written; Search is now a projection
+	// of it and inherits the classification through the call. Both are listed
+	// because the analysis reaches each of them, and dropping either would let a
+	// genuine write into the read set on the next rename.
+	"SearchPage":     "records a best-effort search_events row about the read it just served; the write must never fail the read, and it stores no memory",
 	"Search":         "records a best-effort search_events row about the read it just served; recallstats.go:21 states the write must never fail the read",
 	"RecallStats":    "reads search_events to summarise recall; reachable writes come from shared helper names, not from memory tables",
 	"CheckDuplicate": "embeds the candidate text to compare it, and stores no drawer",

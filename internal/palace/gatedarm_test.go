@@ -18,9 +18,12 @@ import (
 // It is now derived from the same mapping a running service uses, so there is
 // one mapping rather than two that can disagree.
 func TestGatedArmIsTheShippedShape(t *testing.T) {
-	if got := SupersessionGatedArm(); got != ArmRRFReranked {
+	// The shipped shape serves SIGMOID (DefaultRerankNorm), so the arm it ranks
+	// with is the one that says so. rrf+rerank has been the min-max control since
+	// the B1 reset; gating on it would judge a pipeline nobody runs.
+	if got := SupersessionGatedArm(); got != ArmBlendSigmoid {
 		t.Errorf("the shipped shape (rrf, prior retired, reranker configured) gates on %q, want %q",
-			got, ArmRRFReranked)
+			got, ArmBlendSigmoid)
 	}
 	if got := defaultShapeService().gatedArm(false); got != ArmRRF {
 		t.Errorf("the shipped shape WITHOUT a reranker gates on %q, want %q — a deployment with no "+
@@ -320,5 +323,42 @@ func TestGatedArmReconstructsTheServedRanking(t *testing.T) {
 	if named < 8 {
 		t.Errorf("only %d of the configurations named an arm; the mapping has collapsed into refusing "+
 			"everything, which passes every equivalence check by measuring nothing", named)
+	}
+}
+
+// TestGatedArmNamesTheArmThatReconstructsTheServedNormaliser: the gate's
+// contract is "the arm that reconstructs THIS service's ranking exactly", and
+// the normaliser is part of the ranking. The B1 reset made rrf+rerank a
+// min-max arm, so a service served at sigmoid or rank is no longer
+// reconstructed by it — the gate would report a supersession number from a
+// pipeline nobody serves, which is the same defect the reset fixed in the arms,
+// one call site over (review round on PR #57, B1 follow-up).
+func TestGatedArmNamesTheArmThatReconstructsTheServedNormaliser(t *testing.T) {
+	base := func(fusion bool) *Service {
+		// The FIXED 0.4 weight, page-max normaliser and no closet prior: the
+		// "plain" shape the linear arms are faithful to. NewService defaults to
+		// the ADAPTIVE weight, which no linear arm reconstructs.
+		s := NewService(nil, nil, nil, 0).WithClosetBoost(0).
+			WithBM25Weight(false, hybridBM25Weight).WithReranker(&fakeReranker{}, 10)
+		if fusion {
+			s = s.WithFusion("rrf")
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		name string
+		svc  *Service
+		want EvalArm
+	}{
+		{"rrf + rerank at sigmoid (the shipped shape)", base(true).WithRerankNorm(RerankNormSigmoid), ArmBlendSigmoid},
+		{"rrf + rerank at min-max", base(true).WithRerankNorm(RerankNormMinMax), ArmRRFReranked},
+		{"rrf + rerank at rank", base(true).WithRerankNorm(RerankNormRank), ArmBlendRank},
+		{"linear + rerank at min-max", base(false).WithRerankWeight(0.5).WithRerankNorm(RerankNormMinMax), ArmHybridRerank},
+		{"linear + rerank at sigmoid: no arm reconstructs it", base(false).WithRerankWeight(0.5).WithRerankNorm(RerankNormSigmoid), ""},
+	} {
+		if got := tc.svc.SupersessionGatedArmFor(); got != tc.want {
+			t.Errorf("%s: gate names %q, want %q — the gate must report the arm whose RANKING the service actually serves",
+				tc.name, got, tc.want)
+		}
 	}
 }

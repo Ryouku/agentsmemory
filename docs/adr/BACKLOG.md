@@ -114,6 +114,14 @@ running memory service has to answer:
 
 Three primitives unlock all of it, in dependency order.
 
+**Status, 2026-08-25.** Two of the three landed with the OpenTelemetry work (#52, merged as
+`26f6531`), and the third is now ADR-028. **#2 is delivered in full**: 25 semantic stages report
+`ran | bypassed | failed_open | failed_closed` with 15 reasons, and `scripts/redeploy.sh` fails a
+deploy whose smoke search leaves no span. **#1 is delivered on the SPAN** (`am.profile_id` in
+`searchAttrs`) and not on the durable `search_events` row, which is a migration and is deferred
+below. **#3 is ADR-028** — the paragraph below is the brief it was written from, kept because the
+argument for why this signal is the one that scales is not restated in the ADR.
+
 **1. Profile identity on every event.** A `profile_id` covering candidate-pool configuration,
 fusion mode, lexical normaliser and weight, closet scale, rerank model/backend/blend, and index
 version. Without it no drift signal is interpretable and no calibration can state what it is valid
@@ -883,3 +891,240 @@ Two smaller ones from the same review:
   different instrument from the in-process axis runner: an axis proves a selection is reachable,
   where this would prove an external boundary still behaves. Deferred from ADR-025's Out of Scope
   on 2026-08-25, when the disposition was given a receipt it had been missing.
+
+## From ADR-028 (return the identifier and the score a recall was decided by)
+
+ADR-028 ships the two halves that cross the tool boundary — `search_id` returned by `am_search` and
+accepted by `am_get_drawer`, and `blended_score` on every hit. These three are what it deliberately
+did not ship, each with the reason it was held back rather than the intention to get to it.
+
+- **Record the fetch against the recall, and report the ratio.** The consuming half of primitive #3:
+  a fetch that names a `search_id` is a relevance click, and the ratio of recalls followed by a fetch
+  is the first usage signal this palace has ever had. Held back because the precondition does not
+  exist yet — nothing sends an id until ADR-028 T1 ships and a client adopts it, and a report built
+  first would be measuring an empty set. **Trigger: the first week `am_get_drawer` receives a
+  non-empty `search_id` from a client that is not a test.** If a year passes and no id ever arrives,
+  the honest outcome is to REMOVE the argument, and that result is worth as much as the report.
+
+- **`profile_id` on the durable `search_events` row.** Primitive #1's other half. It is on the span
+  today, which makes a sampled trace interpretable, and absent from the durable row, which makes a
+  ratio uninterpretable — "38% of recalls were followed by a fetch" means nothing without knowing
+  which ranking profile produced them. A column addition, so it is a migration and belongs with the
+  recording task above rather than with ADR-028's surface changes.
+
+- **A relevance metric derived from the fetch signal.** Deliberately last. The signal has to exist
+  and be observed before anything is derived from it; deriving a metric from a signal nobody has
+  seen is how the eval acquired arms that measured configurations nobody ran.
+
+## From ADR-029 (a trace that cannot lie about what it did)
+
+A five-lens sweep of the search path on 2026-08-25 against `dcc1389` returned thirty findings; the
+adversarial pass **confirmed sixteen and refuted fourteen**, and five of ADR-029's original seven
+"lies" were among the refuted (see that ADR's amendment). These are the CONFIRMED findings ADR-029
+does not take — real, verified, and held back with the reason, not the intention. Corrected
+2026-08-25: an earlier version of this section said "thirty findings, each adversarially verified",
+which reads thirty as a finding count. It is not.
+
+- **Backend identity on the span. — RECEIVED 2026-08-26, the `VECTOR_BACKEND` half is delivered.**
+  `am.vector_backend` is on the search span as of `6631dc1`, via a `VectorDescriber` optional
+  interface implemented by sqlitevec, qdrant, chromemvec and Hybrid — the last naming BOTH halves
+  (`hybrid(sqlitevec->qdrant)`), because a hybrid's two stores can disagree and a string naming one
+  of them reads identically either way. It is in the explicit knob list, so removing it fails
+  `TestKnobsThatDecideThePageAreAllOnTheParentSpan`, and `var _ VectorDescriber` assertions fail by
+  name if any production store stops describing itself.
+  It did NOT need its own ADR in the end: it turned out to be one attribute and an optional
+  interface already used twice on this branch, not the `cmd/server/main.go` wiring change this entry
+  predicted. The trigger it named — "the next eval table anyone intends to compare across a config
+  change" — is what fired.
+  The `EMBED_BACKEND` half was refuted in ADR-029 rather than delivered here; the embed span
+  separately gained backend, model and input window via `DescribeEmbedder`, which is more than this
+  entry asked for and does not change that refutation.
+  Original text follows.
+
+- **Backend identity on the span.** `VECTOR_BACKEND` selects sqlite brute force, embedded chromem or
+  Qdrant over HTTP, and no search span names the one that ran; the three are not equivalent, since
+  chromem clamps `k` to the collection size. `EMBED_BACKEND` and the embedding model are worse:
+  they decide what every distance in every trace and every eval table MEANS, and both default paths
+  serve the same dimension count, so the one attribute the embed span carries (`am.dim`) cannot
+  separate them. This is the highest-consequence item the sweep found. Held back from ADR-029 only
+  because it is `cmd/server/main.go` wiring rather than the search path, so it earns its own record.
+  **Trigger: the next ADR that touches the embed or retrieve wiring, or the next eval table anyone
+  intends to compare across a config change.**
+
+- **The adaptive BM25 weight's resolved value.** Under `FUSION=linear` with `BM25Weight=auto`,
+  `adaptiveBM25Weight(query, docs, base) = base × LexicalCoverage(query, docs)` is recomputed per
+  query, and the fusion span carries `am.bm25_auto`, `am.bm25_idf`, `am.lex_norm` and `am.bm25_base`
+  — that auto is ON and what the base was, never what it resolved to for this query. Held back
+  because it makes the trace incomplete, not wrong.
+
+- **The whole-memory degradation that lives only in prose.** The search handler silently degrades
+  whole-memory requests to a 400-rune window once a page exceeds `wholeMemoryBudget`, and the fact
+  reaches the caller as a `note` string and reaches no span at all. Held back with the same
+  reasoning, and noted here because a prose field is exactly the shape this repository has ruled
+  is not load-bearing.
+
+- **`SearchQuery.Context` presence on the rerank span.** The context is concatenated onto the query
+  handed to the cross-encoder and changes the served order; `am_search` advertises that it "sharpens
+  re-ranking when a reranker is configured; ignored otherwise", and neither branch of that promise
+  is observable.
+
+- **The coerced-to-zero cosine rejection.** In semantic evidence selection, `similarity, ok :=
+  cosineSimilarity(...); if !ok { similarity = 0 }` emits nothing, so a degraded embedder's
+  non-finite vectors and a deliberately blank window produce the same score. `Span.Event` exists for
+  exactly this and is unused here.
+
+- **`closetBoostsAt`'s three discard paths.** A purged row, a duplicate source, and a distance past
+  `closetDistanceCap` all drop a retrieved closet, and the span ends `ran` carrying only
+  `am.count=len(boosts)` — `len(hits)` is recorded nowhere. So `am.count=0` reads identically for
+  "the team has never mined" and "five closets were retrieved and every one was thrown away".
+
+- **The evidence stage's window counts.** `am.pool` counts DOCUMENTS; the unit that determines the
+  stage's cost is the window, and the file's own comment notes a five-thousand-rune memory yields
+  seventeen of them. How many were generated, embedded, or discarded past
+  `maxMemoryEvidenceRegions` is recorded nowhere.
+
+- **An anchor/staleness stage.** The anchor pass has no span at all, so `SearchStages()` can never
+  catch its absence. ADR-029 T1 makes its FAILURE visible on the enclosing tool span; giving it a
+  stage of its own is a new stage rather than a list repair. **Trigger: the next time a stale flag
+  is wrong in production and nobody can tell from a trace whether the lookup ran.**
+
+- **Telling the CALLER that anchors failed, or that a wing lookup failed.** ADR-029 T1 makes both
+  visible in the trace only. Surfacing them in the `am_search` response is a contract change and
+  needs its own record. **Trigger: the first support question that turns out to be a silently
+  unflagged stale page.**
+
+- **Acting on a non-zero out-of-scope drop count.** ADR-029 T2 makes it visible, and it is an alarm
+  rather than a metric: a non-zero count means the vector index and the durable rows have diverged.
+  What the server should DO about that — refuse, repair, warn — has a blast radius this ADR does not
+  take on. **Trigger: the first non-zero count observed in the deployed container.**
+
+
+## From ADR-030 (a blend that cannot tell confidence from noise)
+
+- **Persist `blended_score` to `search_events`.** ADR-028 T2 put it on the wire; the durable row still
+  records only `top_score` and `reranked`. Without it the tie rate cannot be measured retrospectively,
+  so ADR-030's 17.6% is an EXPOSURE figure (pages small enough for the pool to be degenerate) and not
+  an incidence. A migration, and ADR-030 T1's fixture answers the same question about the present
+  without one. **Trigger: the first time someone wants to know how often the blend actually tied.**
+
+- **`max_distance` as a pool shrinker.** Measured live on 2026-08-25: `max_distance=0.45` cut the
+  candidate pool from 10 to 3, and a pool of 3 is where min-max normalisation is most degenerate. The
+  corpus already holds a decision drawer reading "max_distance is DEAD as a confidence signal — on 61
+  cases the answerable/unanswerable top-1 cosine distributions overlap", matching ADR-001's table
+  (medians 0.401 vs 0.423). So the knob is both useless as a confidence signal AND actively harmful to
+  the ranking that follows it. Whether to floor it, change its default, or remove it is its own
+  decision. **Trigger: ADR-030 T1's measurement, which will show how much the small-pool case costs.**
+
+- **Re-examine every default set by the eval's weight sweep against the pool-size distribution
+  production actually serves.** `RerankWeight: 0.5` is annotated "chosen by the eval's weight sweep",
+  and the sweep ran at pools of 128 and 10 while 17.6% of real reranked recalls run at four or fewer.
+  The general question — for any normalisation or threshold here, does the tuning fixture span the
+  range production serves? — was answered "no" once and has not been asked of the others.
+
+## From ADR-031 (keep the one score that separates a recall that worked)
+
+- **An abstention threshold, calibrated on `top_rerank_score`.** ADR-031 keeps the signal; spending
+  it is ADR-001's T3, which stays BLOCKED on its own preflight — a corpus measuring 100% in-pool is
+  saturated and the go/no-go cannot be taken there in either direction. **Trigger: a corpus with hard
+  identifier-preserving negatives and a retrieval ceiling under saturation, plus enough reranked rows
+  to plot the answered-versus-unanswered distribution against ADR-001's table.**
+
+- **Changing `FUSION` away from `rrf` so the fused score carries magnitude again.** Reciprocal rank
+  fusion discards magnitude at retrieval on both arms, which is why `top_score`'s top-1 range is only
+  0.0275..0.0328. A linear fusion would keep it. This changes the SERVED ORDERING, and the eval of
+  2026-08-25 cannot support a change of that size at n=30 — every arm's verdict was "inconclusive vs
+  best (CI spans zero)". **Trigger: an eval corpus large enough for a paired comparison to resolve.**
+
+- **Removing `avg_top_score` from `am_recall_stats`.** Under `rrf` it is an average of a
+  near-constant, so it invites a conclusion it cannot support. It is NOT wrong for a `FUSION=linear`
+  deployment, and it may be on somebody's dashboard. Its doc comment now states its own limitation.
+  **Trigger: `FUSION=rrf` becoming the only supported fusion, or a confirmed report that nobody reads
+  the field.**
+
+- **The 2026-08-25 eval's uncomfortable headline, unresolved.** On that 30-case replay, plain
+  `vector` scored MRR 0.644 and `production (Search)` scored 0.592 with 7 golds ranked below the page
+  cut — the whole ranking stack underperformed doing nothing. Three reasons not to act on it: n=30,
+  questions generated FROM the drawers (which flatters vector similarity by construction), and
+  ADR-001's finding that this corpus is saturated. It is recorded because an unexplained result that
+  nobody writes down gets rediscovered every quarter. **Trigger: the next eval on a corpus that is
+  not generated from the memories it searches.**
+
+## From ADR-032 (the corpus that chose our defaults could not disagree with them)
+
+- **The 14-of-40 unanswered real queries.** The largest single number in the 2026-08-25 real run
+  and the least interpretable: the judge sees only the RETRIEVED POOL, so "no relevant memory"
+  conflates a memory that is not there with one the judge missed. Four of the fourteen were the same
+  question re-asked (`mutatesOnlyTempPaths temp-write exemption`), which is the "questions the team
+  should have written and did not" signal `search_events` was built for — but separating a write gap
+  from a retrieval miss needs an instrument that does not exist. **Trigger: the next time somebody
+  wants to quote a recall-failure rate.**
+
+- **A stronger judge than `qwen2.5-coder:7b`.** It bounds every ABSOLUTE number in the real table
+  ("85% recall@5" is judge-limited) though not the arm-vs-arm comparisons, since every arm faces the
+  same gold. **Trigger: publishing an absolute recall figure, or a run whose verdict hinges on cases
+  the judge scored inconsistently.**
+
+- **The recalls that never happened.** An agent that does not know a framework exists never searches
+  for it — "you cannot retrieve what you do not know to ask for" — so no corpus built from
+  `search_events` can contain that case, and no eval can see it. It is the one failure mode on
+  ADR-032's subject with NO METRIC AT ALL, and the reason the push channel (`llm_init`, protocol
+  files, centralised skills) exists on convention rather than on measurement. Naming it is the most
+  that can be done honestly today. **Trigger: any proposal to reduce what is loaded unconditionally,
+  since that is the only lever whose cost this blind spot hides.**
+
+- **Re-examine every default annotated as "measured".** Two are named in ADR-032 (`Fusion`,
+  `RerankWeight`); a sweep of `config.Default()` for comments claiming a measurement would say
+  whether there are more. ADR-032 T2's `TestShippedDefaultsCiteTheirCorpus` is the mechanical
+  version of this question. **Trigger: T2 landing.**
+
+- **Make `--style real` the corpus the eval documentation leads with.** `cmd/server/eval.go`'s
+  Description still presents the generated styles first, which is how a fixture that cannot exhibit
+  the defect became the one that picked two shipped defaults. **Trigger: ADR-032 T2 reporting,
+  either way.**
+
+## From ADR-032 T1 (the null result, 2026-08-26)
+
+- **`TestShippedDefaultsCiteTheirCorpus`.** Planned for T2 and NOT written, because it belongs with a
+  default change and there was none. Every `config.Default()` field whose comment claims it was
+  measured should name the case-set id it was measured on — `Fusion` and `RerankWeight` say "chosen
+  by the eval's weight sweep" and name no corpus, which is how a measurement outlived the corpus that
+  produced it. Worth doing on its own. **Trigger: the next change to any default annotated "measured".**
+
+- **The 3 answers no arm retrieved (n=54 run).** The first corpus of three that is not saturated —
+  94% in-pool against 100% for both earlier runs — so for the first time there are genuine RETRIEVAL
+  failures, distinct from ranking ones. No reranker can reach them. The run's own advice: raise
+  `--pool` and re-run; if they come back the pool was too small, if they stay missing the embedding is
+  not placing those memories near their question. **Trigger: any work on retrieval rather than ranking
+  — this is the only measured evidence of which of the two is failing.**
+
+- **The 5 golds `production` lost below its page cut.** Retrieved and ranked, then cut by the page
+  size rather than by the pool. The knobs are the search limit and `RERANK_POOL`, not `--pool`. This
+  is a different failure from the 3 above and the table separates them. **Trigger: a complaint that a
+  recall "missed something obvious" — this is the shape that produces it.**
+
+- **`rerank blend w=0.25` is the top arm in BOTH real runs** (0.761 at n=26, 0.694 at n=54) against a
+  shipped 0.50, and remains unresolved: it is the arm each table selected, so the comparison flatters
+  it, and `w=0.50` is inconclusive against it in both. It is the strongest surviving hint about a
+  shipped default. **Trigger: a run designed to test it specifically, with the contrast preselected
+  rather than read off the winner column.**
+
+## From ADR-032 trial 2 (the pool-width test, 2026-08-26)
+
+- **`Search`'s retrieve floor is too narrow, and it is the first measured, actionable recall finding
+  this corpus produced.** A paired pool 30 → 100 re-run lifted every eval arm by ~0.05 MRR and left
+  `production (Search)` at exactly 0.660 with 8 misses, because `candidateKFor(limit, …)` computes its
+  own fetch width from `limit×3` (raised to `RERANK_POOL`) and cannot see `--pool`. Its misses are
+  golds retrieved and ranked, then cut by the PAGE: `limit=10` removes three of the eight,
+  `retrieve-k=50` two. **Trigger: this is the next change to make, and it wants its own ADR — the
+  knobs are `DefaultSearchLimit` and `RetrieveK`, both served-path defaults.**
+
+- **Re-measure everything previously measured at pool 30.** The closet prior's cost was −0.048,
+  −0.039 and −0.027 across three runs and **−0.002 with Δrecall@1 +0.000** once the pool widened —
+  so three agreeing runs were weaker evidence than they looked, because all three shared a pool
+  width nobody was varying. Any other conclusion drawn at pool 30 inherits the same doubt.
+  **Trigger: before citing any pre-2026-08-26 eval number as settled.**
+
+- **The latency cost of a wider pool is unmeasured.** Trial 2 shows what pool 100 buys in QUALITY and
+  says nothing about what it costs in hydration and rerank time. A recall that is better and twice as
+  slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
+  served retrieve floor — which is the item above, so this blocks it.**

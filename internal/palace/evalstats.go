@@ -611,7 +611,21 @@ func (s *Service) gatedArm(reranked bool) EvalArm {
 		case closetOn:
 			return "" // no RRF arm carries the closet prior production applies
 		case reranked:
-			return ArmRRFReranked
+			// The arm must reconstruct THIS service's ranking exactly, and the
+			// normaliser is part of the ranking: the B1 reset made rrf+rerank the
+			// min-max arm, so a service served at sigmoid or rank is represented
+			// only by the arm that says so. Naming rrf+rerank for a sigmoid
+			// service would report a supersession number from a pipeline nobody
+			// serves — the same defect the reset fixed in the arms, one call site
+			// over.
+			switch s.RerankNormName() {
+			case RerankNormSigmoid:
+				return ArmBlendSigmoid
+			case RerankNormRank:
+				return ArmBlendRank
+			default:
+				return ArmRRFReranked // min-max
+			}
 		default:
 			return ArmRRF
 		}
@@ -623,7 +637,7 @@ func (s *Service) gatedArm(reranked bool) EvalArm {
 	plain := !s.bm25Auto && s.bm25Base == hybridBM25Weight && s.lexNormName == DefaultLexNorm
 	switch {
 	case closetOn && reranked:
-		if plain {
+		if plain && s.RerankNormName() == RerankNormMinMax {
 			return ArmReranked
 		}
 		return ""
@@ -633,7 +647,7 @@ func (s *Service) gatedArm(reranked bool) EvalArm {
 		}
 		return ""
 	case reranked:
-		if plain {
+		if plain && s.RerankNormName() == RerankNormMinMax {
 			return ArmHybridRerank
 		}
 		return ""
