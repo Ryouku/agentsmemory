@@ -1386,6 +1386,71 @@ and `internal/web/wing.go` (the dashboard routes).
 
 ---
 
+## Teaching the palace about a project's data (`import`)
+
+A project's reference and seed data usually ship as JSONL beside the code that
+loads them. The rows end up in a database, which is the right home for rows — it
+answers *"which invoices are overdue"* better than any vector search will.
+
+What no store answers is what the data **means**: why every seeded date falls in
+one quarter, which of twelve status values the data actually exercises, that
+`amount` is minor units. An agent opening the repository can read the rows and
+still not know any of it.
+
+`agentsmemory import` files one memory per dataset, and the memory is two halves:
+
+```bash
+agentsmemory import --config agentsmemory-import.toml --out project.ndjson
+agentsmemory wing import --db ~/.agentsmemory/db.sqlite --file project.ndjson --as wing_acme
+
+# Or straight into a running server, self-hosted or hosted:
+agentsmemory import --config agentsmemory-import.toml \
+  --push https://your-host/import --as wing_acme --token "$AGENTSMEMORY_TOKEN"
+```
+
+The mapping file is committed **in the project's own repository**, so a change to
+a dataset and the description of that dataset are reviewed in the same pull
+request:
+
+```toml
+wing = "wing_acme"                       # a default; --as still names it on the way in
+
+[[dataset]]
+file  = "data/invoices.jsonl"            # relative to THIS file, not to the shell
+room  = "schema"
+title = "Invoice seed data"
+why   = """
+Seeded from one anonymised quarter, which is why every due date lands in Q1.
+`amount` is MINOR UNITS — 1200 is twelve euros, not twelve hundred."""
+```
+
+`why` is required. A dataset drawer carrying only a profile records what a reader
+could have derived from the file, and filing it would spend recall on nothing.
+
+**What lands, and what deliberately does not:**
+
+| Carried | Left behind |
+|---|---|
+| The `why` you wrote, verbatim and first | **The rows.** They are already in the database this same JSONL builds |
+| A profile **measured** on every run: fields, types, row count, the values a small field actually takes, date ranges | **Vectors** — the bundle is text, the server embeds |
+| One example row, so the shape is visible | Anything below the first level of a nested object |
+
+The measured half cannot drift from the data, because it is re-derived rather
+than remembered. The written half is the part no tool can infer, which is why it
+goes first: recall returns a *window* around a match, and the half that cannot be
+re-derived has to be the half a snippet finds.
+
+Rows are refused on evidence rather than taste: a larger, more heterogeneous
+corpus retrieves measurably worse, because unrelated entries do not remove the
+answer — they add competitors ahead of it. Since import is idempotent by source,
+re-running after the JSONL changes **replaces** each dataset's memory instead of
+filing a second one beside it.
+
+Implementation: [`internal/datasetdoc`](internal/datasetdoc/) (the profiler,
+the mapping file and the bundle) and `cmd/server/importdata.go` (the CLI).
+
+---
+
 ## Project layout
 
 ```
