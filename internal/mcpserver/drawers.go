@@ -158,6 +158,14 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 			views[i] = toView(d)
 		}
 		out := map[string]any{"ok": true, "chunks": len(created.Drawers), "drawers": views}
+		// Whether the filing is REACHABLE, not merely stored. Measured 2026-08-26,
+		// 57 of 1,985 drawers carried any edge and 0 were named as a triple
+		// object, so "filed" and "findable by traversal" had quietly become
+		// different things and nothing said which one had just happened.
+		if len(created.Drawers) > 0 {
+			out["has_edge"] = created.Drawers[0].HasEdge
+			out["edge_derived"] = created.Drawers[0].EdgeDerived
+		}
 
 		// Anchors pin the FIRST chunk: it is the parent handle for a multi-chunk
 		// write, and the one search returns as the memory's identity.
@@ -519,6 +527,7 @@ func newSearchHitView(h palace.SearchHit) searchHitView {
 		Reranked:      h.Reranked,
 		Blended:       h.Blended,
 		ChunksMatched: h.ChunksMatched,
+		Corrections:   h.Corrections,
 	}
 }
 
@@ -593,6 +602,10 @@ type searchHitView struct {
 	// last verification pass. Stale is the summary an agent should branch on.
 	Anchors []anchorView `json:"code_anchors,omitempty"`
 	Stale   bool         `json:"stale,omitempty"`
+	// Corrections are the retracts/supersedes/qualifies edges pointing at this
+	// record. Without them a page that bootstraps perfectly still serves a record
+	// somebody has already contradicted, and says nothing about it.
+	Corrections []palace.Correction `json:"corrections,omitempty"`
 }
 
 // regionView is one matching part of a memory as search reports it: the verbatim
@@ -776,6 +789,20 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// found nothing still ran and still wrote its row, and that is the page
 		// most worth tracing. It is the primary key of the search_events row.
 		out := map[string]any{"hits": views, "count": len(views), "search_id": page.SearchID}
+		// The fact block, rendered BESIDE the hits. Three keys, because a match
+		// this recall did not return is reported one of two ways and never as
+		// silence: the WING that holds it, when provenance makes that derivable
+		// and an agent can go and query it, or a COUNT when it does not.
+		//
+		// Silence is indistinguishable from "nothing is filed", which is the
+		// failure this whole surface exists to remove — and on today's corpus the
+		// unplaceable case is the majority: 90 of 196 triples resolve to a drawer,
+		// measured 2026-08-26.
+		if !page.Facts.Empty() {
+			out["facts"] = page.Facts.Facts
+			out["elsewhere_wings"] = page.Facts.ElsewhereWings
+			out["unlocatable_facts"] = page.Facts.Unlocatable
+		}
 		// Say it, rather than letting the caller infer it from a truncation flag on
 		// hits it did not ask to have truncated. A silent cap on a "give me
 		// everything" request is the shape that teaches an agent the palace is

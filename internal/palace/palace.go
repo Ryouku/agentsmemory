@@ -52,6 +52,12 @@ type Drawer struct {
 	// machinery as add_drawer rather than forking a parallel store.
 	Agent string
 	Topic string
+	// HasEdge and EdgeDerived report whether this drawer is reachable by
+	// traversal and, if so, whether the server inferred the edge or a writer
+	// authored it. They are not persisted: they describe what the filing just
+	// did, so a caller learns it without a second query.
+	HasEdge     bool `json:"has_edge,omitempty"`
+	EdgeDerived bool `json:"edge_derived,omitempty"`
 }
 
 // Dynamics are the L7 "living connection" fields every hallway and tunnel carries:
@@ -128,6 +134,11 @@ type Tunnel struct {
 type SearchResult struct {
 	SearchID string
 	Hits     []SearchHit
+	// Facts is the fact block ADR-036 adds BESIDE the hits — in-wing facts, the
+	// sibling wings holding matches this recall did not return, and a count of
+	// the matches it could not place at all. It never reorders Hits: F-9 pins
+	// that, so this cannot be confused with a retrieval change.
+	Facts FactBlock
 }
 
 // SearchHit is one ranked result from hybrid search. Score is the fused rank — a
@@ -152,10 +163,15 @@ type SearchHit struct {
 	// signal — a memory that matched in four places is stronger evidence than one
 	// that matched in one, and a silent collapse throws that away.
 	ChunksMatched int
-	Score         float64 // fused rank score, higher is better
-	BM25          float64 // raw Okapi-BM25 lexical score (pre-normalization)
-	ClosetBoost   float64 // closet rank boost folded into Score (0 when none)
-	Distance      float64 // raw cosine distance, lower is closer
+	// Corrections are the retracts/supersedes/qualifies edges pointing AT this
+	// record, resolved server-side. Marked, never hidden and never demoted: a
+	// retraction can itself be wrong, so this is a signal for the reader rather
+	// than a gate on what the reader may see.
+	Corrections []Correction `json:"corrections,omitempty"`
+	Score       float64      // fused rank score, higher is better
+	BM25        float64      // raw Okapi-BM25 lexical score (pre-normalization)
+	ClosetBoost float64      // closet rank boost folded into Score (0 when none)
+	Distance    float64      // raw cosine distance, lower is closer
 	// RerankScore is the cross-encoder's relevance for this hit, or 0 when no
 	// reranker is configured or it did not score this one. It is reported
 	// alongside Score rather than replacing it: the two are not on the same scale

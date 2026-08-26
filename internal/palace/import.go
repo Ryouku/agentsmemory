@@ -99,6 +99,17 @@ func (s *Service) AbsorbDrawers(ctx context.Context, teamID string, in []ImportD
 	if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
 		return 0, fmt.Errorf("absorb drawers: %w", err)
 	}
+
+	// Imported drawers get the same containment edge every other write path
+	// attaches. Without this an entire imported dataset is filed and unreachable
+	// by traversal — the exact orphan state ADR-036 T6 exists to end, arriving
+	// through a path T6 never looked at because ADR-035 landed after it was
+	// written.
+	//
+	// One edge per SOURCE, not per row: an import is many drawers from one file,
+	// and edging each row would put thousands of derived triples in the graph to
+	// express one fact about where the dataset lives.
+	s.attachDerivedEdgeTo(ctx, teamID, drawers)
 	return len(drawers), nil
 }
 
