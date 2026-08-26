@@ -587,6 +587,23 @@ type EvalOptions struct {
 	// this eval has already once produced a full table of "reranked" numbers that
 	// were silently the hybrid order, and a loud stop is the only reliable cure.
 	AllowDegraded bool
+	// Arms restricts the run to the named arms, matched by exact name or prefix.
+	// Empty runs every arm, which is the default and the right thing for a tuning
+	// sweep.
+	//
+	// It exists because COST, not corpus size, is what stops a question being
+	// asked twice. Measured 2026-08-26: 54 cases against 36 arms took ~50 minutes
+	// at the shipped RERANK_POOL, and ~110 minutes at pool 20 — two runs that day
+	// were abandoned unfinished, and an unfinished run yields nothing at all. A
+	// question worth answering is usually a question about three or four arms, and
+	// paying for the other thirty-two is what makes it unaffordable to re-ask.
+	//
+	// It does NOT change the retrieved pool: every arm still re-orders the same
+	// candidates, so a filtered run is comparable with a full one arm-for-arm.
+	// What it does change is the "vs best" baseline, which is computed among the
+	// arms present — the report says so rather than leaving a reader to assume the
+	// winner beat arms that never ran.
+	Arms []string
 	// CaseSetOrigin says whether the caller replayed saved questions or generated
 	// its own. Only the caller knows; the report carries it so the table and the
 	// run record cannot disagree about it.
@@ -633,6 +650,23 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	}
 
 	arms := evalArms(opts, s.rerank != nil)
+	if len(opts.Arms) > 0 {
+		kept, dropped := selectArms(arms, opts.Arms)
+		// REFUSE a filter that matched nothing rather than running zero arms and
+		// reporting an empty table. This repository's oldest lesson is that a
+		// filter matching nothing exits 0 with a cheerful summary, which is how
+		// every TDD task once passed its own gate with none of the work done.
+		if len(kept) == 0 {
+			return EvalReport{}, fmt.Errorf("--arms %q matched none of the %d available arms; "+
+				"a filter that selects nothing must refuse rather than report an empty table",
+				strings.Join(opts.Arms, ","), len(arms))
+		}
+		// Say what was dropped. Silent truncation reads as "covered everything".
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"--arms selected %d of %d arms (%d not run); the 'vs best' baseline is the best of "+
+				"those %d, not of every arm", len(kept), len(arms), dropped, len(kept)))
+		arms = kept
+	}
 	byArm := map[EvalArm]*EvalMetrics{}
 	for _, a := range arms {
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
@@ -1579,4 +1613,43 @@ func (s *Service) accumulate(byArm map[EvalArm]*EvalMetrics, report *EvalReport,
 			}
 		}
 	}
+}
+
+// selectArms keeps the arms matching any of the patterns, by exact name first
+// and prefix second, preserving the declared order.
+//
+// Order is preserved rather than following the caller's patterns because
+// TestEvalArmsKeepProductionLast requires the arm scoring the served path to be
+// last in the table, and a reader comparing rows finds production at the bottom.
+// Reordering here would break that quietly, in a report rather than in a test.
+//
+// Prefix matching is deliberate: the swept families are minted at run time
+// (rerankArm, bm25Arm, recencyArm build their names with fmt.Sprintf), so
+// "rerank blend" selects the whole weight sweep without naming four values that
+// change whenever the sweep does.
+func selectArms(all []EvalArm, patterns []string) (kept []EvalArm, dropped int) {
+	want := make(map[string]bool, len(patterns))
+	for _, p := range patterns {
+		if p = strings.TrimSpace(p); p != "" {
+			want[p] = true
+		}
+	}
+	for _, a := range all {
+		name := string(a)
+		match := want[name]
+		if !match {
+			for p := range want {
+				if strings.HasPrefix(name, p) {
+					match = true
+					break
+				}
+			}
+		}
+		if match {
+			kept = append(kept, a)
+		} else {
+			dropped++
+		}
+	}
+	return kept, dropped
 }
