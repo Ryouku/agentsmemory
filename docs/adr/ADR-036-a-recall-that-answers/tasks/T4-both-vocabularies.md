@@ -66,9 +66,26 @@ ancestors' 12 still run, so a regression in what T4 was built on is still caught
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · 7a2bbc5 · exit 1 · `set -o pipefail …` · acceptance-sha256:ef1ef68a293acc1d7f1145880433584ab732f4e9929be7ca01e70b04925822c9
+  ```
+  --- FAIL: TestFactLookupMatchesBothEntityVocabularies (0.00s)
+      recallanswers_spec_test.go:66: F-4 not implemented: fact lookup must match a query against kg_entities AND drawers.entities, read-only
+  --- FAIL: TestAnEndedFactIsNeverPresentedAsCurrent (0.00s)
+      recallanswers_spec_test.go:186: F-7 not implemented: a fact with a non-empty valid_to must not be presented as current
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.019s
+  FAIL
+  ```
+- 2026-08-26 · 7a2bbc5* · exit 0 · `set -o pipefail …` · acceptance-sha256:ef1ef68a293acc1d7f1145880433584ab732f4e9929be7ca01e70b04925822c9
 
 ## Mutation Log
+
+- 2026-08-26 · 7a2bbc5* · mutant inconclusive · exit 1 · `internal/palace/factsfor.go` · stop joining the extracted vocabulary; a fact reachable only through a term the extractor found becomes unreachable · acceptance-sha256:ef1ef68a293acc1d7f1145880433584ab732f4e9929be7ca01e70b04925822c9
+  ```
+  the fence failed on a build/parse error, not an assertion
+  ```
+- 2026-08-26 · 7a2bbc5* · mutant killed · exit 1 · `internal/palace/factsfor.go` · present ended facts as current; 14 already-expired facts on the live palace would be served as live answers · acceptance-sha256:ef1ef68a293acc1d7f1145880433584ab732f4e9929be7ca01e70b04925822c9
+- 2026-08-26 · 7a2bbc5* · mutant killed · exit 1 · `internal/palace/factsfor.go` · stop joining the extracted vocabulary; a fact reachable only through a term the extractor found becomes unreachable · acceptance-sha256:ef1ef68a293acc1d7f1145880433584ab732f4e9929be7ca01e70b04925822c9
 
 ## Invariants
 

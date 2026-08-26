@@ -1181,3 +1181,16 @@ which reads thirty as a finding count. It is not.
 - **Personalized PageRank over the graph (HippoRAG, arXiv 2405.14831).** Rejected for ADR-036, not
   forever: it presumes a connected graph, and ours derives zero hallways. **Trigger: once T6 has
   produced edges and T1 can score whether PPR beats the direct lookup.**
+
+## From ADR-036 T4 (the second entity vocabulary, 2026-08-26)
+
+- **Whether the extracted vocabulary HELPS is still unmeasured, and the code shipped anyway.**
+  T4's tests prove a fact reachable only through `drawers.entities` now arrives, and a mutant that
+  drops the join is killed. What they cannot prove is whether the join raises or lowers the
+  answerable-rate: T1's arm scores against gold triple ids, and the committed fixture's ids are
+  invented, so an on/off comparison is 0/8 either way. The real corpus is deliberately untracked
+  (ADR-003 T2), and nobody has built one. So T4's own stop condition — "stop if the join measurably
+  LOWERS the rate" — has no number behind it yet, and frequency-extracted terms are noisier than
+  authored names by construction. **Trigger: the first time the real fact corpus is built; run
+  ArmFactRetrieval with the second vocabulary on and off and record both rates WITH denominators
+  before trusting either.**

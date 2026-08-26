@@ -63,7 +63,46 @@ func TestACorrectedRecordArrivesCarryingItsCorrection(t *testing.T) {
 }
 
 func TestFactLookupMatchesBothEntityVocabularies(t *testing.T) {
-	t.Fatal("F-4 not implemented: fact lookup must match a query against kg_entities AND drawers.entities, read-only")
+	ctx := context.Background()
+	const team = "t-f4"
+	svc := newTestService(t)
+
+	// A drawer whose extracted terms include "Ledger" — the frequency vocabulary
+	// ADR-016 stamps. Nothing ever joins it to kg_entities.
+	filed, err := svc.Add(ctx, team, AddInput{
+		Wing: "wing_acme", Room: "decisions",
+		Content: "Ledger is the service of record. Ledger issues every invoice number, and Ledger is audited quarterly.",
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !slices.Contains(filed.Drawers[0].Entities, "Ledger") {
+		t.Fatalf("the extractor did not stamp the term this test is about; entities=%v", filed.Drawers[0].Entities)
+	}
+
+	// A fact whose SUBJECT is that same term. It is deliberately never indexed as
+	// an authored label: the entity vector index is skipped, so the only way to
+	// reach this fact is through the extracted vocabulary.
+	if _, err := svc.KGAdd(ctx, team, "Ledger", "audited", "quarterly", "", "", "", "", filed.Drawers[0].ID); err != nil {
+		t.Fatalf("kgadd: %v", err)
+	}
+
+	bare := *svc
+	bare.vectors = noEntityIndex{svc.vectors}
+	page, err := bare.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Room: "decisions", Query: "Ledger", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	var found bool
+	for _, f := range page.Facts.Facts {
+		if f.Predicate == "audited" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a fact reachable only through the EXTRACTED vocabulary did not arrive; got %d facts: %+v", len(page.Facts.Facts), page.Facts.Facts)
+	}
 }
 
 func TestFactAnswerableRateIsMeasured(t *testing.T) {
@@ -183,7 +222,50 @@ func TestFactsOnThePageAreScoredByMRR(t *testing.T) {
 }
 
 func TestAnEndedFactIsNeverPresentedAsCurrent(t *testing.T) {
-	t.Fatal("F-7 not implemented: a fact with a non-empty valid_to must not be presented as current")
+	ctx := context.Background()
+	const team = "t-f7"
+	svc := newTestService(t)
+
+	filed, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "Ledger runs on the old scheduler"})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := svc.KGAdd(ctx, team, "Ledger", "runs on", "old scheduler", "2024-01-01", "2025-01-01", "", "", filed.Drawers[0].ID); err != nil {
+		t.Fatalf("kgadd ended: %v", err)
+	}
+	if _, err := svc.KGAdd(ctx, team, "Ledger", "runs on", "new scheduler", "2025-01-01", "", "", "", filed.Drawers[0].ID); err != nil {
+		t.Fatalf("kgadd current: %v", err)
+	}
+	if _, err := svc.BackfillEntityLabels(ctx, team); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "what does Ledger run on", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	// The block must carry the live answer and not the dead one. 14 facts on the
+	// live palace are already ended and unfiltered by search today, so this is a
+	// real population, not a hypothetical.
+	var sawCurrent, sawEnded bool
+	for _, f := range page.Facts.Facts {
+		switch f.Object {
+		case "new scheduler":
+			sawCurrent = true
+		case "old scheduler":
+			sawEnded = true
+		}
+		if f.ValidTo != "" {
+			t.Errorf("a fact with valid_to=%q was presented in the current block: %s -> %s -> %s", f.ValidTo, f.Subject, f.Predicate, f.Object)
+		}
+	}
+	if sawEnded {
+		t.Error("the superseded fact was returned as current")
+	}
+	if !sawCurrent {
+		t.Errorf("the live fact did not arrive at all; got %d facts: %+v", len(page.Facts.Facts), page.Facts.Facts)
+	}
 }
 
 func TestAFactsWingComesFromItsProvenance(t *testing.T) {

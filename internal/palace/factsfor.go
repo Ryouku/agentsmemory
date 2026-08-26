@@ -58,15 +58,48 @@ func (s *Service) factsFor(ctx context.Context, teamID, wing string, vec []float
 	if err != nil {
 		return block, err
 	}
-	if len(matches) == 0 {
+
+	// TWO vocabularies, joined at READ time and not merged.
+	//
+	// kg_entities is authored — somebody chose that name via am_kg_add.
+	// drawers.entities is frequency-extracted by ADR-016's extractEntities, and
+	// 945 of 1,985 drawers carry them (47.6%, measured 2026-08-26). NOTHING joins
+	// the two: only kg_triples.source_drawer_id links a fact to a passage at all.
+	//
+	// So a fact whose subject was never spelled the authored way is reachable
+	// here through the term the extractor found instead. The second vocabulary
+	// costs no query — the terms are already on the rows this recall loaded — and
+	// it changes no schema, which is why F-4 takes the join rather than the
+	// write-path merge the HippoRAG 2 shape would want.
+	entityIDs := make([]string, 0, len(matches)+8)
+	seenEntity := map[string]bool{}
+	for _, m := range matches {
+		if !seenEntity[m.ID] {
+			seenEntity[m.ID] = true
+			entityIDs = append(entityIDs, m.ID)
+		}
+	}
+	for _, d := range loaded {
+		for _, term := range d.Entities {
+			id := normalizeEntityID(term)
+			if id != "" && !seenEntity[id] {
+				seenEntity[id] = true
+				entityIDs = append(entityIDs, id)
+			}
+		}
+	}
+	if len(entityIDs) == 0 {
 		return block, nil
 	}
 
-	// Collect the candidate facts by walking out from each matched entity.
+	// Walk out from every candidate entity. Status is CURRENT: a fact whose
+	// valid_to has passed is not an answer, and am_kg_query already defaults the
+	// same way (kgQueryDefaultStatus), so this extends an existing default rather
+	// than inventing one. 14 facts on the live palace are already ended.
 	var candidates []KGFact
-	for _, m := range matches {
+	for _, id := range entityIDs {
 		q, err := s.KGQuery(ctx, teamID, KGQueryInput{
-			Entity: m.ID, Direction: "both", Status: KGStatusCurrent,
+			Entity: id, Direction: "both", Status: KGStatusCurrent,
 		})
 		if err != nil {
 			return block, err
