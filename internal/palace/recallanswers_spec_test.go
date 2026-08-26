@@ -750,7 +750,8 @@ func TestATruncatedBootstrapSaysWhatItDropped(t *testing.T) {
 	svc := newTestService(t)
 
 	// More records than the eager tier can hold, so the response must truncate.
-	for i := 0; i < bootstrapEagerLimit+4; i++ {
+	total := bootstrapEagerLimit + 4
+	for i := 0; i < total; i++ {
 		if _, err := svc.Add(ctx, team, AddInput{
 			Wing: "wing_acme", Room: EntryRoom,
 			Content: "start-here entry number " + string(rune('a'+i)) + " with enough text to be a real memory",
@@ -763,21 +764,32 @@ func TestATruncatedBootstrapSaysWhatItDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	if res.Truncation.Omitted == 0 {
-		t.Fatal("more records than the bound and nothing reported omitted; a caller cannot tell a complete answer from a capped one by counting")
-	}
+	// The eager tier is BOUNDED, which is what makes this a truncated response.
 	if len(res.Eager) > bootstrapEagerLimit {
 		t.Errorf("eager tier holds %d, over its bound of %d", len(res.Eager), bootstrapEagerLimit)
+	}
+	if len(res.OnDemand) == 0 {
+		t.Fatal("more records than the bound and nothing deferred; the response is not truncated and this test proves nothing")
+	}
+
+	// Every offered record is ACCOUNTED FOR: inlined, named as a pointer, or
+	// counted as an omission. Those three partition the offer.
+	//
+	// This used to assert len(OnDemand) == Omitted, which holds only on an
+	// all-local wing — where nothing is ever refused — so the fixture pinned an
+	// accident. Omitted counts what is neither inlined nor nameable; a pointer is
+	// named, so it is not a loss.
+	accounted := len(res.Eager) + len(res.OnDemand) + res.Truncation.Omitted
+	if accounted < total {
+		t.Errorf("the wing offered %d records and the response accounts for %d; the rest vanished with no count",
+			total, accounted)
 	}
 
 	// Reporting a count is not enough. The protocol this replaces lost 74% of a
 	// prescribed tier to an unreported cap; saying "4 omitted" without saying how
 	// to get them repeats that in a politer form.
-	if res.Truncation.HowToFetch == "" {
+	if res.Truncation.Omitted > 0 && res.Truncation.HowToFetch == "" {
 		t.Error("the truncation report does not say how to fetch what it dropped")
-	}
-	if len(res.OnDemand) != res.Truncation.Omitted {
-		t.Errorf("%d omitted but %d pointers; what was dropped must be nameable", res.Truncation.Omitted, len(res.OnDemand))
 	}
 	for _, p := range res.OnDemand {
 		if p.Fetch == "" {

@@ -220,6 +220,19 @@ Inherited from `docs/specs/2026-08-26-a-recall-that-answers.md` §Risks; delta:
 | Migration `00028` collides with another open branch | Low | High | Checked 2026-08-26 across every remote branch: `00027` is the highest anywhere, held by ADR-034 on PR #61 |
 | ADR number 036 collides | Low | High | Checked across every remote branch: 033 (#58), 034 (#61), 035 (#60) are claimed; 036 is free. `TestADRNumbersAreUnique` guards it thereafter |
 
+**Migration `00028` leaves `00027` unallocated, and that gap is only safe under a condition.**
+`00027` belongs to ADR-034 on PR #61, which has not merged. Verified against the dependency
+(`goose v3.27.1`, `up.go:82`): plain `goose.Up` — which `cmd/server/main.go:1382` calls, with no
+`WithAllowMissing` — returns `found N missing migrations before current version M` when a pending
+migration sits BELOW the database's maximum applied version, and this repository propagates that
+error up through the CLI, so the server exits.
+
+So merging this first, running any server against a database, and then merging #61 would leave that
+database refusing to start. **The condition: whichever of the two merges SECOND renumbers at merge.**
+If #67 lands first, #61 takes `00029`. That is the allocation rule this team already recorded after
+the ADR-number collision — allocate at merge, never at authoring — and it applies to migrations for
+the same reason: a per-branch uniqueness check is blind to cross-branch collisions by construction.
+
 ## Rollback
 
 Persistent state and a public contract, so rollback is real and ordered. `00028` carries a

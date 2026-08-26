@@ -1318,7 +1318,18 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 			// number. That is this repository's characteristic defect and T1
 			// shipped with it until a cross-check ran the arm rather than
 			// reading it.
-			block, err := s.factsFor(armCtx, teamID, c.Wing, vec, nil)
+			// `rows` is the candidate pool this case already hydrated, so the arm
+			// sees BOTH vocabularies exactly as production does. Passing nil
+			// scored the vector vocabulary alone: T4's on/off comparison could
+			// not run through the arm at all, and the first real answerable-rate
+			// would have understated the served path — a measurement biased
+			// against the very feature it exists to judge.
+			//
+			// It is the POOL rather than the page because this arm produces no
+			// drawer page of its own; production reads the ranked page, which is
+			// a subset, so if the two ever diverge the arm is the more generous
+			// of the pair and the direction of that bias is recorded here.
+			block, err := s.factsFor(armCtx, teamID, c.Wing, vec, rows)
 			if err != nil {
 				armSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
 				caseOut = telemetry.FailedClosed

@@ -91,6 +91,13 @@ func (s *Service) factsFor(ctx context.Context, teamID, wing string, vec []float
 	if len(entityIDs) == 0 {
 		return block, nil
 	}
+	// Sorted because part of this list is built by ranging a map, and the SQL
+	// below returns rows in no guaranteed order. Without it two identical recalls
+	// can disagree on fact ORDER and on which duplicate spelling wins the
+	// canonical-key dedup — and a caller comparing two recalls reads that as the
+	// palace changing under them. ElsewhereWings got the same treatment for the
+	// same reason; the facts deserve it too.
+	sort.Strings(entityIDs)
 
 	// ONE batched query for every candidate entity, not one KGQuery each.
 	//
@@ -199,6 +206,13 @@ func (s *Service) factsFor(ctx context.Context, teamID, wing string, vec []float
 			block.Unlocatable++
 		}
 	}
+
+	// Stable fact order, for the same reason the wings are sorted: an unstable
+	// list reads as a changing answer.
+	sort.SliceStable(block.Facts, func(i, j int) bool {
+		return CanonicalFact(block.Facts[i].Subject, block.Facts[i].Predicate, block.Facts[i].Object) <
+			CanonicalFact(block.Facts[j].Subject, block.Facts[j].Predicate, block.Facts[j].Object)
+	})
 
 	for w := range elsewhere {
 		block.ElsewhereWings = append(block.ElsewhereWings, w)

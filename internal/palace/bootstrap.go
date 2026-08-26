@@ -118,12 +118,29 @@ func (s *Service) Bootstrap(ctx context.Context, teamID, wing string) (Bootstrap
 		inline, deferred = ids[:bootstrapEagerLimit], ids[bootstrapEagerLimit:]
 	}
 
+	// Omitted means: a record the wing offered that this response NEITHER inlined
+	// NOR named as a pointer. Nothing else.
+	//
+	// It previously counted len(deferred) wholesale, which counted the pointers as
+	// omitted although they are named right there in the response — and then a
+	// dead increment above it tried to count policy-refused ids into a field that
+	// was reassigned two lines later. Both errors pointed the same way: the number
+	// described the tier split rather than the loss.
+	//
+	// The loss is what matters, because an eager-tier record refused by WingPolicy
+	// or missing from the store used to vanish with no count at all — the exact
+	// silent drop F-18 exists to remove, one response surface over from where
+	// F-18 removed it.
+	omitted := 0
+
 	if len(inline) > 0 {
 		drawers, err := s.repo.DrawersByIDs(ctx, teamID, inline)
 		if err != nil {
 			return BootstrapResult{}, err
 		}
+		found := make(map[string]bool, len(drawers))
 		for _, d := range drawers {
+			found[d.ID] = true
 			// The bootstrap's inline content goes through the SAME wing rule as
 			// every other response path. An entry edge can name a record in
 			// another wing, and inlining it here would be the leak that a
@@ -131,26 +148,41 @@ func (s *Service) Bootstrap(ctx context.Context, teamID, wing string) (Bootstrap
 			placement, _ := policy.Place(ctx, d.ID)
 			if policy.MayReturnContent(placement) {
 				out.Eager = append(out.Eager, d)
+				continue
+			}
+			omitted++
+		}
+		// An id the entry point named and the store no longer holds is a loss
+		// too, and a dangling pointer is precisely what a reader cannot discover
+		// by counting what arrived.
+		for _, id := range inline {
+			if !found[id] {
+				omitted++
 			}
 		}
 	}
+
 	for _, id := range deferred {
 		// A pointer names an id AND the call that fetches it, so an unauthorized
 		// pointer is actionable disclosure rather than an inert string. Placed
-		// like every other exit.
+		// like every other exit; refused ones are counted, never listed.
 		placement, _ := policy.Place(ctx, id)
 		if !policy.MayReturnContent(placement) {
-			out.Truncation.Omitted++
+			omitted++
 			continue
 		}
 		out.OnDemand = append(out.OnDemand, BootstrapPointer{
 			ID: id, Tier: TierOnDemand, Fetch: "am_get_drawer",
 		})
 	}
-	out.Truncation = BootstrapTruncation{Omitted: len(deferred)}
-	if len(deferred) > 0 {
-		out.Truncation.Reason = "beyond the eager tier's bound"
-		out.Truncation.HowToFetch = "am_get_drawer with each id in on_demand"
+
+	out.Truncation = BootstrapTruncation{Omitted: omitted}
+	if omitted > 0 {
+		out.Truncation.Reason = "beyond the eager tier's bound, or not readable from this wing"
+		// Only claims what is true: the pointers are fetchable, the refused ids
+		// are not, and saying "fetch each id in on_demand" while the count also
+		// covers ids deliberately absent from that list was a false instruction.
+		out.Truncation.HowToFetch = "am_get_drawer for each id in on_demand; the remainder is not readable from this wing"
 	}
 
 	// T5's sweep, consumed. Corrections attach as INCOMING edges, so no outgoing
@@ -243,6 +275,11 @@ func (r BootstrapResult) MissingParityParts(offer BootstrapOffer) []string {
 		if len(r.Eager) == 0 && len(r.OnDemand) == 0 {
 			missing = append(missing, parityEager)
 		}
+		// Eager, pointers and omissions PARTITION the offer — every record is in
+		// exactly one — so this sum is exact rather than a lower bound. It used to
+		// double-count, because Omitted was len(deferred) and every pointer was
+		// also inside deferred, which meant a response that silently dropped eager
+		// records still cleared the check the drop exists to catch.
 		if len(r.Eager)+len(r.OnDemand)+r.Truncation.Omitted < offer.Records {
 			missing = append(missing, parityPointers)
 		}

@@ -168,10 +168,10 @@ type SearchHit struct {
 	// retraction can itself be wrong, so this is a signal for the reader rather
 	// than a gate on what the reader may see.
 	Corrections []Correction `json:"corrections,omitempty"`
-	Score         float64 // fused rank score, higher is better
-	BM25          float64 // raw Okapi-BM25 lexical score (pre-normalization)
-	ClosetBoost   float64 // closet rank boost folded into Score (0 when none)
-	Distance      float64 // raw cosine distance, lower is closer
+	Score       float64      // fused rank score, higher is better
+	BM25        float64      // raw Okapi-BM25 lexical score (pre-normalization)
+	ClosetBoost float64      // closet rank boost folded into Score (0 when none)
+	Distance    float64      // raw cosine distance, lower is closer
 	// RerankScore is the cross-encoder's relevance for this hit, or 0 when no
 	// reranker is configured or it did not score this one. It is reported
 	// alongside Score rather than replacing it: the two are not on the same scale

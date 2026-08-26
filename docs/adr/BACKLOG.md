@@ -1220,3 +1220,36 @@ which reads thirty as a finding count. It is not.
   authored names by construction. **Trigger: the first time the real fact corpus is built; run
   ArmFactRetrieval with the second vocabulary on and off and record both rates WITH denominators
   before trusting either.**
+
+## From ADR-036 review (2026-08-26)
+
+- **A migration-number gap is a startup failure, and nothing checks for one.** ADR-036 takes `00028`
+  and leaves `00027` for ADR-034 on PR #61. Verified against `goose v3.27.1` (`up.go:82`): plain
+  `goose.Up`, which `cmd/server/main.go:1382` calls, refuses to run when a pending migration sits
+  below the database's max applied version, and the server exits. The gap is safe only while
+  whichever branch merges SECOND renumbers at merge. Nothing enforces that: `adr-lint` checks ADR
+  numbers, and no gate reads migration numbering across branches. **Trigger: before the second of
+  #67 and #61 merges — and a contiguity check over `db/migrations` on `main` would make it
+  mechanical rather than remembered.**
+
+- **`DropDerivedEdgesFor` leaves structural `kg_entities` rows behind.** Deleting a drawer removes
+  its derived triples but not the room node or the drawer-id entity those triples referenced. Bounded
+  now that the label index excludes structural entities, so nothing reads them — but the table
+  accumulates dead ids. **Trigger: when `am_kg_stats`' entity count stops matching what anyone
+  expects, or before any feature counts entities as a measure of anything.**
+
+- **The centralised skills become stale consumers the moment ADR-036 merges.** The BACKLOG item on
+  updating the client kits names the kits; `start-here` (v3) and `memory-orchestration` are the other
+  two consumers. `start-here` instructs every session to run three predicate queries BY HAND — which
+  is exactly what `kg.CorrectionsFor` now does server-side — and to reach the taxonomy by traversal,
+  which `am_bootstrap` replaces. **Trigger: same as the client kits; the skills are versioned
+  server-side, so they change without a repo commit and will otherwise teach the old protocol
+  indefinitely.**
+
+- **The fact corpus is still not loadable by the eval CLI.** `LoadFactCases` is called only by tests;
+  `agentsmemory eval --cases` uses `readCasesWithMeta`, which neither skips the fixture's leading
+  `//` lines nor understands its `question`/`expect_triple`/`synthetic` schema. So the committed
+  corpus cannot select `ArmFactRetrieval` end to end, and `FactAnswerRateFrom` is never consumed by
+  the production reporter — the table prints recall and MRR and not the answered/cases fraction the
+  arm exists to produce. **Trigger: before the first answerable-rate is quoted anywhere; until then
+  that number can only be produced by a test, which is not the instrument this ADR claimed.**
