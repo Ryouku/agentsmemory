@@ -12,7 +12,7 @@ README is a derived index — when it disagrees with a task file, the task file 
 |------|-------|------------|
 | 1 | T1, T2, T6 | none |
 | 2 | T3, T7 | T1, T2 (T3) · T6 (T7) |
-| 3 | T4, T5, T8 | T3 (T4, T5) · T7 (T8) |
+| 3 | T4, T5, T8 | T3 (T4, T5, T8) · T7 (T8) |
 
 **Wave 1 is the floor, and its shape is the point.** T1 builds the instrument before anything can
 claim an improvement — there is no eval arm for fact retrieval today, so the capability is

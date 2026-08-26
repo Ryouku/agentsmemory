@@ -1,6 +1,6 @@
 # Task ADR-036-T8: The protocol becomes an API
 
-**Depends-on:** T7
+**Depends-on:** T7, T3
 **Covers:** F-13, F-14, F-15, F-16, UC6-S1, UC6-S2, UC6-S3
 **Estimated scope:** L
 **Owner:** unassigned
