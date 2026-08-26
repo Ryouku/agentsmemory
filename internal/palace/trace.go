@@ -47,11 +47,22 @@ func searchAttrs(s *Service, q SearchQuery, limit int) []attribute.KeyValue {
 		attribute.Bool("am.rerank_configured", s.rerank != nil),
 		attribute.Float64("am.rerank_weight", s.rerankWeight),
 		attribute.Int("am.rerank_pool", s.rerankPool),
+		// The knob shipped on 2026-08-25 and was not observable until 2026-08-26 —
+		// rung 3 missed in the very change that added it. It decides whether the
+		// blend preserves the cross-encoder's magnitude or min-max stretches it, so
+		// a trace without it cannot say which ordering rule produced the page.
+		attribute.String("am.rerank_norm", s.RerankNormName()),
 	}
 	if floor := withRetrieveFloors(0, q.RetrieveK, s.retrieveK); floor > 0 {
 		attrs = append(attrs, attribute.Int("am.retrieve_k", floor))
 	}
-	if !s.fusionRRF {
+	if s.fusionRRF {
+		// Under rrf this constant IS the fusion: fused = sum over arms of
+		// 1/(rrfK+rank). It is the only fusion parameter that applies, and the
+		// lexical knobs above are inert, so a reader with am.fusion=rrf and no
+		// am.rrf_k cannot reconstruct a single fused score.
+		attrs = append(attrs, attribute.Int("am.rrf_k", int(rrfK)))
+	} else {
 		attrs = append(attrs, linearFusionAttrs(s)...)
 	}
 	return attrs

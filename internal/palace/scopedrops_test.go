@@ -153,3 +153,61 @@ func TestScopeDropsCountEachCauseSeparately(t *testing.T) {
 			"the rows agree", clean)
 	}
 }
+
+// TestKnobsThatDecideThePageAreAllOnTheParentSpan is a completeness gate, not a
+// spot check.
+//
+// It exists because a variable map of the served search path, taken 2026-08-26,
+// found 34 LIVE variables and 6 that any eval arm varies — and several that
+// decide a page were on no span at all. Two were embarrassing in different ways:
+// am.candidate_k is the actual fetch width, computed on every recall and
+// recorded nowhere, which is why a paired run could show production reaching 15
+// candidates while an arm ranking the same query saw 100 and nothing in the
+// trace said so. And am.rerank_norm shipped one commit earlier — the change that
+// added the knob did not make it observable, which is rung 3 missed inside the
+// very commit that introduced it.
+//
+// The list is deliberately EXPLICIT rather than derived from searchAttrs. A gate
+// that reads the same function it guards passes whatever that function happens
+// to do, which is how a stage list became both the subject and the authority of
+// its own check earlier in this corpus.
+func TestKnobsThatDecideThePageAreAllOnTheParentSpan(t *testing.T) {
+	svc := newTestService(t).WithReranker(&fakeReranker{}, 50).WithRerankWeight(0.5)
+	const team = "team-knobs"
+	mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", Content: "a memory about knob coverage"})
+
+	got := searchSpanAttrs(t, svc, team, SearchQuery{Query: "knob coverage", Limit: 3, MaxDistance: 1.5})
+
+	// Each entry is a knob whose value CHANGES WHICH MEMORIES REACH THE PAGE.
+	// Adding one here without emitting it is meant to fail.
+	for _, want := range []struct{ key, why string }{
+		{"am.candidate_k", "the fetch width actually asked of the index — limit*3, floored by rerank_pool, raised by retrieve-k; not derivable from the others"},
+		{"am.limit", "the page size served"},
+		{"am.limit_requested", "what the caller asked for before clamping"},
+		{"am.max_distance", "the boundary that drops candidates before ranking"},
+		{"am.fusion", "which fusion combined the arms"},
+		{"am.rerank_configured", "whether a cross-encoder ran at all"},
+		{"am.rerank_weight", "how much of the order it decided"},
+		{"am.rerank_norm", "HOW its score was scaled — min-max discards magnitude, sigmoid preserves it"},
+		{"am.rerank_pool", "how many candidates it actually scored"},
+		{"am.evidence", "which text the cross-encoder was shown"},
+		{"am.closet_scale", "the closet prior's weight"},
+		{"am.recency_band", "the recency reorder's width"},
+		{"am.query_runes", "how long the query was before truncation"},
+		{"am.query_truncated", "whether the embedder saw the whole question"},
+	} {
+		if got[want.key] == "" {
+			t.Errorf("%s is absent from the %s span — %s.\n"+
+				"A knob that changes the page and appears on no span cannot be reconstructed "+
+				"from a trace, so a recall cannot be explained after the fact.",
+				want.key, telemetry.StageSearch, want.why)
+		}
+	}
+
+	// Under rrf the lexical knobs are inert and rrfK is the ONLY fusion parameter
+	// that applies, so a reader with am.fusion=rrf and no am.rrf_k cannot
+	// reconstruct a single fused score.
+	if got["am.fusion"] == "rrf" && got["am.rrf_k"] == "" {
+		t.Error("am.fusion=rrf without am.rrf_k: the one constant that defines the fused score is missing")
+	}
+}

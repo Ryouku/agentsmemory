@@ -1094,6 +1094,16 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		candidateKFor(limit, s.rerank != nil, s.rerankPool, s.rerankWeight),
 		q.RetrieveK, s.retrieveK,
 	)
+	// THE fetch width, computed on every recall and until now recorded nowhere.
+	// It is not derivable from the other attributes: candidateKFor is limit*3
+	// raised to rerankPool as a FLOOR, then raised again by any retrieve-k, so
+	// am.limit and am.rerank_pool together still do not say what was asked of the
+	// index.
+	//
+	// Measured 2026-08-26 and the reason this exists: at the shipped limit=5 it is
+	// 15, while an eval arm ranking the same query saw 100 — a gap of 0.027 MRR
+	// and 8 golds no ranking change could reach, invisible on every span.
+	telemetry.Annotate(searchCtx, attribute.Int("am.candidate_k", candidateK))
 	hits, rows, err := s.searchCandidates(searchCtx, teamID, q, vec, candidateK)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
