@@ -1128,3 +1128,56 @@ which reads thirty as a finding count. It is not.
   says nothing about what it costs in hydration and rerank time. A recall that is better and twice as
   slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
   served retrieve floor — which is the item above, so this blocks it.**
+
+## From ADR-036 (the knowledge graph on the read path, 2026-08-26)
+
+- **ADR-004 T5's deferral is received here.** T5 (Accepted, `done`) carries `- Wiring the graph into
+  Service.Search (deferred: docs/adr/BACKLOG.md)` and this file never received it, so `adr-debt`
+  reported zero unreceipted — the pointer resolved to a real file that did not mention it. ADR-036 is
+  that work. **Trigger: closed by ADR-036 reaching `done`; until then this line is the receipt.**
+
+- **`kg_triples` has no `wing` column,** so the graph is workspace-wide while drawers, anchors and
+  search are wing-scoped. ADR-036 works around it by deriving a fact's wing from `source_drawer_id`,
+  which caps reachability at 46% (196 triples, 106 carry an id, 90 resolve — measured 2026-08-26).
+  A column plus backfill would lift the cap. **Trigger: when T1's answerable-rate plateaus and the
+  unresolvable 54% is the named reason.**
+
+- **Repair the 16 dangling `source_drawer_id` pointers.** They name a drawer that is not there, so
+  they are unresolvable rather than merely unlabelled, and they are part of the 46% ceiling above.
+  **Trigger: same as the wing column — they are the cheapest slice of it.**
+
+- **Backfill edges for the 1,928 existing orphan drawers.** ADR-036 T6 fixes the write path only, so
+  every drawer filed before it stays unreachable by traversal (57 of 1,985 carry any edge — 2.9%,
+  measured 2026-08-26). **Trigger: after T6 has run long enough to show the derived-edge marker does
+  not degrade recall; backfilling first would bake in a bad derivation.**
+
+- **Why the derived graph produces zero hallways is still unseparated.** 945 of 1,985 drawers carry
+  entities (47.6%, measured 2026-08-26) and `am_graph_stats` reports no hallway at all. Two causes
+  are indistinguishable from outside: `am_recompute_graph` was never run, or the co-occurrence
+  threshold is never met. BACKLOG item 2 argued from *"`Service.Add` does not [extract entities], 82
+  of 82 today"* — false since ADR-016 — so "feed it" was necessary and demonstrably not sufficient.
+  **Trigger: before anyone proposes a graph-derived ranking signal; it would rest on an empty graph.**
+
+- **Unify the two entity vocabularies at the write path.** `drawers.entities` (frequency-extracted,
+  ADR-016) and `kg_entities` (authored via `am_kg_add`) share nothing but `source_drawer_id`.
+  ADR-036 T4 joins them at READ time only, deliberately. **Trigger: if T1 shows the read-time join
+  helps and its cost per query becomes the bottleneck.**
+
+- **Validate entity spelling on write.** `am_kg_query` fails open on an unknown entity; ADR-036 T2
+  makes that distinguishable at read time but nothing stops a misspelled entity being stored.
+  **Trigger: the first time a fact is filed and cannot be found by the name its author expected.**
+
+- **Fix `am_traverse`'s inert `max_hops`.** `via` is an intersection carried forward, so hop >=2 can
+  never add a node — verified 2026-08-26 from a hub (25 nodes, all hop <=1) and a leaf (10 nodes, all
+  hop 1). ADR-036 T7 resolves edges directly rather than depending on it. The fix is blocked on an
+  unmade product decision: should traversal be transitive across wings, or confined to the wings the
+  start node already belongs to? **Trigger: someone deciding that question — not before.**
+
+- **Update the client kits to use the bootstrap.** ADR-036 T8 adds the surface; the kits still carry
+  a hardcoded root id and a 13-call client-side protocol. A bootstrap nobody adopts is the rung-4
+  failure this ADR exists to remove. **Trigger: once T8's F-16 measurement beats the client baseline
+  — the number is what makes adoption arguable.**
+
+- **Personalized PageRank over the graph (HippoRAG, arXiv 2405.14831).** Rejected for ADR-036, not
+  forever: it presumes a connected graph, and ours derives zero hallways. **Trigger: once T6 has
+  produced edges and T1 can score whether PPR beats the direct lookup.**

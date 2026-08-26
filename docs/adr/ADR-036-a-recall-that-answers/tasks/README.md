@@ -35,6 +35,19 @@ point would index 2.9% of the corpus (57 of 1,985 drawers carry any edge, measur
 
 Status: `pending` | `running` | `blocked` | `done` | `failed`.
 
+**Every Acceptance fence carries a `-skip` list, and that is load-bearing.** All 17 spec stubs are
+committed failing (17 `--- FAIL` lines in `./internal/palace`, verified 2026-08-26), so an unskipped
+`go test ./...` stays red until the last task lands — every earlier task would be structurally unable
+to record an exit-0 `adr-verify` entry, and `adr-lint` refuses `done` without one. A fence that
+cannot pass blocks its wave as surely as one that cannot fail. Each list skips exactly the stubs
+owned by tasks this one does not depend on, so a fence still runs its ancestors' tests and catches a
+regression in what it was built on: T1 runs 2 · T2 1 · T6 1 · T7 3 · T3 7 · T5 8 · T4 9 · T8 14.
+
+Proven two-sided 2026-08-26: T1's fence exits 1 today, and exits 0 with only T1's two stubs
+neutralised, while T3's fence still exits 1 in that same state. **No single fence runs all 17** — T8
+skips T4's and T5's three, because wave 3 is parallel and neither is guaranteed done when T8 runs.
+The full suite green is proven by CI on the merged branch, not by any one task's gate.
+
 ## Contract Coupling
 
 | Producer | Contract | Consumer(s) | Ordering note |

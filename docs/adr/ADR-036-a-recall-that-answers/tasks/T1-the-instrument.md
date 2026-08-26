@@ -30,12 +30,20 @@ Fact retrieval becomes measurable, so that no later task can report an improveme
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestFactAnswerableRateIsMeasured|TestFactsOnThePageAreScoredByMRR' -count=1 2>&1 | tee /tmp/acc36t1.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t1.out && go test ./... -count=1 2>&1 | tee /tmp/acc36t1b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t1b.out
+go test ./internal/palace/ -run 'TestFactAnswerableRateIsMeasured|TestFactsOnThePageAreScoredByMRR' -count=1 2>&1 | tee /tmp/acc36t1.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t1.out && go test ./... -count=1 -skip 'TestAFactLookupDistinguishesAbsenceFromFailure|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking|TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t1b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t1b.out
 ```
 
 The new tests run ALONE first, so the already-green suite in the second command cannot carry the
 verdict by itself. The fence ends with the whole repo because a task-scoped fence passes while a
 repo-wide gate fails — measured on this corpus 2026-08-25.
+
+The `-skip` list is what makes that second command SATISFIABLE. All 17 ADR-036 stubs are committed
+failing, so an unskipped `go test ./...` stays red until the last task lands — every earlier task
+would be unable to record an exit-0 run, and a fence that cannot pass blocks its wave as effectively
+as one that cannot fail. Verified 2026-08-26: 17 `--- FAIL` lines in `./internal/palace` before any
+of this ADR is built. The list skips exactly the stubs owned by tasks this one does NOT depend on;
+T1's own 2 and its ancestors' 0 still run, so the fence still
+catches a regression in anything T1 was built on top of.
 
 ## Tests
 
