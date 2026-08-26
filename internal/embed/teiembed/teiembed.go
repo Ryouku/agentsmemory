@@ -81,8 +81,20 @@ type Embedder struct {
 	// Once fires whether the probe succeeded or FAILED, which pinned a transient
 	// error to the whole process lifetime. The mutex is NEVER held across the
 	// probe itself — see clientBatchSize.
-	batchMu     sync.Mutex
-	batchSize   int
+	batchMu   sync.Mutex
+	batchSize int
+	// inputWindow is the model's max input length in TOKENS, as reported by
+	// /info. Zero until a probe succeeds, and zero forever on a server that does
+	// not report it — which is why it is only ever put on a span when positive.
+	//
+	// The same /info response already carried this and the decoder ignored it, so
+	// the number every chunk-size decision in this repository wants existed one
+	// struct field away for as long as the probe has run.
+	inputWindow int
+	// model is the model id /info reports, for the same reason: a distance is
+	// uninterpretable without it, and two 1024-dimension models are two different
+	// embedding spaces.
+	model       string
 	probing     bool
 	nextProbe   time.Time
 	batchWarned bool
@@ -292,7 +304,9 @@ func (e *Embedder) discoverClientBatchSize(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("GET %s: %s", e.safeEndpoint, resp.Status)
 	}
 	var info struct {
-		MaxClientBatchSize int `json:"max_client_batch_size"`
+		MaxClientBatchSize int    `json:"max_client_batch_size"`
+		MaxInputLength     int    `json:"max_input_length"`
+		ModelID            string `json:"model_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return 0, fmt.Errorf("decode %s: %w", e.safeEndpoint, err)
@@ -300,6 +314,12 @@ func (e *Embedder) discoverClientBatchSize(ctx context.Context) (int, error) {
 	if info.MaxClientBatchSize < 1 {
 		return 0, fmt.Errorf("%s advertised max_client_batch_size=%d", e.safeEndpoint, info.MaxClientBatchSize)
 	}
+	// Keep what the SAME response already told us. These are recorded rather than
+	// acted on: nothing sizes a chunk from them yet, and the first step to sizing
+	// anything from a model's real window is being able to state it at all.
+	e.batchMu.Lock()
+	e.inputWindow, e.model = info.MaxInputLength, info.ModelID
+	e.batchMu.Unlock()
 	return min(info.MaxClientBatchSize, maxDiscoveredBatch), nil
 }
 
@@ -350,4 +370,26 @@ func (e *Embedder) EmbedOne(ctx context.Context, input string) ([]float32, error
 		return nil, err
 	}
 	return vecs[0], nil
+}
+
+// DescribeEmbedder names this backend, its model and the model's input window
+// for a span.
+//
+// ⚠THE PROBE ONLY FIRES ON A MULTI-INPUT BATCH. Embed consults clientBatchSize
+// only when len(inputs) > 1, so EmbedOne — which is the ONLY call a search makes
+// — never triggers discovery. On a server that is read-mostly the window and
+// model therefore stay unknown until some write embeds a batch, and the span
+// omits them until then. That is stated rather than fixed: making a search wait
+// on /info would put a network call on the recall path, which this file already
+// records as having turned the whole write path into a queue one timeout wide.
+//
+// The model and window are whatever the LAST successful /info probe reported,
+// and both are empty/zero until one succeeds — this reports what was measured,
+// never what a comment claims. That distinction is the point: before this, every
+// 8192 in the repository was prose, and ChunkSize sat at 5% of it on that
+// authority alone.
+func (e *Embedder) DescribeEmbedder() (backend, model string, windowTokens int) {
+	e.batchMu.Lock()
+	defer e.batchMu.Unlock()
+	return "tei", e.model, e.inputWindow
 }

@@ -501,3 +501,105 @@ func TestFailedCapabilityProbeBacksOff(t *testing.T) {
 		t.Fatalf("/info probed %d times across 5 calls inside one backoff window; want 1", hits)
 	}
 }
+
+// TestProbeKeepsTheModelWindowItAlreadyFetched: /info's max_input_length and
+// model_id reach DescribeEmbedder.
+//
+// The probe has always requested /info and decoded exactly ONE field from the
+// response, max_client_batch_size, discarding the other two. The consequence was
+// not a missing feature but a missing FACT: nothing in this repository could
+// state any model's input window, so ChunkSize sits at 1600 characters — about
+// 5% of bge-m3's 8192 tokens — on the authority of a source comment, and
+// MaxEmbedRunes is documented as "CONSERVATIVE HEADROOM, NOT A MEASURED
+// CEILING". The number that would have grounded both was one struct field away
+// in a response the code was already parsing.
+//
+// The window is asserted as REPORTED rather than as a constant: the point is
+// that it comes from the server, so a test hard-coding 8192 would pass against
+// an implementation that hard-coded it too.
+func TestProbeKeepsTheModelWindowItAlreadyFetched(t *testing.T) {
+	const wantWindow, wantModel = 8192, "BAAI/bge-m3"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/info") {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"max_client_batch_size":32,"max_input_length":%d,"model_id":%q}`, wantWindow, wantModel)
+			return
+		}
+		var req struct {
+			Inputs []string `json:"inputs"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		vecs := make([]string, len(req.Inputs))
+		for i := range vecs {
+			vecs[i] = "[0.1,0.2]"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, "[%s]", strings.Join(vecs, ","))
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+
+	// Before any probe the honest answer is "not measured", not a guess.
+	if _, model, window := e.DescribeEmbedder(); model != "" || window != 0 {
+		t.Errorf("before probing: model=%q window=%d, want empty/0 — reporting an unmeasured "+
+			"window is exactly the folklore this change exists to replace", model, window)
+	}
+
+	// TWO inputs, not one, and that is forced rather than stylistic. Embed only
+	// consults clientBatchSize when len(inputs) > 1 (teiembed.go:213), so a single
+	// EmbedOne never probes — which is what the first version of this test used
+	// and why it failed. The limitation is real and is recorded on
+	// DescribeEmbedder: a SEARCH only ever calls EmbedOne, so on a search-only
+	// server the window stays unknown until some write embeds a batch.
+	if _, err := e.Embed(context.Background(), []string{"drive", "the probe"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+
+	backend, model, window := e.DescribeEmbedder()
+	if backend != "tei" {
+		t.Errorf("backend = %q, want tei", backend)
+	}
+	if window != wantWindow {
+		t.Errorf("window = %d, want %d — /info reported it and the decoder dropped it, which is "+
+			"the whole defect", window, wantWindow)
+	}
+	if model != wantModel {
+		t.Errorf("model = %q, want %q — am.dim cannot identify a model, so two different "+
+			"1024-dimension models are indistinguishable on a trace without this", model, wantModel)
+	}
+}
+
+// TestDescribeEmbedderReportsNoWindowWhenTheServerOmitsIt: absent beats guessed.
+//
+// A TEI build that does not advertise max_input_length must leave the window at
+// 0 so the span omits it entirely. The alternative — defaulting to 8192 — would
+// put an unverified number on a trace and reintroduce, as data, the folklore
+// this replaced.
+func TestDescribeEmbedderReportsNoWindowWhenTheServerOmitsIt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/info") {
+			fmt.Fprint(w, `{"max_client_batch_size":32}`) // no window, no model
+			return
+		}
+		var req struct {
+			Inputs []string `json:"inputs"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		vecs := make([]string, len(req.Inputs))
+		for i := range vecs {
+			vecs[i] = "[0.1,0.2]"
+		}
+		fmt.Fprintf(w, "[%s]", strings.Join(vecs, ","))
+	}))
+	defer srv.Close()
+
+	e := New(srv.URL, 5*time.Second)
+	if _, err := e.Embed(context.Background(), []string{"drive", "the probe"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if _, _, window := e.DescribeEmbedder(); window != 0 {
+		t.Errorf("window = %d for a server that reported none, want 0", window)
+	}
+}

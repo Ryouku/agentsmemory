@@ -112,6 +112,27 @@ type Embedder interface {
 	EmbedOne(ctx context.Context, input string) ([]float32, error)
 }
 
+// EmbedDescriber is an OPTIONAL interface an Embedder may implement to name
+// itself on a span.
+//
+// Optional rather than folded into Embedder because a test fake has nothing
+// useful to say here and should not be forced to invent it. The served backends
+// implement it; anything that does not simply reports no backend, which reads on
+// a trace as "unknown" instead of as a lie.
+//
+// It exists because a distance means nothing without the model that produced it.
+// A trace showing am.dim=1024 is satisfied by bge-m3 through Ollama, bge-m3
+// through TEI, and any other 1024-dimension model an operator pointed
+// OLLAMA_EMBED_MODEL at — three different embedding spaces, one attribute, and
+// every cosine distance in the tree silently incomparable across them.
+type EmbedDescriber interface {
+	// DescribeEmbedder returns the backend name, the model, and the model's input
+	// window in TOKENS when the backend can report it (0 when it cannot). A zero
+	// window is honest: nothing in this repository could previously state one at
+	// all, and a guessed number would be worse than an absent one.
+	DescribeEmbedder() (backend, model string, windowTokens int)
+}
+
 // Reranker scores candidate documents against a query with a cross-encoder,
 // returning one score per document IN INPUT ORDER (higher is better). Like
 // Embedder it is declared at the consumer, so the service depends on the
@@ -1041,7 +1062,23 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		// will otherwise conclude the memory itself is broken.
 		return SearchResult{}, fmt.Errorf("embed query (the embedder is unreachable; writes are still being stored and queued, but recall needs it): %w", err)
 	}
-	embedSpan.End(telemetry.Ran, attribute.Int("am.dim", len(vec)))
+	embedAttrs := []attribute.KeyValue{attribute.Int("am.dim", len(vec))}
+	// A distance is only interpretable against the model that produced it, and
+	// am.dim cannot identify one: two different 1024-dimension models are two
+	// different embedding spaces reporting the same number.
+	if d, ok := s.embed.(EmbedDescriber); ok {
+		backend, model, window := d.DescribeEmbedder()
+		embedAttrs = append(embedAttrs,
+			attribute.String("am.embed_backend", backend),
+			attribute.String("am.embed_model", model))
+		if window > 0 {
+			// Only when the backend actually REPORTED it. Absent beats guessed:
+			// every 8192 in this tree is a comment, and ChunkSize is 5% of it on
+			// that authority alone.
+			embedAttrs = append(embedAttrs, attribute.Int("am.embed_window_tokens", window))
+		}
+	}
+	embedSpan.End(telemetry.Ran, embedAttrs...)
 
 	// Over-fetch a re-rank pool: BM25 can only reorder what vector retrieval
 	// surfaced, so the pool must be wider than the page (limit*multiplier) for a
