@@ -1291,7 +1291,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				return caseOutcome{TopDistance: -1}, fmt.Errorf("load contextual candidates: %w", err)
 			}
 			hybrid := s.serviceForArm(ArmHybrid)
-			page, _, err := hybrid.rankRetrieved(armCtx, teamID, c.Query, SearchQuery{
+			page, _, _, err := hybrid.rankRetrieved(armCtx, teamID, c.Query, SearchQuery{
 				Query: c.Query, Wing: c.Wing, Limit: len(ctxHits), SkipTelemetry: true,
 			}, vec, ctxHits, ctxRows)
 			if err != nil {
@@ -1307,7 +1307,7 @@ func (s *Service) evalCaseResult(ctx context.Context, teamID string, c EvalCase,
 				armSpan.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonOff))
 				break
 			}
-			page, reranked, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows)
+			page, reranked, _, err := svc.rankRetrieved(armCtx, teamID, c.Query, poolQuery, vec, hits, rows)
 			if err != nil {
 				armSpan.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonError))
 				break
@@ -1426,7 +1426,7 @@ func (s *Service) CandidateUnion(ctx context.Context, teamID, query, wing string
 		if svc == nil {
 			return
 		}
-		page, _, err := svc.rankRetrieved(ctx, teamID, query, SearchQuery{
+		page, _, _, err := svc.rankRetrieved(ctx, teamID, query, SearchQuery{
 			Query: query, Wing: wing, Limit: perArm, SkipTelemetry: true,
 		}, vec, hits, rows)
 		if err != nil {

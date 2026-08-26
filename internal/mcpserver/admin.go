@@ -149,9 +149,14 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 				// not-measured zeros.
 				"avg_top_rerank_score": w.AvgTopRerank,
 				"reranked":             w.Reranked,
-				"drawers":              w.Drawers,
-				"last_used":            w.LastUsed,
-				"last_filed":           w.LastFiled,
+				// WHY the cross-encoder did not order a page, per reason. Omitted
+				// when there is nothing to report, so an always-present empty object
+				// does not read as "measured, and it was fine". `reranked` alone is 0
+				// for a disabled reranker and one failing on every query.
+				"rerank_skips": w.RerankSkips,
+				"drawers":      w.Drawers,
+				"last_used":    w.LastUsed,
+				"last_filed":   w.LastFiled,
 			})
 		}
 		return jsonResult(map[string]any{

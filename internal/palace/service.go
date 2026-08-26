@@ -1172,7 +1172,7 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		return SearchResult{}, err
 	}
 	q.Limit = limit
-	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
+	results, reranked, skipReason, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return SearchResult{}, err
@@ -1192,6 +1192,10 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
 		// threshold from these rows.
 		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
+		// WHY it was not reranked, beside WHETHER it was. This is the line that
+		// SELECTS the value T1 returns: without it the reason is computed, put on
+		// the span, and never reaches a row anyone can aggregate.
+		RerankSkipReason: skipReason,
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
@@ -1223,7 +1227,10 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
 // Eval arms that reconstruct a served configuration call it on a Clone rather
 // than reimplementing fusion, closet boost, recency, rerank, or collapse.
-func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, error) {
+// The third return says WHETHER a cross-encoder ordered the page and the fourth
+// says WHY it did not — empty when it did. Both travel to recordSearch, because
+// `reranked` alone is 0 for a disabled reranker and a failing one alike.
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer) ([]SearchHit, bool, string, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = DefaultSearchLimit
@@ -1263,7 +1270,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
 		if err != nil {
 			collapseSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
-			return nil, false, err
+			return nil, false, "", err
 		}
 		collapseSpan.End(telemetry.Ran, attribute.Int("am.count", len(collapsed)))
 		survivors = collapsed
@@ -1303,7 +1310,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked, reranked, _ := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
+	ranked, reranked, skipReason := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
 
 	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
 	// query, so without this they cluster and crowd each other out: measured on a
@@ -1345,7 +1352,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		results = append(results, hit)
 	}
 
-	return results, reranked, nil
+	return results, reranked, skipReason, nil
 }
 
 // candidateKFor is how many vector neighbours a search fetches.

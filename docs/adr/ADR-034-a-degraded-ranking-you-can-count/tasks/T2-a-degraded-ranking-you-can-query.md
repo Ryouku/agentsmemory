@@ -39,7 +39,7 @@ recalls served a degraded ranking" becomes a query.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestRecallStatsCountsWhyRerankingWasSkipped' -count=1 2>&1 | tee /tmp/acc34c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34c.out && go test ./internal/mcpserver/ -run 'TestRecallStatsResultCarriesTheSkipBreakdown' -count=1 2>&1 | tee /tmp/acc34d.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34d.out && go test ./... -count=1 2>&1 | tee /tmp/acc34e.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34e.out
+go test ./internal/palace/ -run 'TestRecallStatsCountsWhyRerankingWasSkipped|TestADisabledRerankerAndATimingOutOneAreNotTheSameRow|TestARowFromBeforeThisColumnIsNotAFalseSkip|TestADR031CalibrationAggregateIsUnchanged' -count=1 2>&1 | tee /tmp/acc34c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34c.out && go test ./internal/mcpserver/ -run 'TestRecallStatsResultCarriesTheSkipBreakdown' -count=1 2>&1 | tee /tmp/acc34d.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34d.out && go test ./... -count=1 2>&1 | tee /tmp/acc34e.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34e.out
 ```
 
 Each new test runs alone before the full suite, so neither the suite nor the sibling test can carry
@@ -49,10 +49,11 @@ the verdict.
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestRecallStatsCountsWhyRerankingWasSkipped` | `internal/palace/recallstats_test.go` | rows with `timeout`, `no_reranker` and `""` aggregate into the right per-reason counts | — |
-| `TestADisabledRerankerAndATimingOutOneAreNotTheSameRow` | `internal/palace/recallstats_test.go` | the two cases that are indistinguishable today produce different output — this is the whole ADR | — |
-| `TestRecallStatsResultCarriesTheSkipBreakdown` | `internal/mcpserver/admin_test.go` | the field is in the TOOL'S RENDERED RESULT, not merely on the struct | — |
-| `TestADR031CalibrationAggregateIsUnchanged` | `internal/palace/recallstats_test.go` | `AvgTopRerank` / `Reranked` are identical before and after rows carry reasons | — |
+| `TestRecallStatsCountsWhyRerankingWasSkipped` | `internal/palace/rerankskip_test.go` | rows with `timeout`, `no_reranker` and `""` aggregate into the right per-reason counts | — |
+| `TestADisabledRerankerAndATimingOutOneAreNotTheSameRow` | `internal/palace/rerankskip_test.go` | the two cases that are indistinguishable today produce different output — this is the whole ADR | — |
+| `TestRecallStatsResultCarriesTheSkipBreakdown` | `internal/mcpserver/recallskips_test.go` | the field is in the TOOL'S RENDERED RESULT, not merely on the struct | — |
+| `TestADR031CalibrationAggregateIsUnchanged` | `internal/palace/rerankskip_test.go` | `AvgTopRerank` / `Reranked` are identical before and after rows carry reasons | — |
+| `TestARowFromBeforeThisColumnIsNotAFalseSkip` | `internal/palace/rerankskip_test.go` | a NULL (pre-column) row lands in no bucket — "not recorded" is not "nothing skipped" | — |
 
 Shapes the creation path can already produce, decided rather than assumed: rows written by the
 PREVIOUS binary have NULL in this column and must aggregate as "unknown" rather than as a skip
@@ -70,9 +71,17 @@ PREVIOUS binary have NULL in this column and must aggregate as "unknown" rather 
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+
+
+- 2026-08-26 · b979a8e* · exit 0 · `go test ./internal/palace/ -run 'TestRecallStatsCountsWhyRerankingWasSkipped|TestADisabledRerankerAndATimingOutOneAreNotTheSameRow|TestARowFromBeforeThisColumnIsNotAFalseSkip|TestADR031CalibrationAggregateIsUnchanged' -count=1 2>&1 | tee /tmp/acc34c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34c.out && go test ./internal/mcpserver/ -run 'TestRecallStatsResultCarriesTheSkipBreakdown' -count=1 2>&1 | tee /tmp/acc34d.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34d.out && go test ./... -count=1 2>&1 | tee /tmp/acc34e.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34e.out` · acceptance-sha256:e2267c94256cf5f3b1c2e6288735a36a7bf99121635d794a022d85afc2f3bcee
 
 ## Mutation Log
+
+
+
+- 2026-08-26 · b979a8e* · mutant killed · exit 1 · `internal/palace/recallstats.go` · a pre-column NULL row counts as a skip — "not recorded" silently becomes "degraded" · acceptance-sha256:e2267c94256cf5f3b1c2e6288735a36a7bf99121635d794a022d85afc2f3bcee
+- 2026-08-26 · b979a8e* · mutant killed · exit 1 · `internal/palace/recallstats.go` · a recall where reranking RAN counts as a skip, so the column stops measuring degradation · acceptance-sha256:e2267c94256cf5f3b1c2e6288735a36a7bf99121635d794a022d85afc2f3bcee
+- 2026-08-26 · b979a8e* · mutant killed · exit 1 · `internal/mcpserver/admin.go` · the breakdown is computed and never rendered, so an agent reading the tool cannot see it · acceptance-sha256:e2267c94256cf5f3b1c2e6288735a36a7bf99121635d794a022d85afc2f3bcee
 
 ## Invariants
 
