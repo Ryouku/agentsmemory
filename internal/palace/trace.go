@@ -52,6 +52,19 @@ func searchAttrs(s *Service, q SearchQuery, limit int) []attribute.KeyValue {
 		// blend preserves the cross-encoder's magnitude or min-max stretches it, so
 		// a trace without it cannot say which ordering rule produced the page.
 		attribute.String("am.rerank_norm", s.RerankNormName()),
+		// The budget the cross-encoder's evidence shares, and how many places may
+		// share it. These decide WHAT TEXT is scored, which decides the order as
+		// surely as the weight does: the live failure maxMemoryEvidenceRegions
+		// fixes presented sixteen 100-rune shards from this same budget, each too
+		// small to carry the reasoning that followed its match. Constants today —
+		// which is the argument for emitting them, not against it, since a trace
+		// taken after someone tunes them would otherwise be silently incomparable
+		// with one taken before.
+		attribute.Int("am.evidence_chars", ChunkSize),
+		attribute.Int("am.evidence_regions_max", maxMemoryEvidenceRegions),
+	}
+	if backend := s.VectorBackendName(); backend != "" {
+		attrs = append(attrs, attribute.String("am.vector_backend", backend))
 	}
 	if budget := s.RerankBudget(); budget > 0 {
 		// The ceiling that decides whether the cross-encoder's order survives at

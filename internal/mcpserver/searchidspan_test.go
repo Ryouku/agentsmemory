@@ -163,3 +163,56 @@ func TestARejectedSearchIDIsCountedNotDropped(t *testing.T) {
 			"indistinguishable from a client that never sent one, which is the opposite conclusion")
 	}
 }
+
+// TestSearchHandlerRecordsTheSnippetBudgetItWasGiven is the rung-2 half for
+// am.snippet_chars: the annotation being correct is worth nothing if the
+// registered handler never reaches it.
+//
+// It drives the PRODUCTION wrapper with empty Deps, which is why the annotation
+// sits before admit — the value comes from the request and is knowable there.
+// The handler goes on to fail admission, and that is fine: this asserts the
+// budget was recorded, not that a page was served.
+func TestSearchHandlerRecordsTheSnippetBudgetItWasGiven(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"an explicit budget", map[string]any{"query": "q", "snippet_chars": 900}, "900"},
+		{"whole memories", map[string]any{"query": "q", "snippet_chars": 0}, "0"},
+		{"the default when unset", map[string]any{"query": "q"}, "400"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sr := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+			srv := server.NewMCPServer("test", "0.0.0", server.WithToolCapabilities(true))
+			registerAll(&registrar{srv: srv}, Deps{})
+
+			const tool = mcpprotocol.ToolPrefix + "search"
+			st := srv.GetTool(tool)
+			if st.Handler == nil {
+				t.Fatalf("%s is not registered — this check has stopped checking anything", tool)
+			}
+			if _, err := traceTool(tool, st.Handler)(telemetry.WithProvider(context.Background(), tp),
+				mcp.CallToolRequest{Params: mcp.CallToolParams{Name: tool, Arguments: tc.args}}); err != nil {
+				t.Fatalf("handler returned a transport error: %v", err)
+			}
+
+			var got string
+			for _, s := range sr.Ended() {
+				for _, kv := range s.Attributes() {
+					if string(kv.Key) == "am.snippet_chars" {
+						got = kv.Value.Emit()
+					}
+				}
+			}
+			if got != tc.want {
+				t.Errorf("am.snippet_chars = %q, want %q. How much of a memory an agent actually "+
+					"received is invisible otherwise: a 400-rune window and a whole memory produce "+
+					"identical ranking attributes on the search span.", got, tc.want)
+			}
+		})
+	}
+}

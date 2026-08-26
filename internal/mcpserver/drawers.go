@@ -668,6 +668,13 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// How much of each memory the caller will see. Recorded from the REQUEST,
+		// before admission, for the same reason annotateSearchID sits there in
+		// am_get_drawer: it is knowable immediately, and it decides the page's
+		// CONTENT rather than its order — two recalls with byte-identical ranking
+		// attributes can hand back a 400-rune window and a whole memory, with
+		// nothing on the search span telling them apart.
+		telemetry.Annotate(ctx, attribute.Int("am.snippet_chars", req.GetInt("snippet_chars", palace.DefaultSnippetChars)))
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -810,6 +817,11 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// everything" request is the shape that teaches an agent the palace is
 		// missing content it actually holds.
 		if overBudget > 0 {
+			// The caller is told (below) and now so is the trace. A page that
+			// silently delivered less than was asked for is the same shape as the
+			// anchor failure a few lines down: honoured request, degraded answer,
+			// span still `ran`.
+			telemetry.Annotate(ctx, attribute.Int("am.whole_memory_over_budget", overBudget))
 			out["note"] = fmt.Sprintf(
 				"whole memories were requested and the last %d hit(s) exceeded this response's "+
 					"size budget, so they are windowed instead (content_truncated carries "+

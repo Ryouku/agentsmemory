@@ -134,6 +134,31 @@ type EmbedDescriber interface {
 	DescribeEmbedder() (backend, model string, windowTokens int)
 }
 
+// VectorDescriber is an OPTIONAL interface a store.VectorStore may implement to
+// name the backend serving a recall.
+//
+// It decides pages in the most direct way there is — it IS the index the query
+// runs against — and until now the trace could not say which one answered. That
+// matters most exactly when it is hardest to reason about: the source of truth
+// and the search index are different stores, and a recall served by a behind
+// index looks, in every other attribute, identical to one served by a healthy
+// one.
+type VectorDescriber interface {
+	// DescribeVectorStore names the backend, e.g. "sqlitevec", "qdrant", or
+	// "hybrid(sqlitevec->qdrant)" when a source of truth and an index are paired.
+	DescribeVectorStore() string
+}
+
+// VectorBackendName reports the backend serving recalls, or "" when the store
+// cannot name itself.
+func (s *Service) VectorBackendName() string {
+	d, ok := s.vectors.(VectorDescriber)
+	if !ok {
+		return ""
+	}
+	return d.DescribeVectorStore()
+}
+
 // RerankDescriber is an OPTIONAL interface a Reranker may implement to report
 // the budget it enforces on itself.
 //
