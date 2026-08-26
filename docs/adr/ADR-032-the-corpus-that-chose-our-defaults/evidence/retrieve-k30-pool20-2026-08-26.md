@@ -78,4 +78,11 @@ for the same reason.
   sweep is still owed under the shipped normaliser.
 - **Nothing about latency.** `RERANK_TIMEOUT` was set to 120s precisely so budget overruns could
   not confound the ranking numbers. At the shipped 10s a majority of these calls would have
-  failed open — see the compose comment and ADR-034.
+  failed open — see the measurement in the `RERANK_POOL` comment in `docker-compose.full.yml`.
+- **The rerank DURATIONS in this run are contended and must not be quoted.** A second eval was
+  running against the same CPU cross-encoder for its whole length — one this session believed it
+  had stopped, and had not, because the kill filtered on an image tag the container no longer
+  carried after a rebuild. Ranking is unaffected: scoring is deterministic given the same pool, all
+  324 rerank spans ran, none failed open, and the budget was 120s. Only the wall-clock numbers are
+  contaminated, and the pool-20 latency figure quoted elsewhere comes from a frozen window taken
+  before that second run existed.

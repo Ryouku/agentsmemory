@@ -1128,22 +1128,3 @@ which reads thirty as a finding count. It is not.
   says nothing about what it costs in hydration and rerank time. A recall that is better and twice as
   slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
   served retrieve floor — which is the item above, so this blocks it.**
-
-## From ADR-034
-
-Deferred by `docs/adr/ADR-034-a-degraded-ranking-you-can-count.md`, written here in the same commit
-as the deferral so the pointer has a receiving end.
-
-- **The `RERANK_POOL` / `RERANK_TIMEOUT` defaults.** Measured 2026-08-26 on a CPU cross-encoder over
-  the 54-case real corpus: 60 rerank calls at pool 20 took mean 11.4s (min 7.3s, max 18.2s), and a
-  second run the same day averaged ~17s with calls to 19.7s, against a shipped `RERANK_TIMEOUT` of
-  10s. Pool 20 is one batch (`maxBatch` 32), so that is the cost of scoring 20 documents, not
-  batching overhead. **The shipped default is pool 10 and has never been measured on this hardware**,
-  so none of the above is a verdict on it and the default is deliberately unchanged.
-  **Trigger: the first time anyone has an idle reranker and can measure pool 10, or the first
-  non-zero `timeout` count from ADR-034's new column.**
-
-- **A runtime warning when a rerank call approaches its budget.** A leading indicator rather than a
-  lagging one, and cheap. It needs a threshold, and nobody can name a defensible threshold until the
-  fail-open rate is known. **Trigger: ADR-034's `rerank_skip_reason` column having a week of real
-  data.**
