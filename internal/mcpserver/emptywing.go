@@ -3,7 +3,12 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // emptyWingNote explains a zero-hit page when the WING itself holds nothing,
@@ -29,8 +34,19 @@ func emptyWingNote(ctx context.Context, wings wingReader, teamID, wing string) (
 		return "", nil
 	}
 	empty, err := wings.WingIsEmpty(ctx, teamID, wing)
-	if err != nil || !empty {
-		return "", nil // fails OPEN: a lookup failure must not turn a real page into a warning
+	if err != nil {
+		// Fails OPEN — a lookup failure must not turn a real page into a warning —
+		// but the two causes are not the same event and must not read as one. This
+		// branch means "we could not tell"; the branch below means "the wing has
+		// content". Collapsing them into one silent `return "", nil` is why a
+		// zero-hit page could lose its explanation with nothing anywhere saying so.
+		telemetry.Annotate(ctx, attribute.Bool("am.emptiness_lookup_failed", true))
+		slog.Warn("empty-wing lookup failed; a zero-hit page will carry no explanation",
+			"error", err, "wing", wing)
+		return "", nil
+	}
+	if !empty {
+		return "", nil // the wing genuinely holds memories: a real miss, no note
 	}
 	names, err := wings.WingNames(ctx, teamID)
 	if err != nil || len(names) == 0 {

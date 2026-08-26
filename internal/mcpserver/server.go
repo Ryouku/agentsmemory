@@ -145,7 +145,12 @@ func writeGuard(name string, handler server.ToolHandlerFunc) server.ToolHandlerF
 // ran. It is a named function so a test can drive the real wrapper.
 func traceTool(name string, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		_, sp := telemetry.Start(ctx, telemetry.StageTool, attribute.String("am.tool", name))
+		// ctx, not _: the handler must run UNDER this span, or nothing downstream can
+		// annotate it and every child it starts is parented somewhere else. Discarding
+		// it made ADR-028's am.search_id annotation inert in production while its test
+		// passed, because the test started the span itself and passed that context —
+		// a test that builds the environment differently from production.
+		ctx, sp := telemetry.Start(ctx, telemetry.StageTool, attribute.String("am.tool", name))
 		res, err := handler(ctx, req)
 		if err != nil || (res != nil && res.IsError) {
 			sp.End(telemetry.FailedClosed)

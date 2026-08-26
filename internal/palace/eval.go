@@ -61,6 +61,15 @@ const (
 	// the candidate for replacing an inherited 0.6/0.4 split with something that
 	// needs no tuning at all.
 	ArmRRF EvalArm = "rrf"
+	// ArmBlendSigmoid is the served arm with the rerank axis normalised by
+	// sigmoid instead of min-max, so a cross-encoder that is indifferent
+	// contributes almost nothing rather than being stretched to the full range.
+	ArmBlendSigmoid EvalArm = "rrf+rerank norm=sigmoid"
+	// ArmBlendRank is the served arm with the rerank axis normalised by POSITION.
+	// It cannot amplify a rounding difference into a decisive one, and it still
+	// forces the extremes to {0,1} — so it separates the two halves of the defect:
+	// if sigmoid wins and rank does not, the magnitude information is what mattered.
+	ArmBlendRank EvalArm = "rrf+rerank norm=rank"
 	// ArmRRFReranked is RRF with the cross-encoder on top, so the fusion choice
 	// and the rerank choice can be read independently.
 	ArmRRFReranked EvalArm = "rrf+rerank"
@@ -578,6 +587,23 @@ type EvalOptions struct {
 	// this eval has already once produced a full table of "reranked" numbers that
 	// were silently the hybrid order, and a loud stop is the only reliable cure.
 	AllowDegraded bool
+	// Arms restricts the run to the named arms, matched by exact name or prefix.
+	// Empty runs every arm, which is the default and the right thing for a tuning
+	// sweep.
+	//
+	// It exists because COST, not corpus size, is what stops a question being
+	// asked twice. Measured 2026-08-26: 54 cases against 36 arms took ~50 minutes
+	// at the shipped RERANK_POOL, and ~110 minutes at pool 20 — two runs that day
+	// were abandoned unfinished, and an unfinished run yields nothing at all. A
+	// question worth answering is usually a question about three or four arms, and
+	// paying for the other thirty-two is what makes it unaffordable to re-ask.
+	//
+	// It does NOT change the retrieved pool: every arm still re-orders the same
+	// candidates, so a filtered run is comparable with a full one arm-for-arm.
+	// What it does change is the "vs best" baseline, which is computed among the
+	// arms present — the report says so rather than leaving a reader to assume the
+	// winner beat arms that never ran.
+	Arms []string
 	// CaseSetOrigin says whether the caller replayed saved questions or generated
 	// its own. Only the caller knows; the report carries it so the table and the
 	// run record cannot disagree about it.
@@ -624,6 +650,23 @@ func (s *Service) EvaluateWith(ctx context.Context, teamID string, cases []EvalC
 	}
 
 	arms := evalArms(opts, s.rerank != nil)
+	if len(opts.Arms) > 0 {
+		kept, dropped := selectArms(arms, opts.Arms)
+		// REFUSE a filter that matched nothing rather than running zero arms and
+		// reporting an empty table. This repository's oldest lesson is that a
+		// filter matching nothing exits 0 with a cheerful summary, which is how
+		// every TDD task once passed its own gate with none of the work done.
+		if len(kept) == 0 {
+			return EvalReport{}, fmt.Errorf("--arms %q matched none of the %d available arms; "+
+				"a filter that selects nothing must refuse rather than report an empty table",
+				strings.Join(opts.Arms, ","), len(arms))
+		}
+		// Say what was dropped. Silent truncation reads as "covered everything".
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"--arms selected %d of %d arms (%d not run); the 'vs best' baseline is the best of "+
+				"those %d, not of every arm", len(kept), len(arms), dropped, len(kept)))
+		arms = kept
+	}
 	byArm := map[EvalArm]*EvalMetrics{}
 	for _, a := range arms {
 		byArm[a] = &EvalMetrics{Arm: a, ByCategory: map[string]*CategoryMetrics{}}
@@ -741,6 +784,18 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 	c.closetBoostScale = 0
 	c.rerankWeight = 0
 	c.recencyBand = 0
+	// rerankNorm is deliberately NOT reset here. The first fix for the min-max
+	// control (e20890e) set it to min-max for EVERY arm, which cured `rrf+rerank`
+	// and broke the production-shaped ones in the same stroke: `hybrid+rerank` is
+	// documented as the closet-OFF reranked arm production actually serves, and
+	// `rerank blend w=*` exists to sweep the WEIGHT — forcing min-max on them
+	// measured a normaliser production does not run, which is the very defect the
+	// fix was for, one arm family over.
+	//
+	// So the rule is per-arm and stated at each case: an arm that NAMES a
+	// normaliser sets it, `rrf+rerank` sets min-max because every table in this
+	// corpus reads it as the min-max control, and a production-shaped arm inherits
+	// the served value BECAUSE that is what makes it production-shaped.
 
 	if band, ok := recencyBandOf(arm); ok {
 		return c.WithBM25Weight(false, hybridBM25Weight).WithRecencyBand(band)
@@ -767,8 +822,16 @@ func (s *Service) serviceForArm(arm EvalArm) *Service {
 		return c.WithBM25Weight(false, hybridBM25Weight).WithClosetBoost(1).WithRerankWeight(weight)
 	case ArmRRF:
 		return c.WithFusion("rrf")
+	case ArmBlendSigmoid:
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormSigmoid)
+	case ArmBlendRank:
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormRank)
 	case ArmRRFReranked:
-		return c.WithFusion("rrf").WithRerankWeight(weight)
+		// The min-max control, named explicitly. Left to inherit it became a second
+		// sigmoid arm whenever the server ran sigmoid — two bit-identical rows that
+		// were written up as "sigmoid scores identically to min-max" from a
+		// comparison in which min-max never ran.
+		return c.WithFusion("rrf").WithRerankWeight(weight).WithRerankNorm(RerankNormMinMax)
 	case ArmAdaptive:
 		return c.WithBM25Weight(true, hybridBM25Weight)
 	case ArmAdaptiveIDF:
@@ -872,6 +935,13 @@ func evalArms(opts EvalOptions, rerank bool) []EvalArm {
 	// TestEvalArmsKeepProductionLast turned up while pinning the order.) It went
 	// missing once already — built, documented, and never appended — which an
 	// adversarial review caught and no table did.
+	// The blend-normalisation arms go in with the other pool arms, BEFORE the
+	// production arms: TestEvalArmsKeepProductionLast requires the arm that scores
+	// the served path to be last in the table, so a reader comparing rows always
+	// finds production at the bottom.
+	if rerank {
+		arms = append(arms, ArmBlendSigmoid, ArmBlendRank)
+	}
 	arms = append(arms, ArmProduction, ArmProductionDeep, ArmProductionRetrieve)
 	if opts.Contextual {
 		arms = append(arms, ArmContextual)
@@ -954,7 +1024,8 @@ func ArmScope(arm EvalArm) SupersessionScope {
 	case ArmContextual:
 		return ScopeOwnIndex
 	case ArmVector, ArmHybrid, ArmHybridCloset, ArmHybridRerank, ArmReranked,
-		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF:
+		ArmRRF, ArmRRFReranked, ArmAdaptive, ArmAdaptiveIDF,
+		ArmBlendSigmoid, ArmBlendRank:
 		return ScopePool
 	}
 	// The swept families are minted at run time — bm25Arm, rerankArm and
@@ -1560,4 +1631,43 @@ func (s *Service) accumulate(byArm map[EvalArm]*EvalMetrics, report *EvalReport,
 			}
 		}
 	}
+}
+
+// selectArms keeps the arms matching any of the patterns, by exact name first
+// and prefix second, preserving the declared order.
+//
+// Order is preserved rather than following the caller's patterns because
+// TestEvalArmsKeepProductionLast requires the arm scoring the served path to be
+// last in the table, and a reader comparing rows finds production at the bottom.
+// Reordering here would break that quietly, in a report rather than in a test.
+//
+// Prefix matching is deliberate: the swept families are minted at run time
+// (rerankArm, bm25Arm, recencyArm build their names with fmt.Sprintf), so
+// "rerank blend" selects the whole weight sweep without naming four values that
+// change whenever the sweep does.
+func selectArms(all []EvalArm, patterns []string) (kept []EvalArm, dropped int) {
+	want := make(map[string]bool, len(patterns))
+	for _, p := range patterns {
+		if p = strings.TrimSpace(p); p != "" {
+			want[p] = true
+		}
+	}
+	for _, a := range all {
+		name := string(a)
+		match := want[name]
+		if !match {
+			for p := range want {
+				if strings.HasPrefix(name, p) {
+					match = true
+					break
+				}
+			}
+		}
+		if match {
+			kept = append(kept, a)
+		} else {
+			dropped++
+		}
+	}
+	return kept, dropped
 }

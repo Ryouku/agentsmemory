@@ -475,3 +475,22 @@ func (h *Hybrid) Namespaces(ctx context.Context) ([]string, error) {
 func (h *Hybrid) PointsByIDs(ctx context.Context, namespace string, ids []string) ([]Point, error) {
 	return h.sot.PointsByIDs(ctx, namespace, ids)
 }
+
+// DescribeVectorStore names both halves, satisfying palace.VectorDescriber.
+//
+// Both are named because the pair IS the interesting fact: a Hybrid serves reads
+// from the index while the source of truth holds every point, so "which backend
+// answered" has two answers and a trace saying only one of them cannot be read
+// against a divergence between them.
+func (h *Hybrid) DescribeVectorStore() string {
+	return "hybrid(" + describeOr(h.sot, "?") + "->" + describeOr(h.index, "?") + ")"
+}
+
+// describeOr names v when it can name itself, and returns fallback otherwise.
+func describeOr(v any, fallback string) string {
+	d, ok := v.(interface{ DescribeVectorStore() string })
+	if !ok {
+		return fallback
+	}
+	return d.DescribeVectorStore()
+}

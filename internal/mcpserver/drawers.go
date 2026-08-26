@@ -7,9 +7,13 @@ import (
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/palace"
+	"log/slog"
+
+	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/usage"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // registerDrawers wires the core memory-loop tools — the WRITE/FILE, SEARCH/RECALL
@@ -270,14 +274,55 @@ const pendingEmbeddingWarning = "stored, but NOT searchable yet: the embedder co
 	"so this memory is queued for background indexing. It will become searchable once the embedder is " +
 	"running again (check the Ollama server the agentsmemory server points at). Tell the user."
 
+// annotateSearchID records a caller-supplied search_id on the current tool span.
+//
+// Separate from the handler so it can be driven by a test: the handler needs a
+// live palace, and the behaviour worth pinning is "the id reaches the span",
+// which needs no storage at all.
+func annotateSearchID(ctx context.Context, req mcp.CallToolRequest) {
+	sid := strings.TrimSpace(req.GetString("search_id", ""))
+	if sid == "" {
+		return
+	}
+	// Every other am.* string in the tree is derived server-side; this one is
+	// whatever a client sent. ADR-025 keeps query text off spans, and a caller
+	// can put query text — or anything else — in this field, so the shape is
+	// checked before the value reaches a collector rather than after.
+	//
+	// A rejected id is recorded as a rejection instead of being dropped in
+	// silence: ADR-028 defers on "the first week a non-test client sends one",
+	// and clients sending malformed ids would otherwise read as no adoption at
+	// all, which is the opposite conclusion.
+	if !palace.ValidSearchID(sid) {
+		telemetry.Annotate(ctx, attribute.Bool("am.search_id_rejected", true))
+		return
+	}
+	telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
+}
+
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("get_drawer",
 		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
 		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
+		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is recorded on the request's trace span, not yet stored durably — pass it and nothing changes in what you get back, which is what lets clients adopt it before the durable join lands.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Inert for STORAGE — recording the join durably is its own task with its
+		// own trigger — but not invisible. The id goes on the tool span, so a
+		// search followed by a fetch is one traceable pair today, at the cost of
+		// one attribute and no schema change.
+		//
+		// The first version of this line threw the id away (`_ = ...`). That
+		// shipped a signal whose adoption could not be observed by the very
+		// instrument this repository had just made mandatory at deploy time: an
+		// agent sent the id, the server accepted it, and the trace showed a bare
+		// `am.tool ... ran` with nothing linking it to any recall. A change that
+		// adds a signal has to extend the instrument in the same commit, or its
+		// own trigger — "the first week a non-test client sends one" — is
+		// unanswerable.
+		annotateSearchID(ctx, req)
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -454,6 +499,30 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 	})
 }
 
+// newSearchHitView maps a domain hit onto the view an agent receives.
+//
+// Extracted from the loop it used to be inlined in, because an inline composite
+// literal is unreachable from a test: a mutant that populated blended_score from
+// RerankScore — the exact confusion ADR-028 T2 exists to end — SURVIVED the
+// task's fence, since nothing could assert what the RENDER produced. The
+// ordering property was covered in the domain and the field's presence by the
+// reflect gate, and neither can see a wrong assignment between them.
+func newSearchHitView(h palace.SearchHit) searchHitView {
+	return searchHitView{
+		drawerView:    toView(h.Drawer),
+		MemoryID:      h.MemoryID,
+		Score:         h.Score,
+		BM25:          h.BM25,
+		ClosetBoost:   h.ClosetBoost,
+		Distance:      h.Distance,
+		RerankScore:   h.RerankScore,
+		Reranked:      h.Reranked,
+		Blended:       h.Blended,
+		ChunksMatched: h.ChunksMatched,
+		StaleIndex:    h.StaleIndex,
+	}
+}
+
 // searchHitView is one ranked search result: the drawer plus its scores.
 type searchHitView struct {
 	drawerView
@@ -487,6 +556,17 @@ type searchHitView struct {
 	// three of them merged. A hit that says reranked:false is a hit the
 	// cross-encoder did not score, stated.
 	Reranked bool `json:"reranked"`
+	// Blended is the score the page was ORDERED by — BlendRerank's weighted
+	// combination of the pool-normalised fused and rerank scores. It is here
+	// because without it a returned order is unexplainable from the response: a
+	// page is routinely NOT monotonic in rerank_score, which is correct (the
+	// fused score is the better judge of vocabulary and carries half the weight)
+	// and reads exactly like a reranker that silently did not run. Reported as a
+	// suspected bug on 2026-08-25 and diagnosable only by reading BlendRerank.
+	//
+	// omitempty for the same reason rerank_score is: a hit outside the scored
+	// pool has no blend, and 0.0 would claim it had one.
+	Blended float64 `json:"blended_score,omitempty"`
 	// ChunksMatched is how many chunks of this memory were in the ranked pool.
 	// A memory that matched in four places is stronger evidence than one that
 	// matched in one, and ADR-013's collapse would otherwise destroy that signal
@@ -545,7 +625,7 @@ type anchorView struct {
 // re-ranked by a vector+BM25 blend (closet boost joins with the mining phase).
 func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("search",
-		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance."),
+		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance. Each hit carries blended_score: the value the page was actually ordered by, combining the cross-encoder and the fused lexical/vector score. It is POOL-RELATIVE — comparable between hits on one page, meaningless across pages, and not to be averaged. A page is often not monotonic in rerank_score, which is the blend working rather than a reranker that failed."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
 		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour."), searchWingProperty()),
@@ -558,6 +638,13 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		mcp.WithString("context", mcp.Description("Optional background context — what you are working on. Sharpens re-ranking when a reranker is configured; ignored otherwise. It does not change which drawers are retrieved, only how they are ordered.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// How much of each memory the caller will see. Recorded from the REQUEST,
+		// before admission, for the same reason annotateSearchID sits there in
+		// am_get_drawer: it is knowable immediately, and it decides the page's
+		// CONTENT rather than its order — two recalls with byte-identical ranking
+		// attributes can hand back a 400-rune window and a whole memory, with
+		// nothing on the search span telling them apart.
+		telemetry.Annotate(ctx, attribute.Int("am.snippet_chars", req.GetInt("snippet_chars", palace.DefaultSnippetChars)))
 		t, errResult, ok := admit(ctx, usageSvc)
 		if !ok {
 			return errResult, nil
@@ -570,7 +657,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		hits, err := drawers.Search(ctx, t.TeamID, palace.SearchQuery{
+		page, err := drawers.SearchPage(ctx, t.TeamID, palace.SearchQuery{
 			Query:       query,
 			Wing:        wing,
 			Room:        req.GetString("room", ""),
@@ -581,13 +668,14 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		hits := page.Hits
 		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
 		// spent/overBudget bound the WHOLE-memory expansion. See wholeMemoryBudget.
 		spent, overBudget := 0, 0
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
 		for i, h := range hits {
-			views[i] = searchHitView{drawerView: toView(h.Drawer), MemoryID: h.MemoryID, Score: h.Score, BM25: h.BM25, ClosetBoost: h.ClosetBoost, Distance: h.Distance, RerankScore: h.RerankScore, Reranked: h.Reranked, ChunksMatched: h.ChunksMatched, StaleIndex: h.StaleIndex}
+			views[i] = newSearchHitView(h)
 			ids[i] = h.MemoryID
 			fullContent := h.MemoryContent
 			if fullContent == "" {
@@ -660,7 +748,22 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		// has since changed is the one failure mode a confident agent cannot catch
 		// on its own — it reads as knowledge either way.
 		stale := 0
-		if anchors, err := drawers.AnchorsForMemories(ctx, t.TeamID, ids); err == nil {
+		anchors, anchorErr := drawers.AnchorsForMemories(ctx, t.TeamID, ids)
+		if anchorErr != nil {
+			// Fails OPEN — a page without staleness marks beats no page at all — but
+			// it must not fail SILENTLY. Every `stale` flag vanishes from the response
+			// and the enclosing am.tool span still ends `ran`, because traceTool
+			// inspects only the handler's Go error and res.IsError, and both are clean
+			// here. So a page whose staleness marking was lost is indistinguishable,
+			// to the caller AND to the trace, from one where nothing was stale — and
+			// staleness is the single failure mode a confident agent cannot catch on
+			// its own, since a recalled sentence about changed code reads as knowledge
+			// either way.
+			telemetry.Annotate(ctx, attribute.Bool("am.anchors_failed", true))
+			slog.Warn("anchor lookup failed; page returned without staleness marks",
+				"error", anchorErr, "memories", len(ids))
+		}
+		if anchorErr == nil {
 			for i := range views {
 				for _, a := range anchors[ids[i]] {
 					views[i].Anchors = append(views[i].Anchors, anchorView{
@@ -675,12 +778,20 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 				}
 			}
 		}
-		out := map[string]any{"hits": views, "count": len(views)}
+		// search_id is page-level and present even when count is 0: a recall that
+		// found nothing still ran and still wrote its row, and that is the page
+		// most worth tracing. It is the primary key of the search_events row.
+		out := map[string]any{"hits": views, "count": len(views), "search_id": page.SearchID}
 		// Say it, rather than letting the caller infer it from a truncation flag on
 		// hits it did not ask to have truncated. A silent cap on a "give me
 		// everything" request is the shape that teaches an agent the palace is
 		// missing content it actually holds.
 		if overBudget > 0 {
+			// The caller is told (below) and now so is the trace. A page that
+			// silently delivered less than was asked for is the same shape as the
+			// anchor failure a few lines down: honoured request, degraded answer,
+			// span still `ran`.
+			telemetry.Annotate(ctx, attribute.Int("am.whole_memory_over_budget", overBudget))
 			out["note"] = fmt.Sprintf(
 				"whole memories were requested and the last %d hit(s) exceeded this response's "+
 					"size budget, so they are windowed instead (content_truncated carries "+

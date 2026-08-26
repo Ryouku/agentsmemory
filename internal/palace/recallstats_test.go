@@ -285,3 +285,74 @@ func TestSuggestionLinesTransportFormat(t *testing.T) {
 		t.Errorf("line[1] = %q", lines[1])
 	}
 }
+
+// TestRerankSignalIsReportedAndNotDilutedByUnrerankedRows: the number that can
+// actually separate a working recall from a broken one reaches the report, and
+// its denominator is honest.
+//
+// The problem it exists for: avg_top_score averages top_score, which is the FUSED
+// score, and under FUSION=rrf the fused score is reciprocal rank fusion — a rank
+// encoding. Measured 2026-08-25, a top-1 hit can only ever land in
+// 0.0275..0.0328, and a real served page carried 0.03252 / 0.03227 / 0.03200. So
+// the reported average is an average of a near-constant, and a wing whose recall
+// collapsed would report almost the same number as one working perfectly.
+//
+// ADR-001 measured what does separate, over 61 cases: the cross-encoder scored
+// answerable questions at a median 0.891 and unanswerable at -3.832, while cosine
+// distance managed 0.401 against 0.423 and "no threshold separates them at any
+// value". That is the signal, and until this change the row did not keep it.
+//
+// The DENOMINATOR is asserted as hard as the value. These are logits, so a
+// not-measured row contributes a 0 that sits mid-range rather than at "no match",
+// and averaging it in would drag a healthy wing toward zero — the same shape as
+// the write-to-read ratio this project already had to retract for being computed
+// over a population that did not mean what the number claimed.
+func TestRerankSignalIsReportedAndNotDilutedByUnrerankedRows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	const team = "team-rerank-signal"
+	now := time.Now().UTC()
+
+	// Two reranked searches with real logits, and one answered search that no
+	// cross-encoder touched. The unreranked row must not move the average.
+	svc.repo.recordSearch(ctx, searchEventRow{
+		TeamID: team, Wing: "wing_acme", Query: "a", Hits: 3,
+		TopScore: 0.0325, TopRerankScore: 4.0, Reranked: 1,
+		CreatedAt: now.Add(-1 * time.Minute).Format(time.RFC3339),
+	})
+	svc.repo.recordSearch(ctx, searchEventRow{
+		TeamID: team, Wing: "wing_acme", Query: "b", Hits: 2,
+		TopScore: 0.0324, TopRerankScore: 2.0, Reranked: 1,
+		CreatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339),
+	})
+	svc.repo.recordSearch(ctx, searchEventRow{
+		TeamID: team, Wing: "wing_acme", Query: "c", Hits: 1,
+		TopScore: 0.0326, TopRerankScore: 0, Reranked: 0,
+		CreatedAt: now.Add(-3 * time.Minute).Format(time.RFC3339),
+	})
+
+	stats, err := svc.RecallStats(ctx, team, "wing_acme", time.Hour, 10)
+	if err != nil {
+		t.Fatalf("recall stats: %v", err)
+	}
+	if len(stats.Wings) != 1 {
+		t.Fatalf("wings = %+v; want exactly wing_acme", stats.Wings)
+	}
+	w := stats.Wings[0]
+
+	if w.Reranked != 2 {
+		t.Errorf("Reranked = %d, want 2 — the unreranked answered search must not be counted, "+
+			"or the denominator includes rows that were never measured", w.Reranked)
+	}
+	if w.AvgTopRerank != 3.0 {
+		t.Errorf("AvgTopRerank = %v, want 3.0 (mean of 4.0 and 2.0). If it is 2.0 the "+
+			"unreranked row was folded in and a not-measured zero is being read as a bad score",
+			w.AvgTopRerank)
+	}
+	// And the control: the fused average really is the near-constant this change
+	// exists to work around, so the two numbers are not interchangeable.
+	if w.AvgTop > 0.05 {
+		t.Errorf("AvgTop = %v; the fixture's fused scores are RRF-scale, so a large value means "+
+			"this test is no longer describing the situation it was written for", w.AvgTop)
+	}
+}

@@ -7,6 +7,29 @@ import (
 	"testing"
 )
 
+// rerankHitLogit and rerankMissLogit are what this stand-in returns, on the scale
+// a real cross-encoder uses.
+//
+// They were 0.99 and 0.01 until 2026-08-25, which quietly modelled the reranker
+// as returning PROBABILITIES. It does not: the served page measured that day
+// carried rerank_score values of -1.1927, -0.5437 and -1.0018, and a probability
+// cannot be negative. The fixture was describing an interface the system does not
+// have, and nothing noticed while the blend was min-max — min-max rescales
+// whatever arrives, so ANY two distinct numbers behave identically and the
+// fixture's scale could not matter.
+//
+// It matters now. ADR-030 blends a sigmoid of the raw score, which is
+// magnitude-preserving BY DESIGN, so the input's scale is load-bearing:
+// sigmoid(0.99)=0.729 against sigmoid(0.01)=0.502 is a weak preference, while
+// sigmoid(5)=0.993 against sigmoid(-5)=0.007 is the decisive one this fixture
+// means to express. The old values made a fixture that intended "certain" say
+// "barely". This is ADR-030's declared scale risk, arriving through a test rather
+// than through production.
+const (
+	rerankHitLogit  = 5.0
+	rerankMissLogit = -5.0
+)
+
 // keywordReranker is a stand-in cross-encoder: a document scores high when it
 // contains the keyword, low when it does not. That is enough to prove the
 // reranked order — not the fused order — decides the page, without a live TEI.
@@ -24,9 +47,9 @@ func (r *keywordReranker) Rerank(_ context.Context, query string, docs []string)
 	scores := make([]float64, len(docs))
 	for i, d := range docs {
 		if strings.Contains(strings.ToLower(d), r.keyword) {
-			scores[i] = 0.99
+			scores[i] = rerankHitLogit
 		} else {
-			scores[i] = 0.01
+			scores[i] = rerankMissLogit
 		}
 	}
 	return scores, nil
@@ -84,8 +107,8 @@ func TestSearchRerankDecidesTheOrder(t *testing.T) {
 	if !strings.Contains(hits[0].Drawer.Content, "closet") {
 		t.Errorf("top hit = %q, want the reranker's pick (the closet drawer)", hits[0].Drawer.Content)
 	}
-	if hits[0].RerankScore != 0.99 {
-		t.Errorf("top hit RerankScore = %v, want 0.99 reported", hits[0].RerankScore)
+	if hits[0].RerankScore != rerankHitLogit {
+		t.Errorf("top hit RerankScore = %v, want %v reported", hits[0].RerankScore, rerankHitLogit)
 	}
 	// The fused score must still be reported: the point of keeping both is being
 	// able to see when the two rankings disagree.

@@ -147,6 +147,7 @@ func configFromCmd(c *cli.Command, def config.Config) config.Config {
 		MemoryEvidenceSelector: strings.TrimSpace(c.String("memory-evidence-selector")),
 		LexNorm:                strings.TrimSpace(c.String("lex-norm")),
 		RerankWeight:           c.Float("rerank-weight"),
+		RerankNorm:             c.String("rerank-norm"),
 		RerankTimeout:          c.Duration("rerank-timeout"),
 		HTTPTimeout:            c.Duration("http-timeout"),
 		OTELEndpoint:           strings.TrimSpace(c.String("otel-endpoint")),
@@ -207,6 +208,7 @@ func dataFlags(def config.Config) []cli.Flag {
 		&cli.DurationFlag{Name: "http-timeout", Sources: cli.EnvVars("HTTP_TIMEOUT"), Value: def.HTTPTimeout, Usage: "budget for outbound calls to the vector store and the embedder — raise it for a slow or cold embedder, which is the case an operator hits first"},
 		&cli.StringFlag{Name: "otel-endpoint", Sources: cli.EnvVars("AGENTSMEMORY_OTEL_ENDPOINT"), Value: def.OTELEndpoint, Usage: "OpenTelemetry export: empty=off, 'stdout' prints a compact stage tree to stderr (file:line, outcome, reason), otherwise an OTLP HTTP collector URL (http://localhost:4318). Does not change search results"},
 		&cli.FloatFlag{Name: "rerank-weight", Sources: cli.EnvVars("RERANK_WEIGHT"), Value: def.RerankWeight, Usage: "how much the cross-encoder decides the order, 0..1 (1 = it overrides the hybrid score entirely)"},
+		&cli.StringFlag{Name: "rerank-norm", Sources: cli.EnvVars("RERANK_NORM"), Value: def.RerankNorm, Usage: "how a raw cross-encoder score is scaled before blending: sigmoid (preserves confidence; the default), minmax (the original — scale-free, and on a small pool at weight 0.5 it ties and discards the cross-encoder), or rank (position only)"},
 		&cli.DurationFlag{Name: "rerank-timeout", Sources: cli.EnvVars("RERANK_TIMEOUT"), Value: def.RerankTimeout, Usage: "budget for a rerank call; it does real inference, unlike the other outbound calls"},
 		&cli.BoolFlag{Name: "debug", Sources: cli.EnvVars("APP_DEBUG"), Value: def.Debug, Usage: "verbose logging: per-request HTTP access logs + gorm SQL"},
 	}
@@ -931,7 +933,8 @@ func configureRanking(svc *palace.Service, cfg config.Config,
 		}
 		drawers = drawers.
 			WithReranker(newReranker(cfg.RerankURL, timeout), cfg.RerankPool).
-			WithRerankWeight(cfg.RerankWeight)
+			WithRerankWeight(cfg.RerankWeight).
+			WithRerankNorm(cfg.RerankNorm)
 		say("reranker: %s (pool %d, weight %.2f, timeout %s)",
 			cfg.RerankURL, cfg.RerankPool, cfg.RerankWeight, timeout)
 	}

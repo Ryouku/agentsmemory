@@ -32,7 +32,10 @@ import (
 	"strings"
 	"time"
 
+	"errors"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+	"net"
+	"net/http/httptrace"
 )
 
 // maxBatch is how many texts may go in ONE request to TEI. It mirrors TEI's
@@ -168,6 +171,7 @@ func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]fl
 	// pool of 100 is four of them, so the promised budget was silently multiplied
 	// by the number of batches — and the fail-open path, whose entire purpose is
 	// to give up before the caller does, could not be reached.
+	parent := ctx
 	if c.budget > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.budget)
@@ -178,6 +182,33 @@ func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]fl
 		end := min(start+maxBatch, len(texts))
 		batch, err := c.rerankBatch(ctx, query, texts[start:end])
 		if err != nil {
+			// OUR budget expired, on a call that had actually reached the model: a
+			// capacity signal. The parent check matters because an inherited deadline
+			// expiring is not this client running out of its own budget, and the
+			// connection check matters because a stalled or blackholed endpoint burns
+			// the same budget while being an outage — reporting that as capacity sends
+			// an operator to lower the pool on a reranker that is simply not there.
+			var cf connFailure
+			reachedTheModel := errors.As(err, &cf) && cf.connected
+
+			// EITHER of our own timers counts, because New sets both to the same
+			// duration: the context deadline over the whole call and
+			// http.Client.Timeout per request. Requiring the context one specifically
+			// made this a coin flip between two timers armed for the same instant --
+			// it passed locally and failed in CI, where the client timer won and
+			// ctx.Err() was still nil.
+			//
+			// Re-admitting net.Error.Timeout() here is safe ONLY because
+			// reachedTheModel gates it: that is what still excludes a DNS or connect
+			// timeout, which is the case this whole distinction exists for.
+			ourBudgetExpired := ctx.Err() == context.DeadlineExceeded
+			if !ourBudgetExpired {
+				var ne net.Error
+				ourBudgetExpired = errors.As(err, &ne) && ne.Timeout()
+			}
+			if parent.Err() == nil && ourBudgetExpired && reachedTheModel {
+				return nil, budgetExceeded{err}
+			}
 			// One failed batch means an incomplete ranking, which would order the
 			// page on a mix of scored and unscored candidates. Fail the whole call
 			// so the caller falls back to a ranking that is at least coherent.
@@ -187,6 +218,11 @@ func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]fl
 	}
 	return scores, nil
 }
+
+// RerankBudget returns the ceiling this client enforces on a complete Rerank
+// call, satisfying palace.RerankDescriber so the search span can record the
+// budget beside the duration it bounds.
+func (c *Client) RerankBudget() time.Duration { return c.budget }
 
 // rerankBatch scores one batch of at most maxBatch texts, returning the scores
 // in the batch's own input order.
@@ -201,9 +237,17 @@ func (c *Client) rerankBatch(ctx context.Context, query string, texts []string) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// Whether we ever got a connection is what separates "the model was slow" from
+	// "the endpoint is not there". Both consume the whole budget and both surface
+	// as a timeout-bearing *url.Error, so without this the two are one error.
+	connected := false
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected = true },
+	}))
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, connFailure{err: err, connected: connected}
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
@@ -231,3 +275,27 @@ func (c *Client) rerankBatch(ctx context.Context, query string, texts []string) 
 	}
 	return scores, nil
 }
+
+// connFailure carries whether the request ever obtained a connection, so the
+// caller can tell a slow model from an absent endpoint. Both fail the same way.
+type connFailure struct {
+	err       error
+	connected bool
+}
+
+func (e connFailure) Error() string { return e.err.Error() }
+func (e connFailure) Unwrap() error { return e.err }
+
+// budgetExceeded marks the one case that is genuinely a capacity signal: this
+// client's own budget ran out on a call that had reached the model. It answers
+// RerankBudgetExceeded so a consumer can detect it without importing this
+// package, matching how Embedder, Reranker and VectorDescriber are all declared
+// at the consumer rather than the producer.
+type budgetExceeded struct{ err error }
+
+func (e budgetExceeded) Error() string { return "tei: rerank budget exceeded: " + e.err.Error() }
+func (e budgetExceeded) Unwrap() error { return e.err }
+
+// RerankBudgetExceeded reports that this client's own budget was the binding
+// constraint, as opposed to an unreachable endpoint or an inherited deadline.
+func (e budgetExceeded) RerankBudgetExceeded() bool { return true }
