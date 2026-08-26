@@ -34,6 +34,7 @@ import (
 
 	"errors"
 	"github.com/atvirokodosprendimai/agentsmemory/internal/telemetry"
+	"net"
 	"net/http/httptrace"
 )
 
@@ -189,7 +190,23 @@ func (c *Client) Rerank(ctx context.Context, query string, texts []string) ([]fl
 			// an operator to lower the pool on a reranker that is simply not there.
 			var cf connFailure
 			reachedTheModel := errors.As(err, &cf) && cf.connected
-			if parent.Err() == nil && ctx.Err() == context.DeadlineExceeded && reachedTheModel {
+
+			// EITHER of our own timers counts, because New sets both to the same
+			// duration: the context deadline over the whole call and
+			// http.Client.Timeout per request. Requiring the context one specifically
+			// made this a coin flip between two timers armed for the same instant --
+			// it passed locally and failed in CI, where the client timer won and
+			// ctx.Err() was still nil.
+			//
+			// Re-admitting net.Error.Timeout() here is safe ONLY because
+			// reachedTheModel gates it: that is what still excludes a DNS or connect
+			// timeout, which is the case this whole distinction exists for.
+			ourBudgetExpired := ctx.Err() == context.DeadlineExceeded
+			if !ourBudgetExpired {
+				var ne net.Error
+				ourBudgetExpired = errors.As(err, &ne) && ne.Timeout()
+			}
+			if parent.Err() == nil && ourBudgetExpired && reachedTheModel {
 				return nil, budgetExceeded{err}
 			}
 			// One failed batch means an incomplete ranking, which would order the
