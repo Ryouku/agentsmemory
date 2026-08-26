@@ -131,7 +131,15 @@ func (s *Service) Bootstrap(ctx context.Context, teamID, wing string) (Bootstrap
 	// or missing from the store used to vanish with no count at all — the exact
 	// silent drop F-18 exists to remove, one response surface over from where
 	// F-18 removed it.
-	omitted := 0
+	//
+	// It starts at the ENTRY filter's count, because that is where the loss
+	// actually occurs: every id in `ids` has already passed MayReturnContent
+	// inside EntryPoint, so the tier-level refusal branches below can fire only
+	// when the store mutates between the two checks. Counting only the tiers made
+	// Omitted structurally zero while the entry node's out-degree and the
+	// response's account visibly disagreed. With the refusals seeded here,
+	// eager + pointers + omitted partitions the entry node's full offer.
+	omitted := entry.Refused
 
 	if len(inline) > 0 {
 		drawers, err := s.repo.DrawersByIDs(ctx, teamID, inline)

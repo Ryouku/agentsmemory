@@ -779,10 +779,11 @@ func TestATruncatedBootstrapSaysWhatItDropped(t *testing.T) {
 	// all-local wing — where nothing is ever refused — so the fixture pinned an
 	// accident. Omitted counts what is neither inlined nor nameable; a pointer is
 	// named, so it is not a loss.
+	offered := len(res.EntryPoint.Edges) + res.EntryPoint.Refused
 	accounted := len(res.Eager) + len(res.OnDemand) + res.Truncation.Omitted
-	if accounted < total {
-		t.Errorf("the wing offered %d records and the response accounts for %d; the rest vanished with no count",
-			total, accounted)
+	if accounted != offered {
+		t.Errorf("the entry point offered %d records and the response accounts for %d; the partition leaks",
+			offered, accounted)
 	}
 
 	// Reporting a count is not enough. The protocol this replaces lost 74% of a

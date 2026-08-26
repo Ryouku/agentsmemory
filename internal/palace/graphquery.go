@@ -447,6 +447,12 @@ type EntryPointResult struct {
 	// which is a fact about the wing and not an error; known_term_no_facts means
 	// it has one that points at nothing yet.
 	Resolution KGResolution `json:"resolution"`
+	// Refused counts entry edges dropped because their target is not readable
+	// from this wing. A count discloses no identifier, so it is the one thing
+	// WingPolicy permits saying about a refused edge — and without it the drop
+	// is silent: the caller sees a shorter edge list and cannot distinguish a
+	// smaller front door from a filtered one.
+	Refused int `json:"refused,omitempty"`
 }
 
 // EntryPoint resolves a wing's entry node and its outgoing edges DIRECTLY.
@@ -503,7 +509,9 @@ func (s *Service) EntryPoint(ctx context.Context, teamID, wing string) (EntryPoi
 		placement, _ := policy.Place(ctx, f.Object)
 		if policy.MayReturnContent(placement) {
 			out.Edges = append(out.Edges, f)
+			continue
 		}
+		out.Refused++
 	}
 	return out, nil
 }

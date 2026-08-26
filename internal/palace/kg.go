@@ -1174,7 +1174,12 @@ func (r *Repo) KGTriplesForEntities(ctx context.Context, teamID string, ids []st
 	case KGStatusEnded:
 		q = q.Where("valid_to <> ''")
 	}
-	if err := q.Find(&rows).Error; err != nil {
+	// Ordered, because which duplicate SPELLING survives factsFor's
+	// canonical-key dedup is decided by iteration order over these rows: the
+	// canonical key collapses both spellings of a two-directional walk, so the
+	// final sort over facts cannot repair a nondeterministic winner. Without
+	// this the winner is backend row order.
+	if err := q.Order("subject, predicate, object, valid_from, extracted_at").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil

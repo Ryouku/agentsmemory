@@ -221,7 +221,7 @@ func registerKGTimeline(reg *registrar, drawers *palace.Service, usageSvc *usage
 // will ever call.
 func registerEntryPoint(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("entry_point",
-		mcp.WithDescription("Where to START in a wing. Returns the wing's entry node and what it points at, so a session needs no id from a skill file and no multi-hop walk to begin. A wing with no entry point says so, distinguishably from an error."),
+		mcp.WithDescription("Where to START in a wing. Returns the wing's entry node and what it points at, so a session needs no id from a skill file and no multi-hop walk to begin. Edges whose target is not readable from this wing are dropped and counted in refused, never listed. A wing with no entry point says so, distinguishably from an error."),
 		mcp.WithString("wing", mcp.Required(), mcp.Description("The wing whose entry point to resolve.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -233,9 +233,16 @@ func registerEntryPoint(reg *registrar, drawers *palace.Service, usageSvc *usage
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{
+		out := map[string]any{
 			"wing": res.Wing, "node": res.Node, "edges": res.Edges,
 			"resolution": string(res.Resolution),
-		}), nil
+		}
+		// A refusal count of zero is the normal case and stays out of the
+		// response; when present it says "the front door holds more than you
+		// were shown", which is the one fact a filtered listing owes its reader.
+		if res.Refused > 0 {
+			out["refused"] = res.Refused
+		}
+		return jsonResult(out), nil
 	})
 }

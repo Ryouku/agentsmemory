@@ -133,16 +133,16 @@ func TestARequiredWingMustActuallyBeNonEmpty(t *testing.T) {
 }
 
 // TestTruncationCountsWhatIsNeitherInlinedNorPointedAt pins the contract with a
-// foreign edge in BOTH tiers.
+// foreign edge on the wing's entry node.
 //
-// Every earlier bootstrap fixture was all-local, so the code and the tests agreed
-// only on the path that was tested — the PR's own "four filters that agree today
-// diverge on the path nobody tested", arriving as a test. On an all-local wing
-// Omitted == len(OnDemand) holds by accident, and a fixture asserting that
-// equality pinned the accident.
-//
-// Omitted means: a record the wing offered that is NEITHER inlined NOR named as a
-// pointer. Eager-tier refusals belong in it; pointers never do.
+// The foreign edge never reaches either tier: EntryPoint authorizes every edge
+// on its target with the same WingPolicy, so it is refused at the front door,
+// before Bootstrap builds its id list. That is where the loss actually occurs —
+// the tier-level refusal branches can fire only on a store mutation between the
+// two checks — so the contract this fixture pins is that the ENTRY refusal is
+// counted, and that eager + pointers + omitted equals the entry node's full
+// out-degree. A lower bound here let the old code (pointers double-counted as
+// omissions, the entry drop invisible) pass alongside the fix.
 func TestTruncationCountsWhatIsNeitherInlinedNorPointedAt(t *testing.T) {
 	ctx := context.Background()
 	const team = "t-truncation"
@@ -175,17 +175,23 @@ func TestTruncationCountsWhatIsNeitherInlinedNorPointedAt(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	offered := len(res.EntryPoint.Edges) + 1 // +1: the foreign edge the entry point refused
-	accounted := len(res.Eager) + len(res.OnDemand) + res.Truncation.Omitted
-	if accounted < len(local) {
-		t.Errorf("the response accounts for %d records but the wing offered at least %d; some vanished uncounted",
-			accounted, len(local))
+	// The fixture staged exactly one foreign target, so the entry point must
+	// report exactly one refusal — this is what proves the edge reached the
+	// filter at all, rather than never being written.
+	if res.EntryPoint.Refused != 1 {
+		t.Errorf("EntryPoint.Refused = %d, want 1: the staged foreign edge was not refused where the filter runs",
+			res.EntryPoint.Refused)
 	}
 
-	// A pointer is NAMED, so it is not an omission. Counting it as one was how a
-	// silently dropped eager record still cleared the parity sum.
-	if res.Truncation.Omitted >= len(res.OnDemand)+len(local) {
-		t.Errorf("Omitted=%d looks like it is counting the %d pointers as losses", res.Truncation.Omitted, len(res.OnDemand))
+	// EQUALITY, not a lower bound. The offer is the entry node's full out-degree:
+	// the edges returned plus the ones refused at the door. The pre-fix code
+	// accounts 14 for a 13-edge offer (pointers double-counted as omissions, the
+	// entry refusal invisible), and a lower bound cleared both readings.
+	offered := len(res.EntryPoint.Edges) + res.EntryPoint.Refused
+	accounted := len(res.Eager) + len(res.OnDemand) + res.Truncation.Omitted
+	if accounted != offered {
+		t.Errorf("the entry point offered %d records and the response accounts for %d; the partition leaks",
+			offered, accounted)
 	}
 	for _, p := range res.OnDemand {
 		if p.ID == foreign.Drawers[0].ID {
@@ -195,5 +201,4 @@ func TestTruncationCountsWhatIsNeitherInlinedNorPointedAt(t *testing.T) {
 	if res.Truncation.Omitted > 0 && res.Truncation.HowToFetch == "" {
 		t.Error("records were omitted with no statement of what can be done about it")
 	}
-	_ = offered
 }
