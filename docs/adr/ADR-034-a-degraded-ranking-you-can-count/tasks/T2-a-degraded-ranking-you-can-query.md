@@ -17,7 +17,7 @@ recalls served a degraded ranking" becomes a query.
 
 | File | Change | Why |
 |------|--------|-----|
-| `db/migrations/00027_search_events_rerank_skip_reason.sql` | add | nullable TEXT column, with a `-- +goose Down` — additive, following migration `00026` |
+| `db/migrations/00029_search_events_rerank_skip_reason.sql` | add | nullable TEXT column, with a `-- +goose Down` — additive, following migration `00028` |
 | `internal/palace/recallstats.go` | edit | `searchEventRow.RerankSkipReason` field (the row type is UNEXPORTED — this task file called it `SearchEvent`, which does not exist; scouted 2026-08-26); `WingRecall.RerankSkips` map; the aggregate that groups by reason |
 | `internal/palace/service.go` | edit | `recordSearch` writes the reason T1 returns — the line that SELECTS it |
 | `internal/mcpserver/admin.go` | edit | `am_recall_stats` result carries `rerank_skips` — the line that makes it DISCOVERABLE |
@@ -29,7 +29,7 @@ recalls served a degraded ranking" becomes a query.
 1. Write the failing tests first: (a) an aggregate over rows with mixed reasons returns the right
    per-reason counts, (b) `am_recall_stats`'s rendered result contains `rerank_skips`. Both RED —
    the column does not exist.
-2. Add migration `00027`.
+2. Add migration `00029`.
 3. Add `RerankSkipReason` to `searchEventRow` (gorm column `rerank_skip_reason`); write it in `recordSearch` from T1's return, at the literal in `Search` that already sets `Reranked: boolToInt(reranked)` (`service.go:1194`).
 4. Add `RerankSkips` to `WingRecall` and the grouping aggregate, leaving ADR-031's
    `hits > 0 AND reranked = 1` aggregate untouched.
@@ -93,7 +93,9 @@ PREVIOUS binary have NULL in this column and must aggregate as "unknown" rather 
 
 - Conflating NULL with "no skip" would silently report every historical row as healthy. The explicit
   test above is the guard.
-- The migration number could collide with another open branch; `00027` checked 2026-08-26 against
+- The migration number could collide with another open branch; renumbered `00027` -> `00029` at merge
+  2026-08-26 under ADR-036's recorded allocate-at-merge rule, because #67 landed first and goose
+  refuses a pending migration below the maximum applied version. Originally checked against
   this tree and the behind-index branch.
 
 ## Out of Scope

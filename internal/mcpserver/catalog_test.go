@@ -68,8 +68,8 @@ func liveSurface(t *testing.T, local bool) ([]CatalogEntry, []mcp.Tool) {
 // against any value the file happens to hold.
 func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 	const (
-		wantHosted = 40 // every tool except delete_wing
-		wantLocal  = 41 // + delete_wing, safe only when the agent owns the machine
+		wantHosted = 42 // every tool except delete_wing
+		wantLocal  = 43 // + delete_wing, safe only when the agent owns the machine
 	)
 
 	hosted, local := fullCatalog(false), fullCatalog(true)

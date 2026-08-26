@@ -210,6 +210,10 @@ func (s *Service) DeleteWing(ctx context.Context, teamID, wing, confirm string) 
 		if err != nil {
 			return res, fmt.Errorf("delete wing drawers: %w", err)
 		}
+		// Derived edges naming these drawers go too; see purgeSource.
+		if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
+			return DeleteWingResult{}, fmt.Errorf("drop derived edges: %w", err)
+		}
 		if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
 			return res, fmt.Errorf("delete wing drawer vectors: %w", err)
 		}

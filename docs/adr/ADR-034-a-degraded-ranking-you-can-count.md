@@ -102,7 +102,7 @@ surface in `internal/mcpserver`. No component changes owner and no boundary move
 
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
-| `search_events.rerank_skip_reason` (schema) | new nullable TEXT column, migration `00027` | `recordSearch` | `RecallStats`, `doctor` |
+| `search_events.rerank_skip_reason` (schema) | new nullable TEXT column, migration `00029` | `recordSearch` | `RecallStats`, `doctor` |
 | `palace.searchEventRow.RerankSkipReason` (struct field, unexported) | added | `Service.Search` | `recordSearch` |
 | `applyRerankWith` return signature | returns `(ranked, ok, reason)` | `internal/palace/service.go` | `Search`, `RerankScoresFor` |
 | `palace.WingRecall.RerankSkips` (map reason→count) | added | `RecallStats` | `am_recall_stats` |
@@ -146,12 +146,12 @@ See `tasks/README.md`. Two tasks.
 |------|------------|--------|------------|
 | The reason column is written but nothing ever reads it — a capability that ships unreachable | Med | Med | T2's Reachability rung 3 is the `am_recall_stats` result schema, and its test fails if the field is absent from the tool's output rather than merely absent from the struct |
 | The span's reason and the column's reason drift into two vocabularies | Low | Med | Both take `telemetry.Reason*` constants; T1's test asserts the value the span carries equals the value returned for the row |
-| The migration collides with another open branch | Low | High | `00027` — checked 2026-08-26: `00026` is the highest in this tree and on the behind-index branch |
+| The migration collides with another open branch | Low | High | Renumbered `00027` -> `00029` at merge 2026-08-26: ADR-036 (#67) landed first with `00028`, and goose refuses a pending migration below the maximum applied version, so the record that merges second reallocates. This is ADR-036's own recorded rule, applied |
 | The column is always empty and the work bought nothing | Med | Low | That is a recordable result, and the ADR says so in the Decision rather than treating emptiness as failure |
 
 ## Rollback
 
-Persistent state, so rollback is real: `db/migrations/00027_search_events_rerank_skip_reason.sql`
+Persistent state, so rollback is real: `db/migrations/00029_search_events_rerank_skip_reason.sql`
 carries a `-- +goose Down` dropping the column, and the field is nullable, so a server running the
 previous binary against the migrated schema writes NULL and reads nothing. Revert order is binary
 then migration; the reverse also works because nothing reads the column at write time.

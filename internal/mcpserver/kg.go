@@ -33,6 +33,7 @@ func registerKG(reg *registrar, drawers *palace.Service, usageSvc *usage.Service
 	registerKGQuery(reg, drawers, usageSvc)
 	registerKGStats(reg, drawers, usageSvc)
 	registerKGTimeline(reg, drawers, usageSvc)
+	registerEntryPoint(reg, drawers, usageSvc)
 }
 
 func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
@@ -134,6 +135,20 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		}
 		out := map[string]any{
 			"facts": res.Facts, "count": len(res.Facts), "status": res.Status,
+			// resolution is what separates "nothing is filed about this" from
+			// "you asked about something this graph has never heard of". Both
+			// used to arrive as count:0 with no error, so a caller could not act
+			// on the difference and a pointer built on the second pointed nowhere.
+			// It is rendered here, not merely set on the Go struct: a field no
+			// handler emits is invisible to every agent, and no behavioural test
+			// can see that.
+			"resolution": string(res.Resolution),
+		}
+		// Named only when something actually failed to resolve, so the key's
+		// presence is itself the signal rather than an empty string every caller
+		// has to compare against.
+		if res.Unresolved != "" {
+			out["unresolved"] = res.Unresolved
 		}
 		// Each entry point is echoed only when it was used, so the response says
 		// which question was asked rather than carrying an empty key for the one
@@ -195,5 +210,39 @@ func registerKGTimeline(reg *registrar, drawers *palace.Service, usageSvc *usage
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return jsonResult(map[string]any{"entity": label, "timeline": facts, "count": len(facts)}), nil
+	})
+}
+
+// registerEntryPoint exposes a wing's front door.
+//
+// The reg.add call is the line that makes it REACHABLE, and the catalogue entry
+// that call produces is what makes it DISCOVERABLE — an agent consults the
+// catalogue, and a tool the handler serves but the catalogue omits is one nobody
+// will ever call.
+func registerEntryPoint(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+	tool := newTool("entry_point",
+		mcp.WithDescription("Where to START in a wing. Returns the wing's entry node and what it points at, so a session needs no id from a skill file and no multi-hop walk to begin. Edges whose target is not readable from this wing are dropped and counted in refused, never listed. A wing with no entry point says so, distinguishably from an error."),
+		mcp.WithString("wing", mcp.Required(), mcp.Description("The wing whose entry point to resolve.")),
+	)
+	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t, errResult, ok := admit(ctx, usageSvc)
+		if !ok {
+			return errResult, nil
+		}
+		res, err := drawers.EntryPoint(ctx, t.TeamID, req.GetString("wing", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		out := map[string]any{
+			"wing": res.Wing, "node": res.Node, "edges": res.Edges,
+			"resolution": string(res.Resolution),
+		}
+		// A refusal count of zero is the normal case and stays out of the
+		// response; when present it says "the front door holds more than you
+		// were shown", which is the one fact a filtered listing owes its reader.
+		if res.Refused > 0 {
+			out["refused"] = res.Refused
+		}
+		return jsonResult(out), nil
 	})
 }

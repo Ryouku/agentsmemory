@@ -1157,3 +1157,127 @@ as the deferral so the pointer has a receiving end.
   lagging one, and cheap. It needs a threshold, and nobody can name a defensible threshold until the
   fail-open rate is known. **Trigger: ADR-034's `rerank_skip_reason` column having a week of real
   data.**
+## From ADR-035 (a dataset you can recall)
+
+- **Row-level import for small reference sets, under a stated ceiling.** ADR-035 refuses rows on
+  evidence — a larger, more heterogeneous corpus retrieves measurably worse, so filing tens of
+  thousands of seed rows would degrade recall for every other memory in the wing to answer
+  questions SQL already answers better. The exception worth building is the set where the row *is*
+  the knowledge: currencies, status codes, a country list. Trigger: someone actually wants such a
+  set recallable row by row. It needs a row-count ceiling enforced in code (the profiler has none
+  today, and nothing in the shipped command pretends otherwise), or it quietly becomes the bulk
+  path the ADR rejected.
+- **Watching the JSONL and re-importing on change.** A scheduled or hook-driven re-import is a
+  deployment concern rather than a format one, so it stays out of the producer. Safe to build now
+  that an unchanged file re-imports as a no-op.
+- **Replacing a dataset's profile when the data changes — the gap review found.** The producer's
+  drawer id is deterministic, so an unchanged file upserts. A CHANGED file produces different text,
+  a different id, and therefore a SECOND profile: yesterday's numbers stay recallable next to
+  today's, and the stale one has to be deleted by hand. Closing it means a purge-by-source on the
+  import path, which is exactly what the migration path must NOT do — `AbsorbDrawers` absorbs
+  without purging because a batched migration would otherwise delete the earlier batches of the
+  source it is still uploading. So it needs an opt-in the producer can ask for (a `replace_source`
+  on the bundle or the endpoint) rather than a change to the shared absorb. Filed 2026-08-26 from
+  the PR #60 review, where the ADR had claimed the stronger "idempotent by source" four times.
+- **Nested structures below the first level.** The profiler reports a nested object's presence and
+  type, never its interior. Deep schema inference is its own decision — and, since values below the
+  first level would have to pass the same `show_values` allowlist, its own disclosure question.
+
+## From ADR-036 (the knowledge graph on the read path, 2026-08-26)
+
+- **ADR-004 T5's deferral is received here.** T5 (Accepted, `done`) carries `- Wiring the graph into
+  Service.Search (deferred: docs/adr/BACKLOG.md)` and this file never received it, so `adr-debt`
+  reported zero unreceipted — the pointer resolved to a real file that did not mention it. ADR-036 is
+  that work. **Trigger: closed by ADR-036 reaching `done`; until then this line is the receipt.**
+
+- **`kg_triples` has no `wing` column,** so the graph is workspace-wide while drawers, anchors and
+  search are wing-scoped. ADR-036 works around it by deriving a fact's wing from `source_drawer_id`,
+  which caps reachability at 46% (196 triples, 106 carry an id, 90 resolve — measured 2026-08-26).
+  A column plus backfill would lift the cap. **Trigger: when T1's answerable-rate plateaus and the
+  unresolvable 54% is the named reason.**
+
+- **Repair the 16 dangling `source_drawer_id` pointers.** They name a drawer that is not there, so
+  they are unresolvable rather than merely unlabelled, and they are part of the 46% ceiling above.
+  **Trigger: same as the wing column — they are the cheapest slice of it.**
+
+- **Backfill edges for the 1,928 existing orphan drawers.** ADR-036 T6 fixes the write path only, so
+  every drawer filed before it stays unreachable by traversal (57 of 1,985 carry any edge — 2.9%,
+  measured 2026-08-26). **Trigger: after T6 has run long enough to show the derived-edge marker does
+  not degrade recall; backfilling first would bake in a bad derivation.**
+
+- **Why the derived graph produces zero hallways is still unseparated.** 945 of 1,985 drawers carry
+  entities (47.6%, measured 2026-08-26) and `am_graph_stats` reports no hallway at all. Two causes
+  are indistinguishable from outside: `am_recompute_graph` was never run, or the co-occurrence
+  threshold is never met. BACKLOG item 2 argued from *"`Service.Add` does not [extract entities], 82
+  of 82 today"* — false since ADR-016 — so "feed it" was necessary and demonstrably not sufficient.
+  **Trigger: before anyone proposes a graph-derived ranking signal; it would rest on an empty graph.**
+
+- **Unify the two entity vocabularies at the write path.** `drawers.entities` (frequency-extracted,
+  ADR-016) and `kg_entities` (authored via `am_kg_add`) share nothing but `source_drawer_id`.
+  ADR-036 T4 joins them at READ time only, deliberately. **Trigger: if T1 shows the read-time join
+  helps and its cost per query becomes the bottleneck.**
+
+- **Validate entity spelling on write.** `am_kg_query` fails open on an unknown entity; ADR-036 T2
+  makes that distinguishable at read time but nothing stops a misspelled entity being stored.
+  **Trigger: the first time a fact is filed and cannot be found by the name its author expected.**
+
+- **Fix `am_traverse`'s inert `max_hops`.** `via` is an intersection carried forward, so hop >=2 can
+  never add a node — verified 2026-08-26 from a hub (25 nodes, all hop <=1) and a leaf (10 nodes, all
+  hop 1). ADR-036 T7 resolves edges directly rather than depending on it. The fix is blocked on an
+  unmade product decision: should traversal be transitive across wings, or confined to the wings the
+  start node already belongs to? **Trigger: someone deciding that question — not before.**
+
+- **Update the client kits to use the bootstrap.** ADR-036 T8 adds the surface; the kits still carry
+  a hardcoded root id and a 13-call client-side protocol. A bootstrap nobody adopts is the rung-4
+  failure this ADR exists to remove. **Trigger: once T8's F-16 measurement beats the client baseline
+  — the number is what makes adoption arguable.**
+
+- **Personalized PageRank over the graph (HippoRAG, arXiv 2405.14831).** Rejected for ADR-036, not
+  forever: it presumes a connected graph, and ours derives zero hallways. **Trigger: once T6 has
+  produced edges and T1 can score whether PPR beats the direct lookup.**
+
+## From ADR-036 T4 (the second entity vocabulary, 2026-08-26)
+
+- **Whether the extracted vocabulary HELPS is still unmeasured, and the code shipped anyway.**
+  T4's tests prove a fact reachable only through `drawers.entities` now arrives, and a mutant that
+  drops the join is killed. What they cannot prove is whether the join raises or lowers the
+  answerable-rate: T1's arm scores against gold triple ids, and the committed fixture's ids are
+  invented, so an on/off comparison is 0/8 either way. The real corpus is deliberately untracked
+  (ADR-003 T2), and nobody has built one. So T4's own stop condition — "stop if the join measurably
+  LOWERS the rate" — has no number behind it yet, and frequency-extracted terms are noisier than
+  authored names by construction. **Trigger: the first time the real fact corpus is built; run
+  ArmFactRetrieval with the second vocabulary on and off and record both rates WITH denominators
+  before trusting either.**
+
+## From ADR-036 review (2026-08-26)
+
+- **A migration-number gap is a startup failure, and nothing checks for one.** ADR-036 takes `00028`
+  and leaves `00027` for ADR-034 on PR #61. Verified against `goose v3.27.1` (`up.go:82`): plain
+  `goose.Up`, which `cmd/server/main.go:1382` calls, refuses to run when a pending migration sits
+  below the database's max applied version, and the server exits. The gap is safe only while
+  whichever branch merges SECOND renumbers at merge. Nothing enforces that: `adr-lint` checks ADR
+  numbers, and no gate reads migration numbering across branches. **Trigger: before the second of
+  #67 and #61 merges — and a contiguity check over `db/migrations` on `main` would make it
+  mechanical rather than remembered.**
+
+- **`DropDerivedEdgesFor` leaves structural `kg_entities` rows behind.** Deleting a drawer removes
+  its derived triples but not the room node or the drawer-id entity those triples referenced. Bounded
+  now that the label index excludes structural entities, so nothing reads them — but the table
+  accumulates dead ids. **Trigger: when `am_kg_stats`' entity count stops matching what anyone
+  expects, or before any feature counts entities as a measure of anything.**
+
+- **The centralised skills become stale consumers the moment ADR-036 merges.** The BACKLOG item on
+  updating the client kits names the kits; `start-here` (v3) and `memory-orchestration` are the other
+  two consumers. `start-here` instructs every session to run three predicate queries BY HAND — which
+  is exactly what `kg.CorrectionsFor` now does server-side — and to reach the taxonomy by traversal,
+  which `am_bootstrap` replaces. **Trigger: same as the client kits; the skills are versioned
+  server-side, so they change without a repo commit and will otherwise teach the old protocol
+  indefinitely.**
+
+- **The fact corpus is still not loadable by the eval CLI.** `LoadFactCases` is called only by tests;
+  `agentsmemory eval --cases` uses `readCasesWithMeta`, which neither skips the fixture's leading
+  `//` lines nor understands its `question`/`expect_triple`/`synthetic` schema. So the committed
+  corpus cannot select `ArmFactRetrieval` end to end, and `FactAnswerRateFrom` is never consumed by
+  the production reporter — the table prints recall and MRR and not the answered/cases fraction the
+  arm exists to produce. **Trigger: before the first answerable-rate is quoted anywhere; until then
+  that number can only be produced by a test, which is not the instrument this ADR claimed.**

@@ -679,12 +679,73 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 		if err := s.repo.SaveUnembedded(ctx, drawers); err != nil {
 			return AddResult{}, fmt.Errorf("save drawers (embedding deferred): %w", err)
 		}
+		// The edge attaches here TOO. This branch returns early, and the first
+		// version of T6 attached below it — so a memory filed while the embedder
+		// was down became a permanent orphan. That is precisely the memory a
+		// later session most needs to find, and the vector index it is waiting
+		// for is not what makes it reachable by traversal.
+		s.attachDerivedEdgeTo(ctx, teamID, drawers)
 		return AddResult{Drawers: drawers, PendingEmbedding: true}, nil
 	}
 	if err := s.storeDrawers(ctx, teamID, drawers, vectors); err != nil {
 		return AddResult{}, err
 	}
+	s.attachDerivedEdgeTo(ctx, teamID, drawers)
 	return AddResult{Drawers: drawers}, nil
+}
+
+// attachDerivedEdgeTo makes a freshly written set of chunks reachable by
+// traversal. EVERY write path calls it — Add's normal branch, Add's deferred
+// branch, and the import path — because a capability reachable on the one path
+// somebody tested is this repository's characteristic defect, and T6 shipped
+// with exactly that shape before a cross-check found the other two.
+//
+// The edge goes on the ROOT chunk only. A memory is chunked, and one edge per
+// chunk would multiply a single filing into as many graph rows as it happened to
+// split into, inflating the very count this is measured by.
+//
+// Failure is logged, never fatal. The text is the memory; the edge is only how it
+// is reached, and losing a filing because the graph refused would be the worse
+// trade — the same reasoning the deferred-embedding branch already makes.
+func (s *Service) attachDerivedEdgeTo(ctx context.Context, teamID string, drawers []Drawer) {
+	// One edge per SOURCE ROOT, not per batch. An import batch can carry records
+	// from several independent source files, and attaching only to drawers[0]
+	// left every other root unedged — a distinct defect from the missing call
+	// that preceded it, and invisible for the same reason: the batch that was
+	// tested had one source.
+	seen := map[string]bool{}
+	for i := range drawers {
+		d := drawers[i]
+		// The ROOT chunk of each memory. A chunked memory must not contribute one
+		// edge per chunk, which would inflate the count this is measured by.
+		if d.ParentID != "" {
+			continue
+		}
+		key := d.Wing + "\x00" + d.Room + "\x00" + d.SourceFile
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		got, err := s.attachDerivedEdge(ctx, teamID, d)
+		if err != nil {
+			logAttachFailure(ctx, d.ID, err)
+			continue
+		}
+		// Reported from what actually happened. Setting both flags unconditionally
+		// made a drawer a writer had deliberately placed come back claiming the
+		// server guessed for it.
+		drawers[i].HasEdge = true
+		drawers[i].EdgeDerived = got != EdgeAuthored
+	}
+}
+
+// logAttachFailure records a derived-edge attachment that did not happen. It is
+// deliberately non-fatal and deliberately not silent: an orphan created because
+// the graph write failed looks exactly like one created before this existed.
+func logAttachFailure(ctx context.Context, drawerID string, err error) {
+	slog.WarnContext(ctx, "derived edge not attached; drawer is filed but unreachable by traversal",
+		"drawer_id", drawerID, "err", err)
 }
 
 // embedChunks embeds a batch of chunks, returning one vector per chunk in order.
@@ -784,6 +845,14 @@ func (s *Service) purgeSource(ctx context.Context, teamID, wing, room, source st
 	}
 	if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
 		return fmt.Errorf("purge source vectors: %w", err)
+	}
+	// The derived edges go with the rows. Left behind they stay CURRENT and point
+	// at ids that no longer resolve — an edge asserting a record exists where none
+	// does — and they accumulate on every re-file of changed content, since a
+	// changed drawer gets a new id and a new edge beside the stale one. Authored
+	// edges are deliberately left for a human.
+	if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
+		return fmt.Errorf("purge derived edges: %w", err)
 	}
 	if err := s.repo.DeleteBySource(ctx, teamID, wing, room, source); err != nil {
 		return fmt.Errorf("purge source rows: %w", err)
@@ -992,6 +1061,11 @@ func (s *Service) Delete(ctx context.Context, teamID, id string) (n int, err err
 	if len(ids) == 0 {
 		ids = []string{id} // no row to resolve; delete what we were given
 	}
+	// Same rule as purgeSource: a deleted drawer's derived edges go with it, or
+	// they stay current pointing at nothing.
+	if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
+		return 0, fmt.Errorf("drop derived edges: %w", err)
+	}
 	for _, cid := range ids {
 		if err := s.repo.Delete(ctx, teamID, cid); err != nil {
 			return 0, fmt.Errorf("delete drawer row: %w", err)
@@ -1178,11 +1252,30 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		return SearchResult{}, err
 	}
 
+	// The fact block is assembled AFTER ranking and never feeds it. A failure
+	// here degrades the answer to drawers-only rather than failing the recall:
+	// the drawers are what a caller had before this existed, and losing them
+	// because the graph refused would be the worse trade.
+	// Entities come from the RANKED PAGE, not the candidate pool. `rows` is the
+	// pool searchCandidates fetched — limit*3, so 30 drawers at the shipped
+	// limit of 10 — and reading entities from all of it made the fact lookup pay
+	// for candidates the caller will never see. The page is also the more correct
+	// source: a fact should relate to what was actually returned.
+	pageRows := make(map[string]Drawer, len(results))
+	for _, h := range results {
+		pageRows[h.Drawer.ID] = h.Drawer
+	}
+	facts, factsErr := s.factsFor(searchCtx, teamID, q.Wing, vec, pageRows)
+	if factsErr != nil {
+		slog.WarnContext(ctx, "fact block not assembled; recall degraded to drawers only", "err", factsErr)
+		facts = FactBlock{}
+	}
+
 	_, rec := telemetry.Start(searchCtx, telemetry.StageRecord)
 	if q.SkipTelemetry {
 		rec.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonSkipSQLite))
 		parent.Set(attribute.Int("am.count", len(results)))
-		return SearchResult{SearchID: searchID, Hits: results}, nil
+		return SearchResult{SearchID: searchID, Hits: results, Facts: facts}, nil
 	}
 	ev := searchEventRow{
 		ID: searchID, TeamID: teamID, Wing: q.Wing, Room: q.Room, Query: query,
@@ -1207,7 +1300,7 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	rec.End(telemetry.Ran, attribute.Int("am.count", len(results)))
 	parent.Set(attribute.Int("am.count", len(results)))
 
-	return SearchResult{SearchID: searchID, Hits: results}, nil
+	return SearchResult{SearchID: searchID, Hits: results, Facts: facts}, nil
 }
 
 // Search is SearchPage's hits without the page's identity, kept because most
