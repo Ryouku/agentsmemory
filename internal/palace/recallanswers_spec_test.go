@@ -56,3 +56,22 @@ func TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked(t *testing.T) {
 func TestAFactLookupDistinguishesAbsenceFromFailure(t *testing.T) {
 	t.Fatal("F-12 not implemented: observed 2026-08-26 — am_kg_query returns count:0 with no error for a nonexistent entity AND a nonexistent predicate, so F-2's pointer cannot be trusted until absence and failure differ")
 }
+
+// UC-6 — the bootstrap. One call replaces a client-side protocol that currently
+// costs ~25k tokens of instructions plus a hardcoded root id.
+
+func TestOneCallBootstrapsAWing(t *testing.T) {
+	t.Fatal("F-13 not implemented: one call must return entry point, eager content, on-demand pointers, swept corrections, resolved wing and a truncation report — no second call, no id from a skill file")
+}
+
+func TestATruncatedBootstrapSaysWhatItDropped(t *testing.T) {
+	t.Fatal("F-14 not implemented: the bootstrap must be bounded AND report what it omitted. Silent spill is the failure it exists to remove — the protocol it replaces lost 74% of a prescribed tier to an unreported cap")
+}
+
+func TestCorrectionsAreSweptServerSideAcrossAllThreePredicates(t *testing.T) {
+	t.Fatal("F-15 not implemented: retracts, supersedes AND qualifies, read INCOMING. Outgoing-only traversal cannot see a correction; running only retracts once shipped a pointer to an ADR not on main")
+}
+
+func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
+	t.Fatal("F-16 not implemented: must beat the measured client baseline of 13 calls / ~2.8k output tokens. A bootstrap returning more than it saves has reproduced the problem inside one call")
+}

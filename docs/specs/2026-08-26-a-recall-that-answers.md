@@ -79,6 +79,16 @@ facts today, by construction).
 - **Failure paths:** a. at step 2, a derived edge would overwrite an edge the writer authored → the authored edge wins.
 - **Postconditions:** the drawer is not an orphan, and whether its edge was derived or authored is visible.
 
+### UC-6: A session bootstraps a wing in one call, carrying no protocol
+
+- **Trigger:** a session starts in a wing · **Preconditions:** none — no hardcoded id, no memorised procedure
+- **Main flow:**
+  1. The session asks the server to bootstrap the wing.
+  2. One response carries: the entry point, the eager tier's CONTENT, the on-demand tier as pointers, incoming corrections already swept, the resolved wing, and what was left out.
+  3. The session begins work.
+- **Failure paths:** a. at step 2, the response would exceed its budget → it truncates and SAYS what it dropped, never silently. b. at step 1, the wing has no entry point → say so, distinguishably from an error, and return what exists.
+- **Postconditions:** no second call and no constant from a skill file were needed; the session knows what it was not given.
+
 ## Scenarios
 
 ### UC1-S1 [happy] A question reaches the fact that answers it [@spec] → `internal/palace/recallanswers_spec_test.go::TestAWingScopedRecallNeverReturnsAnotherWingsFact`
@@ -161,6 +171,30 @@ When the server would also derive an edge
 Then the authored edge is the one that stands
 ```
 
+### UC6-S1 [happy] One call is enough to start [@spec] → `internal/palace/recallanswers_spec_test.go::TestOneCallBootstrapsAWing`
+
+```gherkin
+Given a wing with an entry point and an eager tier
+When a session bootstraps that wing
+Then it receives the eager content, the on-demand pointers and the swept corrections in one response
+```
+
+### UC6-S2 [failure] A truncated bootstrap says what it dropped [@spec] → `internal/palace/recallanswers_spec_test.go::TestATruncatedBootstrapSaysWhatItDropped`
+
+```gherkin
+Given a wing whose eager tier exceeds the response budget
+When a session bootstraps that wing
+Then the response reports what was omitted and how to fetch it
+```
+
+### UC6-S3 [failure] A wing with no entry point still bootstraps [@spec] → `internal/palace/recallanswers_spec_test.go::TestOneCallBootstrapsAWing`
+
+```gherkin
+Given a wing that has never had an entry point written
+When a session bootstraps that wing
+Then the response says so explicitly and returns what the wing does hold
+```
+
 ## Facts
 
 | ID | Assertion (invariant / behavior) | Test (`path::name`) | Tag | Cmd (optional) |
@@ -173,6 +207,10 @@ Then the authored edge is the one that stands
 | F-6 | Once facts share the page with drawers, ordering is scored by MRR on the same paired bootstrap as every other arm | `internal/palace/recallanswers_spec_test.go::TestFactsOnThePageAreScoredByMRR` | @spec | |
 | F-7 | A fact whose `valid_to` is non-empty is never presented as current. Precedent: `am_kg_query` already defaults to `status=current` (`internal/mcpserver/kg.go:kgQueryDefaultStatus`), so the 14 ended facts are already invisible there — this requirement extends an existing default to the new path rather than inventing one | `internal/palace/recallanswers_spec_test.go::TestAnEndedFactIsNeverPresentedAsCurrent` | @spec | |
 | F-8 | Wing membership of a fact is derived from `kg_triples.source_drawer_id`; a fact whose provenance does not resolve to a drawer in the searched wing is treated as belonging elsewhere, never as belonging to the searched wing | `internal/palace/recallanswers_spec_test.go::TestAFactsWingComesFromItsProvenance` | @spec | |
+| F-13 | ONE call bootstraps a wing, returning: the entry point, the EAGER tier's content inline, the ON-DEMAND tier as pointers, incoming corrections already swept, the resolved wing, and a truncation report. A session needs no second call and no id from a skill file to start work | `internal/palace/recallanswers_spec_test.go::TestOneCallBootstrapsAWing` | @spec | |
+| F-14 | The bootstrap is BOUNDED and reports what it omitted. Silent spill is the failure it exists to remove — the client protocol it replaces records a prescribed tier losing 74% of itself to an unreported ~40KB cap | `internal/palace/recallanswers_spec_test.go::TestATruncatedBootstrapSaysWhatItDropped` | @spec | |
+| F-15 | Corrections are swept SERVER-side across all three predicates (`retracts`, `supersedes`, `qualifies`) and read INCOMING. Outgoing-only traversal cannot see a correction, which is why the client protocol needs three separate queries and why running only `retracts` once shipped a pointer to an ADR that was not on `main` | `internal/palace/recallanswers_spec_test.go::TestCorrectionsAreSweptServerSideAcrossAllThreePredicates` | @spec | |
+| F-16 | The bootstrap costs FEWER output tokens than the client-side traversal it replaces. Measured baseline on the protocol's own palace: 13 calls for ~2.8k output tokens. A bootstrap that returns more than it saves has reproduced the problem inside one call | `internal/palace/recallanswers_spec_test.go::TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces` | @spec | |
 | F-12 | A fact lookup distinguishes "no matching fact" from "the lookup did not resolve". Observed 2026-08-26: `am_kg_query` returned `count: 0` with no error for both a nonexistent entity and a nonexistent predicate — so an empty result is currently indistinguishable from a failed one, and F-2's sibling-wing pointer cannot be trusted while that holds | `internal/palace/recallanswers_spec_test.go::TestAFactLookupDistinguishesAbsenceFromFailure` | @spec | |
 | F-10 | A wing reports its own entry point — the record others hang from and its outgoing taxonomy edges — so reaching a wing's taxonomy never requires an id the server did not supply. A wing with no entry point says so, distinguishably from an error | `internal/palace/recallanswers_spec_test.go::TestAWingReportsItsOwnEntryPoint` | @spec | |
 | F-11 | Every drawer receives an edge at write time; a server-derived edge is MARKED as derived and never overwrites one the writer authored | `internal/palace/recallanswers_spec_test.go::TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked` | @spec | |
@@ -193,6 +231,7 @@ relate one record to another.
 | `am_search` result | add: a fact block, a sibling-wing pointer, correction marks on hits | every agent session; the client kit |
 | `palace.SearchResult` | add: fields carrying the above | `internal/mcpserver`, eval arms |
 | `am_kg_query` result | change: distinguish an empty result from an unresolved lookup | agent sessions; F-2's pointer |
+| wing bootstrap | add: one call returning entry point, eager content, on-demand pointers, swept corrections, resolved wing, truncation report | agent sessions; every client kit; replaces client-side protocol |
 | wing entry point | add: a surface reporting a wing's entry record and its taxonomy edges | agent sessions; the client kit |
 | `am_add_drawer` result | add: whether the drawer carries an edge, and whether that edge was derived | agent sessions |
 | eval arm registry | add: a fact-retrieval arm and its case set | `agentsmemory eval` |
@@ -203,6 +242,7 @@ relate one record to another.
 - **Abstention / a confidence verdict** (permanent for this spec: ADR-001 is Accepted and owns it; all six of its tasks are pending. Re-deciding it here would fork an accepted decision.)
 - **Memory-level or late-chunking embeddings** (deferred: `docs/specs/2026-08-26-a-recall-that-answers.md` §Risks). The measured ceiling is in-pool 100%, top-1 46% — ordering fails, not recall, so a representation change aimed at recall is unjustified on this corpus. An experiment at most.
 - **Unifying the two entity vocabularies at the write path** (deferred: this spec's F-4 takes the read-only join instead). No hallway derives today even within the one vocabulary that has extraction wired, so merging an unmeasured mechanism into a working one adds risk with no way to detect it.
+- **Defining the tier VOCABULARY** (permanent: the server distinguishes an eager tier from an on-demand one, and does not bless particular names. A team's `must.*`/`ref.*` is one spelling of that distinction, not the product's.)
 - **Changing the reranker, the fusion, or `RERANK_*` defaults** (permanent: out of this spec's subject; ADR-030 and ADR-034 own that area.)
 - **Adding a `wing` column to `kg_triples`** (deferred: F-8 derives wing from provenance instead, which needs no migration. Revisit if provenance proves too sparse to be useful.)
 
@@ -217,6 +257,8 @@ relate one record to another.
 | **F-8 caps fact reachability at 46%.** Measured 2026-08-26 against the live palace: 196 triples, 106 carry `source_drawer_id`, and only **90 resolve to an existing drawer**. The other 54% are treated as "elsewhere" and are invisible to every wing-scoped recall | High | High | This is F-5's ceiling, stated up front so a 46% result reads as the instrument working rather than the feature failing. Raising it is a write-path question, not a retrieval one |
 | **16 provenance pointers are dangling** — they name a drawer that does not exist (106 carry an id, 90 resolve) | Med | Med | F-8 treats an unresolvable pointer as "elsewhere", so a dangling id degrades reachability rather than leaking across wings |
 | **97.1% of drawers are orphans.** Measured 2026-08-26: 1,985 drawers, 57 with any edge. And **0 drawers are named as a triple OBJECT**, so the pointer pattern this spec's F-10 is modelled on has zero adoption in this workspace | High | High | F-11 addresses it at the write path in this same spec; F-10 shipped alone would index 2.9% of the palace |
+| A full bootstrap encodes a WORKFLOW, not just data. If the tier split or the sweep is wrong, it is expensive to walk back because clients will have been written against it | Med | High | F-16 makes the win measurable rather than assumed, and F-14 forces the response to declare its own limits — a bootstrap that cannot state what it omitted is not ready to be depended on |
+| The bootstrap returns so much that it costs more context than the protocol it replaces | Med | High | F-16 is the gate: it must beat 13 calls / ~2.8k output tokens, measured, or it is not shipped |
 | Derived edges invent taxonomy the writer did not choose, and S-8 says the extraction side derives nothing measurable today — so derived edges could be noise that makes traversal worse | Med | High | F-11 requires derived edges to be MARKED, which is what makes the noise measurable and removable; the orphan rate and the derived/authored split are both reportable numbers |
 | F-10's entry point indexes a palace where ≥90% of drawers are orphans (1,974 drawers vs 196 triples, measured 2026-08-26) | High | Med | F-11 addresses the write path in the same spec, so the index is not shipped against a corpus it cannot cover |
 | F-2's pointer is built on a lookup that fails open, so "no facts in this wing" may mean "the lookup did not resolve" | High | High | F-12 makes the two distinguishable and is a precondition of F-2 rather than an independent nicety |
@@ -244,5 +286,7 @@ spec-verify --spec docs/specs/2026-08-26-a-recall-that-answers.md
 | 7 | Does returning facts alter drawer ranking? | F-9 | No — the fact block is additive, so the change cannot be confounded with a ranking change |
 | 8 | Should the wing's entry point be discoverable from the server? | F-10 | Yes — a power user already built this by hand with a hardcoded id in a skill file; it may outrank semantic fact lookup |
 | 9 | A drawer with no edge is drifting data — enforce, assist, or derive? | F-11 | Derive automatically; the concern that derived edges invent taxonomy is recorded as a Risk and mitigated by marking them |
+| 12 | How opinionated should the server be about the must.*/ref.* tier grammar? | F-13 | Full bootstrap — the protocol becomes an API. It is the only option that removes the ~25k tokens of client-side protocol rather than half of it |
+| 13 | What stops the bootstrap becoming the problem it replaces? | F-16 | It must beat the measured client baseline of 13 calls / ~2.8k output tokens, or it is not shipped |
 | 11 | Does a fact lookup distinguish absence from failure? | F-12 | No — observed live: count:0 with no error for a nonexistent entity AND a nonexistent predicate. Made a precondition of F-2 |
 | 10 | Spec file naming and location | non-behavioral | `docs/specs/YYYY-MM-DD-<topic>.md`; first spec in this repo |
