@@ -1,6 +1,6 @@
 # ADR-036: Put the knowledge graph on the read path
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-26
 **Owner:** Zy
 **Spec:** `docs/specs/2026-08-26-a-recall-that-answers.md`

@@ -1,7 +1,7 @@
 # Spec: Reach a fact by asking a question
 
 > **Date:** 2026-08-26 · **Status:** Ready-for-ADR *(marked Ready-for-ADR by the owner, 2026-08-26 — the ADR carries the Accepted state)*
-> **Owner:** Zy · **Becomes:** [ADR-036](../adr/ADR-036-a-recall-that-answers.md) *(Proposed — the ADR holds the Accepted gate, not this spec)*
+> **Owner:** Zy · **Becomes:** [ADR-036](../adr/ADR-036-a-recall-that-answers.md) *(Accepted by the owner, 2026-08-26, after two cold review laps returned REJECT and were worked)*
 > **Gate:** Status may become Ready-for-ADR only after `spec-verify --spec docs/specs/2026-08-26-a-recall-that-answers.md` exits 0.
 > **Cross-references:** `docs/adr/ADR-001-recall-answers-or-abstains.md` (abstention — Accepted, all six tasks pending), `docs/adr/ADR-016-a-memory-an-agent-files-must-be-navigable.md` (entity stamping — executed), `docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md`
 
