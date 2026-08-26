@@ -12,6 +12,30 @@ import (
 // ADR-008 opens with. Entries are added by T3 and T4.
 var scenarios = []mcptest.Scenario{
 	{
+		// ADR-036 T8. Two calls: file into the entry room, then bootstrap — so the
+		// assertion is that ONE call returns what a session actually needs, not
+		// that a handler returned something.
+		Name:  "one call bootstraps a wing and carries every part of the protocol it replaces",
+		Tools: []string{"am_add_drawer", "am_bootstrap"},
+		Run: func(t *testing.T, h *mcptest.Harness) {
+			h.MustCall(t, "am_add_drawer", map[string]any{
+				"wing": "wing_scenario", "room": "llm_init",
+				"content": "BOOTSTRAP-MARKER read this before doing anything else in this wing",
+			})
+			out := h.MustCall(t, "am_bootstrap", map[string]any{"wing": "wing_scenario"})
+			for _, part := range []string{"entry_point", "truncation", "BOOTSTRAP-MARKER"} {
+				if !contains(out, part) {
+					t.Errorf("the bootstrap does not carry %q, so it does not replace the protocol it claims to:\n%s", part, out)
+				}
+			}
+			// A wing with no entry point still bootstraps rather than failing.
+			empty := h.MustCall(t, "am_bootstrap", map[string]any{"wing": "wing_no_such_place"})
+			if !contains(empty, "unknown_term") {
+				t.Errorf("a wing with no entry point did not bootstrap distinguishably:\n%s", empty)
+			}
+		},
+	},
+	{
 		// ADR-036 T7. Two calls, because a one-call scenario proves only that the
 		// handler returned something: the drawer is FILED first, then the entry
 		// point is asked, so the assertion is that the front door actually reaches

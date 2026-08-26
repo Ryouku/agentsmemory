@@ -44,7 +44,7 @@ here claims live-corpus coverage it does not deliver.
 | T7 | A wing reports its own entry point, resolved directly | done | F-10, UC4-S1, UC4-S2 | 2 tests (palace + catalogue) + suite |
 | T4 | Both entity vocabularies, and an ended fact is never current | done | F-4, F-7, UC1-S2 | 2 tests + suite |
 | T5 | A corrected record arrives carrying its correction | done | F-3, UC3-S1, UC3-S2 | 2 tests (palace + mcpserver) + suite |
-| T8 | The protocol becomes an API, and proves it costs less for the same meaning | pending | F-13, F-14, F-15, F-16, F-17, F-19, UC6-S1, UC6-S2, UC6-S3 | 7 tests (6 palace + catalogue) + suite |
+| T8 | The protocol becomes an API, and proves it costs less for the same meaning | done | F-13, F-14, F-15, F-16, F-17, F-19, UC6-S1, UC6-S2, UC6-S3 | 7 tests (6 palace + catalogue) + suite |
 
 Status: `pending` | `running` | `blocked` | `done` | `failed`.
 

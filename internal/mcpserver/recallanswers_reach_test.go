@@ -161,5 +161,32 @@ func TestEntryPointToolIsRegisteredAndDiscoverable(t *testing.T) {
 // TestBootstrapToolIsRegisteredAndDiscoverable is ADR-036 T8's rung-3 proof. A
 // bootstrap nobody can find is the 13-call protocol it was written to replace.
 func TestBootstrapToolIsRegisteredAndDiscoverable(t *testing.T) {
-	t.Fatal("ADR-036 T8 not implemented: the bootstrap tool is registered and appears in the catalogue with its arguments")
+	// A bootstrap nobody can find is the 13-call protocol it replaced, wearing a
+	// different name. Rung 3, and only a source or schema check can see it.
+	src, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("read bootstrap.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `newTool("bootstrap"`) {
+		t.Error("no bootstrap tool is declared")
+	}
+	if !strings.Contains(body, `mcp.WithString("wing", mcp.Required()`) {
+		t.Error("the wing argument is not advertised as required; an agent reading the schema cannot know to send it")
+	}
+
+	srv, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	if !strings.Contains(string(srv), "registerBootstrap(reg,") {
+		t.Error("registerBootstrap is never called; the tool exists and nothing registers it — the exact defect this ADR exists to remove")
+	}
+
+	keys := renderedKeysOf(t, "bootstrap.go", "bootstrap")
+	for _, want := range []string{"entry_point", "eager", "on_demand", "corrections", "truncation"} {
+		if !keys[want] {
+			t.Errorf("the bootstrap result has no %q key", want)
+		}
+	}
 }

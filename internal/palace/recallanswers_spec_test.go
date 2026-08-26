@@ -2,6 +2,7 @@ package palace
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -686,23 +687,228 @@ func brokenBackendService(t *testing.T) (*Service, func()) {
 // costs ~25k tokens of instructions plus a hardcoded root id.
 
 func TestOneCallBootstrapsAWing(t *testing.T) {
-	t.Fatal("F-13 not implemented: one call must return entry point, eager content, on-demand pointers, swept corrections, resolved wing and a truncation report — no second call, no id from a skill file")
+	ctx := context.Background()
+	const team = "t-f13"
+	svc := newTestService(t)
+
+	root, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "WHAT MUST I LOAD AT THE START OF A SESSION?"})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// ONE call. No second round trip and no id carried in from a skill file —
+	// the wing name is the only thing the caller has to know.
+	res, err := svc.Bootstrap(ctx, team, "wing_acme")
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if res.Wing != "wing_acme" {
+		t.Errorf("wing = %q, want the one asked for", res.Wing)
+	}
+	if res.EntryPoint.Node == "" {
+		t.Error("no entry point; a session would still need an id from somewhere else")
+	}
+	var inlined bool
+	for _, d := range res.Eager {
+		if d.ID == root.Drawers[0].ID {
+			inlined = true
+		}
+	}
+	if !inlined {
+		t.Errorf("the eager tier did not inline what the entry point points at; %d eager", len(res.Eager))
+	}
+	// The truncation report is ALWAYS present, so a caller never has to infer
+	// completeness by counting.
+	if res.Truncation.Omitted != 0 {
+		t.Errorf("omitted %d with nothing to omit", res.Truncation.Omitted)
+	}
+
+	// UC6-S3: a wing with no entry point STILL bootstraps. It returns a usable
+	// answer that says there is no front door, rather than failing.
+	t.Run("a wing with no entry point still bootstraps", func(t *testing.T) {
+		empty, err := svc.Bootstrap(ctx, team, "wing_alpha")
+		if err != nil {
+			t.Fatalf("a wing without an entry point failed to bootstrap: %v", err)
+		}
+		if empty.Wing != "wing_alpha" {
+			t.Errorf("wing = %q", empty.Wing)
+		}
+		if empty.EntryPoint.Resolution != KGResolutionUnknownTerm {
+			t.Errorf("resolution = %q, want %q", empty.EntryPoint.Resolution, KGResolutionUnknownTerm)
+		}
+	})
 }
 
 func TestATruncatedBootstrapSaysWhatItDropped(t *testing.T) {
-	t.Fatal("F-14 not implemented: the bootstrap must be bounded AND report what it omitted. Silent spill is the failure it exists to remove — the protocol it replaces lost 74% of a prescribed tier to an unreported cap")
+	ctx := context.Background()
+	const team = "t-f14"
+	svc := newTestService(t)
+
+	// More records than the eager tier can hold, so the response must truncate.
+	for i := 0; i < bootstrapEagerLimit+4; i++ {
+		if _, err := svc.Add(ctx, team, AddInput{
+			Wing: "wing_acme", Room: EntryRoom,
+			Content: "start-here entry number " + string(rune('a'+i)) + " with enough text to be a real memory",
+		}); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+	}
+
+	res, err := svc.Bootstrap(ctx, team, "wing_acme")
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if res.Truncation.Omitted == 0 {
+		t.Fatal("more records than the bound and nothing reported omitted; a caller cannot tell a complete answer from a capped one by counting")
+	}
+	if len(res.Eager) > bootstrapEagerLimit {
+		t.Errorf("eager tier holds %d, over its bound of %d", len(res.Eager), bootstrapEagerLimit)
+	}
+
+	// Reporting a count is not enough. The protocol this replaces lost 74% of a
+	// prescribed tier to an unreported cap; saying "4 omitted" without saying how
+	// to get them repeats that in a politer form.
+	if res.Truncation.HowToFetch == "" {
+		t.Error("the truncation report does not say how to fetch what it dropped")
+	}
+	if len(res.OnDemand) != res.Truncation.Omitted {
+		t.Errorf("%d omitted but %d pointers; what was dropped must be nameable", res.Truncation.Omitted, len(res.OnDemand))
+	}
+	for _, p := range res.OnDemand {
+		if p.Fetch == "" {
+			t.Errorf("pointer %s carries no fetch call; a pointer without the call that resolves it is a riddle", p.ID)
+		}
+	}
 }
 
 func TestCorrectionsAreSweptServerSideAcrossAllThreePredicates(t *testing.T) {
-	t.Fatal("F-15 not implemented: retracts, supersedes AND qualifies, read INCOMING. Outgoing-only traversal cannot see a correction; running only retracts once shipped a pointer to an ADR not on main")
+	// The three names are written out rather than ranged over
+	// CorrectionPredicates: iterating the list under test means shrinking it just
+	// runs fewer subtests and passes, which is how the same mutant survived T5's
+	// first version.
+	for _, pred := range []string{"retracts", "supersedes", "qualifies"} {
+		t.Run(pred, func(t *testing.T) {
+			ctx := context.Background()
+			team := "t-f15-" + pred
+			svc := newTestService(t)
+
+			wrong, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "load the old checklist first"})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			right, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "load the new checklist first"})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			// INCOMING: the correcting record points AT the corrected one.
+			if _, err := svc.KGAdd(ctx, team, right.Drawers[0].ID, pred, wrong.Drawers[0].ID, "", "", "", "", right.Drawers[0].ID); err != nil {
+				t.Fatalf("kgadd: %v", err)
+			}
+
+			res, err := svc.Bootstrap(ctx, team, "wing_acme")
+			if err != nil {
+				t.Fatalf("bootstrap: %v", err)
+			}
+			got := res.Corrections[normalizeEntityID(wrong.Drawers[0].ID)]
+			if len(got) == 0 {
+				t.Fatalf("a bootstrapped record arrived with no correction; a session that bootstraps perfectly would read what the tier got wrong and believe it")
+			}
+			var sawPred bool
+			for _, c := range got {
+				if c.Predicate == pred {
+					sawPred = true
+				}
+			}
+			if !sawPred {
+				t.Errorf("the %s correction was not swept; got %+v", pred, got)
+			}
+		})
+	}
 }
 
 func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
-	t.Fatal("F-16 not implemented: assert SEMANTIC PARITY with the redacted baseline manifest FIRST, then that it costs fewer output tokens under the tokenizer that manifest names. Without parity the cheapest conformant bootstrap returns nothing")
+	ctx := context.Background()
+	const team = "t-f16"
+	svc := newTestService(t)
+	if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "WHAT MUST I LOAD AT THE START OF A SESSION? Read these first."}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	baseline, err := LoadBootstrapBaseline(filepath.Join("testdata", "bootstrap-baseline-manifest-2026-08-26.json"))
+	if err != nil {
+		t.Fatalf("load baseline: %v", err)
+	}
+
+	res, err := svc.Bootstrap(ctx, team, "wing_acme")
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	// PARITY FIRST. Without it the cheapest conformant bootstrap is one that
+	// returns nothing, and this gate would reward exactly that.
+	missing := res.MissingParityParts()
+	if len(missing) > 0 {
+		t.Fatalf("the bootstrap does not carry the same logical payload as the %d calls it replaces; missing: %v", baseline.Calls, missing)
+	}
+
+	// The parity check must be able to FAIL, driven directly rather than only
+	// through a happy-path fixture. Measured: a mutant that hollowed out the
+	// truncation branch survived, because this test's fixture omits nothing and
+	// so never reached it. A parity gate that is vacuous on the case it is
+	// applied to is a token comparison wearing a parity gate's name.
+	t.Run("parity can fail", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			res  BootstrapResult
+			want string
+		}{
+			{"no entry point resolution", BootstrapResult{Wing: "wing_acme"}, "entry point"},
+			{"no resolved wing", BootstrapResult{EntryPoint: EntryPointResult{Resolution: KGResolutionMatched}}, "resolved wing"},
+			{"omissions with no way to fetch them",
+				BootstrapResult{Wing: "wing_acme", EntryPoint: EntryPointResult{Resolution: KGResolutionMatched},
+					Truncation: BootstrapTruncation{Omitted: 3}}, "truncation report"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := tc.res.MissingParityParts()
+				if !slices.Contains(got, tc.want) {
+					t.Errorf("a response missing %q passed parity; got %v", tc.want, got)
+				}
+			})
+		}
+	})
+
+	// Only then the cost comparison, and only against a DATED baseline naming
+	// its own tokenizer.
+	if baseline.Calls <= 1 {
+		t.Fatalf("baseline claims %d calls; there is nothing to replace", baseline.Calls)
+	}
+	if baseline.Tokenizer == "" || baseline.Date == "" {
+		t.Fatal("the baseline names no tokenizer or no date; an undated cost comparison is unfalsifiable a month later")
+	}
+	if got := res.ApproxOutputTokens(); got >= baseline.OutputTokens {
+		t.Errorf("bootstrap costs %d output tokens against a baseline of %d under %s; a bootstrap that returns more than it saves has reproduced the problem inside one call",
+			got, baseline.OutputTokens, baseline.Tokenizer)
+	}
 }
 
 func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {
-	t.Fatal("F-17 not implemented: am_traverse's max_hops is provably inert (via is an intersection carried forward, so hop>=2 adds nothing), so a bootstrap built on multi-hop traversal would silently return only hop 1")
+	// F-17 asserted against the BOOTSTRAP, not only against EntryPoint. T7 can
+	// prove EntryPoint resolves directly and still leave this surface free to be
+	// built on a walk whose max_hops is inert, with every T7 test green.
+	//
+	// A source check, because "which function did you call" is not observable
+	// from a return value.
+	src, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("read bootstrap.go: %v", err)
+	}
+	body := string(src)
+	if strings.Contains(body, "s.Traverse(") {
+		t.Error("the bootstrap calls Traverse; max_hops is provably inert (via is an intersection carried forward), so it would silently return only hop 1 while looking correct")
+	}
+	if !strings.Contains(body, "s.EntryPoint(") {
+		t.Error("the bootstrap does not resolve through EntryPoint, which is the direct resolution F-17 requires")
+	}
 }
 
 // TestAQuestionReachesTheFactThatAnswersIt binds UC1-S1, the happy path of
@@ -779,7 +985,78 @@ func TestAnUnlocatableFactIsCountedNotDropped(t *testing.T) {
 // are four ways out of the server, and a rule re-implemented four times is a
 // rule that will disagree with itself on the path nobody tested.
 func TestOneWingRuleGovernsEveryNewResponsePath(t *testing.T) {
-	t.Fatal("F-19 not implemented: one wing-authorization rule governs the fact block, the sibling pointer, EntryPoint's edges and the bootstrap's inline content")
+	// F-19 asserted STRUCTURALLY. A behavioural test over fixtures is satisfied
+	// by four duplicated filters that happen to agree today — which is precisely
+	// the state F-19 exists to forbid, because the one that later diverges is a
+	// tenancy leak rather than a formatting bug.
+	//
+	// So this asks a question no fixture can answer: does each path CALL the
+	// policy?
+	for _, path := range []struct{ file, why string }{
+		{"factsfor.go", "the fact block and the sibling pointer"},
+		{"memory_search.go", "the correction mark on a returned record"},
+		{"graphquery.go", "an entry point's outgoing edges"},
+		{"bootstrap.go", "the bootstrap's inline content"},
+	} {
+		t.Run(path.file, func(t *testing.T) {
+			src, err := os.ReadFile(path.file)
+			if err != nil {
+				t.Fatalf("read %s: %v", path.file, err)
+			}
+			body := string(src)
+			usesPolicy := strings.Contains(body, "wingPolicyFor(") || strings.Contains(body, "NewWingPolicy(")
+			consultsIt := strings.Contains(body, ".Place(") || strings.Contains(body, "MayReturnContent(") || strings.Contains(body, "CorrectionsFor(")
+			if !usesPolicy || !consultsIt {
+				t.Errorf("%s (%s) does not go through WingPolicy; it decides the wing boundary for itself, and four rules that agree today diverge on the path nobody tested",
+					path.file, path.why)
+			}
+		})
+	}
+
+	// The structural half above asks whether a path MENTIONS the policy. That is
+	// not the same as HEEDING it: a mutant that computed the placement and threw
+	// the answer away survived this test completely, because the call was still
+	// in the file. So the boundary is also driven for real, on the path where the
+	// two checks disagree.
+	t.Run("the bootstrap does not inline a foreign wing's record", func(t *testing.T) {
+		ctx := context.Background()
+		const team = "t-f19"
+		svc := newTestService(t)
+
+		// A local record in the entry room, so the wing has a front door whose
+		// own provenance is local.
+		local, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: EntryRoom, Content: "the local checklist"})
+		if err != nil {
+			t.Fatalf("add local: %v", err)
+		}
+		// And a record in ANOTHER wing.
+		foreign, err := svc.Add(ctx, team, AddInput{Wing: "wing_alpha", Room: "decisions", Content: "FOREIGN-WING-SECRET another project's content"})
+		if err != nil {
+			t.Fatalf("add foreign: %v", err)
+		}
+
+		// An entry edge whose OBJECT is the foreign record but whose provenance is
+		// local. EntryPoint places an edge by its SourceDrawerID, so this passes
+		// that filter — only the bootstrap's own check on the inlined record can
+		// stop it. That asymmetry is the whole reason F-19 wants one rule applied
+		// at every path rather than one filter per path.
+		if _, err := svc.KGAdd(ctx, team, DerivedEdgeSubject("wing_acme", EntryRoom), DerivedEdgePredicate, foreign.Drawers[0].ID, "", "", "", "", local.Drawers[0].ID); err != nil {
+			t.Fatalf("kgadd cross-wing entry edge: %v", err)
+		}
+
+		res, err := svc.Bootstrap(ctx, team, "wing_acme")
+		if err != nil {
+			t.Fatalf("bootstrap: %v", err)
+		}
+		for _, d := range res.Eager {
+			if d.Wing != "wing_acme" {
+				t.Errorf("the bootstrap inlined a record from %q; only local content may cross", d.Wing)
+			}
+			if strings.Contains(d.Content, "FOREIGN-WING-SECRET") {
+				t.Error("another wing's content was inlined into this wing's bootstrap")
+			}
+		}
+	})
 }
 
 // factWorld seeds two wings and three facts: one whose provenance is in the

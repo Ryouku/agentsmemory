@@ -82,9 +82,34 @@ ancestors' 18 still run, so a regression in what T8 was built on is still caught
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · 762592a · exit 1 · `set -o pipefail …` · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+  ```
+      recallanswers_spec_test.go:705: F-17 not implemented: am_traverse's max_hops is provably inert (via is an intersection carried forward, so hop>=2 adds nothing), so a bootstrap built on multi-hop traversal would silently return only hop 1
+  --- FAIL: TestOneWingRuleGovernsEveryNewResponsePath (0.00s)
+      recallanswers_spec_test.go:782: F-19 not implemented: one wing-authorization rule governs the fact block, the sibling pointer, EntryPoint's edges and the bootstrap's inline content
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.024s
+  --- FAIL: TestBootstrapToolIsRegisteredAndDiscoverable (0.00s)
+      recallanswers_reach_test.go:164: ADR-036 T8 not implemented: the bootstrap tool is registered and appears in the catalogue with its arguments
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.020s
+  FAIL
+  ```
+- 2026-08-26 · 762592a* · exit 0 · `set -o pipefail …` · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
 
 ## Mutation Log
+
+- 2026-08-26 · 762592a* · mutant survived · exit 0 · `internal/palace/bootstrap.go` · inline every record the entry point names, including one in another wing; a subject/predicate/object check would never see it · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · 762592a* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · report a count and not the call that resolves it — the politer form of the unreported cap that lost 74% of a tier · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+- 2026-08-26 · 762592a* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · compute the placement and throw the answer away — the file still calls the policy, so only a behavioural assertion can see the leak · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+- 2026-08-26 · 762592a* · mutant survived · exit 0 · `internal/palace/bootstrap.go` · hollow out the parity check so F-16 becomes a bare token comparison, which the cheapest response wins by returning nothing · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · 762592a* · mutant killed · exit 1 · `internal/palace/bootstrap.go` · hollow out the parity check so F-16 becomes a bare token comparison, which the cheapest response wins by returning nothing · acceptance-sha256:588b170436cba7a6adc6adcbfe5111d10cd69f7344bd6181cd4e61384abdd92d
 
 ## Invariants
 
