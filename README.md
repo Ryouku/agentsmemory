@@ -1473,9 +1473,28 @@ re-derived has to be the half a snippet finds.
 
 Rows are refused on evidence rather than taste: a larger, more heterogeneous
 corpus retrieves measurably worse, because unrelated entries do not remove the
-answer — they add competitors ahead of it. Since import is idempotent by source,
-re-running after the JSONL changes **replaces** each dataset's memory instead of
-filing a second one beside it.
+answer — they add competitors ahead of it.
+
+### Re-running it
+
+A drawer's id is a hash of where it goes and what it says, and the memory's text
+is a pure function of the dataset — the measurement date rides along as
+`content_date` rather than inside the text. So **re-importing an unchanged file
+is a no-op**, however often it runs: same bytes, same id, one row. That is what
+makes a committed mapping file worth committing and a scheduled re-import safe.
+
+**A changed dataset is a different matter.** The import path absorbs and never
+purges by source — it has to, because a batched migration would otherwise delete
+the earlier batches of the source it is still uploading — so a new profile is
+filed *beside* the old one and yesterday's numbers stay recallable. Delete the
+superseded drawer with `am_delete_drawer` after a real change, until the
+[backlog item](docs/adr/BACKLOG.md) that closes this lands.
+
+Pushing straight to a server takes `--as`, and the CLI refuses the push without
+it: the bundle carries no wing, and `/import` **skips** a record it cannot
+address while still answering 200. The push then reads the endpoint's summary
+rather than its status code, for the same reason — a storage failure is reported
+inside a 200 — and asks it to rebuild the derived graph on the way out.
 
 Implementation: [`internal/datasetdoc`](internal/datasetdoc/) (the profiler,
 the mapping file and the bundle) and `cmd/server/importdata.go` (the CLI).

@@ -26,7 +26,7 @@ A project's data arrives as JSONL — reference sets and seed data sitting in th
 
 So the gap is narrow and specific: **there is no producer that turns domain JSONL into the format the palace already imports.** Everything downstream of that format works today, on both surfaces.
 
-**Two facts about the existing format decide most of this design.** The bundle `Record` carries **no vector** — it is text only, and `internal/importer` embeds on the way in with a background worker draining the queue. So a producer cannot corrupt a palace by shipping vectors from a different embedding model, which is the failure the wing-bundle work already recorded as silent. And drawers are **idempotent by source**, so a stable `source_file` per dataset makes a re-import after the JSONL changes a replacement rather than a duplicate.
+**Two facts about the existing format decide most of this design.** The bundle `Record` carries **no vector** — it is text only, and `internal/importer` embeds on the way in with a background worker draining the queue. So a producer cannot corrupt a palace by shipping vectors from a different embedding model, which is the failure the wing-bundle work already recorded as silent. And a drawer's id is **deterministic** — `sha256(team, wing, room, source_file, chunk, content)` (`palace.DrawerID`) — so a stable `source_file` plus a body that is a pure function of the data makes a re-import over an unchanged file an upsert rather than a second copy. That is a narrower guarantee than "idempotent by source", and the difference is load-bearing: `Add`/`Mine` purge a source before rewriting it, the **import** path deliberately does not (a batched migration would delete the earlier batches of the source it is still uploading). So a dataset that has CHANGED files a new profile and leaves the previous one recallable. Review caught this claim stated as the stronger one; the weaker one is the true one, and the gap is receipted in `docs/adr/BACKLOG.md` §"From ADR-035" rather than assumed away.
 
 ## Existing Primitives Audit
 
@@ -35,7 +35,7 @@ So the gap is narrow and specific: **there is no producer that turns domain JSON
 | Bundle `Record` (no wing, no vector) | `internal/wingbundle/wingbundle.go` | Yes — emitted verbatim. No new format is defined. |
 | `POST /import` + bearer gate | `internal/importer` | Yes, unchanged. This is the SaaS path and it needs no server change. |
 | `wing import --file --as` | `cmd/server/wing.go` | Yes, unchanged. This is the self-hosted path. |
-| Idempotency by `source_file` | `internal/importer` | Yes — it is what makes a committed mapping file worth committing. |
+| Deterministic drawer ids | `palace.DrawerID`, via `internal/importer` | Yes, for what they actually promise: an unchanged file re-imports as an upsert, which is what makes a committed mapping file worth committing and a scheduled re-import safe. They do not replace a profile whose data changed — the import path absorbs and never purges by source. |
 | Background embed worker | `internal/importer:62-65` | Yes. The producer emits text; embedding stays where it is. |
 | `am_mine` | `internal/mcpserver/mine.go` | **No, deliberately.** Mining chunks one blob; this composes one deliberate drawer per dataset. Reusing it would put the profile at the mercy of chunk boundaries. |
 | TOML parsing | `github.com/pelletier/go-toml/v2`, already direct (`clients/claude-code/settings.go`) | Yes — no new module. |
@@ -71,7 +71,10 @@ No boundary moves. A new package produces `wingbundle.Record` values; `cmd/serve
 ## Wiring & Contract Changes
 
 - New subcommand `agentsmemory import`, registered in `cmd/server/main.go`'s command list.
-- New flags, each read or the flag gate fails: `--config`, `--out`, `--push`, `--token`.
+- New flags, each read or the flag gate fails: `--config`, `--out`, `--push`, `--token`, `--as`.
+- `--as` is **required with `--push`**, and `--push` without it is refused rather than attempted. A bundle carries no wing, `?as=` is where the destination is named, and `internal/importer` *skips* a record it cannot address instead of refusing it — so the unrefused combination uploads everything, stores nothing, and answers 200. Found by review; it is this repository's named defect (reachable, tested, does nothing) inside the commit whose gates exist to catch that class.
+- The push reads the endpoint's **summary**, not its status code. `POST /import` consumes the whole body before replying, so it reports a storage failure inside a 200 as `Result.Error` and counts an unaddressable record into `Skipped`; a client that stops at 2xx cannot tell a full import from an empty one. The push also sets `recompute=1`, because hallways and entity tunnels are derived from the drawers and a single-shot import that skips the rebuild leaves its memories outside the graph.
+- `--push` refuses a cleartext non-loopback endpoint: the workspace token travels with the bundle, and it is read/write access to the whole palace.
 - The mapping file format is operator-facing and therefore documented where an operator reads it, with a gate that the documented keys are the parsed ones.
 - `show_values` is part of that format, and therefore carries the same gate: it is documented in the README example, and a test asserts that no value of an unnamed field reaches the emitted drawer.
 
@@ -94,7 +97,7 @@ No boundary moves. A new package produces `wingbundle.Record` values; `cmd/serve
 
 An agent opening a project repository can ask the palace what a dataset is and get an answer that was true at import time, with the fields and value sets measured rather than remembered. The mapping file makes the import reproducible and reviewable in the same pull request as the data it describes.
 
-The cost is that the profile is a snapshot. It is stamped with the date it was taken and replaced wholesale on re-import, which is the same contract every other drawer has.
+The cost is that the profile is a snapshot. It carries the date it was taken as the record's `content_date` — not inside its text, because the text is what the drawer's id is hashed from, and a date in there would make every night's re-import a new memory instead of the same one. Re-importing an unchanged file is therefore a no-op however often it runs. Re-importing a CHANGED file is not a replacement: it files the new profile and leaves the old one recallable, because the import path absorbs without purging by source. Until that gap closes (backlog), a dataset re-imported after a real change wants the superseded drawer deleted by hand.
 
 ## Out of Scope
 
@@ -108,7 +111,8 @@ The cost is that the profile is a snapshot. It is stamped with the date it was t
 ## Risks
 
 - **A date range still discloses two real values.** `Earliest`/`Latest` are the minimum and maximum of a date column, and those are two actual cells from the file. It is the fact the profile most exists to carry — *why every seeded date falls in one quarter* — so it is reported unconditionally rather than gated behind `show_values`. The residual is stated rather than mitigated: a dataset whose date column is itself sensitive (a birth date, a diagnosis date) is a dataset to describe in prose and not to profile.
-- **The human half goes stale while the measured half does not.** A re-import refreshes the profile and carries the old prose forward unchanged, so a description can quietly outlive the data it describes. Mitigated only by the drawer naming its import date; genuinely fixing it needs a person to re-read, and no gate can do that.
+- **The human half goes stale while the measured half does not.** A re-import refreshes the profile and carries the old prose forward unchanged, so a description can quietly outlive the data it describes. Mitigated only by the drawer carrying its import date (`content_date`, returned beside the text on every recall); genuinely fixing it needs a person to re-read, and no gate can do that.
+- **A partial read looks like a small file.** A line over the 8 MiB cap ends the scan, and keeping the rows already read beats returning nothing because row 40,000 was oversized — but a row count that stopped at ten is indistinguishable from a file with ten rows. The profile therefore reports the truncation in as many words, and the counts below it are explicitly about the part that was reached.
 - **Low-cardinality detection is a heuristic.** A field with few distinct values in the seed data may have many in production, and the profile would state a value set that is really a fixture artefact. The profile therefore reports what it saw *in this file*, phrased as such, never as a domain constraint.
 - **A mapping file that lists a dataset which no longer exists** would silently describe nothing. The producer must fail on a missing file rather than skip it.
 
