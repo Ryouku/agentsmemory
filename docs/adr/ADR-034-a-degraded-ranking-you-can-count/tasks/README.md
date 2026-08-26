@@ -17,7 +17,7 @@ This README is a derived index — when it disagrees with a task file, the task 
 
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
-| T1 | applyRerankWith returns WHY it did not rerank | pending | — | `go test ./internal/palace/ -run 'TestTheReasonOnTheSpanIsTheReasonReturned'` + suite |
+| T1 | applyRerankWith returns WHY it did not rerank | done | — | `go test ./internal/palace/ -run 'TestTheReasonOnTheSpanIsTheReasonReturned'` + suite |
 | T2 | persist the reason and report it | pending | — | `go test ./internal/palace/ -run 'TestRecallStatsCountsWhyRerankingWasSkipped'` + `./internal/mcpserver/` + suite |
 
 Status: `pending` | `running` | `blocked` | `done` | `failed`.

@@ -18,7 +18,7 @@ recalls served a degraded ranking" becomes a query.
 | File | Change | Why |
 |------|--------|-----|
 | `db/migrations/00027_search_events_rerank_skip_reason.sql` | add | nullable TEXT column, with a `-- +goose Down` — additive, following migration `00026` |
-| `internal/palace/recallstats.go` | edit | `SearchEvent.RerankSkipReason` field; `WingRecall.RerankSkips` map; the aggregate that groups by reason |
+| `internal/palace/recallstats.go` | edit | `searchEventRow.RerankSkipReason` field (the row type is UNEXPORTED — this task file called it `SearchEvent`, which does not exist; scouted 2026-08-26); `WingRecall.RerankSkips` map; the aggregate that groups by reason |
 | `internal/palace/service.go` | edit | `recordSearch` writes the reason T1 returns — the line that SELECTS it |
 | `internal/mcpserver/admin.go` | edit | `am_recall_stats` result carries `rerank_skips` — the line that makes it DISCOVERABLE |
 | `internal/palace/recallstats_test.go` | edit | aggregate test |
@@ -30,7 +30,7 @@ recalls served a degraded ranking" becomes a query.
    per-reason counts, (b) `am_recall_stats`'s rendered result contains `rerank_skips`. Both RED —
    the column does not exist.
 2. Add migration `00027`.
-3. Add `RerankSkipReason` to `SearchEvent`; write it in `recordSearch` from T1's return.
+3. Add `RerankSkipReason` to `searchEventRow` (gorm column `rerank_skip_reason`); write it in `recordSearch` from T1's return, at the literal in `Search` that already sets `Reranked: boolToInt(reranked)` (`service.go:1194`).
 4. Add `RerankSkips` to `WingRecall` and the grouping aggregate, leaving ADR-031's
    `hits > 0 AND reranked = 1` aggregate untouched.
 5. Render `rerank_skips` in `am_recall_stats`.

@@ -1,6 +1,6 @@
 # ADR-034: Record WHY the cross-encoder did not order a page
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-26
 **Owner:** Zy
 **Spec:** None — no spec stage
@@ -103,7 +103,7 @@ surface in `internal/mcpserver`. No component changes owner and no boundary move
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
 | `search_events.rerank_skip_reason` (schema) | new nullable TEXT column, migration `00027` | `recordSearch` | `RecallStats`, `doctor` |
-| `palace.SearchEvent.RerankSkipReason` (struct field) | added | `Service.Search` | `recordSearch` |
+| `palace.searchEventRow.RerankSkipReason` (struct field, unexported) | added | `Service.Search` | `recordSearch` |
 | `applyRerankWith` return signature | returns `(ranked, ok, reason)` | `internal/palace/service.go` | `Search`, `RerankScoresFor` |
 | `palace.WingRecall.RerankSkips` (map reason→count) | added | `RecallStats` | `am_recall_stats` |
 | `am_recall_stats` tool result | new `rerank_skips` object | `internal/mcpserver/admin.go` | agents, operators |

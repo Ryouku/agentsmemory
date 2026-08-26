@@ -18,6 +18,7 @@ what the span already reports.
 | File | Change | Why |
 |------|--------|-----|
 | `internal/palace/service.go` | edit | `applyRerankWith` computes the reason for the span and discards it; return it. `applyRerank` and every call site updated — this is the line that SELECTS the new value, and without it the reason is computed and dropped exactly as today |
+| `internal/palace/service_test.go` | edit | four existing call sites of `applyRerankWith` take the new return |
 | `internal/palace/rerankreason_test.go` | add | the failing test, and the assertion that span and return agree |
 
 ## Ordered Steps
@@ -28,13 +29,19 @@ what the span already reports.
    does not compile until step 2, which is the strongest possible red.
 2. Change `applyRerankWith` to return the reason on every path: `no_reranker`, `empty`,
    `weight_zero`, `timeout`, `error`, `score_count`, and `""` when the cross-encoder ran.
-3. Update `applyRerank` and both call sites (`Search`, `RerankScoresFor`) to thread it.
+3. Update `applyRerank` to thread it, and `Search`'s single call site at `service.go:1306`.
+
+   **Scouted 2026-08-26, and this task file was wrong about it:** the production chain is
+   `Search -> applyRerank -> applyRerankWith`, ONE site. `RerankScoresFor` does NOT call
+   `applyRerankWith` — it calls `s.rerank.Rerank` directly and is untouched. Four test call sites
+   in `service_test.go` also take the new return. Fewer sites than assumed, so the Stop Condition
+   does not trip.
 4. Run the fence.
 
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestTheReasonOnTheSpanIsTheReasonReturned' -count=1 2>&1 | tee /tmp/acc34a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34a.out && go test ./internal/palace/ ./internal/mcpserver/ -count=1 2>&1 | tee /tmp/acc34b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34b.out
+go test ./internal/palace/ -run 'TestTheReasonOnTheSpanIsTheReasonReturned|TestWeightZeroReportsWeightZeroNotAnError|TestAServedRerankReturnsNoReason' -count=1 2>&1 | tee /tmp/acc34a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34a.out && go test ./internal/palace/ ./internal/mcpserver/ -count=1 2>&1 | tee /tmp/acc34b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34b.out
 ```
 
 The new test runs ALONE first, so the already-green palace suite in the second command cannot carry
@@ -63,9 +70,13 @@ that sentinel, so a stubbed fixture would pass green while production returned t
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+
+- 2026-08-26 · 4645635* · exit 0 · `go test ./internal/palace/ -run 'TestTheReasonOnTheSpanIsTheReasonReturned|TestWeightZeroReportsWeightZeroNotAnError|TestAServedRerankReturnsNoReason' -count=1 2>&1 | tee /tmp/acc34a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc34a.out && go test ./internal/palace/ ./internal/mcpserver/ -count=1 2>&1 | tee /tmp/acc34b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc34b.out` · acceptance-sha256:fab197129424ae3fc750a68ab5125e41f31b4b01f3c05f11fc77f0c8289941ef
 
 ## Mutation Log
+
+
+- 2026-08-26 · 4645635* · mutant killed · exit 1 · `internal/palace/service.go` · collapse the timeout/error distinction the span still reports, so span and return disagree · acceptance-sha256:fab197129424ae3fc750a68ab5125e41f31b4b01f3c05f11fc77f0c8289941ef
 
 ## Invariants
 
@@ -85,5 +96,6 @@ that sentinel, so a stubbed fixture would pass green while production returned t
 
 ## Stop Condition
 
-Stop and ask if `applyRerankWith` turns out to have call sites beyond `applyRerank`, `Search` and
-`RerankScoresFor` — the contract is wider than this task assumes.
+Stop and ask if `applyRerankWith` turns out to have production call sites beyond `applyRerank` —
+the contract is wider than this task assumes. Scouted before execution: it does not (see Ordered
+Steps 3).
