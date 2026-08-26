@@ -101,7 +101,19 @@ func jsonResult(v any) *mcp.CallToolResult {
 // chunk embedded and stored; the response reports the drawers created.
 func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("add_drawer",
-		mcp.WithDescription("File a verbatim memory (drawer) into a wing/room. Content over ~800 chars is chunked into multiple drawers; re-adding the same source is idempotent."),
+		// The chunk threshold is interpolated rather than written out, because this
+		// sentence shipped for months claiming ~800 — the frozen Python miner's
+		// figure, which chunk.go deliberately diverged from. Three independent
+		// sessions read the wrong number off this description before anyone read
+		// the constant. A description that restates a value is a second source of
+		// truth; deriving it means the drift cannot recur.
+		mcp.WithDescription(fmt.Sprintf(
+			"File a verbatim memory (drawer) into a wing/room. Content over %d runes is chunked into "+
+				"several drawers sharing a parent; re-adding the same source is idempotent. ⚠That "+
+				"threshold binds at CREATION and is one-way: a multi-chunk memory can never be edited "+
+				"in place or moved to another wing or room, because am_update_drawer refuses it. A "+
+				"memory created at or under %d runes stays ONE row and stays editable for life, so "+
+				"anything you intend to maintain must be filed under it.", palace.ChunkSize, palace.ChunkSize)),
 		mcp.WithString("wing", mcp.Description("Project namespace the memory belongs to. Optional when this MCP was registered for a project — then it defaults to that project's wing.")),
 		mcp.WithString("room", mcp.Required(), mcp.Description("Aspect within the wing, e.g. \"backend\" or \"decisions\".")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to remember — stored exactly, never summarised.")),
