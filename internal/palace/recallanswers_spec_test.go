@@ -1,10 +1,19 @@
 package palace
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/atvirokodosprendimai/agentsmemory/db"
+	"github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec"
+
+	glebarez "github.com/glebarez/sqlite"
+	"github.com/pressly/goose/v3"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // Spec: docs/specs/2026-08-26-a-recall-that-answers.md
@@ -167,7 +176,103 @@ func TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked(t *testing.T) {
 }
 
 func TestAFactLookupDistinguishesAbsenceFromFailure(t *testing.T) {
-	t.Fatal("F-12 not implemented: observed 2026-08-26 — am_kg_query returns count:0 with no error for a nonexistent entity AND a nonexistent predicate, so F-2's pointer cannot be trusted until absence and failure differ")
+	ctx := context.Background()
+	const team = "t-f12"
+	svc := newTestService(t)
+
+	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Acme", "2024-01-01", "", "", "", ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// The three renderable states are exhaustive and mutually exclusive. Measured
+	// 2026-08-26 the last two were indistinguishable: a nonexistent entity and a
+	// nonexistent predicate both returned count:0 with no error, exactly like a
+	// real empty answer.
+	for _, tc := range []struct {
+		name       string
+		in         KGQueryInput
+		want       KGResolution
+		unresolved string
+	}{
+		{"a known entity with facts", KGQueryInput{Entity: "Alice", Direction: "both"}, KGResolutionMatched, ""},
+		{"a known entity with no facts this direction", KGQueryInput{Entity: "Acme", Direction: "outgoing"}, KGResolutionKnownTermNoFact, ""},
+		{"an entity the graph never heard of", KGQueryInput{Entity: "Nobody", Direction: "both"}, KGResolutionUnknownTerm, "entity"},
+		{"a predicate the graph never heard of", KGQueryInput{Predicate: "never_used"}, KGResolutionUnknownTerm, "predicate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := svc.KGQuery(ctx, team, tc.in)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			if res.Resolution != tc.want {
+				t.Errorf("resolution = %q, want %q (facts=%d)", res.Resolution, tc.want, len(res.Facts))
+			}
+			if res.Unresolved != tc.unresolved {
+				t.Errorf("unresolved = %q, want %q", res.Unresolved, tc.unresolved)
+			}
+		})
+	}
+
+	// The states must be DISTINCT, not merely present: three assertions that all
+	// pass because every state carries the same value would satisfy the table.
+	t.Run("the states are distinct", func(t *testing.T) {
+		seen := map[KGResolution]bool{}
+		for _, in := range []KGQueryInput{
+			{Entity: "Alice", Direction: "both"},
+			{Entity: "Acme", Direction: "outgoing"},
+			{Entity: "Nobody", Direction: "both"},
+		} {
+			res, err := svc.KGQuery(ctx, team, in)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			seen[res.Resolution] = true
+		}
+		if len(seen) != 3 {
+			t.Errorf("three different lookups produced %d distinct states, want 3: %v", len(seen), seen)
+		}
+	})
+
+	// A backend failure must not FAIL OPEN into any of the three. It is returned
+	// out of band as an error — a lookup that could not run has no result to
+	// carry a state on — and the danger is precisely that it arrives looking like
+	// a confident empty answer. Injected rather than assumed.
+	t.Run("an injected backend failure is not one of the three", func(t *testing.T) {
+		broken, kill := brokenBackendService(t)
+		kill()
+		res, err := broken.KGQuery(ctx, team, KGQueryInput{Entity: "Alice", Direction: "both"})
+		if err == nil {
+			t.Fatal("a dead backend returned no error; absence and failure are indistinguishable again")
+		}
+		if res.Resolution != "" {
+			t.Errorf("a failed lookup carried resolution %q; failure must not present as one of the three states", res.Resolution)
+		}
+	})
+}
+
+// brokenBackendService builds a migrated service and hands back the closer that
+// kills its store, so a test can INJECT a backend failure rather than assume
+// errors propagate. Assuming is how a fail-open survives: the code that would
+// have caught it is the code being tested.
+func brokenBackendService(t *testing.T) (*Service, func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "broken.db")
+	gdb, err := gorm.Open(glebarez.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatalf("sql handle: %v", err)
+	}
+	goose.SetBaseFS(db.Migrations)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("dialect: %v", err)
+	}
+	if err := goose.Up(sqlDB, "migrations"); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return NewService(NewRepo(gdb), fakeEmbedder{}, sqlitevec.New(gdb), fakeDim), func() { _ = sqlDB.Close() }
 }
 
 // UC-6 — the bootstrap. One call replaces a client-side protocol that currently

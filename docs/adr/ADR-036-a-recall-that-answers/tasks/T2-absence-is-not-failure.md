@@ -70,9 +70,24 @@ ancestors' 0 still run, so a regression in what T2 was built on is still caught.
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · d9af496 · exit 1 · `set -o pipefail …` · acceptance-sha256:bb1c80b4ed2fcbcfb4673cd182997ba6deaaa227f4e6d36b142647d62125a825
+  ```
+  --- FAIL: TestAFactLookupDistinguishesAbsenceFromFailure (0.00s)
+      recallanswers_spec_test.go:170: F-12 not implemented: observed 2026-08-26 — am_kg_query returns count:0 with no error for a nonexistent entity AND a nonexistent predicate, so F-2's pointer cannot be trusted until absence and failure differ
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.023s
+  --- FAIL: TestKGQueryResultRendersResolutionState (0.00s)
+      recallanswers_reach_test.go:23: ADR-036 T2 not implemented: am_kg_query's rendered result distinguishes an unresolved entity or predicate from a real empty match
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.022s
+  FAIL
+  ```
+- 2026-08-26 · d9af496* · exit 0 · `set -o pipefail …` · acceptance-sha256:bb1c80b4ed2fcbcfb4673cd182997ba6deaaa227f4e6d36b142647d62125a825
 
 ## Mutation Log
+
+- 2026-08-26 · d9af496* · mutant killed · exit 1 · `internal/palace/kg.go` · collapse unknown_term into known_term_no_facts for an entity — the exact fail-open measured 2026-08-26 · acceptance-sha256:bb1c80b4ed2fcbcfb4673cd182997ba6deaaa227f4e6d36b142647d62125a825
+- 2026-08-26 · d9af496* · mutant killed · exit 1 · `internal/mcpserver/kg.go` · render the state under a name no agent looks for; the palace test stays green and only the rung-3 render check sees it · acceptance-sha256:bb1c80b4ed2fcbcfb4673cd182997ba6deaaa227f4e6d36b142647d62125a825
 
 ## Invariants
 

@@ -134,6 +134,20 @@ func registerKGQuery(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 		}
 		out := map[string]any{
 			"facts": res.Facts, "count": len(res.Facts), "status": res.Status,
+			// resolution is what separates "nothing is filed about this" from
+			// "you asked about something this graph has never heard of". Both
+			// used to arrive as count:0 with no error, so a caller could not act
+			// on the difference and a pointer built on the second pointed nowhere.
+			// It is rendered here, not merely set on the Go struct: a field no
+			// handler emits is invisible to every agent, and no behavioural test
+			// can see that.
+			"resolution": string(res.Resolution),
+		}
+		// Named only when something actually failed to resolve, so the key's
+		// presence is itself the signal rather than an empty string every caller
+		// has to compare against.
+		if res.Unresolved != "" {
+			out["unresolved"] = res.Unresolved
 		}
 		// Each entry point is echoed only when it was used, so the response says
 		// which question was asked rather than carrying an empty key for the one

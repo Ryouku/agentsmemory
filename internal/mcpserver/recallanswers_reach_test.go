@@ -1,6 +1,12 @@
 package mcpserver
 
-import "testing"
+import (
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+)
 
 // Rung-3 proofs for ADR-036.
 //
@@ -20,7 +26,54 @@ import "testing"
 // struct. A field a handler sets and no renderer emits is invisible to every
 // agent, and no behavioural test can see that.
 func TestKGQueryResultRendersResolutionState(t *testing.T) {
-	t.Fatal("ADR-036 T2 not implemented: am_kg_query's rendered result distinguishes an unresolved entity or predicate from a real empty match")
+	// A SOURCE check, deliberately. Rung 3 asks whether the intended caller can
+	// DISCOVER the field, and only a source or schema check can answer that: a
+	// behavioural test that reads the value passes whether or not the handler
+	// emits it, because the test can reach the struct directly. That is exactly
+	// what a caller which was never wired also does.
+	keys := renderedKeysOf(t, "kg.go", "kg_query")
+	for _, want := range []string{"resolution", "unresolved"} {
+		if !keys[want] {
+			t.Errorf("am_kg_query's rendered result has no %q key; the state is set on the Go struct and never reaches an agent", want)
+		}
+	}
+}
+
+// renderedKeysOf parses an mcpserver file and returns the string keys assigned
+// into map[string]any results within the named tool's handler region.
+//
+// It is deliberately loose about WHERE in the handler a key is set — some are set
+// in the literal and some conditionally afterwards — because the question is only
+// "does this key ever reach the wire", and tightening it to the literal alone
+// would report a conditionally-added key as missing.
+func renderedKeysOf(t *testing.T, file, tool string) map[string]bool {
+	t.Helper()
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	body := string(src)
+	i := strings.Index(body, strconv.Quote(tool))
+	if i < 0 {
+		t.Fatalf("%s: tool %q not found — this check has stopped checking anything", file, tool)
+	}
+	// Bound the region at the next tool registration so keys from a neighbouring
+	// handler cannot satisfy this one.
+	rest := body[i+len(tool):]
+	if j := strings.Index(rest, "newTool("); j >= 0 {
+		rest = rest[:j]
+	}
+	keys := map[string]bool{}
+	for _, m := range regexp.MustCompile(`"([a-z_]+)":`).FindAllStringSubmatch(rest, -1) {
+		keys[m[1]] = true
+	}
+	for _, m := range regexp.MustCompile(`out\["([a-z_]+)"\]`).FindAllStringSubmatch(rest, -1) {
+		keys[m[1]] = true
+	}
+	if len(keys) == 0 {
+		t.Fatalf("%s: no rendered keys found for %q", file, tool)
+	}
+	return keys
 }
 
 // TestSearchResultRendersFactsAndTheSiblingPointer is ADR-036 T3's rung-3 proof.

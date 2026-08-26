@@ -441,6 +441,33 @@ type KGQueryInput struct {
 	Status    string
 }
 
+// KGResolution says which of three things a successful lookup found. The three
+// are exhaustive and mutually exclusive BY STAGE, which "absence versus failure"
+// was not: that phrase is two words for four things, and two of them overlap.
+//
+// Stage A resolves the term: it is either known to the graph or it is not.
+// Stage B, reached only when the term is known, either matches triples or does
+// not. So:
+//
+//	matched               the term is known and triples matched
+//	known_term_no_facts   the term is known and nothing matched
+//	unknown_term          the term is not in the graph at all
+//
+// A backend failure is deliberately NOT a fourth value. It is returned as an
+// error, out of band, exactly as this package already does — a failed lookup has
+// no result to carry a state on. What matters is that it never FAILS OPEN into
+// one of the three: measured 2026-08-26, a nonexistent entity and a nonexistent
+// predicate both returned count:0 with no error, which is indistinguishable from
+// a real empty answer and is what made a sibling-wing pointer untrustworthy.
+type KGResolution string
+
+// The three resolution states. See KGResolution for why there is no fourth.
+const (
+	KGResolutionMatched         KGResolution = "matched"
+	KGResolutionKnownTermNoFact KGResolution = "known_term_no_facts"
+	KGResolutionUnknownTerm     KGResolution = "unknown_term"
+)
+
 // KGQueryResult is a graph query's answer together with what it did not return.
 //
 // Withheld is the count the status filter removed, taken from the store rather
@@ -456,6 +483,15 @@ type KGQueryResult struct {
 	Status         string
 	Withheld       int64
 	WithheldStatus string
+	// Resolution distinguishes a real empty answer from a term the graph has
+	// never heard of. Without it a caller cannot tell "nothing is filed about
+	// this" from "you asked about something that does not exist here", and a
+	// pointer built on the second is a pointer to nowhere.
+	Resolution KGResolution
+	// Unresolved names WHICH entry point did not resolve — "entity" or
+	// "predicate" — when Resolution is unknown_term. A query may give both, and
+	// "something you named is unknown" is not actionable without knowing which.
+	Unresolved string
 }
 
 // KGFact is one fact a query/timeline returns, with display names resolved and the
@@ -710,6 +746,9 @@ func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (
 			}
 			out.Withheld += n
 		}
+		if out.Resolution, out.Unresolved, err = s.classifyKGResult(ctx, teamID, out, "", "", pred); err != nil {
+			return KGQueryResult{}, err
+		}
 		return out, nil
 	}
 
@@ -760,7 +799,49 @@ func (s *Service) KGQuery(ctx context.Context, teamID string, in KGQueryInput) (
 			out.Withheld += n
 		}
 	}
+	if out.Resolution, out.Unresolved, err = s.classifyKGResult(ctx, teamID, out, eid, ent, pred); err != nil {
+		return KGQueryResult{}, err
+	}
 	return out, nil
+}
+
+// classifyKGResult sets the resolution state for a completed lookup.
+func (s *Service) classifyKGResult(ctx context.Context, teamID string, out KGQueryResult, eid, ent, pred string) (KGResolution, string, error) {
+	if len(out.Facts) > 0 {
+		return KGResolutionMatched, "", nil
+	}
+	return s.resolveKGTerms(ctx, teamID, eid, ent, pred)
+}
+
+// resolveKGTerms classifies a lookup that returned no facts: is the term known to
+// the graph, or has the graph never heard of it?
+//
+// It runs ONLY when nothing matched. The classification costs a query, and when
+// facts came back the answer is already known — spending it on every call would
+// make the common path pay for the rare one.
+func (s *Service) resolveKGTerms(ctx context.Context, teamID, eid, ent, pred string) (KGResolution, string, error) {
+	if ent != "" {
+		names, err := s.repo.KGEntityNames(ctx, teamID, []string{eid})
+		if err != nil {
+			return "", "", err
+		}
+		if names[eid] == "" {
+			return KGResolutionUnknownTerm, "entity", nil
+		}
+	}
+	if pred != "" {
+		// A predicate is known when ANY triple uses it, in any status. Asking
+		// under the caller's own status filter would report a predicate whose
+		// every fact has ended as unknown, which is a different thing entirely.
+		rows, err := s.repo.KGTriplesByPredicate(ctx, teamID, pred, KGStatusAll)
+		if err != nil {
+			return "", "", err
+		}
+		if len(rows) == 0 {
+			return KGResolutionUnknownTerm, "predicate", nil
+		}
+	}
+	return KGResolutionKnownTermNoFact, "", nil
 }
 
 // KGStats summarizes the team's graph: entity and triple totals, current vs

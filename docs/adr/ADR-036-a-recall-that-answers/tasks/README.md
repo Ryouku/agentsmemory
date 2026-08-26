@@ -38,7 +38,7 @@ here claims live-corpus coverage it does not deliver.
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
 | T1 | The instrument: a fact answerable-rate with a 0% baseline | done | F-5, F-6 | 3 tests (2 palace + privacy gate) + suite |
-| T2 | A lookup that distinguishes four outcomes, not two | pending | F-12 | 2 tests (palace + mcpserver) + suite |
+| T2 | A lookup that distinguishes four outcomes, not two | done | F-12 | 2 tests (palace + mcpserver) + suite |
 | T6 | Every new drawer is REACHABLE, and derived edges say so | pending | F-11, UC5-S1, UC5-S2 | 2 tests (palace + mcpserver) + suite |
 | T3 | Facts reach the page, wing-resolved, in three states | pending | F-1, F-2, F-8, F-9, F-18, UC1-S1, UC2-S1, UC2-S2 | 7 tests (6 palace + mcpserver) + suite |
 | T7 | A wing reports its own entry point, resolved directly | pending | F-10, UC4-S1, UC4-S2 | 2 tests (palace + catalogue) + suite |
