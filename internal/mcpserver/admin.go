@@ -149,10 +149,15 @@ func registerRecallStats(reg *registrar, drawers *palace.Service, usageSvc *usag
 				// not-measured zeros.
 				"avg_top_rerank_score": w.AvgTopRerank,
 				"reranked":             w.Reranked,
-				// WHY the cross-encoder did not order a page, per reason. Omitted
-				// when there is nothing to report, so an always-present empty object
-				// does not read as "measured, and it was fine". `reranked` alone is 0
-				// for a disabled reranker and one failing on every query.
+				// WHY the cross-encoder did not order a page, per reason. `reranked`
+				// alone is 0 for a disabled reranker and for one failing on every
+				// query, which is what this separates.
+				//
+				// Renders as null, not {}, when nothing was skipped in the window —
+				// a nil map, verified against the live server 2026-08-26. That is the
+				// honest encoding: null reads as "no skips recorded", and `searches`
+				// and `reranked` beside it say whether that is because the window was
+				// healthy or because it was empty.
 				"rerank_skips": w.RerankSkips,
 				"drawers":      w.Drawers,
 				"last_used":    w.LastUsed,
