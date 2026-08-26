@@ -1129,6 +1129,34 @@ which reads thirty as a finding count. It is not.
   slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
   served retrieve floor — which is the item above, so this blocks it.**
 
+## From ADR-034
+
+Deferred by `docs/adr/ADR-034-a-degraded-ranking-you-can-count.md`, written here in the same commit
+as the deferral so the pointer has a receiving end.
+
+- **The `RERANK_POOL` / `RERANK_TIMEOUT` defaults.** Measured 2026-08-26 on a CPU cross-encoder over
+  the 54-case real corpus: 60 rerank calls at pool 20 took mean 11.4s (min 7.3s, max 18.2s), and a
+  second run the same day averaged ~17s with calls to 19.7s, against a shipped `RERANK_TIMEOUT` of
+  10s. Pool 20 is one batch (`maxBatch` 32), so that is the cost of scoring 20 documents, not
+  batching overhead. **The shipped default is pool 10 and has never been measured on this hardware**,
+  so none of the above is a verdict on it and the default is deliberately unchanged.
+  **HALF RECEIVED 2026-08-26 — pool 10 is measured and the default is safe.** 12 real recalls
+  through the live server on an idle CPU cross-encoder: mean 4.3s, min 3.3s, max 5.5s, none past
+  the 10s budget — about 2.3x headroom. Scaling to pool 20 costs 2.7x the time for 2x the
+  documents, so cost is superlinear in pool and a per-doc model understates the risk of raising
+  it. Recorded in the `RERANK_POOL` comment in `docker-compose.full.yml`.
+
+  Two figures stated earlier that day were wrong, both from n=1 and both flattering the default:
+  a single 2721ms sample (the mean is 4332ms, so headroom is 2.3x not 3.7x) and an inferred 4.3x
+  scaling (measured 2.7x).
+
+  **Still open: the first non-zero `timeout` count from ADR-034's column** — the lagging
+  indicator, which needs real traffic rather than a bench.
+
+- **A runtime warning when a rerank call approaches its budget.** A leading indicator rather than a
+  lagging one, and cheap. It needs a threshold, and nobody can name a defensible threshold until the
+  fail-open rate is known. **Trigger: ADR-034's `rerank_skip_reason` column having a week of real
+  data.**
 ## From ADR-035 (a dataset you can recall)
 
 - **Row-level import for small reference sets, under a stated ceiling.** ADR-035 refuses rows on

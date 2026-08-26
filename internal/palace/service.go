@@ -1252,7 +1252,7 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		return SearchResult{}, err
 	}
 	q.Limit = limit
-	results, reranked, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows, stale)
+	results, reranked, skipReason, err := s.rankRetrieved(searchCtx, teamID, query, q, vec, hits, rows, stale)
 	if err != nil {
 		parent.End(telemetry.FailedClosed)
 		return SearchResult{}, err
@@ -1291,6 +1291,10 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		// cross-encoder pass that never ran. ADR-001 calibrates its abstention
 		// threshold from these rows.
 		Candidates: len(hits), Hits: len(results), Reranked: boolToInt(reranked),
+		// WHY it was not reranked, beside WHETHER it was. This is the line that
+		// SELECTS the value T1 returns: without it the reason is computed, put on
+		// the span, and never reaches a row anyone can aggregate.
+		RerankSkipReason: skipReason,
 	}
 	if len(results) > 0 {
 		ev.TopScore = results[0].Score
@@ -1322,7 +1326,13 @@ func (s *Service) Search(ctx context.Context, teamID string, q SearchQuery) ([]S
 // rankRetrieved is the one ranking pipeline. Search retrieves then calls it.
 // Eval arms that reconstruct a served configuration call it on a Clone rather
 // than reimplementing fusion, closet boost, recency, rerank, or collapse.
-func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer, stale bool) ([]SearchHit, bool, error) {
+// The third return says WHETHER a cross-encoder ordered the page and the fourth
+// says WHY it did not — empty when it did. Both travel to recordSearch, because
+// `reranked` alone is 0 for a disabled reranker and a failing one alike.
+//
+// stale marks a page served while the search index was behind its source of
+// truth (ADR-033), and rides onto every hit.
+func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q SearchQuery, vec []float32, hits []store.Hit, rows map[string]Drawer, stale bool) ([]SearchHit, bool, string, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = DefaultSearchLimit
@@ -1362,7 +1372,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		collapsed, err := s.collapseCandidatesToMemories(ctx, teamID, q, survivors)
 		if err != nil {
 			collapseSpan.End(telemetry.FailedClosed, telemetry.AttrReason(telemetry.ReasonError))
-			return nil, false, err
+			return nil, false, "", err
 		}
 		collapseSpan.End(telemetry.Ran, attribute.Int("am.count", len(collapsed)))
 		survivors = collapsed
@@ -1402,7 +1412,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 	// score is the better judge of VOCABULARY, and a query naming an identifier
 	// leans on exactly that. So the two are blended rather than one replacing the
 	// other, and both are reported.
-	ranked, reranked := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
+	ranked, reranked, skipReason := s.applyRerank(ctx, q.rerankQuery(query), query, vec, survivors, ranked)
 
 	// A page is a page of MEMORIES. Chunks of one memory are similar to the same
 	// query, so without this they cluster and crowd each other out: measured on a
@@ -1444,7 +1454,7 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		results = append(results, hit)
 	}
 
-	return results, reranked, nil
+	return results, reranked, skipReason, nil
 }
 
 // candidateKFor is how many vector neighbours a search fetches.
@@ -1496,7 +1506,7 @@ func boolToInt(b bool) int {
 // hybrid order. That mirrors the closet boost's rule that a ranking input is a
 // signal, never a gate — a reranker that is down or slow must degrade recall,
 // never break it.
-func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool) {
+func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore) ([]HybridScore, bool, string) {
 	return s.applyRerankWith(ctx, rerankQuery, evidenceQuery, queryVector, survivors, ranked, s.rerankWeight)
 }
 
@@ -1507,18 +1517,22 @@ func (s *Service) applyRerank(ctx context.Context, rerankQuery, evidenceQuery st
 // the document together, which the embedder never did, and the fused score
 // carries the lexical evidence, which a cross-encoder logit does not
 // distinguish. Blending keeps both; handing over discards one.
-func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool) {
+// The third return is WHY the cross-encoder did not order the page — one of
+// telemetry's reason constants, or "" when it did. It is the same value the span
+// carries, computed once and handed to both, because a trace and a durable row
+// disagreeing about one recall is the defect ADR-034 exists to prevent.
+func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuery string, queryVector []float32, survivors []SearchHit, ranked []HybridScore, weight float64) ([]HybridScore, bool, string) {
 	rerankCtx, sp := telemetry.Start(ctx, telemetry.StageRerank, attribute.Float64("am.weight", weight))
 	switch {
 	case s.rerank == nil:
 		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonNoReranker))
-		return ranked, false
+		return ranked, false, telemetry.ReasonNoReranker
 	case len(ranked) == 0:
 		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonEmpty))
-		return ranked, false
+		return ranked, false, telemetry.ReasonEmpty
 	case weight <= 0:
 		sp.End(telemetry.Bypassed, telemetry.AttrReason(telemetry.ReasonWeightZero))
-		return ranked, false
+		return ranked, false, telemetry.ReasonWeightZero
 	}
 	pool := min(s.rerankPool, len(ranked))
 	docs := make([]string, pool)
@@ -1563,15 +1577,17 @@ func (s *Service) applyRerankWith(ctx context.Context, rerankQuery, evidenceQuer
 		}
 		slog.Warn("rerank failed, falling back to hybrid order", "error", err, "candidates", pool, "reason", reason)
 		sp.End(telemetry.FailedOpen, telemetry.AttrReason(reason), attribute.Int("am.pool", pool))
-		return ranked, false
+		return ranked, false, reason
 	}
 	if len(scores) != pool {
 		slog.Warn("rerank returned the wrong number of scores", "want", pool, "got", len(scores))
 		sp.End(telemetry.FailedOpen, telemetry.AttrReason(telemetry.ReasonScoreCount), attribute.Int("am.pool", pool), attribute.Int("am.got", len(scores)))
-		return ranked, false
+		return ranked, false, telemetry.ReasonScoreCount
 	}
 	sp.End(telemetry.Ran, attribute.Int("am.pool", pool))
-	return BlendRerankWith(ranked, scores, weight, s.RerankNormName()), true
+	// Empty, not a "ran" sentinel: the column T2 fills must stay empty on the rows
+	// where nothing was skipped, or it measures nothing.
+	return BlendRerankWith(ranked, scores, weight, s.RerankNormName()), true, ""
 }
 
 // RerankBudget reports the ceiling the configured reranker enforces on a
