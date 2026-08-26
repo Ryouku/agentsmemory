@@ -27,7 +27,7 @@ point would index 2.9% of the corpus (57 of 1,985 drawers carry any edge, measur
 | T1 | The instrument: a fact answerable-rate with a 0% baseline | pending | F-5, F-6 | `go test ./internal/palace/ -run 'TestFactAnswerableRateIsMeasured\|TestFactsOnThePageAreScoredByMRR'` + suite |
 | T2 | A lookup that distinguishes absence from failure | pending | F-12 | `go test ./internal/palace/ -run 'TestAFactLookupDistinguishesAbsenceFromFailure'` + suite |
 | T6 | Every drawer carries an edge, and derived ones say so | pending | F-11, UC5-S1, UC5-S2 | `go test ./internal/palace/ -run 'TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked'` + suite |
-| T3 | Facts reach the page, wing-resolved, as a pointer never a crossing | pending | F-1, F-2, F-8, F-9, UC1-S1, UC2-S1, UC2-S2 | `go test ./internal/palace/ -run 'TestAWingScopedRecallNeverReturnsAnotherWingsFact\|TestARecallNamesTheWingsThatHoldTheAnswer\|TestAFactsWingComesFromItsProvenance\|TestReturningFactsDoesNotChangeDrawerRanking'` + suite |
+| T3 | Facts reach the page, wing-resolved, as a pointer never a crossing | pending | F-1, F-2, F-8, F-9, UC1-S1, UC2-S1, UC2-S2 | `go test ./internal/palace/ -run 'TestAQuestionReachesTheFactThatAnswersIt\|TestAWingScopedRecallNeverReturnsAnotherWingsFact\|TestARecallNamesTheWingsThatHoldTheAnswer\|TestAFactsWingComesFromItsProvenance\|TestReturningFactsDoesNotChangeDrawerRanking'` + suite |
 | T7 | A wing reports its own entry point, resolved directly | pending | F-10, F-17, UC4-S1, UC4-S2 | `go test ./internal/palace/ -run 'TestAWingReportsItsOwnEntryPoint\|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk'` + suite |
 | T4 | Both entity vocabularies, and an ended fact is never current | pending | F-4, F-7, UC1-S2 | `go test ./internal/palace/ -run 'TestFactLookupMatchesBothEntityVocabularies\|TestAnEndedFactIsNeverPresentedAsCurrent'` + suite |
 | T5 | A corrected record arrives carrying its correction | pending | F-3, UC3-S1, UC3-S2 | `go test ./internal/palace/ -run 'TestACorrectedRecordArrivesCarryingItsCorrection'` + suite |
@@ -35,16 +35,16 @@ point would index 2.9% of the corpus (57 of 1,985 drawers carry any edge, measur
 
 Status: `pending` | `running` | `blocked` | `done` | `failed`.
 
-**Every Acceptance fence carries a `-skip` list, and that is load-bearing.** All 17 spec stubs are
-committed failing (17 `--- FAIL` lines in `./internal/palace`, verified 2026-08-26), so an unskipped
+**Every Acceptance fence carries a `-skip` list, and that is load-bearing.** All 18 spec stubs are
+committed failing (18 `--- FAIL` lines in `./internal/palace`, verified 2026-08-26), so an unskipped
 `go test ./...` stays red until the last task lands — every earlier task would be structurally unable
 to record an exit-0 `adr-verify` entry, and `adr-lint` refuses `done` without one. A fence that
 cannot pass blocks its wave as surely as one that cannot fail. Each list skips exactly the stubs
 owned by tasks this one does not depend on, so a fence still runs its ancestors' tests and catches a
-regression in what it was built on: T1 runs 2 · T2 1 · T6 1 · T7 3 · T3 7 · T5 8 · T4 9 · T8 14.
+regression in what it was built on: T1 runs 2 · T2 1 · T6 1 · T7 3 · T3 8 · T5 9 · T4 10 · T8 15.
 
 Proven two-sided 2026-08-26: T1's fence exits 1 today, and exits 0 with only T1's two stubs
-neutralised, while T3's fence still exits 1 in that same state. **No single fence runs all 17** — T8
+neutralised, while T3's fence still exits 1 in that same state. **No single fence runs all 18** — T8
 skips T4's and T5's three, because wave 3 is parallel and neither is guaranteed done when T8 runs.
 The full suite green is proven by CI on the merged branch, not by any one task's gate.
 

@@ -31,17 +31,17 @@ A filed drawer is reachable by traversal, and a server-derived edge is distingui
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked' -count=1 2>&1 | tee /tmp/acc36t6.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t6.out && go test ./... -count=1 -skip 'TestFactAnswerableRateIsMeasured|TestFactsOnThePageAreScoredByMRR|TestAFactLookupDistinguishesAbsenceFromFailure|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking|TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t6b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t6b.out
+go test ./internal/palace/ -run 'TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked' -count=1 2>&1 | tee /tmp/acc36t6.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t6.out && go test ./... -count=1 -skip 'TestFactAnswerableRateIsMeasured|TestFactsOnThePageAreScoredByMRR|TestAFactLookupDistinguishesAbsenceFromFailure|TestAQuestionReachesTheFactThatAnswersIt|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking|TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t6b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t6b.out
 ```
 
 The new tests run ALONE first, so the already-green suite in the second command cannot carry the
 verdict by itself. The fence ends with the whole repo because a task-scoped fence passes while a
 repo-wide gate fails — measured on this corpus 2026-08-25.
 
-The `-skip` list is what makes that second command SATISFIABLE. All 17 ADR-036 stubs are committed
+The `-skip` list is what makes that second command SATISFIABLE. All 18 ADR-036 stubs are committed
 failing, so an unskipped `go test ./...` stays red until the last task lands — every earlier task
 would be unable to record an exit-0 run, and a fence that cannot pass blocks its wave as effectively
-as one that cannot fail. Verified 2026-08-26: 17 `--- FAIL` lines in `./internal/palace` before any
+as one that cannot fail. Verified 2026-08-26: 18 `--- FAIL` lines in `./internal/palace` before any
 of this ADR is built. The list skips exactly the stubs owned by tasks this one does NOT depend on;
 T6's own 1 and its ancestors' 0 still run, so the fence still
 catches a regression in anything T6 was built on top of.

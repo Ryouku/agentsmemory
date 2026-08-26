@@ -32,25 +32,26 @@ A question reaches a fact in its own wing, and learns that matches exist in wing
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking' -count=1 2>&1 | tee /tmp/acc36t3.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t3.out && go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t3b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t3b.out
+go test ./internal/palace/ -run 'TestAQuestionReachesTheFactThatAnswersIt|TestAWingScopedRecallNeverReturnsAnotherWingsFact|TestARecallNamesTheWingsThatHoldTheAnswer|TestAFactsWingComesFromItsProvenance|TestReturningFactsDoesNotChangeDrawerRanking' -count=1 2>&1 | tee /tmp/acc36t3.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc36t3.out && go test ./... -count=1 -skip 'TestFactLookupMatchesBothEntityVocabularies|TestAnEndedFactIsNeverPresentedAsCurrent|TestACorrectedRecordArrivesCarryingItsCorrection|TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked|TestAWingReportsItsOwnEntryPoint|TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk|TestOneCallBootstrapsAWing|TestATruncatedBootstrapSaysWhatItDropped|TestCorrectionsAreSweptServerSideAcrossAllThreePredicates|TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces' 2>&1 | tee /tmp/acc36t3b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc36t3b.out
 ```
 
 The new tests run ALONE first, so the already-green suite in the second command cannot carry the
 verdict by itself. The fence ends with the whole repo because a task-scoped fence passes while a
 repo-wide gate fails — measured on this corpus 2026-08-25.
 
-The `-skip` list is what makes that second command SATISFIABLE. All 17 ADR-036 stubs are committed
+The `-skip` list is what makes that second command SATISFIABLE. All 18 ADR-036 stubs are committed
 failing, so an unskipped `go test ./...` stays red until the last task lands — every earlier task
 would be unable to record an exit-0 run, and a fence that cannot pass blocks its wave as effectively
-as one that cannot fail. Verified 2026-08-26: 17 `--- FAIL` lines in `./internal/palace` before any
+as one that cannot fail. Verified 2026-08-26: 18 `--- FAIL` lines in `./internal/palace` before any
 of this ADR is built. The list skips exactly the stubs owned by tasks this one does NOT depend on;
-T3's own 4 and its ancestors' 3 still run, so the fence still
+T3's own 5 and its ancestors' 3 still run, so the fence still
 catches a regression in anything T3 was built on top of.
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
+| `TestAQuestionReachesTheFactThatAnswersIt` | `internal/palace/recallanswers_spec_test.go` | a question not naming the entity returns the in-wing fact in a distinct block — the POSITIVE assertion UC1-S1 lacked | UC1-S1 |
 | `TestAWingScopedRecallNeverReturnsAnotherWingsFact` | `internal/palace/recallanswers_spec_test.go` | no foreign wing's subject, predicate or object appears anywhere in the response | F-1 |
 | `TestARecallNamesTheWingsThatHoldTheAnswer` | `internal/palace/recallanswers_spec_test.go` | sibling wings holding matches are named and said to be queryable | F-2 |
 | `TestAFactsWingComesFromItsProvenance` | `internal/palace/recallanswers_spec_test.go` | wing derives from `source_drawer_id`; unresolvable means elsewhere | F-8 |
@@ -60,7 +61,7 @@ catches a regression in anything T3 was built on top of.
 
 | Rung | How this task shows it |
 |------|------------------------|
-| 1 — exists | the four tests |
+| 1 — exists | the five tests |
 | 2 — something selects it | the `Search` call site building the block; mutation: drop it and the fact block disappears |
 | 3 — the caller can discover it | the fields appear in the rendered tool result, not only on the Go struct |
 | 4 — it is used | T1's answerable-rate, whose baseline is 0% by construction |

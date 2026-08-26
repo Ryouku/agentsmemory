@@ -79,3 +79,12 @@ func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {
 	t.Fatal("F-17 not implemented: am_traverse's max_hops is provably inert (via is an intersection carried forward, so hop>=2 adds nothing), so a bootstrap built on multi-hop traversal would silently return only hop 1")
 }
+
+// TestAQuestionReachesTheFactThatAnswersIt binds UC1-S1, the happy path of
+// reaching a fact by question. It exists because the scenario was bound to
+// TestAWingScopedRecallNeverReturnsAnotherWingsFact, whose assertion is
+// satisfied by returning no facts at all — an unfalsifiable gate on the one
+// path that has to prove a question ARRIVES somewhere.
+func TestAQuestionReachesTheFactThatAnswersIt(t *testing.T) {
+	t.Fatal("UC1-S1 not implemented: a wing holding a current fact whose subject is semantically close to the question returns that fact in a distinct block beside the drawer hits, without the question naming the entity")
+}
