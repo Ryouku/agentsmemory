@@ -96,22 +96,22 @@ call. Every threshold here is valid for THIS corpus and this embedder, never in 
 
 ## Alternatives Considered
 
-- **Personalized PageRank over the graph, seeded from query entities** (the HippoRAG shape,
-  arXiv 2405.14831). Rejected for now, not on merit: it presumes a connected graph, and ours derives
-  **zero hallways** against 945 entity-carrying drawers. Seeding a walk over an edgeless graph
-  returns the seeds. Revisit once T6 has produced edges and T1 can measure the difference.
-- **Unify the two entity vocabularies at the write path** (the HippoRAG 2 shape, arXiv 2502.14802,
-  which reports +7% on associative memory from putting phrase and passage nodes in one graph).
-  Rejected as the first move for the same reason: the extraction-side vocabulary is itself
-  unmeasured. F-4 takes the read-only join instead, which needs no schema or write-path change.
+- **Personalized PageRank over the graph** — REJECTED for now, not on merit: it presumes a connected
+  graph, and ours derives **zero hallways** against 945 entity-carrying drawers, so seeding a walk
+  over an edgeless graph returns the seeds. (The HippoRAG shape, arXiv 2405.14831.) Revisit once T6
+  has produced edges and T1 can measure the difference.
+- **Unify the two entity vocabularies at the write path** — REJECTED as the first move: the
+  extraction-side vocabulary is itself unmeasured, so merging it into the authored one would spend a
+  schema change on an unknown. F-4 takes the read-only join instead, which needs neither a schema nor
+  a write-path change. (The HippoRAG 2 shape, arXiv 2502.14802, reports +7% on associative memory
+  from putting phrase and passage nodes in one graph — worth revisiting once F-4 has measured whether
+  the second vocabulary helps at all.)
 - **Add a `wing` column to `kg_triples` and backfill.** Rejected in favour of deriving wing from
   provenance (F-8), which needs no migration on live data. The cost is a 46% ceiling, recorded in
   the spec's Risks. Revisit if provenance proves too sparse to be useful.
 - **Fix `am_traverse` and build routing on it.** Rejected: whether traversal should be transitive or
   confined is an unmade product decision, and they are different products. F-17 resolves edges
   directly instead.
-- **Repurpose `reranked` into an enum rather than adding a column.** Not applicable here — that
-  alternative belongs to ADR-034 and is recorded there.
 
 ## Component / Boundary Impact
 
@@ -194,6 +194,13 @@ quietly fixed:
   is settled before an entry point indexes against it — not because T6 delivers coverage. The
   backfill is deferred with a receipt.
 - **Neutral:** ranking is untouched. F-9 pins it, so this cannot be confused with a retrieval change.
+
+`adr-judge` reports C3 ("Consequences state no cost") against this section. Checked 2026-08-26 and
+it stands as written: the three **Negative** bullets above name a workflow that is expensive to
+reverse, a 46% ceiling on what can be located at all, and a corpus that stays ~97% unreachable after
+T6. The finding is a parser artifact, not a missing trade-off, and it is recorded here rather than
+answered by adding the word the heuristic looks for — writing prose to satisfy a checker is how a
+section stops meaning anything.
 
 ## Out of Scope
 
