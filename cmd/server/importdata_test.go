@@ -45,6 +45,7 @@ file  = "data/currencies.jsonl"
 room  = "refdata"
 title = "Currencies we actually support"
 why   = "Only these reach the pricing UI; the rest are rejected at the boundary."
+show_values = ["code"]
 `)
 	out := filepath.Join(dir, "bundle.ndjson")
 
@@ -68,11 +69,21 @@ why   = "Only these reach the pricing UI; the rest are rejected at the boundary.
 		`"source_file":"data/currencies.jsonl"`,
 		"pricing UI",  // the human half
 		"minor_units", // a measured field name
-		"EUR, JPY",    // the value set the profile found
+		"EUR, JPY",    // the value set of the field show_values names
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("bundle is missing %q:\n%s", want, got)
 		}
+	}
+
+	// show_values has to survive the whole CLI path — parsed from the committed
+	// file, carried into the profiler, honoured in the emitted drawer. The unit
+	// tests prove the filter; this proves the mapping key reaches it. Dropping the
+	// field from Dataset leaves "EUR, JPY" missing above, and dropping the
+	// per-field count leaves this line red.
+	if !strings.Contains(got, "2 distinct value(s), not listed") {
+		t.Errorf("minor_units was not named in show_values, so its values must be counted and "+
+			"withheld — and the count must still be there, or the omission is silent:\n%s", got)
 	}
 }
 

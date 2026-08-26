@@ -43,6 +43,23 @@ type Dataset struct {
 	// a dataset drawer carrying only a profile records what a reader could have
 	// derived themselves, and filing it would spend recall on nothing.
 	Why string `toml:"why"`
+	// ShowValues names the fields whose distinct values may be QUOTED in the
+	// memory. Everything else about a field is reported whether or not it is
+	// named: type, presence, distinct count, date range.
+	//
+	// It is an allowlist rather than a list of exclusions because the two fail in
+	// opposite directions, and only one of the failures is recoverable. A column
+	// added to the dataset after this file was written is merely absent from the
+	// next memory here; an exclusion list written before that column existed
+	// publishes it. Publishing is the one that cannot be taken back — the content
+	// is embedded and indexed on arrival, and a later re-import replaces the
+	// drawer long after every session in the wing could already recall it.
+	//
+	// The cost is the omission being silent, and the profile answers that by
+	// still reporting the distinct COUNT of an unnamed field: a reader sees that
+	// six values exist and were not listed, which is a pointer rather than a
+	// blank.
+	ShowValues []string `toml:"show_values"`
 }
 
 // ParseConfig reads a mapping file and refuses one that cannot produce a useful
@@ -115,7 +132,7 @@ func Bundle(cfg Config, open Opener, measuredAt time.Time, w io.Writer) (int, er
 		if err != nil {
 			return written, fmt.Errorf("dataset %q: %w", d.File, err)
 		}
-		p, err := ProfileJSONL(rc)
+		p, err := ProfileJSONL(rc, d.ShowValues)
 		closeErr := rc.Close()
 		if err != nil {
 			return written, fmt.Errorf("dataset %q: %w", d.File, err)
@@ -165,6 +182,8 @@ func drawerFor(d Dataset, p Profile, measuredAt time.Time) wingbundle.Record {
 			fmt.Fprintf(&b, ", takes %d value(s) here: %s", f.Distinct, strings.Join(f.Values, ", "))
 		case f.Distinct > maxDistinct:
 			fmt.Fprintf(&b, ", more than %d distinct values", maxDistinct)
+		default:
+			fmt.Fprintf(&b, ", %d distinct value(s), not listed", f.Distinct)
 		}
 		if f.Earliest != "" {
 			fmt.Fprintf(&b, ", ranging %s to %s", f.Earliest, f.Latest)
@@ -172,8 +191,15 @@ func drawerFor(d Dataset, p Profile, measuredAt time.Time) wingbundle.Record {
 		b.WriteString("\n")
 	}
 
-	if p.Example != "" {
-		fmt.Fprintf(&b, "\nONE ROW, VERBATIM:\n%s\n", p.Example)
+	// Said once, at the end, rather than beside each field: an unexplained "not
+	// listed" reads as "this field has nothing interesting in it", which is the
+	// opposite of what it means, and repeating the explanation per field would
+	// crowd out the profile it is annotating.
+	if p.Withheld > 0 {
+		fmt.Fprintf(&b, "\n⚠%d field(s) above were COUNTED AND NOT QUOTED. Values appear only for "+
+			"fields the mapping file names in show_values, because a drawer is recalled by every "+
+			"agent in the wing and a column quoted here is published to all of them. The count is "+
+			"the pointer: if a field's values are worth recalling, name it and re-import.\n", p.Withheld)
 	}
 
 	return wingbundle.Record{

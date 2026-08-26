@@ -46,7 +46,9 @@ So the gap is narrow and specific: **there is no producer that turns domain JSON
 
 Three parts, and the split between the first two is the point:
 
-1. **What the tool MEASURES from the JSONL** — field names, inferred types, row count, the distinct values of low-cardinality fields, date ranges, one example row. Derived on every run, so it cannot drift from the data it describes.
+1. **What the tool MEASURES from the JSONL** — field names, inferred types, row count, distinct counts, date ranges. Derived on every run, so it cannot drift from the data it describes.
+
+   **The values themselves are quoted only for the fields the mapping file names in `show_values`.** A profile is filed into a wing every agent recalls from and is embedded and indexed on arrival, so a column quoted here is published to every future session in that wing. A profiler cannot tell an enumeration from a small population — `status`, `country` and `manager_email` are all "twelve distinct strings" from inside it — and only the person who wrote the dataset knows which may be published. Naming a field is that person saying so.
 2. **What a PERSON WRITES** in a mapping file committed beside the data — what the dataset is for, why it looks like this, what a field means that its name does not say. No tool can infer this, and it is the half worth recalling.
 3. **A producer that emits the existing bundle format**, so `wing import` files it self-hosted and `POST /import` files it into SaaS, both unchanged.
 
@@ -59,6 +61,8 @@ Three parts, and the split between the first two is the point:
 - **Extend `POST /import` to accept arbitrary JSONL with a mapping in the request.** Rejected. It puts a schema-inference engine behind an authenticated write endpoint on the server, where a malformed mapping becomes a server-side failure mode, and it would need the same work again for the CLI. Converting on the client keeps the server's contract exactly as it is.
 - **A second bundle format for datasets.** Rejected outright. Two formats is how one goes stale; the existing `Record` already carries every field this needs (`Room`, `SourceFile`, `Content`, `Entities`, `ContentDate`).
 - **Import the JSONL as a closet document.** Rejected: closets are a mined index over drawers, not an entry point, and the profile is a composed statement rather than a chunked source.
+- **A distinct-count threshold as the only control on quoting values, plus one verbatim example row.** This is what the first implementation did, and review caught it: `users.jsonl` and `contacts.jsonl` are exactly the seed files a project most wants documented, and both would have shipped their first row verbatim plus the full value set of every low-cardinality column — `country`, `email_domain`, `manager_email`. A threshold cannot distinguish an enumeration from a small population, and the mapping file offered no way to opt a field out short of not importing the dataset at all, which is the one thing the tool exists to make easy.
+- **A list of EXCLUDED fields, keeping the example row behind an opt-in.** Rejected in favour of the allowlist above, though it is the smaller diff. The two fail in opposite directions and only one failure is recoverable: a column added to the dataset after the mapping file was written is merely *absent* from an allowlist's next memory, while an exclusion list written before that column existed *publishes* it. Publishing is the half that cannot be undone — a re-import replaces the drawer, but nothing un-embeds what the first one already filed. Once value sets are an allowlist, an example row is precisely the complement of what was allowed, so an opt-in to re-enable it would be an opt-in to defeat the control; the example row is deleted rather than gated. The allowlist's own failure — a silent omission — is answered by still reporting the distinct **count** of an unnamed field and stating out loud that values were withheld, so the gap is a pointer rather than a blank.
 
 ## Component / Boundary Impact
 
@@ -69,6 +73,7 @@ No boundary moves. A new package produces `wingbundle.Record` values; `cmd/serve
 - New subcommand `agentsmemory import`, registered in `cmd/server/main.go`'s command list.
 - New flags, each read or the flag gate fails: `--config`, `--out`, `--push`, `--token`.
 - The mapping file format is operator-facing and therefore documented where an operator reads it, with a gate that the documented keys are the parsed ones.
+- `show_values` is part of that format, and therefore carries the same gate: it is documented in the README example, and a test asserts that no value of an unnamed field reaches the emitted drawer.
 
 ## Inter-task Contracts
 
@@ -79,7 +84,7 @@ No boundary moves. A new package produces `wingbundle.Record` values; `cmd/serve
 
 ## Implementation
 
-**T1 — measure a dataset.** A profiler over one JSONL file: fields, inferred types, row count, low-cardinality value sets, date ranges, an example row. Streaming, so a large seed file costs memory in rows rather than in files.
+**T1 — measure a dataset.** A profiler over one JSONL file: fields, inferred types, row count, distinct counts, date ranges, and the value sets of the fields the caller names. Streaming, so a large seed file costs memory in rows rather than in files. The allowlist is applied where a measured value becomes a reported one, so the disclosure has a single gate a test can hold shut.
 
 **T2 — the mapping file and the bundle it produces.** Parse the committed TOML, compose one drawer per dataset from the measured profile plus the human text, emit bundle NDJSON with a stable `source_file`.
 
@@ -96,11 +101,13 @@ The cost is that the profile is a snapshot. It is stamped with the date it was t
 - **Row-level import** (deferred: `docs/adr/BACKLOG.md` §"From ADR-035" — trigger: a reference set under a stated row ceiling that someone actually wants recallable row-by-row)
 - **Watching the JSONL and re-importing on change** (deferred: same section — a scheduled or hook-driven re-import is a deployment concern, not a format one)
 - **Nested structures below the first level** (deferred: the profiler reports a nested object's presence and type, not its interior; deep schema inference is its own decision)
+- **Making the 25-value cap configurable** (permanent, and deliberate: the cap is no longer what decides how much data escapes — a field is quoted only when someone named it, so the cap bounds a disclosure that was already chosen. As a threshold standing alone it would be the whole control and 25 would be a number worth arguing about; behind the allowlist it is an upper bound on a deliberate act)
 - **Any change to ranking, recall, or an MCP tool** (permanent: this ADR adds a producer of an existing format and nothing else)
 - **A SaaS dashboard upload** (permanent for this ADR: the endpoint it would call is the one this already targets)
 
 ## Risks
 
+- **A date range still discloses two real values.** `Earliest`/`Latest` are the minimum and maximum of a date column, and those are two actual cells from the file. It is the fact the profile most exists to carry — *why every seeded date falls in one quarter* — so it is reported unconditionally rather than gated behind `show_values`. The residual is stated rather than mitigated: a dataset whose date column is itself sensitive (a birth date, a diagnosis date) is a dataset to describe in prose and not to profile.
 - **The human half goes stale while the measured half does not.** A re-import refreshes the profile and carries the old prose forward unchanged, so a description can quietly outlive the data it describes. Mitigated only by the drawer naming its import date; genuinely fixing it needs a person to re-read, and no gate can do that.
 - **Low-cardinality detection is a heuristic.** A field with few distinct values in the seed data may have many in production, and the profile would state a value set that is really a fixture artefact. The profile therefore reports what it saw *in this file*, phrased as such, never as a domain constraint.
 - **A mapping file that lists a dataset which no longer exists** would silently describe nothing. The producer must fail on a missing file rather than skip it.

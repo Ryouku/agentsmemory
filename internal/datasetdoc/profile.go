@@ -13,6 +13,12 @@
 // builds, which answers questions about rows better than a vector search will,
 // and filing tens of thousands of them would push every other memory in the wing
 // further down its own recall.
+//
+// And the values inside those rows stay out unless the mapping file NAMES the
+// field they came from. A profile is filed into a wing every agent recalls from,
+// so quoting a column nobody asked it to quote — an email, a phone number, a
+// hostname — publishes that column to every future session. Counting a column is
+// a fact about the data; quoting it is the data.
 package datasetdoc
 
 import (
@@ -35,11 +41,12 @@ const maxLineBytes = 8 << 20 // 8 MiB
 // maxDistinct is how many values a field may take before it stops being
 // reportable as a value set. Past this the list would be data rather than
 // schema, and the profile's job is schema.
+//
+// It is a constant rather than a knob because it is no longer what decides how
+// much data escapes: a field is quoted only when the mapping file names it, so
+// this bounds a disclosure someone already chose to make. As a threshold on its
+// own it would be the whole control, and 25 would be a number to argue about.
 const maxDistinct = 25
-
-// maxExampleBytes caps the example row. One row is worth showing; a row that is
-// itself a document is not, and the profile is meant to be read.
-const maxExampleBytes = 2000
 
 // Profile is what one JSONL file says about itself when nobody is asked.
 //
@@ -57,9 +64,11 @@ type Profile struct {
 	// Fields are the keys observed, in a stable order so two runs over unchanged
 	// data produce identical text and a re-import is a no-op.
 	Fields []Field
-	// Example is the first well-formed row, for a reader who wants to see the
-	// shape rather than read about it.
-	Example string
+	// Withheld is how many fields were counted but not quoted, because the
+	// mapping file did not name them. Reported so the memory can say that values
+	// are missing by choice — an unexplained absence reads as "this field has no
+	// interesting values", which is the opposite of what it means.
+	Withheld int
 }
 
 // Field is one key observed across the file, with what was seen of it.
@@ -73,9 +82,13 @@ type Field struct {
 	// Present is how many rows carried this key with a non-null value. Compared
 	// against Profile.Rows it says whether the field is optional in practice.
 	Present int
-	// Values is the sorted value set when the field took at most maxDistinct
-	// distinct values, and nil otherwise. Non-nil is the signal that this field
-	// is an enumeration in this file.
+	// Values is the sorted value set, and is non-nil only when the mapping file
+	// named this field AND it took at most maxDistinct distinct values.
+	//
+	// Naming is required because a threshold cannot tell an enumeration from a
+	// small population: `status` and `country` and `manager_email` all look like
+	// twelve distinct strings from here, and only the person who wrote the
+	// dataset knows which of them may be quoted into a wing everyone recalls.
 	Values []string
 	// Distinct is how many distinct values were seen, capped: once the count
 	// passes maxDistinct it is reported as maxDistinct+1 and Values is dropped,
@@ -108,11 +121,23 @@ type fieldStat struct {
 
 // ProfileJSONL reads JSONL from r and reports what it contains.
 //
+// showValues names the fields whose values may be quoted in the result. Every
+// field is measured the same either way — types, presence, distinct count, date
+// range — but a field nobody named has its values counted and then dropped, so a
+// Profile cannot hand a caller a column it was not asked to disclose. The filter
+// is here rather than at rendering time for exactly that reason: a value that is
+// never carried out cannot be printed by the next caller who forgets.
+//
 // It streams, so file size costs memory in one row rather than in the whole
 // file. A read error is returned; malformed LINES are counted into the Profile
 // instead, because one bad row should not deny a reader everything the other
 // thousands say.
-func ProfileJSONL(r io.Reader) (Profile, error) {
+func ProfileJSONL(r io.Reader, showValues []string) (Profile, error) {
+	quotable := make(map[string]bool, len(showValues))
+	for _, name := range showValues {
+		quotable[name] = true
+	}
+
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
@@ -131,9 +156,6 @@ func ProfileJSONL(r io.Reader) (Profile, error) {
 			continue
 		}
 		p.Rows++
-		if p.Example == "" {
-			p.Example = truncate(line, maxExampleBytes)
-		}
 		for k, v := range row {
 			st := stats[k]
 			if st == nil {
@@ -154,7 +176,7 @@ func ProfileJSONL(r io.Reader) (Profile, error) {
 		p.Malformed++
 	}
 
-	p.Fields = summarise(stats)
+	p.Fields, p.Withheld = summarise(stats, quotable)
 	return p, nil
 }
 
@@ -198,9 +220,15 @@ func observe(st *fieldStat, v any) {
 	}
 }
 
-// summarise turns the accumulated stats into the reported, sorted Fields.
-func summarise(stats map[string]*fieldStat) []Field {
+// summarise turns the accumulated stats into the reported, sorted Fields, and
+// reports how many fields were counted without being quoted.
+//
+// This is the ONE place a measured value becomes a reported one, which is why
+// the allowlist is applied here and nowhere else: a disclosure with a single
+// gate is a disclosure a test can hold shut.
+func summarise(stats map[string]*fieldStat, quotable map[string]bool) ([]Field, int) {
 	out := make([]Field, 0, len(stats))
+	withheld := 0
 	for name, st := range stats {
 		f := Field{Name: name, Present: st.present}
 		for t := range st.types {
@@ -211,10 +239,14 @@ func summarise(stats map[string]*fieldStat) []Field {
 			f.Distinct = maxDistinct + 1
 		} else {
 			f.Distinct = len(st.values)
-			for v := range st.values {
-				f.Values = append(f.Values, v)
+			if quotable[name] {
+				for v := range st.values {
+					f.Values = append(f.Values, v)
+				}
+				sortValues(f.Values)
+			} else {
+				withheld++
 			}
-			sortValues(f.Values)
 		}
 		if st.allDates && st.anyDate {
 			f.Earliest = st.earliest.Format(time.RFC3339)
@@ -227,7 +259,7 @@ func summarise(stats map[string]*fieldStat) []Field {
 	// produce different text on different exports — and a re-import that changes
 	// nothing must be a no-op.
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, withheld
 }
 
 // sortValues orders a value set for reading: numerically when every value is a
@@ -305,19 +337,3 @@ func parseDate(s string) (time.Time, bool) {
 	}
 	return time.Time{}, false
 }
-
-// truncate shortens s to at most n bytes on a rune boundary, marking that it
-// did. An unmarked truncation would read as the whole value.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := s[:n]
-	for len(cut) > 0 && !isRuneStart(cut[len(cut)-1]) {
-		cut = cut[:len(cut)-1]
-	}
-	return cut + "… (truncated)"
-}
-
-// isRuneStart reports whether b can begin a UTF-8 rune.
-func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }

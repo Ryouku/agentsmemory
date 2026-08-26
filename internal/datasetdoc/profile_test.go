@@ -14,7 +14,7 @@ const sample = `{"id":"inv-1","status":"paid","amount":1200,"due":"2026-01-15","
 `
 
 func TestProfileMeasuresWhatTheFileActuallyContains(t *testing.T) {
-	p, err := ProfileJSONL(strings.NewReader(sample))
+	p, err := ProfileJSONL(strings.NewReader(sample), []string{"status"})
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestProfileMeasuresWhatTheFileActuallyContains(t *testing.T) {
 // a file that is half malformed is a finding about the export that produced it.
 func TestProfileCountsMalformedRowsRatherThanFailing(t *testing.T) {
 	in := "{\"a\":1}\nnot json at all\n[1,2,3]\n\n{\"a\":2}\n"
-	p, err := ProfileJSONL(strings.NewReader(in))
+	p, err := ProfileJSONL(strings.NewReader(in), nil)
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
@@ -89,7 +89,10 @@ func TestHighCardinalityFieldsReportNoValueSet(t *testing.T) {
 		b.WriteString(itoa(i))
 		b.WriteString("\"}\n")
 	}
-	p, err := ProfileJSONL(strings.NewReader(b.String()))
+	// The field is NAMED in show_values on purpose: without that, the empty value
+	// set below would prove only that the allowlist works, and this test would
+	// pass forever with the cap deleted.
+	p, err := ProfileJSONL(strings.NewReader(b.String()), []string{"id"})
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
@@ -115,7 +118,7 @@ func TestHighCardinalityFieldsReportNoValueSet(t *testing.T) {
 // luck, so this uses a set where it cannot.
 func TestNumericValueSetsSortNumerically(t *testing.T) {
 	in := "{\"n\":90}\n{\"n\":1200}\n{\"n\":450}\n{\"n\":7}\n{\"n\":33}\n{\"n\":8000}\n"
-	p, err := ProfileJSONL(strings.NewReader(in))
+	p, err := ProfileJSONL(strings.NewReader(in), []string{"n"})
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
@@ -125,7 +128,7 @@ func TestNumericValueSetsSortNumerically(t *testing.T) {
 
 	// A mixed field must fall back to lexical rather than silently dropping the
 	// non-numeric values or panicking on them.
-	mixed, err := ProfileJSONL(strings.NewReader("{\"n\":10}\n{\"n\":\"n/a\"}\n{\"n\":2}\n"))
+	mixed, err := ProfileJSONL(strings.NewReader("{\"n\":10}\n{\"n\":\"n/a\"}\n{\"n\":2}\n"), []string{"n"})
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
@@ -141,11 +144,11 @@ func TestNumericValueSetsSortNumerically(t *testing.T) {
 func TestFieldOrderIsStable(t *testing.T) {
 	forward := "{\"a\":1,\"b\":2,\"c\":3}\n"
 	reverse := "{\"c\":3,\"b\":2,\"a\":1}\n"
-	p1, err := ProfileJSONL(strings.NewReader(forward))
+	p1, err := ProfileJSONL(strings.NewReader(forward), nil)
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}
-	p2, err := ProfileJSONL(strings.NewReader(reverse))
+	p2, err := ProfileJSONL(strings.NewReader(reverse), nil)
 	if err != nil {
 		t.Fatalf("ProfileJSONL: %v", err)
 	}

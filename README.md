@@ -1422,18 +1422,49 @@ title = "Invoice seed data"
 why   = """
 Seeded from one anonymised quarter, which is why every due date lands in Q1.
 `amount` is MINOR UNITS — 1200 is twelve euros, not twelve hundred."""
+show_values = ["status", "currency"]     # the ONLY fields whose values are quoted
 ```
 
 `why` is required. A dataset drawer carrying only a profile records what a reader
 could have derived from the file, and filing it would spend recall on nothing.
+
+### `show_values` — the only values that leave the file
+
+Every field is measured the same way whether or not you name it: type, how many
+rows carry it, how many distinct values it took, and its date range. But the
+**values themselves are quoted only for the fields listed in `show_values`.**
+
+A drawer is recalled by every agent in the wing, and the server embeds and
+indexes it on arrival. So `status` and `country` and `manager_email` all look
+alike from inside a profiler — twelve distinct strings — and only the person who
+wrote the dataset knows which of them may be published. Naming them is that
+person saying so.
+
+It is an **allowlist, not a list of exclusions**, because the two fail in
+opposite directions and only one failure is recoverable. A column added to the
+dataset next month is merely *absent* from the next memory here; an exclusion
+list written before that column existed *publishes* it. A re-import replaces the
+drawer, but nothing un-embeds what the first one already filed.
+
+The cost is that the omission could be silent, so it isn't: an unnamed field
+still reports its distinct **count**, and the memory says in as many words that
+values were withheld.
+
+```
+· status (string), takes 2 value(s) here: open, paid
+· email (string), 148 distinct value(s), not listed
+
+⚠2 field(s) above were COUNTED AND NOT QUOTED. …
+```
 
 **What lands, and what deliberately does not:**
 
 | Carried | Left behind |
 |---|---|
 | The `why` you wrote, verbatim and first | **The rows.** They are already in the database this same JSONL builds |
-| A profile **measured** on every run: fields, types, row count, the values a small field actually takes, date ranges | **Vectors** — the bundle is text, the server embeds |
-| One example row, so the shape is visible | Anything below the first level of a nested object |
+| A profile **measured** on every run: fields, types, row count, distinct counts, date ranges | **The values of any field `show_values` does not name** — counted, never quoted |
+| The value sets of the fields you named in `show_values` | **Vectors** — the bundle is text, the server embeds |
+| A count of the fields whose values were withheld, so the gap is visible | Anything below the first level of a nested object |
 
 The measured half cannot drift from the data, because it is re-derived rather
 than remembered. The written half is the part no tool can infer, which is why it

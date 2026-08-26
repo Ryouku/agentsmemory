@@ -20,6 +20,7 @@ title = "Invoice seed data"
 why   = """
 Seeded from one anonymised quarter, which is why every due date is in Q1.
 amount is minor units, not currency units — 1200 is twelve euros."""
+show_values = ["status"]
 `
 
 func mustParse(t *testing.T, s string) Config {
@@ -94,12 +95,12 @@ func TestBundleCarriesTheHumanAccountAndTheMeasuredProfile(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"twelve euros",         // the human half, carried verbatim
-		"3 rows",               // the measured half
-		"open, paid",           // the value set the profile found
-		"number|string",        // the inconsistent type, surfaced
-		"ONE ROW, VERBATIM",    // the example
-		"not\nconstraints the", // the caveat that a value set is about THIS file
+		"twelve euros",           // the human half, carried verbatim
+		"3 rows",                 // the measured half
+		"open, paid",             // the value set of the ONE field show_values names
+		"number|string",          // the inconsistent type, surfaced
+		"COUNTED AND NOT QUOTED", // the fields it was not asked to quote, said out loud
+		"not\nconstraints the",   // the caveat that a value set is about THIS file
 	} {
 		if !strings.Contains(d.Content, want) && !strings.Contains(d.Content, strings.ReplaceAll(want, "\n", " ")) {
 			t.Errorf("drawer content is missing %q:\n%s", want, d.Content)
@@ -126,6 +127,67 @@ func TestTheExplanationComesBeforeTheNumbers(t *testing.T) {
 	why, measured := strings.Index(c, "twelve euros"), strings.Index(c, "MEASURED FROM THE FILE")
 	if why < 0 || measured < 0 || why > measured {
 		t.Errorf("the human account must precede the measured profile (why=%d measured=%d)", why, measured)
+	}
+}
+
+// TestValuesAppearOnlyForFieldsTheMappingNames is the disclosure gate.
+//
+// A drawer is filed into a wing every agent recalls from, and the importer
+// embeds and indexes on arrival — so a value quoted here is published to all of
+// them, and a later re-import that fixes the mapping replaces the drawer without
+// un-publishing anything. That asymmetry is why the profile quotes a column only
+// when the mapping file names it.
+//
+// The assertions are on the VALUES rather than on the section that prints them,
+// which is what makes this hold shut against more than the one mistake it was
+// written for: deleting the allowlist in summarise turns it red, and so would
+// re-introducing a verbatim example row, a "first five rows" sample, or any
+// other future path that carries a raw cell out of the file.
+func TestValuesAppearOnlyForFieldsTheMappingNames(t *testing.T) {
+	const people = `{"id":"u-1","status":"active","email":"ada@example.com","phone":"+370 600 11111"}
+{"id":"u-2","status":"invited","email":"grace@example.com","phone":"+370 600 22222"}
+`
+	const peopleTOML = `
+[[dataset]]
+file  = "data/users.jsonl"
+room  = "schema"
+title = "User seed data"
+why   = "Two seeded operators; every login-flow test starts from these."
+show_values = ["status"]
+`
+	var b strings.Builder
+	if _, err := Bundle(mustParse(t, peopleTOML), openerFor(map[string]string{"data/users.jsonl": people}),
+		time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC), &b); err != nil {
+		t.Fatalf("Bundle: %v", err)
+	}
+	content := decodeBundle(t, b.String())[1].Content
+
+	for _, value := range []string{
+		"ada@example.com", "grace@example.com", "+370 600 11111", "+370 600 22222", "u-1", "u-2",
+	} {
+		if strings.Contains(content, value) {
+			t.Errorf("the drawer quotes %q, from a field show_values does not name — once filed, "+
+				"that value is recallable by every agent in the wing:\n%s", value, content)
+		}
+	}
+
+	// The named field IS quoted, or an allowlist would be indistinguishable from
+	// never reporting values at all — and the enumeration is the fact the profile
+	// exists to carry.
+	if !strings.Contains(content, "active, invited") {
+		t.Errorf("status is named in show_values and its values are missing:\n%s", content)
+	}
+
+	// Schema is not the secret. A reader must still learn the column exists, what
+	// type it holds and how many values it took — that count is the only pointer
+	// saying an unnamed field has an enumeration worth asking for.
+	for _, want := range []string{
+		"email (string)", "phone (string)", "2 distinct value(s), not listed",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("the profile withheld %q along with the values; only the values are "+
+				"sensitive:\n%s", want, content)
+		}
 	}
 }
 
