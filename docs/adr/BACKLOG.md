@@ -1140,8 +1140,18 @@ as the deferral so the pointer has a receiving end.
   10s. Pool 20 is one batch (`maxBatch` 32), so that is the cost of scoring 20 documents, not
   batching overhead. **The shipped default is pool 10 and has never been measured on this hardware**,
   so none of the above is a verdict on it and the default is deliberately unchanged.
-  **Trigger: the first time anyone has an idle reranker and can measure pool 10, or the first
-  non-zero `timeout` count from ADR-034's new column.**
+  **HALF RECEIVED 2026-08-26 — pool 10 is measured and the default is safe.** 12 real recalls
+  through the live server on an idle CPU cross-encoder: mean 4.3s, min 3.3s, max 5.5s, none past
+  the 10s budget — about 2.3x headroom. Scaling to pool 20 costs 2.7x the time for 2x the
+  documents, so cost is superlinear in pool and a per-doc model understates the risk of raising
+  it. Recorded in the `RERANK_POOL` comment in `docker-compose.full.yml`.
+
+  Two figures stated earlier that day were wrong, both from n=1 and both flattering the default:
+  a single 2721ms sample (the mean is 4332ms, so headroom is 2.3x not 3.7x) and an inferred 4.3x
+  scaling (measured 2.7x).
+
+  **Still open: the first non-zero `timeout` count from ADR-034's column** — the lagging
+  indicator, which needs real traffic rather than a bench.
 
 - **A runtime warning when a rerank call approaches its budget.** A leading indicator rather than a
   lagging one, and cheap. It needs a threshold, and nobody can name a defensible threshold until the
