@@ -1,8 +1,14 @@
 # Two corpora, opposite answers — 2026-08-25
 
+> **Correction, 2026-08-26 — the sentence below is wrong and the tables disprove it.**
+> The two runs did NOT share a ranking configuration. See *Amendment* at the end: corpus
+> B's `rrf+rerank` and `rrf+rerank norm=sigmoid` are bit-identical, which they can only be
+> if both ran the same normaliser, while corpus A's are not. The `--pool 30`, the commit
+> and the palace are unaffected; the normaliser is the one field that differs.
+
 Both runs were taken on the same palace, the same day, on commit `3eb4b33`, with the
-same ranking configuration (`fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00
-rerank=on(pool=10,weight=0.50,norm=sigmoid) unit=memory evidence=lexical`) and the same
+~~same ranking configuration (`fusion=rrf lex-weight=n/a lex-norm=n/a closet-boost=0.00
+rerank=on(pool=10,weight=0.50,norm=sigmoid) unit=memory evidence=lexical`)~~ and the same
 `--pool 30`. Only the QUESTIONS differ.
 
 - **Corpus A — `--style paraphrase`, 30 cases, replayed from `eval-stack-65aaaa7.jsonl`.**
@@ -84,8 +90,9 @@ what makes the fusion inversion a ranking result and not a retrieval one.
   memory" verdict conflates "not there" with "the judge missed it", and 14 of 40 sampled
   queries landed there.
 - The winning arm in each table was selected from that table.
-- The sigmoid normalisation shipped earlier the same day scores IDENTICALLY to min-max on
-  corpus B (0.708 both), and `norm=rank` scores higher (0.748, inconclusive). The
+- ~~The sigmoid normalisation shipped earlier the same day scores IDENTICALLY to min-max on
+  corpus B (0.708 both)~~ — **RETRACTED 2026-08-26, see Amendment: that is one arm measured
+  twice.** `norm=rank` scores higher (0.748, inconclusive). The
   degeneracy it fixes is provable in isolation; this corpus does not confirm it moves recall.
 
 ## Corpus A — full table (paraphrase, n=30)
@@ -171,3 +178,49 @@ rerank blend w=0.75                           54%      92%    0.683    [0.54–0
 rerank blend w=1.00                           50%      92%    0.654    [0.51–0.79]          0   worse by 0.04–0.30
 n=26 — CI column: single-arm bootstrap; 'vs best' verdicts: PAIRED bootstrap on per-case deltas (trust these, not CI overlap). The best arm was picked from this same table, so unadjusted comparisons against it flatter the winner; 'inconclusive' means exactly that, never equivalence
 ```
+
+
+---
+
+## Amendment — 2026-08-26: corpus B's min-max control was a second sigmoid arm
+
+A review of #57 found that `serviceForArm`'s reset block clears nine ranking knobs and
+not `rerankNorm`, so a cloned arm inherits whatever normaliser the server running the eval
+was set to. `rrf+rerank` sets no normaliser and `rrf+rerank norm=sigmoid` sets one, so
+whenever the served value is already sigmoid the two arms are one configuration under two
+names. Fixed at `e20890e`; the gate is
+`TestEvalArmsAreDISTINCTCONFIGURATIONSNotJustDistinctNames`.
+
+**What makes this provable rather than suspected: this file contains its own control.**
+`vector` and `fusion bm25=0.00` are the same configuration by construction — the bm25
+sweep's zero endpoint IS vector-only — and they score bit-identically in BOTH corpora
+(53%/77%/0.644 in A, 38%/85%/0.580 in B). So in this eval, identical rows mean identical
+configuration; they are not noise. That control is what turns corpus B's identity from a
+coincidence into a proof.
+
+Applying it to all three tables this ADR rests on:
+
+| run | `rrf+rerank` | `rrf+rerank norm=sigmoid` | so min-max… |
+|---|---|---|---|
+| A — paraphrase, n=30 | 0.610 (R@5 73%) | 0.633 (R@5 77%) | **ran** — the arms differ |
+| B — real, n=26 | 0.708 (R@5 100%) | 0.708 (R@5 100%) | **never ran** — identical in every column |
+| real, n=54 (`real-corpus-large.md`) | 0.668 | 0.666 | **ran** — the arms differ |
+
+So the defect voids ONE table, not the ADR. Corpus B has no min-max control and its
+`rrf+rerank` row must be read as a duplicate of the sigmoid row. The other two runs
+compared the normalisers for real.
+
+**What survives.** On real queries the comparison is n=54, not "measured twice": min-max
+0.668 against sigmoid 0.666, a difference of 0.002 with both inconclusive against best.
+The conclusion that sigmoid is neutral on real queries is unchanged — it simply rests on
+one measurement instead of two, and one of the two it was thought to rest on was an arm
+compared with itself.
+
+**Why the served normaliser differed between two runs on one commit is not recoverable.**
+Neither run's startup log survives, and the eval's `ranking:` line — which prints the
+resolved normaliser and would have settled it in one grep — was not captured into this
+file. The likely explanation is that the runs straddled ADR-030 changing the served
+default, but that is an inference about an unrecorded runtime value and is recorded here
+as a cause to suspect, not a finding. **Evidence files from here on should paste the
+`ranking:` line**, which costs one line and would have made this whole reconstruction a
+lookup.

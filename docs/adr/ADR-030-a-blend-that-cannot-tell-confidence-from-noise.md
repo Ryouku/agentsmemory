@@ -46,7 +46,7 @@ The cross-encoder was handed −5.0 against +5.0 and its verdict was discarded. 
 |---|---|---|
 | The eval harness and its arm registry | `internal/palace/eval.go` | Yes. This ADR adds arms, and `TestEveryDeclaredArmIsRegistered` already fails for an arm nothing registers. |
 | `blended_score` on the wire | `internal/mcpserver/drawers.go` (ADR-028 T2) | Yes — it is what made the tie visible on a served page rather than only in source. |
-| `normalizeScores` | `internal/palace/service.go` | Replaced per-axis, not deleted: the fused axis is already a bounded `[0,1]` RRF score and does not need rescaling the way a raw logit does. |
+| `normalizeScores` | `internal/palace/service.go` | ~~Replaced per-axis, not deleted: the fused axis is already a bounded `[0,1]` RRF score and does not need rescaling the way a raw logit does.~~ **Superseded — see Amendment 2026-08-26.** Both axes are replaced; the shipped `normalizeBlendAxes` pairs each rerank policy with a fused policy. |
 | `search_events.top_score` | `internal/palace/recallstats.go` | Read-only here. Persisting `blended_score` is receipted, not taken. |
 | ADR-014's rule that a default is measured | `docs/adr/ADR-014-...` | Binding. This ADR deliberately does NOT pick a replacement; T1 measures, T2 ships the winner. |
 
@@ -76,7 +76,7 @@ No boundary moves. `internal/palace` gains eval arms and a normalisation functio
 
 - New eval arms registered in `internal/palace/eval.go`, each covered by the existing `TestEveryDeclaredArmIsRegistered` gate.
 - New eval cases with pools of 2, 3 and 4 and a low-spread logit fixture.
-- T2 only: the rerank axis's normalisation function changes, and `config.Default().RerankWeight` may change. Both are single-site.
+- T2 only: ~~the rerank axis's~~ **both axes'** normalisation changes (see Amendment 2026-08-26), and `config.Default().RerankWeight` may change. Both are single-site.
 
 ## Inter-task Contracts
 
@@ -104,7 +104,7 @@ Either way the tuning method changes: a weight swept on large pools is not a wei
 - **Persisting `blended_score` to `search_events`** (deferred: `docs/adr/BACKLOG.md` §"From ADR-030" — a migration that answers a question about the past; T1's fixture answers it about the present)
 - **`max_distance`'s role as a pool shrinker** (deferred: `docs/adr/BACKLOG.md` §"From ADR-030" — it makes small pools more likely and the corpus already records it as "DEAD as a confidence signal"; whether to floor or remove the knob is its own decision)
 - **Handing the whole order to the cross-encoder** (permanent: settled by ADR-024 and by the measured loss of lexical evidence recorded at `internal/config/config.go:241-244`)
-- **Any change to the fused axis or to RRF** (permanent: ADR-024 owns fusion; this ADR touches only how a raw cross-encoder logit is brought onto a comparable scale)
+- **Any change to RRF itself** (permanent: ADR-024 owns fusion. AMENDED 2026-08-26 — this entry also excluded the FUSED AXIS's normalisation, which the shipped code changes and which is therefore in scope; see Amendment. RRF's own rank-fusion arithmetic remains out of scope and untouched)
 - **Changing the served ranking before T1 reports** (permanent: ADR-014 — the shipped default is the measured one, and this ADR exists because that rule was satisfied against the wrong distribution)
 
 ## Risks
@@ -128,3 +128,37 @@ T1 is additive test surface and reverts cleanly. T2 changes one normalisation fu
 - Re-examine every default set by the weight sweep against the pool-size distribution production actually serves.
 - Persist `blended_score` so a tie rate becomes measurable from the durable row rather than only from a live page.
 - **A general check: for any normalisation in this pipeline, does the fixture used to tune it span the range production serves?** The answer here was no, and nothing would have said so.
+
+
+---
+
+## Amendment — 2026-08-26: the fused axis is in scope, and the record said it never would be
+
+A review of #57 found this record asserting three times that only the rerank axis moves,
+while the shipped code replaces both. `normalizeBlendAxes` (`internal/palace/service.go`)
+returns `normalizeSigmoid(rerank), normalizeByMax(fused)`, and `normalizeByMax` was written
+new for the fused side. The code is right and this document was stale; the three statements
+above are struck rather than rewritten, so a reader can see what was decided and what
+changed.
+
+**Why both axes had to move.** A blend is a comparison, so normalising one side alone
+changes what the weight means rather than fixing it. That is the whole defect this ADR was
+opened for: min-max on the rerank axis discarded the cross-encoder's magnitude, and leaving
+the fused axis on a different scale would have replaced one incomparability with another.
+`BlendRerankWith`'s doc comment carries the argument in full.
+
+**What this does to `RERANK_WEIGHT`, which matters more than the scoping error.** Under
+min-max both axes filled `[0,1]`, so the weight split ordering influence between them.
+Under the shipped policy both ranges are data-dependent: with `rrfK=60` a top-of-page RRF
+spread normalised by max occupies roughly `[0.85, 1.0]`, while the sigmoid'd logit spread on
+the page this ADR cites was about 0.135. The weight therefore no longer divides two
+comparable quantities, and `--rerank-weight`'s usage string ("how much the cross-encoder
+decides the order, 0..1") is less true than it was. This is the SECOND time this knob has
+changed meaning without its documentation moving; the palace already holds a drawer from
+2026-08-19, *"RERANK_WEIGHT is not the weight it says"*, making the same argument about
+min-max. Recorded here so the next weight sweep is read with it in mind.
+
+**Not fixed here**, because it is a scope this record does not own: whether `RERANK_WEIGHT`
+should be redefined, renamed, or replaced by something whose units are stable across
+normalisation policies. That wants its own ADR, and it wants the weight sweep re-run under
+the shipped normaliser first — every sweep in #57 predates it.

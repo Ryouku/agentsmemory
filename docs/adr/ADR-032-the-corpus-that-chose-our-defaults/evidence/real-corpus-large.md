@@ -43,10 +43,19 @@ Same sign three times, shrinking magnitude, interval now excluding zero. It is a
 **`vector`-only is genuinely the worst arm on real queries.** Resolved at both n=26 and
 n=54. This is the part of the corpus inversion that survives.
 
-**ADR-030's sigmoid is neutral on real queries, measured twice.** 0.666 against min-max's
-0.668 here; 0.708 against 0.708 at n=26. The degeneracy it fixes is provable in isolation
-and no corpus has shown it moves recall. It is not reverted — reverting on an inconclusive
-result is the same error as adopting on one.
+**ADR-030's sigmoid is neutral on real queries, measured ONCE.** 0.666 against min-max's
+0.668 here. ~~0.708 against 0.708 at n=26~~ — **retracted 2026-08-26**: at n=26 the served
+normaliser was already sigmoid and `serviceForArm` did not reset it, so `rrf+rerank` was a
+second sigmoid arm rather than the min-max control. Identical rows there are one arm
+measured twice, not a replication. See the Amendment in `two-corpora-2026-08-25.md`; fixed
+at `e20890e`.
+
+The n=54 comparison above is unaffected — its two rerank arms differ (0.668 vs 0.666), and
+`vector`/`fusion bm25=0.00`, which are the same configuration by construction, are
+bit-identical at 0.587, so in this run identity means same-config and difference means the
+control genuinely ran. The degeneracy sigmoid fixes is provable in isolation and no corpus
+has shown it moves recall. It is not reverted — reverting on an inconclusive result is the
+same error as adopting on one — but the evidence for neutrality is one run, not two.
 
 **Lower rerank weight remains suggestive and unresolved.** `w=0.25` is the top arm in both
 real runs (0.761 at n=26, 0.694 here) but it is the arm the table selected, so the
