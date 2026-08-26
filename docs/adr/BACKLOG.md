@@ -1129,6 +1129,32 @@ which reads thirty as a finding count. It is not.
   slow is a different trade, and the eval does not report it. **Trigger: any proposal to raise the
   served retrieve floor — which is the item above, so this blocks it.**
 
+## From ADR-035 (a dataset you can recall)
+
+- **Row-level import for small reference sets, under a stated ceiling.** ADR-035 refuses rows on
+  evidence — a larger, more heterogeneous corpus retrieves measurably worse, so filing tens of
+  thousands of seed rows would degrade recall for every other memory in the wing to answer
+  questions SQL already answers better. The exception worth building is the set where the row *is*
+  the knowledge: currencies, status codes, a country list. Trigger: someone actually wants such a
+  set recallable row by row. It needs a row-count ceiling enforced in code (the profiler has none
+  today, and nothing in the shipped command pretends otherwise), or it quietly becomes the bulk
+  path the ADR rejected.
+- **Watching the JSONL and re-importing on change.** A scheduled or hook-driven re-import is a
+  deployment concern rather than a format one, so it stays out of the producer. Safe to build now
+  that an unchanged file re-imports as a no-op.
+- **Replacing a dataset's profile when the data changes — the gap review found.** The producer's
+  drawer id is deterministic, so an unchanged file upserts. A CHANGED file produces different text,
+  a different id, and therefore a SECOND profile: yesterday's numbers stay recallable next to
+  today's, and the stale one has to be deleted by hand. Closing it means a purge-by-source on the
+  import path, which is exactly what the migration path must NOT do — `AbsorbDrawers` absorbs
+  without purging because a batched migration would otherwise delete the earlier batches of the
+  source it is still uploading. So it needs an opt-in the producer can ask for (a `replace_source`
+  on the bundle or the endpoint) rather than a change to the shared absorb. Filed 2026-08-26 from
+  the PR #60 review, where the ADR had claimed the stronger "idempotent by source" four times.
+- **Nested structures below the first level.** The profiler reports a nested object's presence and
+  type, never its interior. Deep schema inference is its own decision — and, since values below the
+  first level would have to pass the same `show_values` allowlist, its own disclosure question.
+
 ## From ADR-036 (the knowledge graph on the read path, 2026-08-26)
 
 - **ADR-004 T5's deferral is received here.** T5 (Accepted, `done`) carries `- Wiring the graph into
