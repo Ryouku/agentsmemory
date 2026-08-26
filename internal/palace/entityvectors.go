@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/store"
 )
@@ -66,12 +67,39 @@ func (s *Service) BackfillEntityLabels(ctx context.Context, teamID string) (int,
 	}
 	n := 0
 	for _, r := range rows {
+		// Structural entities are skipped. attachDerivedEdge creates a room node
+		// and an entity for the drawer id itself, and neither is something a
+		// QUESTION is ever about — but both would compete for the five nearest
+		// label slots, and factsFor then discards every derived fact anyway. So
+		// indexing them costs slots and returns nothing.
+		if isStructuralEntity(r.Name) {
+			continue
+		}
 		if err := s.IndexEntityLabel(ctx, teamID, r.ID, r.Name); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// isStructuralEntity reports whether an entity exists to hold the graph together
+// rather than to be asked about: a room node, or a drawer id promoted to an
+// entity so an edge could name it.
+func isStructuralEntity(name string) bool {
+	if strings.HasPrefix(name, "room:") {
+		return true
+	}
+	// A drawer id is 64 lowercase hex characters. A real entity label is not.
+	if len(name) == 64 {
+		for _, c := range name {
+			if !strings.ContainsRune("0123456789abcdef", c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // entityMatches returns the KG entities whose labels are nearest the query.

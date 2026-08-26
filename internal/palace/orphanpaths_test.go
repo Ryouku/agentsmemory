@@ -182,3 +182,77 @@ func TestATripleIDIsNotAStableGold(t *testing.T) {
 		t.Error("the canonical fact is not stable, which is the only property it exists for")
 	}
 }
+
+// TestDeletingADrawerTakesItsDerivedEdge covers every deletion path, because a
+// derived edge left behind is worse than an orphan drawer: it stays CURRENT and
+// asserts a record exists at an id that no longer resolves.
+//
+// Re-filing CHANGED content is the case that accumulates them — a changed drawer
+// gets a new id and a new edge, beside the stale one — so it is tested rather
+// than reasoned about.
+func TestDeletingADrawerTakesItsDerivedEdge(t *testing.T) {
+	ctx := context.Background()
+	const team = "t-purge"
+
+	edgesNaming := func(t *testing.T, svc *Service, id string) int {
+		t.Helper()
+		q, err := svc.KGQuery(ctx, team, KGQueryInput{Entity: id, Direction: "incoming", Status: KGStatusAll})
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		return len(q.Facts)
+	}
+
+	t.Run("re-filing changed content leaves no edge behind", func(t *testing.T) {
+		svc := newTestService(t)
+		first, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "notes.md", Content: "the original answer"})
+		if err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		old := first.Drawers[0].ID
+		if edgesNaming(t, svc, old) == 0 {
+			t.Fatal("the first filing got no edge, so this test cannot observe one being stranded")
+		}
+		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", SourceFile: "notes.md", Content: "a DIFFERENT answer entirely"}); err != nil {
+			t.Fatalf("re-add: %v", err)
+		}
+		if n := edgesNaming(t, svc, old); n != 0 {
+			t.Errorf("%d edge(s) still name the purged drawer %s; they are current and point at nothing", n, old)
+		}
+	})
+
+	t.Run("deleting a drawer takes its edge", func(t *testing.T) {
+		svc := newTestService(t)
+		filed, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "a memory that will be deleted"})
+		if err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		id := filed.Drawers[0].ID
+		if edgesNaming(t, svc, id) == 0 {
+			t.Fatal("no edge to begin with")
+		}
+		if _, err := svc.Delete(ctx, team, id); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if n := edgesNaming(t, svc, id); n != 0 {
+			t.Errorf("%d edge(s) survived the drawer they name", n)
+		}
+	})
+
+	t.Run("an AUTHORED edge survives, deliberately", func(t *testing.T) {
+		svc := newTestService(t)
+		filed, _ := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "a memory somebody pointed at by hand"})
+		id := filed.Drawers[0].ID
+		if _, err := svc.KGAdd(ctx, team, "Release Notes", "documents", id, "", "", "", "", ""); err != nil {
+			t.Fatalf("author: %v", err)
+		}
+		if _, err := svc.Delete(ctx, team, id); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		// A writer's placement outliving its drawer is a fact a human should
+		// resolve, not something a purge erases silently.
+		if n := edgesNaming(t, svc, id); n == 0 {
+			t.Error("the authored edge was deleted too; only server-derived edges may be purged")
+		}
+	})
+}

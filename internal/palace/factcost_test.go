@@ -3,134 +3,89 @@ package palace
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-// TestFactLookupCostIsBounded measures how many graph queries a single recall
-// issues, because factsFor runs one KGQuery per candidate entity and candidates
-// come from BOTH the vector matches AND every loaded drawer's extracted terms.
+// TestFactLookupIssuesABoundedNumberOfStatements measures what a single recall
+// actually costs in SQL, on the search hot path.
 //
-// This is a search-path hot loop: every am_search pays it. The number is measured
-// rather than reasoned about, and the ceiling is asserted so a later change that
-// multiplies it fails here instead of showing up as a slow palace.
-func TestFactLookupCostIsBounded(t *testing.T) {
+// The number that matters is STATEMENTS, not entities. An earlier version of this
+// test counted candidate entities and called them queries — true when factsFor
+// issued one KGQuery per entity, and stale the moment the fetch was batched. A
+// cost test whose unit drifts from the thing it measures reports a number nobody
+// can act on.
+//
+// The review that prompted this counted correctly and beat my own measurement:
+// one KGQuery costs several statements, and factsFor read the CANDIDATE POOL
+// (limit*3 — 30 drawers at the shipped limit of 10) rather than the ranked page.
+// Both are fixed; this pins the result.
+func TestFactLookupIssuesABoundedNumberOfStatements(t *testing.T) {
 	ctx := context.Background()
-	const team = "t-cost"
+	const team = "t-sqlcost"
 	svc := newTestService(t)
 
-	// A page's worth of drawers, each carrying several extracted proper nouns.
-	for i := 0; i < 10; i++ {
-		content := fmt.Sprintf("Ledger and Atlas and Vault and Beacon and Harbor interact in system %d. Ledger calls Atlas. Vault stores Beacon.", i)
+	// Ten drawers, each naming three things no other drawer names, so entity
+	// dedup cannot flatter the count. Each noun is repeated within its drawer
+	// because extractEntities is frequency-based and stamps nothing otherwise.
+	vocab := [][3]string{
+		{"Kestrel", "Meridian", "Foundry"}, {"Lantern", "Quarry", "Thicket"},
+		{"Beacon", "Harrow", "Vellum"}, {"Cinder", "Marrow", "Pallet"},
+		{"Dovetail", "Nimbus", "Rampart"}, {"Ember", "Orchard", "Sable"},
+		{"Fathom", "Plinth", "Tessera"}, {"Girder", "Quill", "Umber"},
+		{"Halyard", "Rookery", "Verdant"}, {"Ingot", "Sextant", "Willow"},
+	}
+	for _, v := range vocab {
+		content := fmt.Sprintf("%s calls %s. %s stores in %s. %s reads %s. %s and %s share %s.",
+			v[0], v[1], v[0], v[2], v[1], v[2], v[0], v[1], v[2])
 		if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: content}); err != nil {
-			t.Fatalf("add %d: %v", i, err)
+			t.Fatalf("add: %v", err)
+		}
+		if _, err := svc.KGAdd(ctx, team, v[0], "calls", v[1], "", "", "", "", ""); err != nil {
+			t.Fatalf("kgadd: %v", err)
 		}
 	}
 	if _, err := svc.BackfillEntityLabels(ctx, team); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 
-	rows, err := svc.repo.IDsBySource(ctx, team, "wing_acme", "decisions", "")
-	if err != nil {
-		t.Fatalf("ids: %v", err)
-	}
-	loaded := map[string]Drawer{}
-	drawers, err := svc.repo.DrawersByIDs(ctx, team, rows)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	for _, d := range drawers {
-		loaded[d.ID] = d
-	}
+	// Record only the statements the fact lookup itself issues.
+	rec := &sqlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
+	svc.repo.db = svc.repo.db.Session(&gorm.Session{Logger: rec})
 
-	// The query count equals the number of distinct candidate entities, which is
-	// what the implementation iterates.
-	vec, err := svc.embed.EmbedOne(ctx, "what does Ledger call")
+	vec, err := svc.embed.EmbedOne(ctx, "what does Kestrel call")
 	if err != nil {
 		t.Fatalf("embed: %v", err)
 	}
-	matches, err := svc.entityMatches(ctx, team, vec, factEntityMatches)
-	if err != nil {
-		t.Fatalf("matches: %v", err)
-	}
-	seen := map[string]bool{}
-	for _, m := range matches {
-		seen[m.ID] = true
-	}
-	for _, d := range loaded {
-		for _, term := range d.Entities {
-			if id := normalizeEntityID(term); id != "" {
-				seen[id] = true
-			}
-		}
+	page := map[string]Drawer{}
+	ids, _ := svc.repo.IDsBySource(ctx, team, "wing_acme", "decisions", "")
+	ds, _ := svc.repo.DrawersByIDs(ctx, team, ids)
+	for _, d := range ds {
+		page[d.ID] = d
 	}
 
-	t.Logf("page of %d drawers -> %d candidate entities -> %d KGQuery calls per recall",
-		len(loaded), len(seen), len(seen))
-
-	// The ceiling is deliberately generous and deliberately PRESENT. A recall that
-	// issues a query per extracted noun across a whole page is a cost that grows
-	// with page size and with how chatty the extractor is, and neither is bounded
-	// by anything else in the system.
-	const ceiling = 60
-	if len(seen) > ceiling {
-		t.Errorf("a single recall would issue %d graph queries (ceiling %d); factsFor is on the search hot path and this grows with page size times entities per drawer",
-			len(seen), ceiling)
+	before := len(rec.statements())
+	if _, err := svc.factsFor(ctx, team, "wing_acme", vec, page); err != nil {
+		t.Fatalf("factsFor: %v", err)
 	}
+	cost := len(rec.statements()) - before
 
-	// The case above is FAVOURABLE: every drawer names the same five things, so
-	// dedup collapses them and the count stays near the entity count rather than
-	// the drawer count. A page whose drawers share no vocabulary is the real
-	// ceiling, and measuring only the flattering case is how a cost estimate
-	// becomes a reassurance.
-	t.Run("a page that shares no vocabulary", func(t *testing.T) {
-		const team = "t-cost-worst"
-		svc := newTestService(t)
-		// Ten drawers, each naming three things NO other drawer names. Getting
-		// this fixture to actually exercise the worst case took three attempts,
-		// and each failed version passed:
-		//
-		//   1. each noun named once   -> extractEntities is frequency-based and
-		//                                stamped nothing; 0 candidate entities
-		//   2. nouns suffixed 0..9    -> the extractor strips digits, so Alpha0
-		//                                and Alpha9 are both "Alpha"; all ten
-		//                                drawers shared one vocabulary
-		//
-		// A cost measurement over a fixture that cannot produce the cost is a
-		// reassurance, not a measurement.
-		vocab := [][3]string{
-			{"Kestrel", "Meridian", "Foundry"}, {"Lantern", "Quarry", "Thicket"},
-			{"Beacon", "Harrow", "Vellum"}, {"Cinder", "Marrow", "Pallet"},
-			{"Dovetail", "Nimbus", "Rampart"}, {"Ember", "Orchard", "Sable"},
-			{"Fathom", "Plinth", "Tessera"}, {"Girder", "Quill", "Umber"},
-			{"Halyard", "Rookery", "Verdant"}, {"Ingot", "Sextant", "Willow"},
+	graph := 0
+	for _, sql := range rec.statements()[before:] {
+		if strings.Contains(sql, "kg_triples") || strings.Contains(sql, "kg_entities") {
+			graph++
 		}
-		for _, v := range vocab {
-			content := fmt.Sprintf("%s calls %s. %s stores in %s. %s reads %s. %s and %s share %s.",
-				v[0], v[1], v[0], v[2], v[1], v[2], v[0], v[1], v[2])
-			if _, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: content}); err != nil {
-				t.Fatalf("add %s: %v", v[0], err)
-			}
-		}
-		ids, err := svc.repo.IDsBySource(ctx, team, "wing_acme", "decisions", "")
-		if err != nil {
-			t.Fatalf("ids: %v", err)
-		}
-		ds, err := svc.repo.DrawersByIDs(ctx, team, ids)
-		if err != nil {
-			t.Fatalf("load: %v", err)
-		}
-		worst := map[string]bool{}
-		for _, d := range ds {
-			for _, term := range d.Entities {
-				if id := normalizeEntityID(term); id != "" {
-					worst[id] = true
-				}
-			}
-		}
-		t.Logf("page of %d drawers sharing no vocabulary -> %d candidate entities -> %d KGQuery calls",
-			len(ds), len(worst), len(worst))
-		if len(worst) > ceiling {
-			t.Errorf("worst realistic page issues %d graph queries (ceiling %d) on every am_search", len(worst), ceiling)
-		}
-	})
+	}
+	t.Logf("one recall over a %d-drawer page: %d statements total, %d of them graph reads", len(page), cost, graph)
+
+	// The ceiling is what stops a later change reintroducing per-entity fan-out.
+	// It is not a performance target — it is the line between "bounded by the
+	// query shape" and "bounded by how chatty the extractor was".
+	const ceiling = 12
+	if cost > ceiling {
+		t.Errorf("a single recall issued %d SQL statements (ceiling %d) on the search hot path; the lookup is fanning out per entity again", cost, ceiling)
+	}
 }

@@ -92,22 +92,39 @@ func (s *Service) factsFor(ctx context.Context, teamID, wing string, vec []float
 		return block, nil
 	}
 
-	// Walk out from every candidate entity. Status is CURRENT: a fact whose
-	// valid_to has passed is not an answer, and am_kg_query already defaults the
-	// same way (kgQueryDefaultStatus), so this extends an existing default rather
-	// than inventing one. 14 facts on the live palace are already ended.
-	var candidates []KGFact
-	for _, id := range entityIDs {
-		q, err := s.KGQuery(ctx, teamID, KGQueryInput{
-			Entity: id, Direction: "both", Status: KGStatusCurrent,
-		})
-		if err != nil {
-			return block, err
-		}
-		candidates = append(candidates, q.Facts...)
+	// ONE batched query for every candidate entity, not one KGQuery each.
+	//
+	// Status is CURRENT: a fact whose valid_to has passed is not an answer, and
+	// am_kg_query already defaults the same way (kgQueryDefaultStatus), so this
+	// extends an existing default rather than inventing one. 14 facts on the live
+	// palace are already ended.
+	rows, err := s.repo.KGTriplesForEntities(ctx, teamID, entityIDs, KGStatusCurrent)
+	if err != nil {
+		return block, err
 	}
-	if len(candidates) == 0 {
+	if len(rows) == 0 {
 		return block, nil
+	}
+
+	// Endpoint names resolved in one read too, rather than per fact.
+	nameIDs := make([]string, 0, 2*len(rows))
+	for _, row := range rows {
+		nameIDs = append(nameIDs, row.Subject, row.Object)
+	}
+	names, err := s.repo.KGEntityNames(ctx, teamID, nameIDs)
+	if err != nil {
+		return block, err
+	}
+	candidates := make([]KGFact, 0, len(rows))
+	for _, row := range rows {
+		subj, obj := names[row.Subject], names[row.Object]
+		if subj == "" {
+			subj = row.Subject
+		}
+		if obj == "" {
+			obj = row.Object
+		}
+		candidates = append(candidates, kgFact("", subj, row.Predicate, obj, row))
 	}
 
 	// Resolve provenance from the rows the search ALREADY loaded, and query only

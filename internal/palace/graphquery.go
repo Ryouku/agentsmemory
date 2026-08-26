@@ -3,6 +3,7 @@ package palace
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -258,6 +259,10 @@ type RecomputeResult struct {
 	Hallways       int      `json:"hallways"`
 	EntityTunnels  int      `json:"entity_tunnels"`
 	PrunedHallways int      `json:"pruned_hallways"`
+	// EntityLabelsIndexed is how many KG entity labels were re-embedded, so an
+	// operator can see the fact-lookup index was rebuilt and not merely the
+	// hallways.
+	EntityLabelsIndexed int `json:"entity_labels_indexed"`
 }
 
 // RecomputeGraph rebuilds the derived graph from current drawers, no source files
@@ -363,6 +368,20 @@ func (s *Service) RecomputeGraph(ctx context.Context, teamID, wing string, prune
 		return RecomputeResult{}, err
 	}
 	res.EntityTunnels = len(entityTunnels)
+
+	// The entity-label index is derived structure too, so it is rebuilt here
+	// rather than living only in a test. BackfillEntityLabels had NO production
+	// caller, so entities that existed before ADR-036 never entered the vector
+	// namespace and no question could reach their facts — a capability complete
+	// and unreachable, which is this repository's named defect.
+	//
+	// Non-fatal: a recompute that rebuilt the graph should not report failure
+	// because the label index could not be refreshed.
+	if n, err := s.BackfillEntityLabels(ctx, teamID); err != nil {
+		slog.WarnContext(ctx, "entity labels not reindexed; facts about pre-existing entities stay unreachable by question", "err", err)
+	} else {
+		res.EntityLabelsIndexed = n
+	}
 	return res, nil
 }
 

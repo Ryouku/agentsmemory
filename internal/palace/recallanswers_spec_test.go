@@ -569,7 +569,7 @@ func TestEveryDrawerCarriesAnEdgeAndDerivedOnesAreMarked(t *testing.T) {
 			t.Fatalf("author an edge: %v", err)
 		}
 
-		if err := svc.attachDerivedEdge(ctx, team, Drawer{ID: placed, Wing: "wing_acme", Room: "decisions"}); err != nil {
+		if _, err := svc.attachDerivedEdge(ctx, team, Drawer{ID: placed, Wing: "wing_acme", Room: "decisions"}); err != nil {
 			t.Fatalf("attach: %v", err)
 		}
 

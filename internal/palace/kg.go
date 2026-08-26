@@ -982,6 +982,19 @@ func DerivedEdgeSubject(wing, room string) string {
 	return "room:" + wing + "/" + room
 }
 
+// EdgeAttachment says what attachDerivedEdge actually did, because "no error"
+// covered three different outcomes and the caller reported all of them as a
+// freshly derived edge — so a drawer a writer had deliberately placed came back
+// claiming the server had guessed for it.
+type EdgeAttachment int
+
+// The three outcomes. Authored and AlreadyDerived both mean "nothing was written".
+const (
+	EdgeAuthored EdgeAttachment = iota
+	EdgeAlreadyDerived
+	EdgeNewlyDerived
+)
+
 // attachDerivedEdge makes a newly filed drawer reachable by traversal.
 //
 // Measured 2026-08-26 on the live palace: 57 of 1,985 drawers carry any edge
@@ -993,14 +1006,14 @@ func DerivedEdgeSubject(wing, room string) string {
 // An AUTHORED edge always wins. If any triple already names this drawer as its
 // object, nothing is derived: the writer has said where it belongs, and a server
 // guess must not sit beside a human decision as though the two were equivalent.
-func (s *Service) attachDerivedEdge(ctx context.Context, teamID string, d Drawer) error {
+func (s *Service) attachDerivedEdge(ctx context.Context, teamID string, d Drawer) (EdgeAttachment, error) {
 	existing, err := s.repo.KGTriplesByObject(ctx, teamID, normalizeEntityID(d.ID), KGStatusAll, "")
 	if err != nil {
-		return err
+		return EdgeAuthored, err
 	}
 	for _, row := range existing {
 		if row.Derived == nil || !*row.Derived {
-			return nil // authored; leave it alone
+			return EdgeAuthored, nil // authored; leave it alone
 		}
 	}
 
@@ -1009,18 +1022,18 @@ func (s *Service) attachDerivedEdge(ctx context.Context, teamID string, d Drawer
 	p := normalizePredicate(DerivedEdgePredicate)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := s.repo.UpsertKGEntity(ctx, teamID, subID, subj, now); err != nil {
-		return err
+		return EdgeAuthored, err
 	}
 	if err := s.repo.UpsertKGEntity(ctx, teamID, objID, d.ID, now); err != nil {
-		return err
+		return EdgeAuthored, err
 	}
 	if id, err := s.repo.CurrentTripleID(ctx, teamID, subID, p, objID); err != nil {
-		return err
+		return EdgeAuthored, err
 	} else if id != "" {
-		return nil
+		return EdgeAlreadyDerived, nil
 	}
 	derived := true
-	return s.repo.InsertKGTriple(ctx, kgTripleRow{
+	return EdgeNewlyDerived, s.repo.InsertKGTriple(ctx, kgTripleRow{
 		TeamID: teamID, ID: tripleID(subID, p, objID, "", now),
 		Subject: subID, Predicate: p, Object: objID,
 		Confidence: 1.0, SourceDrawerID: d.ID, ExtractedAt: now,
@@ -1138,4 +1151,56 @@ func (s *Service) CorrectionsFor(ctx context.Context, teamID string, recordIDs [
 		}
 	}
 	return out, nil
+}
+
+// KGTriplesForEntities loads every current triple touching ANY of the given
+// entity ids, in one statement per direction rather than one query per entity.
+//
+// factsFor previously issued a full KGQuery per candidate entity — each costing
+// several statements — across every entity on every drawer in the candidate pool.
+// At the shipped limit of 10 the pool is 30 drawers, so a single am_search could
+// reach four figures of serial SQL. This is the batched replacement: the cost
+// becomes two statements plus one name resolution, independent of how many
+// entities the page mentions.
+func (r *Repo) KGTriplesForEntities(ctx context.Context, teamID string, ids []string, status string) ([]kgTripleRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []kgTripleRow
+	q := r.db.WithContext(ctx).Where("team_id = ? AND (subject IN ? OR object IN ?)", teamID, ids, ids)
+	switch status {
+	case KGStatusCurrent:
+		q = q.Where("valid_to = ''")
+	case KGStatusEnded:
+		q = q.Where("valid_to <> ''")
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// DropDerivedEdgesFor removes the server-derived edges naming any of these
+// drawers, and only those.
+//
+// Deletion paths purge drawer rows and vectors and left their derived triples
+// behind, still current, pointing at ids that no longer resolve. That is worse
+// than an orphan drawer: it is an edge asserting a record exists where none
+// does, and it accumulates on every re-file of changed content because a changed
+// drawer gets a NEW id and a new edge beside the stale one.
+//
+// AUTHORED edges are never touched. A writer's placement outliving the drawer it
+// named is a fact about the graph a human should resolve, not something a purge
+// should silently erase.
+func (r *Repo) DropDerivedEdgesFor(ctx context.Context, teamID string, drawerIDs []string) error {
+	if len(drawerIDs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(drawerIDs))
+	for _, id := range drawerIDs {
+		ids = append(ids, normalizeEntityID(id))
+	}
+	return r.db.WithContext(ctx).
+		Where("team_id = ? AND object IN ? AND derived = ?", teamID, ids, true).
+		Delete(&kgTripleRow{}).Error
 }

@@ -708,14 +708,36 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 // is reached, and losing a filing because the graph refused would be the worse
 // trade — the same reasoning the deferred-embedding branch already makes.
 func (s *Service) attachDerivedEdgeTo(ctx context.Context, teamID string, drawers []Drawer) {
-	if len(drawers) == 0 {
-		return
+	// One edge per SOURCE ROOT, not per batch. An import batch can carry records
+	// from several independent source files, and attaching only to drawers[0]
+	// left every other root unedged — a distinct defect from the missing call
+	// that preceded it, and invisible for the same reason: the batch that was
+	// tested had one source.
+	seen := map[string]bool{}
+	for i := range drawers {
+		d := drawers[i]
+		// The ROOT chunk of each memory. A chunked memory must not contribute one
+		// edge per chunk, which would inflate the count this is measured by.
+		if d.ParentID != "" {
+			continue
+		}
+		key := d.Wing + "\x00" + d.Room + "\x00" + d.SourceFile
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		got, err := s.attachDerivedEdge(ctx, teamID, d)
+		if err != nil {
+			logAttachFailure(ctx, d.ID, err)
+			continue
+		}
+		// Reported from what actually happened. Setting both flags unconditionally
+		// made a drawer a writer had deliberately placed come back claiming the
+		// server guessed for it.
+		drawers[i].HasEdge = true
+		drawers[i].EdgeDerived = got != EdgeAuthored
 	}
-	if err := s.attachDerivedEdge(ctx, teamID, drawers[0]); err != nil {
-		logAttachFailure(ctx, drawers[0].ID, err)
-		return
-	}
-	drawers[0].HasEdge, drawers[0].EdgeDerived = true, true
 }
 
 // logAttachFailure records a derived-edge attachment that did not happen. It is
@@ -823,6 +845,14 @@ func (s *Service) purgeSource(ctx context.Context, teamID, wing, room, source st
 	}
 	if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
 		return fmt.Errorf("purge source vectors: %w", err)
+	}
+	// The derived edges go with the rows. Left behind they stay CURRENT and point
+	// at ids that no longer resolve — an edge asserting a record exists where none
+	// does — and they accumulate on every re-file of changed content, since a
+	// changed drawer gets a new id and a new edge beside the stale one. Authored
+	// edges are deliberately left for a human.
+	if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
+		return fmt.Errorf("purge derived edges: %w", err)
 	}
 	if err := s.repo.DeleteBySource(ctx, teamID, wing, room, source); err != nil {
 		return fmt.Errorf("purge source rows: %w", err)
@@ -1031,6 +1061,11 @@ func (s *Service) Delete(ctx context.Context, teamID, id string) (n int, err err
 	if len(ids) == 0 {
 		ids = []string{id} // no row to resolve; delete what we were given
 	}
+	// Same rule as purgeSource: a deleted drawer's derived edges go with it, or
+	// they stay current pointing at nothing.
+	if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
+		return 0, fmt.Errorf("drop derived edges: %w", err)
+	}
 	for _, cid := range ids {
 		if err := s.repo.Delete(ctx, teamID, cid); err != nil {
 			return 0, fmt.Errorf("delete drawer row: %w", err)
@@ -1221,7 +1256,16 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 	// here degrades the answer to drawers-only rather than failing the recall:
 	// the drawers are what a caller had before this existed, and losing them
 	// because the graph refused would be the worse trade.
-	facts, factsErr := s.factsFor(searchCtx, teamID, q.Wing, vec, rows)
+	// Entities come from the RANKED PAGE, not the candidate pool. `rows` is the
+	// pool searchCandidates fetched — limit*3, so 30 drawers at the shipped
+	// limit of 10 — and reading entities from all of it made the fact lookup pay
+	// for candidates the caller will never see. The page is also the more correct
+	// source: a fact should relate to what was actually returned.
+	pageRows := make(map[string]Drawer, len(results))
+	for _, h := range results {
+		pageRows[h.Drawer.ID] = h.Drawer
+	}
+	facts, factsErr := s.factsFor(searchCtx, teamID, q.Wing, vec, pageRows)
 	if factsErr != nil {
 		slog.WarnContext(ctx, "fact block not assembled; recall degraded to drawers only", "err", factsErr)
 		facts = FactBlock{}
