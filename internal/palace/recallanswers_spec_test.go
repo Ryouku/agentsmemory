@@ -75,3 +75,7 @@ func TestCorrectionsAreSweptServerSideAcrossAllThreePredicates(t *testing.T) {
 func TestTheBootstrapCostsFewerTokensThanTheProtocolItReplaces(t *testing.T) {
 	t.Fatal("F-16 not implemented: must beat the measured client baseline of 13 calls / ~2.8k output tokens. A bootstrap returning more than it saves has reproduced the problem inside one call")
 }
+
+func TestTheBootstrapResolvesEdgesDirectlyNotByGraphWalk(t *testing.T) {
+	t.Fatal("F-17 not implemented: am_traverse's max_hops is provably inert (via is an intersection carried forward, so hop>=2 adds nothing), so a bootstrap built on multi-hop traversal would silently return only hop 1")
+}
