@@ -408,10 +408,44 @@ type evidenceCitation struct {
 	line   int
 }
 
-// citedEvidenceDocs are the documents whose file references are load-bearing:
-// their whole authority is that a reader can go and look. Add a document here
-// when it starts citing code.
-var citedEvidenceDocs = []string{"docs/evidence/search-path-variable-map.md"}
+// evidenceDir holds the documents whose file references are load-bearing: their
+// whole authority is that a reader can go and look.
+//
+// The directory is GLOBBED rather than listed, because a hand-kept list is the
+// defect this package exists to catch one level up — the list is a claim about
+// the tree, kept beside the tree, and it goes stale silently. Measured while
+// reviewing this gate: a new docs/evidence/probe-map.md full of line-number
+// citations passed the suite without a word, because nobody had remembered to
+// add it. Globbing removes the remembering.
+const evidenceDir = "docs/evidence"
+
+// identifierBoundary reports whether the byte at a citation's edge would extend
+// the identifier. Resolution is a substring search, so without this check
+// service.go:andidateKFor resolves against candidateKFor — a stale or typo'd
+// anchor that happens to sit inside a real symbol reads as verified.
+func identifierBoundary(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// containsIdentifier reports whether target appears in src delimited by
+// non-identifier characters on both sides.
+func containsIdentifier(src, target string) bool {
+	for i := 0; ; {
+		j := strings.Index(src[i:], target)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(target)
+		leftOK := start == 0 || !identifierBoundary(src[start-1])
+		rightOK := end == len(src) || !identifierBoundary(src[end])
+		if leftOK && rightOK {
+			return true
+		}
+		i = start + 1
+	}
+}
 
 // TestEvidenceCitationsResolve: a document that cites code must cite code that
 // exists, and must cite it in a form that survives an edit somewhere else.
@@ -448,8 +482,16 @@ func TestEvidenceCitationsResolve(t *testing.T) {
 	loose := regexp.MustCompile(`((?:internal|cmd|db|clients)/[A-Za-z0-9_./-]+\.(?:go|sql|yml|yaml)):[A-Za-z0-9_.]* [A-Za-z0-9_]`)
 
 	var cites []evidenceCitation
-	for _, doc := range citedEvidenceDocs {
-		b, err := os.ReadFile(filepath.Join(root, doc))
+	docs, err := filepath.Glob(filepath.Join(root, evidenceDir, "*.md"))
+	if err != nil {
+		t.Fatalf("glob %s: %v", evidenceDir, err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("%s holds no documents — this check has nothing to read", evidenceDir)
+	}
+	for _, abs := range docs {
+		doc := filepath.ToSlash(filepath.Join(evidenceDir, filepath.Base(abs)))
+		b, err := os.ReadFile(abs)
 		if err != nil {
 			t.Fatalf("read %s: %v", doc, err)
 		}
@@ -482,7 +524,7 @@ func TestEvidenceCitationsResolve(t *testing.T) {
 			t.Errorf("%s:%d cites %s, which does not exist: %v", c.doc, c.line, c.file, err)
 			continue
 		}
-		if !strings.Contains(string(src), c.target) {
+		if !containsIdentifier(string(src), c.target) {
 			t.Errorf("%s:%d cites %s:%s, and %q appears nowhere in that file.\n"+
 				"  Either the code was renamed or removed, or the citation was never right.",
 				c.doc, c.line, c.file, c.target, c.target)
