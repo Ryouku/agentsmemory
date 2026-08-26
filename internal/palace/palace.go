@@ -163,6 +163,11 @@ type SearchHit struct {
 	// signal — a memory that matched in four places is stronger evidence than one
 	// that matched in one, and a silent collapse throws that away.
 	ChunksMatched int
+	// Corrections are the retracts/supersedes/qualifies edges pointing AT this
+	// record, resolved server-side. Marked, never hidden and never demoted: a
+	// retraction can itself be wrong, so this is a signal for the reader rather
+	// than a gate on what the reader may see.
+	Corrections []Correction `json:"corrections,omitempty"`
 	Score         float64 // fused rank score, higher is better
 	BM25          float64 // raw Okapi-BM25 lexical score (pre-normalization)
 	ClosetBoost   float64 // closet rank boost folded into Score (0 when none)

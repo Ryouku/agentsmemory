@@ -75,3 +75,22 @@ func (p WingPolicy) Place(ctx context.Context, sourceDrawerID string) (WingPlace
 func (p WingPolicy) MayReturnContent(placement WingPlacement) bool {
 	return placement == PlacementLocal
 }
+
+// wingPolicyFor builds the policy for one recall, resolving drawer wings from the
+// store. It is the shared constructor every response path uses, so "which wing is
+// this in" is answered one way rather than per call site.
+func (s *Service) wingPolicyFor(ctx context.Context, teamID, viewer string) WingPolicy {
+	cache := map[string]string{}
+	return NewWingPolicy(viewer, func(ctx context.Context, id string) (string, bool) {
+		if w, ok := cache[id]; ok {
+			return w, w != ""
+		}
+		wings, err := s.repo.WingsForDrawers(ctx, teamID, []string{id})
+		if err != nil {
+			return "", false
+		}
+		w := wings[id]
+		cache[id] = w
+		return w, w != ""
+	})
+}

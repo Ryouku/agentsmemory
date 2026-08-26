@@ -70,9 +70,32 @@ ancestors' 12 still run, so a regression in what T5 was built on is still caught
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · ffc1d01 · exit 1 · `set -o pipefail …` · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
+  ```
+  --- FAIL: TestACorrectedRecordArrivesCarryingItsCorrection (0.00s)
+      recallanswers_spec_test.go:62: F-3 not implemented: a hit that is the object of retracts/supersedes/qualifies must carry that edge and the replacement id — marked, never hidden
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.016s
+  --- FAIL: TestSearchResultRendersTheCorrectionMark (0.00s)
+      recallanswers_reach_test.go:91: ADR-036 T5 not implemented: a superseded record's correction edge and replacement id appear in the rendered hit
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/mcpserver	0.017s
+  FAIL
+  ```
+- 2026-08-26 · ffc1d01* · exit 0 · `set -o pipefail …` · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
 
 ## Mutation Log
+
+- 2026-08-26 · ffc1d01* · mutant survived · exit 0 · `internal/palace/kg.go` · read the sweep outgoing: a correction attaches to the record it corrects as an INCOMING edge, so this direction can never see one · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · ffc1d01* · mutant survived · exit 0 · `internal/palace/kg.go` · sweep only retracts; on 2026-08-25 the edge that mattered was a qualifies and a session that ran only retracts shipped a bad pointer · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · ffc1d01* · mutant killed · exit 1 · `internal/palace/kg.go` · attach the correction to the record doing the correcting instead of the one being corrected · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
+- 2026-08-26 · ffc1d01* · mutant killed · exit 1 · `internal/palace/kg.go` · sweep only retracts; on 2026-08-25 the edge that mattered was a qualifies · acceptance-sha256:308880c7faa47cf66150c6718ec3c639bd1bfb52ece3a5f3798a2a2c488aebeb
 
 ## Invariants
 

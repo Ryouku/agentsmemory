@@ -527,6 +527,7 @@ func newSearchHitView(h palace.SearchHit) searchHitView {
 		Reranked:      h.Reranked,
 		Blended:       h.Blended,
 		ChunksMatched: h.ChunksMatched,
+		Corrections:   h.Corrections,
 	}
 }
 
@@ -601,6 +602,10 @@ type searchHitView struct {
 	// last verification pass. Stale is the summary an agent should branch on.
 	Anchors []anchorView `json:"code_anchors,omitempty"`
 	Stale   bool         `json:"stale,omitempty"`
+	// Corrections are the retracts/supersedes/qualifies edges pointing at this
+	// record. Without them a page that bootstraps perfectly still serves a record
+	// somebody has already contradicted, and says nothing about it.
+	Corrections []palace.Correction `json:"corrections,omitempty"`
 }
 
 // regionView is one matching part of a memory as search reports it: the verbatim

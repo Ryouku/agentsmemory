@@ -59,7 +59,92 @@ func TestARecallNamesTheWingsThatHoldTheAnswer(t *testing.T) {
 }
 
 func TestACorrectedRecordArrivesCarryingItsCorrection(t *testing.T) {
-	t.Fatal("F-3 not implemented: a hit that is the object of retracts/supersedes/qualifies must carry that edge and the replacement id — marked, never hidden")
+	// ALL THREE predicates, table-driven. Naming three and asserting one is how
+	// `qualifies` was missed on 2026-08-25, when a session that ran only
+	// `retracts` shipped a pointer to an ADR that was not on main.
+	// The three names are written out HERE rather than ranged over
+	// CorrectionPredicates. Iterating the very list under test means shrinking
+	// that list just runs fewer subtests and passes — measured: a mutant cutting
+	// it to {"retracts"} survived this test completely.
+	for _, pred := range []string{"retracts", "supersedes", "qualifies"} {
+		t.Run(pred, func(t *testing.T) {
+			if !slices.Contains(CorrectionPredicates, pred) {
+				t.Fatalf("%q is not swept by CorrectionPredicates; a correction of this kind would never be seen", pred)
+			}
+			ctx := context.Background()
+			team := "t-f3-" + pred
+			svc := newTestService(t)
+
+			wrong, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "the scheduler runs hourly"})
+			if err != nil {
+				t.Fatalf("add wrong: %v", err)
+			}
+			right, err := svc.Add(ctx, team, AddInput{Wing: "wing_acme", Room: "decisions", Content: "the scheduler runs every five minutes"})
+			if err != nil {
+				t.Fatalf("add right: %v", err)
+			}
+
+			// The correcting record points AT the corrected one. That direction is
+			// the whole point: it arrives as an INCOMING edge, which an outgoing
+			// walk from the corrected record can never see.
+			if _, err := svc.KGAdd(ctx, team, right.Drawers[0].ID, pred, wrong.Drawers[0].ID, "", "", "", "", right.Drawers[0].ID); err != nil {
+				t.Fatalf("kgadd %s: %v", pred, err)
+			}
+
+			page, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "how often does the scheduler run", Limit: 10})
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+
+			var marked *SearchHit
+			for i := range page.Hits {
+				if page.Hits[i].MemoryID == wrong.Drawers[0].ID {
+					marked = &page.Hits[i]
+				}
+			}
+			if marked == nil {
+				t.Fatalf("the corrected record is not on the page at all; %d hits", len(page.Hits))
+			}
+			if len(marked.Corrections) == 0 {
+				t.Fatalf("the corrected record arrived with no correction; a reader would act on something already contradicted")
+			}
+			var sawPred, sawReplacement bool
+			for _, c := range marked.Corrections {
+				if c.Predicate == pred {
+					sawPred = true
+				}
+				if c.ReplacementID != "" {
+					sawReplacement = true
+				}
+			}
+			if !sawPred {
+				t.Errorf("the correction does not name its kind; got %+v", marked.Corrections)
+			}
+			if !sawReplacement {
+				t.Errorf("the correction does not name what replaced the record; got %+v", marked.Corrections)
+			}
+
+			// The mark lands on the CORRECTED record and never on the correcting
+			// one. Without this the sweep can key by the wrong endpoint and still
+			// look right whenever both records are on the page — which is the
+			// common case, and which let a direction mutant survive.
+			for i := range page.Hits {
+				if page.Hits[i].MemoryID == right.Drawers[0].ID && len(page.Hits[i].Corrections) > 0 {
+					t.Errorf("the correcting record was itself marked as corrected: %+v", page.Hits[i].Corrections)
+				}
+			}
+
+			// Marked, never hidden and never demoted. A retraction can itself be
+			// wrong, so this is a signal for the reader rather than a gate.
+			uncorrected, err := svc.SearchPage(ctx, team, SearchQuery{Wing: "wing_acme", Query: "how often does the scheduler run", Limit: 10})
+			if err != nil {
+				t.Fatalf("search again: %v", err)
+			}
+			if len(uncorrected.Hits) != len(page.Hits) {
+				t.Errorf("marking changed how many records came back: %d vs %d", len(uncorrected.Hits), len(page.Hits))
+			}
+		})
+	}
 }
 
 func TestFactLookupMatchesBothEntityVocabularies(t *testing.T) {

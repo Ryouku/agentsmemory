@@ -88,7 +88,34 @@ func TestSearchResultRendersFactsAndTheSiblingPointer(t *testing.T) {
 
 // TestSearchResultRendersTheCorrectionMark is ADR-036 T5's rung-3 proof.
 func TestSearchResultRendersTheCorrectionMark(t *testing.T) {
-	t.Fatal("ADR-036 T5 not implemented: a superseded record's correction edge and replacement id appear in the rendered hit")
+	// searchHitView is the wire shape, and hitview_test.go already enforces that
+	// every palace.SearchHit field reaches it or is excused. This asserts the one
+	// this task adds, and that it is POPULATED — a field declared on the view and
+	// never assigned is on the wire as a permanent null.
+	if !viewFieldIsPopulated(t, "Corrections") {
+		t.Error("searchHitView.Corrections is declared but never assigned from the hit; every rendered result would carry a null")
+	}
+}
+
+// viewFieldIsPopulated reports whether the searchHitView constructor assigns the
+// named field. A source check, because a behavioural test reads the domain struct
+// and cannot see whether the VIEW was filled from it.
+func viewFieldIsPopulated(t *testing.T, field string) bool {
+	t.Helper()
+	src, err := os.ReadFile("drawers.go")
+	if err != nil {
+		t.Fatalf("read drawers.go: %v", err)
+	}
+	body := string(src)
+	i := strings.Index(body, "return searchHitView{")
+	if i < 0 {
+		t.Fatal("searchHitView constructor not found — this check has stopped checking anything")
+	}
+	end := strings.Index(body[i:], "\n\t}\n")
+	if end < 0 {
+		t.Fatal("could not bound the searchHitView literal")
+	}
+	return regexp.MustCompile(`\b` + field + `:\s*h\.`).MatchString(body[i : i+end])
 }
 
 // TestAddDrawerResultReportsItsEdge is ADR-036 T6's rung-3 proof. T6 promised

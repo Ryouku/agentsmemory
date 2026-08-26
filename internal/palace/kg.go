@@ -1066,3 +1066,70 @@ func (r *Repo) WingsForDrawers(ctx context.Context, teamID string, ids []string)
 	}
 	return out, nil
 }
+
+// CorrectionPredicates are the three ways a record can be corrected by a later
+// one. All three, always — running only `retracts` on 2026-08-25 shipped a
+// pointer to an ADR that was not on main, because the edge that mattered that day
+// was a `qualifies`.
+var CorrectionPredicates = []string{"retracts", "supersedes", "qualifies"}
+
+// Correction is one record's correction by another, as returned to a reader.
+type Correction struct {
+	// Predicate is which of the three kinds of correction this is.
+	Predicate string `json:"predicate"`
+	// ReplacementID is the record that corrects this one, when the correcting
+	// record is itself a drawer this viewer may see. Empty when the correcting
+	// record lives in another wing — the fact that a correction EXISTS still
+	// travels, because a reader who is not told is a reader acting on something
+	// somebody has already contradicted.
+	ReplacementID string `json:"replacement_id,omitempty"`
+	// ElsewhereWing names the wing holding the correcting record when it is not
+	// this viewer's. A name, never content — the same rule the fact block obeys.
+	ElsewhereWing string `json:"elsewhere_wing,omitempty"`
+}
+
+// CorrectionsFor resolves, for each given record id, the corrections attached to
+// it — read INCOMING.
+//
+// Direction is the whole point and it is easy to get backwards. A correction
+// attaches to the record it corrects as an INCOMING edge, so an outgoing walk
+// from a record can never see that it has been retracted. That is why the team's
+// own operating skill instructs agents to run three predicate queries by hand:
+// this is the server doing it once, correctly, instead.
+//
+// One resolver, consumed by both the search path (T5) and the bootstrap (T8).
+// Two implementations of the same sweep diverge on the path nobody tested, and
+// the one that diverges silently serves contradicted records as current.
+func (s *Service) CorrectionsFor(ctx context.Context, teamID string, recordIDs []string, policy WingPolicy) (map[string][]Correction, error) {
+	out := map[string][]Correction{}
+	if len(recordIDs) == 0 {
+		return out, nil
+	}
+	want := map[string]bool{}
+	for _, id := range recordIDs {
+		want[normalizeEntityID(id)] = true
+	}
+
+	for _, pred := range CorrectionPredicates {
+		rows, err := s.repo.KGTriplesByPredicate(ctx, teamID, normalizePredicate(pred), KGStatusCurrent)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			// The OBJECT is the record being corrected; the SUBJECT is the record
+			// doing the correcting.
+			if !want[row.Object] {
+				continue
+			}
+			c := Correction{Predicate: pred}
+			placement, wing := policy.Place(ctx, row.SourceDrawerID)
+			if policy.MayReturnContent(placement) {
+				c.ReplacementID = row.Subject
+			} else if placement == PlacementForeign {
+				c.ElsewhereWing = wing
+			}
+			out[row.Object] = append(out[row.Object], c)
+		}
+	}
+	return out, nil
+}
