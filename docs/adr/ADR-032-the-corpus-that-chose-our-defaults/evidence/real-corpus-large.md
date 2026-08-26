@@ -50,10 +50,18 @@ second sigmoid arm rather than the min-max control. Identical rows there are one
 measured twice, not a replication. See the Amendment in `two-corpora-2026-08-25.md`; fixed
 at `e20890e`.
 
-The n=54 comparison above is unaffected — its two rerank arms differ (0.668 vs 0.666), and
+**Corrected again 2026-08-26:** the sentence below argued the n=54 comparison was sound BECAUSE
+its two rerank arms differ. That reasoning is now known to be invalid — a later run scored two
+IDENTICAL reranked configurations 0.009 MRR apart, so a 0.002 gap establishes nothing about
+whether the two arms were configured differently. What survives is the ruling, not this
+argument for it: no corpus has shown the normaliser moves recall, and the gaps being compared
+are smaller than the instrument reproduces. See
+`reranked-arms-are-not-deterministic-2026-08-26.md`.
+
+~~The n=54 comparison above is unaffected — its two rerank arms differ (0.668 vs 0.666), and
 `vector`/`fusion bm25=0.00`, which are the same configuration by construction, are
 bit-identical at 0.587, so in this run identity means same-config and difference means the
-control genuinely ran. The degeneracy sigmoid fixes is provable in isolation and no corpus
+control genuinely ran.~~ The degeneracy sigmoid fixes is provable in isolation and no corpus
 has shown it moves recall. It is not reverted — reverting on an inconclusive result is the
 same error as adopting on one — but the evidence for neutrality is one run, not two.
 

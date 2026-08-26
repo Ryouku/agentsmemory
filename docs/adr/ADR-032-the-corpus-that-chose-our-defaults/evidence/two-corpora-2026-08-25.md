@@ -209,11 +209,21 @@ coincidence into a proof.
 
 Applying it to all three tables this ADR rests on:
 
+> **Second correction, 2026-08-26 — the "differ" half of this table's rule is now known to be
+> unsafe.** A later run contained a duplicate pair of RERANKED arms — the same configuration
+> under two names — and they scored 0.709 against 0.700, 2 points of R@1 apart. So two identical
+> reranked configurations CAN differ, and "the arms differ, therefore the configurations
+> differed" does not hold for any arm that calls the cross-encoder. Rows A and n=54 below rest on
+> exactly that inference and are **not established**; row B, which rests on identity rather than
+> difference, still stands and is independently corroborated by reading `serviceForArm`. The B1
+> defect was found in the source, not in these tables, so it is unaffected. See
+> `reranked-arms-are-not-deterministic-2026-08-26.md`.
+
 | run | `rrf+rerank` | `rrf+rerank norm=sigmoid` | so min-max… |
 |---|---|---|---|
-| A — paraphrase, n=30 | 0.610 (R@5 73%) | 0.633 (R@5 77%) | **ran** — the arms differ |
+| A — paraphrase, n=30 | 0.610 (R@5 73%) | 0.633 (R@5 77%) | ~~**ran**~~ **not established** — 0.023 is inside the measured noise |
 | B — real, n=26 | 0.708 (R@5 100%) | 0.708 (R@5 100%) | **never ran** — identical in every column |
-| real, n=54 (`real-corpus-large.md`) | 0.668 | 0.666 | **ran** — the arms differ |
+| real, n=54 (`real-corpus-large.md`) | 0.668 | 0.666 | ~~**ran**~~ **not established** — 0.002 is far inside the measured noise |
 
 So the defect voids ONE table, not the ADR. Corpus B has no min-max control and its
 `rrf+rerank` row must be read as a duplicate of the sigmoid row. The other two runs
