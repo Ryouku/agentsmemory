@@ -1,6 +1,11 @@
 package palace
 
-import "testing"
+import (
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
 
 // Spec: docs/specs/2026-08-26-a-recall-that-answers.md
 //
@@ -26,11 +31,119 @@ func TestFactLookupMatchesBothEntityVocabularies(t *testing.T) {
 }
 
 func TestFactAnswerableRateIsMeasured(t *testing.T) {
-	t.Fatal("F-5 not implemented: a case set whose gold answers are kg_triples, and an arm reporting the fraction that reached the response. Baseline is 0% by construction")
+	// Rung 2, driven rather than parsed: TestEveryDeclaredArmIsRegistered proves
+	// the identifier is MENTIONED in evalArms, which a comparison would satisfy.
+	// This calls the function and looks in its output, so deleting the append
+	// fails here even if the name survives elsewhere in the body.
+	t.Run("the arm is registered", func(t *testing.T) {
+		for _, rerank := range []bool{false, true} {
+			if !slices.Contains(evalArms(EvalOptions{}, rerank), ArmFactRetrieval) {
+				t.Errorf("rerank=%v: ArmFactRetrieval is declared but evalArms never returns it, so it appears in no table", rerank)
+			}
+		}
+	})
+
+	// The case set exists, is loadable, and every case has a gold triple. A
+	// corpus that loads to zero cases would make every rate 0/0 and satisfy any
+	// assertion about the rate vacuously.
+	cases, err := LoadFactCases(filepath.Join("testdata", "factcases-synthetic.jsonl"))
+	if err != nil {
+		t.Fatalf("load fact cases: %v", err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("no fact cases loaded")
+	}
+	for i, c := range cases {
+		if c.ExpectTriple == "" {
+			t.Errorf("case %d has no gold triple; its answerable-rate contribution is unfalsifiable", i)
+		}
+		if c.Category != CatFact {
+			t.Errorf("case %d is category %q, not %q — it would be averaged into single-hop and hidden", i, c.Category, CatFact)
+		}
+	}
+
+	// The rate always carries its denominator. This is the assertion that stops
+	// "40%" being quoted a month later over a corpus nobody can reconstruct.
+	t.Run("the rate carries its denominator", func(t *testing.T) {
+		r := FactAnswerRateFrom([]int{0, 3, 0, 1, 0})
+		if r.Answered != 2 || r.Cases != 5 {
+			t.Fatalf("got %d/%d, want 2/5", r.Answered, r.Cases)
+		}
+		if !strings.Contains(r.String(), "2/5") {
+			t.Errorf("rate renders as %q, which does not carry its denominator", r.String())
+		}
+	})
+
+	// The baseline is 0% BY CONSTRUCTION: nothing returns facts yet. Stating it
+	// as a test rather than as prose is what makes a later non-zero result mean
+	// something — the alternative is zero, so it cannot be noise.
+	t.Run("the baseline is zero", func(t *testing.T) {
+		ranks := make([]int, len(cases))
+		base := FactAnswerRateFrom(ranks)
+		if base.Fraction() != 0 {
+			t.Fatalf("baseline is %s, want 0 — nothing on the search path returns facts yet", base)
+		}
+		if base.Cases != len(cases) {
+			t.Errorf("baseline denominator is %d, want %d", base.Cases, len(cases))
+		}
+	})
+
+	// The manifest is the redacted record of the real run. Its absence would mean
+	// a rate with no auditable provenance at all.
+	m, err := LoadFactCorpusManifest(filepath.Join("testdata", "factcases-manifest-2026-08-26.json"))
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if m.Cases <= 0 || m.Date == "" {
+		t.Errorf("manifest carries cases=%d date=%q; a rate without a denominator and a date is unfalsifiable later", m.Cases, m.Date)
+	}
 }
 
 func TestFactsOnThePageAreScoredByMRR(t *testing.T) {
-	t.Fatal("F-6 not implemented: once facts share the page, ordering is scored on the same paired bootstrap as every other arm")
+	// F-6 is a property of the INSTRUMENT, provable before facts reach the page:
+	// the fact arm produces the same Ranks slice every other arm produces, so the
+	// existing statistics consume it unchanged. If it needed its own MRR path,
+	// its numbers would not be comparable with any other row in the table.
+	ranks := []int{1, 0, 2, 5, 0, 1}
+
+	iv := BootstrapMRR(ranks)
+	if iv.Hi <= 0 {
+		t.Fatalf("BootstrapMRR over the fact arm's ranks gave %s; the fact arm is not scored on the shared statistic", iv)
+	}
+	if iv.Lo > iv.Hi {
+		t.Errorf("interval %s is inverted", iv)
+	}
+	// The observed MRR must sit inside its own interval, which is what makes the
+	// interval a statement about this arm rather than a decoration beside it.
+	var mrr float64
+	for _, r := range ranks {
+		mrr += reciprocal(r)
+	}
+	mrr /= float64(len(ranks))
+	if !iv.Contains(mrr) {
+		t.Errorf("observed MRR %.3f lies outside its own interval %s", mrr, iv)
+	}
+
+	// The paired comparison is what makes a fact-arm change readable against a
+	// control rather than against a remembered number.
+	other := []int{2, 0, 3, 4, 0, 1}
+	d := PairedDelta(ranks, other)
+	if d.Lo > d.Hi {
+		t.Fatalf("paired delta interval is inverted: [%v,%v]", d.Lo, d.Hi)
+	}
+
+	// A miss is rank 0 and must not be scored as a hit at rank 1 — the arithmetic
+	// that would quietly turn every miss into a perfect answer.
+	allMissed := BootstrapMRR([]int{0, 0, 0})
+	if allMissed.Hi != 0 {
+		t.Errorf("an all-miss arm scored %s, want an interval pinned at 0", allMissed)
+	}
+
+	// And the answerable-rate agrees with the ranks it was derived from, so the
+	// two numbers the arm reports cannot drift apart.
+	if got := FactAnswerRateFrom(ranks); got.Answered != 4 || got.Cases != 6 {
+		t.Errorf("answerable rate %s disagrees with the ranks it came from; want 4/6", got)
+	}
 }
 
 func TestAnEndedFactIsNeverPresentedAsCurrent(t *testing.T) {

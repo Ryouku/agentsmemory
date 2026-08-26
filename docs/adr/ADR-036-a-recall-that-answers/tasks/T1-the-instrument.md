@@ -21,6 +21,8 @@ Fact retrieval becomes measurable against a frozen, dated corpus, so that no lat
 | `internal/palace/testdata/factcases-synthetic.jsonl` | add | the committed fixture: invented questions over invented triples, carrying no palace content |
 | `internal/palace/testdata/factcases-manifest-2026-08-26.json` | add | the redacted record of the REAL run: case count, corpus hash, provenance, date — no case text, no ids |
 | `.gitignore` | edit | keep the real case set untracked — the line that makes the privacy boundary mechanical rather than remembered |
+| `internal/palace/eval_ssot_test.go` | edit | add the arm to the serviceForArm-nil set — it retrieves on its own path, since the shared pool holds drawers and this gold is a triple |
+| `internal/palace/eval_test.go` | edit | add the arm to the not-fusion exception list; without it the arm falls through to the rerank branch and is scored under a name that does not describe it |
 | `internal/repohygiene/adr036_fixtures_test.go` | edit | the privacy gate |
 | `internal/palace/recallanswers_spec_test.go` | edit | the two red tests |
 
@@ -74,9 +76,42 @@ ancestors' 0 still run, so a regression in what T1 was built on is still caught.
 
 ## Verification Log
 
-<Tool-written by `adr-verify <task.md>`. Empty at authoring.>
+- 2026-08-26 · 1a0635f · exit 1 · `set -o pipefail …` · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
+  ```
+      recallanswers_spec_test.go:29: F-5 not implemented: a case set whose gold answers are kg_triples, and an arm reporting the fraction that reached the response. Baseline is 0% by construction
+  --- FAIL: TestFactsOnThePageAreScoredByMRR (0.00s)
+      recallanswers_spec_test.go:33: F-6 not implemented: once facts share the page, ordering is scored on the same paired bootstrap as every other arm
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/palace	0.017s
+  --- FAIL: TestADR036FixturesCarryNoPrivatePalaceContent (0.00s)
+      adr036_fixtures_test.go:22: ADR-036 T1 not implemented: tracked testdata fixtures carry only redacted aggregates — counts, hashes, provenance, tokenizer — and no case text, drawer id or triple id
+  FAIL
+  FAIL	github.com/atvirokodosprendimai/agentsmemory/internal/repohygiene	0.005s
+  FAIL
+  ```
+- 2026-08-26 · 1a0635f* · exit 1 · `set -o pipefail …` · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
+  ```
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/qdrant	0.029s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/sqlitevec	0.423s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/store/storetest	0.013s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/telemetry	0.019s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/tenant	0.487s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/usage	0.024s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web	0.034s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/web/views	0.027s
+  ok  	github.com/atvirokodosprendimai/agentsmemory/internal/wingbundle	0.023s
+  FAIL
+  ```
+- 2026-08-26 · 1a0635f* · exit 0 · `set -o pipefail …` · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
 
 ## Mutation Log
+
+- 2026-08-26 · 1a0635f* · mutant killed · exit 1 · `internal/palace/eval.go` · delete the one line that registers the arm; without it the arm is declared, documented and appears in no table · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
+- 2026-08-26 · 1a0635f* · mutant survived · exit 0 · `internal/palace/testdata/factcases-synthetic.jsonl` · plant a palace-shaped identifier in a committed fixture; the privacy gate must refuse it · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-26 · 1a0635f* · mutant killed · exit 1 · `internal/palace/testdata/factcases-synthetic.jsonl` · plant a real-shaped 64-hex palace identifier in a committed fixture; the privacy gate must refuse it · acceptance-sha256:5b0379fe2aa32870d7f169bb96526f3e6f63a6e137df00d96b039cc8b42b489c
 
 ## Invariants
 
