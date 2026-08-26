@@ -5,7 +5,10 @@
 **Owner:** Zy
 **Spec:** `docs/specs/2026-08-26-a-recall-that-answers.md`
 **Cross-references:** `docs/adr/ADR-001-recall-answers-or-abstains.md`, `docs/adr/ADR-004-supersession-not-recall.md`, `docs/adr/ADR-016-a-memory-an-agent-files-must-be-navigable.md`, `docs/adr/ADR-031-the-column-abstention-would-calibrate-on.md`, `docs/architecture.md`
-**Invalidates:** none — checked. ADR-001 (abstention) is Accepted with all six tasks pending and is a NON-GOAL here, deliberately not re-decided. ADR-016 is Accepted and executed; F-4 depends on it rather than changing it. ADR-031's calibration aggregate reads `reranked`, which this ADR does not touch. ADR-034 (open PR #61) adds `rerank_skip_reason`; this ADR takes migration `00028` to avoid its `00027`.
+**Invalidates:** **ADR-004 — this ADR crosses a condition ADR-004 set, and that is UNRESOLVED.** See
+§"The ADR-004 condition" below; the claim previously made here ("none — checked") was wrong and is
+corrected rather than quietly amended, because the whole point of the header is that somebody read it.
+Otherwise:  ADR-001 (abstention) is Accepted with all six tasks pending and is a NON-GOAL here, deliberately not re-decided. ADR-016 is Accepted and executed; F-4 depends on it rather than changing it. ADR-031's calibration aggregate reads `reranked`, which this ADR does not touch. ADR-034 (open PR #61) adds `rerank_skip_reason`; this ADR takes migration `00028` to avoid its `00027`.
 **Served-path change:** `am_search` gains a fact block, a sibling-wing pointer naming wings it did not search, and correction marks on hits; a new one-call bootstrap surface appears. An agent's recall visibly changes.
 
 ## Context
@@ -93,6 +96,55 @@ ceiling is 46% by F-8, and if the measured rate sits far below that with provena
 retrieval premise is falsified rather than quietly unmet. F-16 is the bootstrap's own falsifier: it
 must beat 13 calls / ~2.8k output tokens, measured, or it has reproduced the problem inside one
 call. Every threshold here is valid for THIS corpus and this embedder, never in the abstract.
+
+## The ADR-004 condition — unresolved, and named here rather than decided by implication
+
+ADR-004 (Accepted) says, categorically:
+
+> Nothing about the graph is populated, wired or changed until that measurement exists and has spoken.
+
+The measurement is its pre-registered supersession gate — `eval --supersession-gate`, one named arm,
+a Wilson interval against a fixed bar of 0.20, a floor of 30 verified non-vacuous pairs. It has never
+run. Issue #34 tracks it, is OPEN, and its 2026-08-24 rewrite is explicit about what may not be built
+in the meantime:
+
+> The first version of this issue proposed wiring supersession edges into `am_search`. That is
+> precisely what ADR-004 (Accepted) forbids until a pre-registered measurement has run. The ask is now
+> the measurement, not the feature. The original proposal is preserved at the bottom as the thing that
+> must NOT be built yet.
+
+**This ADR does both of the things that sentence covers.** T3 wires a graph read into the hot search
+path — `factsFor` on every `SearchPage` — and T4/T5 put `retracts`/`supersedes`/`qualifies` marks onto
+`am_search` hits. ADR-004's own cost justification names the first one in as many words: *"Feeding the
+graph means running `kg-extract` across ~5,020 drawers, wiring a graph read into the hot recall path,
+and keeping the graph fresh."*
+
+There is an argument that ADR-004's gate is narrower than its sentence — its metric is
+stale-above-current, a RANKING measure, and its verdict prices whether the graph earns a place in
+ranking. This ADR pins ranking untouched (F-9), runs no `kg-extract`, and brings its own instrument
+with a 0% baseline. On that reading ADR-036 is outside the gate's scope.
+
+**That argument is not made here, because it is not this ADR's to make.** ADR-004 is Accepted, its
+sentence is categorical, and its cost model names the hot-path read. Narrowing an accepted decision is
+a decision, and this repository's protocol is explicit that a conflict between recorded decisions gets
+surfaced rather than resolved by implication — which is exactly what "Invalidates: none — checked"
+did, silently, in the header of this document.
+
+**Resolution required before merge, one of:**
+
+1. **Run the gate** (#34's actual ask). A `justified` verdict authorises populating and wiring the
+   graph *"as its own ADR"*, which this already is — the conflict then dissolves into a satisfied
+   precondition. `not justified` or `unresolved` sends this to option 2 or 3. The two blockers #34
+   recorded (#36, #35) are both fixed, so it is runnable; it needs ≥30 judge-verified non-vacuous
+   temporal pairs generated against a live palace first.
+2. **Split this ADR** — land what sits outside the condition and hold T3's hot-path read and T5's
+   marks until the gate speaks.
+3. **Amend ADR-004** to the narrower reading above, with the owner's sign-off recorded in both
+   documents and #34 updated so it does not rot into contradiction.
+
+No gate catches this class: `adr-debt` reported 0 because the pointer resolved, and nothing reads
+SEMANTIC conflict between two accepted records. Review is the only gate here, and review is what
+caught it.
 
 ## Alternatives Considered
 
