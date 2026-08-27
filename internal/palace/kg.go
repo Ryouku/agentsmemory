@@ -637,8 +637,8 @@ func kgAddOn(ctx context.Context, r *Repo, teamID, subj, pred, obj, vf, vt, sour
 		if !exists {
 			return KGAddResult{}, fmt.Errorf(
 				"%w: source_drawer_id %s names no drawer in this team, so the fact would "+
-					"carry provenance that resolves to nothing. Ids are full length and copied, "+
-					"never typed — a shortened one does not fail, it points elsewhere. Omit "+
+					"carry provenance that resolves to nothing. Copy the id whole: a shortened or "+
+					"retyped one lands here, which is the point of the check. Omit "+
 					"source_drawer_id if this fact does not come from a drawer",
 				ErrSourceDrawerNotFound, short12(sourceDrawerID))
 		}

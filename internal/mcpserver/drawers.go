@@ -129,8 +129,11 @@ type drawerView struct {
 	// Set when the response budget trimmed this drawer's content. Both fields or
 	// neither: "truncated" without the original length tells a caller something is
 	// missing and not how much, which is not enough to decide whether to fetch it.
-	Truncated  bool `json:"content_truncated,omitempty"`
-	FullLength int  `json:"full_length,omitempty"`
+	Truncated bool `json:"content_truncated,omitempty"`
+	// content_length, not full_length: a search hit already reports the original
+	// size under that name, and one concept with two wire names on two tools is a
+	// distinction a caller has to learn for nothing.
+	FullLength int `json:"content_length,omitempty"`
 }
 
 // toView projects a domain Drawer onto its wire shape.
@@ -587,7 +590,7 @@ func registerInvalidateDrawer(reg *registrar, drawers *palace.Service, usageSvc 
 // registerListDrawers: paginate a team's drawers, optionally filtered by wing/room.
 func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
-		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. A listing carries whole drawers, so a large page is bounded: once the response budget is spent the remaining drawers carry their opening lines with content_truncated and full_length set, and a note says how many. Nothing is dropped — read any of them in full with am_get_drawer(id, whole=true), or narrow with room/limit. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. A listing carries whole drawers, so a large page is bounded: once the response budget is spent the remaining drawers carry as much of their opening as the budget still allows — possibly none — with content_truncated and content_length set, and a note says how many. Nothing is dropped — read any of them in full with am_get_drawer(id, whole=true), or narrow with room/limit. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
 		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
@@ -619,10 +622,10 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		// A listing returns whole drawers, and fifty of them at ChunkSize is roughly
-		// twice what this transport delivers. Past the ceiling the WHOLE result
-		// spills to a file the model never reads, so an unbounded listing does not
-		// return too much — it returns nothing, and reads as an empty room. Trim the
-		// tail to a bounded head instead, and say so on every record that was cut.
+		// twice a search page's whole allowance, spent without the caller asking.
+		// On a client that truncates it is worse than costly: the result arrives as
+		// nothing and reads as an empty room. Trim the tail to a bounded head
+		// instead, and say so on every record that was cut.
 		views := make([]drawerView, len(listed))
 		spent, trimmed := 0, 0
 		for i, d := range listed {
@@ -641,7 +644,8 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if trimmed > 0 {
 			out["note"] = fmt.Sprintf(
 				"%d of %d drawer(s) exceeded this response's size budget and carry their opening "+
-					"lines instead of their full text (content_truncated, with full_length). Read any "+
+					"openings instead of their full text, and the last of them may carry none at all "+
+					"(content_truncated, with content_length). Read any "+
 					"of them in full with am_get_drawer(id, whole=true), or narrow the listing with "+
 					"room/limit. The budget is a context bound, not a page count: a listing tells you WHAT is there and you fetch what you want by id.",
 				trimmed, len(views))
@@ -886,16 +890,37 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			// window, marked truncated with the full length like any other trim, so
 			// a caller can tell it happened and ask for the rest by id.
 			if snippetChars <= 0 && spent+len([]rune(fullContent)) > responseBudget {
-				// Bounded by what is LEFT, not only by the head size. The window is
-				// still query-centred where it fits; past that the budget wins, because
-				// a page that overshoots reaches the caller as nothing at all.
-				window := palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
-				views[i].Content, _ = headWithin(window, len([]rune(window)), responseBudget-spent)
+				// The window is still query-centred where it fits; the bound below
+				// then decides whether even that fits.
+				views[i].Content = palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
 				views[i].Truncated = true
 				views[i].FullLength = len([]rune(fullContent))
 				overBudget++
 			}
+
+			// ⚠ THE BOUND APPLIES ON EVERY PATH, not only to whole memories, and it
+			// counts the regions too. snippet_chars is caller-supplied and unclamped,
+			// so `limit=100, snippet_chars=100000` rendered a multi-megabyte page
+			// while the budget above looked on: it was conditioned on the ONE branch
+			// somebody tested. Regions are additional rendered text and were never in
+			// the total at all, so a page could pass the check and still ship several
+			// times the budget.
+			if trimmed, cut := headWithin(views[i].Content, len([]rune(views[i].Content)), responseBudget-spent); cut {
+				views[i].Content = trimmed
+				if !views[i].Truncated {
+					views[i].Truncated = true
+					views[i].FullLength = len([]rune(fullContent))
+					overBudget++
+				}
+				// Regions are a second copy of matching passages. Once the budget is
+				// gone they are the first thing to drop: content is the answer, regions
+				// are only how to find more of it.
+				views[i].Regions = nil
+			}
 			spent += len([]rune(views[i].Content))
+			for _, r := range views[i].Regions {
+				spent += len([]rune(r.Text))
+			}
 
 			// Coverage is set for EVERY hit, including snippet_chars=0. Otherwise
 			// "the caller requested and received the whole memory" reports the same
@@ -973,7 +998,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 				"whole memories were requested and the last %d hit(s) exceeded this response's "+
 					"size budget, so they are windowed instead (content_truncated carries "+
 					"content_length). Fetch any of them in full with am_get_drawer(id, whole=true), "+
-					"or narrow the search — a larger response would not reach you: this transport "+
+					"or narrow the search — a larger response spends context you did not ask "+
 					"budget is a context bound: a page this size is most of a session's context, and "+
 					"most of it is text you did not ask for.", overBudget)
 		}
