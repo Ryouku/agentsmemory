@@ -18,9 +18,9 @@
 > a store where text that was once superseded can never be filed again, and no gate in either record
 > would have caught it. That interaction is why this is one decision now.
 >
-> **Both records are Proposed, so this closure only takes effect if ADR-038 is accepted.** They are
-> now one decision and are accepted or rejected together. Everything below is kept verbatim as the
-> reasoning ADR-038 inherits — read it there, decide it there.
+> **This closure is IN EFFECT — ADR-038 was Accepted on 2026-08-27**, and the two were accepted as
+> one decision. Everything below is kept verbatim as the reasoning ADR-038 inherits — read it there,
+> and execute it there. These task files stay frozen.
 
 **Status:** Superseded by ADR-038
 **Date:** 2026-08-20
