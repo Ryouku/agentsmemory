@@ -208,6 +208,29 @@ source are ENDED, not deleted.**
      removal stays possible for an operator, because a store that cannot forget a leaked secret is
      not deployable; it stops being something a confused agent reaches for while trying to help.
 
+   **Three questions the tasks had punted, decided 2026-08-27 rather than left to execution:**
+
+   - **A correction CARRIES its anchors to the successor, with `status` reset to `unchecked`.**
+     Not cleared, and not trusted. Verification is client-side (`list_anchors` hands them out, the
+     client checks its working tree, `mark_anchors` takes verdicts back — the server cannot read a
+     repo), so "re-verify now" is not available at supersede time. `drawer_anchors.status` already
+     has `unchecked` meaning *"never verified"*, and `anchorID` already folds in the drawer id, so a
+     carried anchor mints a new id on the successor for free. The next client-side sweep re-verifies
+     it. Anchors are scarce — 41 of 2,024 drawers carry one, measured 2026-08-27 — so clearing them
+     on every correction would spend a resource the palace barely has. **Named cost:** `Stale()` is
+     true only for `drifted`/`missing`, so a carried anchor does not cry wolf before anyone looks at
+     it, and there is a window where it reads as fine and has not been checked. That is the right
+     trade — a false stale marker is worse than an unchecked one — but it is a window, not nothing.
+   - **A knowledge-graph fact KEEPS its `source_drawer_id` when that drawer is ended.** Provenance is
+     historical: the fact *was* extracted from that text. Re-pointing it at the successor would
+     assert that the corrected text still supports the fact, which a correction may have removed —
+     the store would be fabricating provenance. `am_kg_query` already returns `source_drawer_id`
+     (ADR-026 T6), so a reader can see the pointer resolves to an ended record, and T6's
+     `doctor --corpus` reports the ratio.
+   - **The three destructive tools are REMOVED from the agent surface, with no deprecation window.**
+     An agent doing a retraction currently gets an erasure; leaving the verb live for one more
+     release leaves the defect live for one more release. The refusal text names the operator path.
+
    **Point 7 is what makes an opaque id necessary rather than merely tidy.** A supersede mints a
    second row for the same memory. Under a content-addressed id that is an identity problem — two ids
    derived from two contents, and nothing says which is the memory. Under an opaque id it is an

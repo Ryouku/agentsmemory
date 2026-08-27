@@ -64,7 +64,10 @@ go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -run 'TestA
 others are not (should be impossible after T4 — assert it, do not assume it); a superseded record
 whose successor is itself superseded (a chain — the live record names its immediate predecessor, and
 the full chain is history-flag territory); an ended record that is the `source_drawer_id` of a
-current KG fact (the fact must not silently lose its provenance — decide and say which).
+current KG fact — **decided 2026-08-27: the fact KEEPS the pointer.** Provenance is historical; the
+fact was extracted from that text, and re-pointing it at the successor would assert that the
+corrected text still supports it, which a correction may have removed. `am_kg_query` already returns
+`source_drawer_id` (ADR-026 T6) so the reader can see it resolves to an ended record.
 
 ## Reachability
 
@@ -81,6 +84,7 @@ current KG fact (the fact must not silently lose its provenance — decide and s
 
 - Ended TEXT never competes with its correction on any default route.
 - The ending REASON always reaches the default route, on the live record.
+- A KG fact's `source_drawer_id` is never rewritten by an ending. Provenance records where a claim came from, not where it is still true.
 - The recall payload does not grow with corpus size: 200-character cap, `limit × snippet_chars` unchanged.
 
 ## Risks

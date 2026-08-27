@@ -26,6 +26,7 @@ erase.
 | `internal/mcpserver/drawers.go` | edit | `am_invalidate_drawer` declared and registered; `am_update_drawer` gains a required `reason` and returns the NEW id naming the ended one; `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` **removed from the agent registration** — this is the line that SELECTS the boundary, and deleting it puts erasure back in an agent's hands |
 | `internal/mcpserver/server.go` | edit | the registration list — a tool removed from the agent surface must be absent from the catalogue an agent reads, not merely refused at call time |
 | `cmd/server/` | edit | the operator erasure path for a single drawer, beside `wing delete`, so removal stays possible for a leaked secret |
+| `internal/palace/anchors.go` | edit | carry the old record's anchors onto the successor with `status = 'unchecked'`, `checked_at = ''`. `anchorID` folds in the drawer id, so the copies mint new ids for free — no dedupe problem |
 | `internal/mcpserver/kg.go` | edit | `am_kg_invalidate` gains a required `reason`; the schema has `valid_to` and no column for one today |
 | `db/migrations/000NN_kg_ended_reason.sql` | add | the column the KG reason lands in. NN allocated at merge |
 | `README.md` | edit | the tool table — `TestEveryCatalogToolIsNamedInTheReadme` requires a first-cell row per catalogue tool, so adding one tool and removing three is a README change in this commit |
@@ -40,7 +41,9 @@ erase.
    - `am_invalidate_drawer(id, reason)` ends a memory that nothing replaces;
    - `am_kg_invalidate` without a reason is refused;
    - **the three destructive tools are absent from the agent catalogue** — a source or registration
-     check, because a behavioural test that never calls them passes either way (rung 3).
+     check, because a behavioural test that never calls them passes either way (rung 3);
+   - a corrected memory's anchors appear on the SUCCESSOR with status `unchecked`, and are gone from
+     nothing — the old record keeps its own, because it keeps its text.
 2. Implement the supersede path in `Service`, ending through T1's single `End`.
 3. Declare `am_invalidate_drawer`; add the required reasons; remove the three tools from the agent
    registration and add the operator single-drawer erasure path.
@@ -50,7 +53,7 @@ erase.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestDestructiveToolsAreAbsentFromTheAgentCatalogue' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
+go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestASupersedeCarriesAnchorsAsUnchecked' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
 ```
 
 The whole tree runs second because this task edits `README.md`, which `TestEveryCatalogToolIsNamedInTheReadme` reads from another package.
@@ -64,12 +67,15 @@ The whole tree runs second because this task edits `README.md`, which `TestEvery
 | `TestUpdateWithoutAReasonIsRefused` | `internal/mcpserver/drawers_test.go` | the reason is required where an agent supplies it | — |
 | `TestInvalidateDrawerEndsWithNoSuccessor` | `internal/mcpserver/drawers_test.go` | a retraction that replaces nothing is expressible | — |
 | `TestKgInvalidateRequiresAReason` | `internal/mcpserver/kg_test.go` | the half of the store that kept history stops keeping only *that* a fact ended | — |
+| `TestASupersedeCarriesAnchorsAsUnchecked` | `internal/palace/supersede_test.go` | anchors reach the successor and are NOT marked verified — an unverified pin must never read as a checked one | — |
 | `TestDestructiveToolsAreAbsentFromTheAgentCatalogue` | `internal/mcpserver/catalog_test.go` | **rung 3** — a registration check, since a behavioural test that never calls a tool passes whether or not it is offered | — |
 
 **Shapes the creation path can already produce, decided rather than assumed:** a multi-chunk memory
 (a supersede replaces the WHOLE memory — every chunk ends, one new set is written); a drawer with
-anchors (`ReplaceAnchors` semantics on the new row: decide whether anchors follow the correction or
-are cleared, and say which in the task rather than discovering it); a drawer already ended (refuse);
+anchors — **decided 2026-08-27: they CARRY to the successor with `status` reset to `unchecked`**,
+because verification is client-side and the server cannot re-check at supersede time, and because 41
+of 2,024 drawers carry an anchor at all so clearing them spends a scarce resource; a drawer already
+ended (refuse);
 a source-less drawer (no `purgeSource`, so the supersede is the only path — assert it works).
 
 ## Reachability
@@ -86,7 +92,8 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 ## Invariants
 
 - Ending goes through T1's single `End`. This task adds callers, never a second ending path.
-- The old text survives every correction.
+- The old text survives every correction, and so do its own anchors.
+- A carried anchor is never `verified` until a client says so. The server never mints a verification verdict.
 - No agent-reachable tool destroys a drawer, a tunnel or a hallway after this task.
 - Erasure remains possible for an operator — a store that cannot forget a leaked secret is not deployable.
 
@@ -98,9 +105,14 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 
 ## Stop Condition
 
-Stop and ask if removing `am_delete_drawer` from the agent surface would break a live client this
-repository does not own. That is a product decision about a published tool catalogue, not an
-implementation detail.
+**Answered 2026-08-27 — remove them, no deprecation window.** An agent doing a retraction currently
+gets an erasure, and keeping the verb live for one more release keeps the defect live for one more
+release. The refusal text must name the operator path, or an agent that cannot delete will file a
+duplicate instead.
+
+Stop and ask if the anchor carry turns out to need a server-side tree read after all — it must not,
+because the server has no repository, and if the design drifts that way the decision above is
+unimplementable as written.
 
 ## Out of Scope
 
