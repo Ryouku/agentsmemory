@@ -268,6 +268,25 @@ is real. A retraction whose reasoning needs more than 200 characters is a memory
 Noise here is this repo's measured floor: two arms with provably identical configuration scored 0.709
 against 0.700 MRR on 2026-08-26, so a difference under ~0.01 MRR is not a result.
 
+**The instrument for this already exists, and this record is what feeds it.** ADR-004 is Accepted with
+all five tasks done, and `internal/palace/evalstats.go` carries `StaleAboveRate` — it counts, per arm,
+how often a superseded memory outranked the current one (`StaleAbove`), how often it merely reached
+the page (`StaleInPage`), and how often the superseded version never entered the pool at all
+(`Vacuous`). That is exactly the falsification above, already built and already wired.
+
+**It is starved, not missing.** `supersessionMinCases = 30` (`evalstats.go:417`) is a floor on
+verified, non-vacuous pairs, and the gate refuses to answer below it rather than answering on noise.
+Measured 2026-08-27 against the live palace: **5 `supersedes` triples workspace-wide, and 0
+`retracts` and 0 `qualifies`.** Six times short of its own floor, with supersession expressible today
+only as a hand-authored knowledge-graph edge.
+
+T4 is what changes that. Once correcting a memory writes `superseded_by` on the drawer, **every
+correction produces a pair**, and ADR-004's instrument gets its input from ordinary use instead of
+from somebody remembering to file a triple. Naming it here because this record must not build a
+second measurement beside a working one — and because "the corpus where superseded records outnumber
+current ones 2:1" is not a hypothetical corpus to construct, it is what this palace becomes after T4
+has been live for a while.
+
 If it fails, the exclusion is not working and ended records are competing — a defect in the
 implementation, not a reason to start deleting. The remedy is the filter; the second remedy, only if
 the first is impossible, is a separate index for ended records.
@@ -430,7 +449,8 @@ continuing past a failure, so a partial backfill is a failed migration rather th
 - [ ] **Received from ADR-004:** ranking a supersession chain when history IS requested. ADR-004 owns how a history request is ranked; T5 creates `include_history` and defers the ordering to it, exactly as ADR-010 T3 did before this record absorbed it.
 - [ ] Report the first measured count of drifted rows after T6's gate lands, whichever way it falls — including "zero", which would mean the 27 were repaired by ordinary re-filing rather than by anything this record did.
 - [ ] Report the `reason` field's median length and a human read of a sample once T4 has been live for a month. Per ADR-010's own correction the measurement improves the PROMPTING and never retracts the field.
-- [ ] Run the pre-registered falsification once a corpus exists where ended records outnumber current ones 2:1, and record the MRR delta against the ~0.01 noise floor whichever way it falls.
+- [ ] Run the pre-registered falsification through ADR-004's existing `StaleAboveRate` once T4 has produced 30 verified non-vacuous pairs — the floor at `evalstats.go:417`, against 5 workspace-wide today. Record the MRR delta against the ~0.01 noise floor whichever way it falls, and report the pair count that made it answerable, since "the gate finally ran" is itself the result.
+- [ ] **Retrieval ORDERING is not touched by this record and should not be read as touched.** Measured n=54 on 2026-08-26: in-pool 100%, top-1 46%, top-5 74% — the answer is always retrieved and ordering is what fails. That is ADR-001/002/003/030's territory, all still pending. This record only promises that accumulation does not make ordering WORSE.
 - [ ] Nothing checks that an `ADR-NNN` cross-reference PATH still resolves — `adr-lint` reads README↔task consistency and not link targets, so this record's own rename would have left stale pointers passing every gate. Same class as ADR-037's T1. One gate, not built here.
 - [ ] Report the first `doctor --corpus` run against the hosted deployment, whichever way it falls — including "clean", which would mean the drift is local to one palace rather than a property of the write paths.
 - [ ] Decide whether ADR-027's remaining question — a reference pointing at a non-parent chunk that a re-chunk deletes — is answerable now that ids are opaque, or whether it needs its own record.
