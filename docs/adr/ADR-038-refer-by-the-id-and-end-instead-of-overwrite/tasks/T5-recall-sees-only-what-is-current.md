@@ -90,6 +90,7 @@ corrected text still supports it, which a correction may have removed. `am_kg_qu
 ## Risks
 
 - A filter applied to the vector half and not the lexical one leaks ended records back. The mutation in rung 2 exists for that specific shape.
+- **An ended drawer keeps its vector, so the pool can shrink silently.** The vector store returns N candidates keyed by drawer id; `current()` runs in SQL and drops the ended ones, so a page can come back shorter than `limit` with nothing saying why. ADR-034 already settled the shape for the ranking half — count the degradation, never let it be silent — and this is that shape one layer up. Decide in this task: over-fetch to compensate, or report how many candidates the filter removed. Do not leave it to be found as "search returns fewer results than it used to".
 - Truncating at 200 characters mid-word produces an unreadable fragment. Truncate on a boundary and mark it; a reason nobody can read is a reason nobody will act on.
 
 ## Stop Condition

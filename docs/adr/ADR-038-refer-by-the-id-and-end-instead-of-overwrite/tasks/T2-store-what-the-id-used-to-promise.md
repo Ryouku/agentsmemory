@@ -21,6 +21,8 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
 | `db/migrations/00006_drawers.sql` | edit | line 18's comment on `id` reads `deterministic hash(team,wing,room,source,chunk) — idempotency key`. It is **factually wrong** — `DrawerID` hashes **content** too — and the phrase `idempotency key` names the primary key by its dedup job, which is the conflation this ADR ends. Safe to edit despite being applied: goose keys on version so the statement never re-runs, and a **fresh install runs this file**, so leaving it stale ships a new database whose schema lies about itself |
 | `internal/palace/palace.go` | edit | `Drawer` gains `ContentKey string` with its gorm tag — the field the column maps to |
 | `internal/palace/chunk.go` | edit | `DrawerID`'s doc comment stops calling it the identity of a drawer and calls it the content key; body unchanged |
+| `internal/palace/palace.go` | edit | `:19`, the `Drawer` struct's own ID field: *"a deterministic hash of (team, wing, room, source, chunkIndex)"*. The TYPE DEFINITION's comment, the most-read one, and **already wrong today** — it omits content, the same error as `00006:18`. Found by sweeping the class rather than waiting to be told |
+| `internal/palace/service.go` | edit | `:677` — *"a standalone memory (deduped by its content-hash id)"*, the exact sentence describing the mechanism T3 replaces |
 | `internal/palace/service.go` | edit | `Add` (`:660`) and `WriteDiary` (`:2054`) — the mint sites. Diary sets an EMPTY key; that is the line that SELECTS a journal out of dedup |
 | `internal/palace/import.go` | edit | `AbsorbDrawers` (`:82`) mints the key |
 | `internal/palace/mine.go` | edit | `Mine` (`:155`) mints the key |

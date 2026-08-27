@@ -42,8 +42,9 @@ erase.
    - `am_invalidate_drawer(id, reason)` ends a memory that nothing replaces;
    - `am_kg_invalidate` without a reason is refused;
    - **superseding a fact is atomic and leaves no observable boundary.** Add a fact, supersede it,
-     and assert `as_of` at the boundary instant returns exactly ONE value. This is red today and is
-     reproduced in issue #74: the hand-rolled sequence returns two;
+     and assert `as_of` ONE UNIT PAST the boundary returns exactly one value, and that the day-scale
+     overlap is gone. **Not the boundary instant itself** — `inEffectAt` is inclusive on both ends,
+     so that one is #74's and asserting it here would make the test unsatisfiable;
    - **the four destructive tools are absent from the agent catalogue** — a source or registration
      check, because a behavioural test that never calls them passes either way (rung 3);
    - a corrected memory's anchors appear on the SUCCESSOR with status `unchecked`, and are gone from
@@ -99,7 +100,7 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 
 - Ending goes through T1's single `End`. This task adds callers, never a second ending path.
 - The old text survives every correction, and so do its own anchors.
-- Superseding a fact never leaves an instant with zero or two current values for one subject+predicate.
+- Superseding a fact never leaves an instant with ZERO current values, and never leaves more than the boundary instant with two. The boundary instant itself is issue #74's — `inEffectAt` is inclusive on both ends, so a shared endpoint is in effect for both rows.
 - `KGSupersede` writes datetimes, never date-only values, so it never depends on `temporalEndKey`'s stretch.
 - A carried anchor is never `verified` until a client says so. The server never mints a verification verdict.
 - No agent-reachable tool destroys a drawer, a tunnel or a hallway after this task.

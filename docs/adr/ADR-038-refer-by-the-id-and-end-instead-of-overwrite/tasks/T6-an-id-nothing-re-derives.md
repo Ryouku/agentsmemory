@@ -39,6 +39,13 @@ ladder, where the capability exists and its intended caller cannot discover it.
      mentioning the name must not satisfy or trip it) and fails when `DrawerID(...)` appears anywhere
      other than an assignment to a `ContentKey` field or to a variable passed as one. Confirm it is
      red by adding a `DrawerID` call used as a lookup and watching it fail.
+   - `TestNoCommentClaimsADrawerIdIsDerivedFromItsContent` — sweep Go comments and `db/migrations/*.sql`
+     for the phrases asserting content-derivation (`content hash`, `deterministic hash of`,
+     `content-hash id`, `hash of its content`) and require each hit to sit in an allowlist carrying a
+     written reason, exactly as `notOperatorFacing` does. **Five instances of this class were fixed one
+     at a time as somebody pointed at each** — `00006:18`, `DrawerID`, `SaveUnembedded:98`,
+     `palace.go:19`, `service.go:677` — a hand-kept list where this repo's culture demands a derived
+     gate. `internal/doclint` already exists; this is the same instrument aimed at one claim.
    - `TestDoctorCorpusIsReachable` — run `doctor --corpus` ALONE and assert it does not exit with
      "nothing to check", then run it WITH `--index` and assert both reports appear. **`TestEveryFlagIsRead`
      passes either way**: `--corpus` is read, in a block nothing can reach. Only a dispatch test sees this.
@@ -60,7 +67,7 @@ ladder, where the capability exists and its intended caller cannot discover it.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./cmd/server/ -run 'TestDoctorCorpus'  -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out
+go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey|TestNoCommentClaimsADrawerIdIsDerivedFromItsContent' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./cmd/server/ -run 'TestDoctorCorpus'  -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out
 ```
 
 The whole tree runs in the second command because this task edits `AGENTS.md`, which
@@ -74,6 +81,7 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 | `TestEveryDrawerMintWritesAContentKey` | `internal/palace/identityrole_test.go` | a mint path that forgets the key fails the build's gate, derived from the source | — |
 | `TestDoctorCorpusReportsDriftAndDanglingReferences` | `cmd/server/doctorcorpus_test.go` | a drifted row and each kind of dangling reference are reported and exit non-zero | — |
 | `TestDoctorCorpusIsAdvertisedInHelp` | `cmd/server/doctorcorpus_test.go` | the flag appears in the Description's integrity block — rung 3, and the only rung a behavioural test cannot reach | — |
+| `TestNoCommentClaimsADrawerIdIsDerivedFromItsContent` | `internal/palace/identityrole_test.go` | documentation stops going false one instance at a time — the allowlist entry is the review | — |
 | `TestDoctorCorpusIsReachable` | `cmd/server/doctorcorpus_test.go` | `--corpus` alone is dispatched, and `--corpus` with `--index` yields both — **rung 2**, invisible to `TestEveryFlagIsRead`, which passes while the flag is read in unreachable code | — |
 
 ## Reachability

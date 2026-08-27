@@ -310,11 +310,31 @@ predicate, old, new, reason)`, atomic.** One call, one transaction, ending the o
 so neither a gap nor an overlap can be observed between them, and carrying the same required `reason`
 point 7 puts on every other retraction.
 
-   **It writes an instant, never a date, and that is what removes the overlap without changing what
-   an existing row means.** `temporalEndKey` stretches a date-only `valid_to` to `T23:59:59Z`; a
-   supersede that stamps both `old.valid_to` and `new.valid_from` with the same RFC3339 **datetime**
-   is never date-only, so no stretch happens and no instant has two current values. The 15 already-
-   ended facts on this palace keep the meaning they were written with, and nothing is migrated.
+   **It writes an instant, never a date, which collapses the overlap from a day to the boundary
+   instant — and does NOT remove it.** `temporalEndKey` stretches a date-only `valid_to` to
+   `T23:59:59Z`; a supersede stamping both `old.valid_to` and `new.valid_from` with the same RFC3339
+   **datetime** is never date-only, so no stretch happens. **86,400 seconds becomes 1.** The 15
+   already-ended facts keep the meaning they were written with, and nothing is migrated.
+
+   ⚠ **The boundary instant itself still holds both values, and an earlier draft of this record
+   claimed otherwise — twice.** Found by review 2026-08-27 and reproduced against the real function:
+
+   ```
+   as_of = 2026-08-24T10:00:00Z   old in effect = true    new in effect = true
+   as_of = 2026-08-24T10:00:01Z   old in effect = false   new in effect = true
+   ```
+
+   `inEffectAt` is inclusive on BOTH ends — it excludes only on `>` and `<`, never `>=`/`<=` — so with
+   a shared endpoint neither comparison fires. **This is a different axis from the date-only stretch:
+   the interval is CLOSED `[valid_from, valid_to]` where a validity window wants half-open
+   `[valid_from, valid_to)`.** Removing the stretch narrows a closed-interval overlap; it cannot
+   remove one, because the shared endpoint IS the mechanism. Reachable: an agent that supersedes and
+   then queries `as_of` the timestamp the supersede response just handed it lands exactly on it.
+
+   The one-character fix (`<` → `<=`) *is* the half-open semantics, and it re-reads every ended fact
+   by one boundary unit including those 15. That is the same interval-semantics question issue #74
+   already defers from the other direction — #74 asks what a date-only `valid_to` MEANS, this asks
+   whether `valid_to` is inclusive at all — so both go to #74 and one record answers them together.
 
    **What this does NOT decide:** whether a date-only `valid_to` should mean *through* that day
    (today's inclusive reading) or *as of* it. Both are defensible, `status:"current"` and `as_of`
@@ -445,7 +465,7 @@ Inherited from ADR-010, for the lineage half:
 | `am_update_drawer` content edit | change — supersedes instead of overwriting; returns the NEW id and names the ended one | `internal/mcpserver/drawers.go` | every agent that corrects a memory |
 | `am_invalidate_drawer(id, reason)` | add | `internal/mcpserver/drawers.go` | any agent retracting a memory |
 | `am_kg_invalidate` `reason` | add — required, mirroring the drawer verb | `internal/mcpserver/kg.go` | anyone reading why a fact ended |
-| `am_kg_supersede(subject, predicate, old, new, reason)` | **add** — one atomic call replacing hand-rolled invalidate+add; stamps a datetime boundary so no instant holds both values | `internal/mcpserver/kg.go`, `internal/palace/kg.go` | every agent correcting a fact |
+| `am_kg_supersede(subject, predicate, old, new, reason)` | **add** — one atomic call replacing hand-rolled invalidate+add; stamps a datetime boundary, collapsing the overlap from a day to the boundary instant (see Decision 9 — the boundary instant itself is #74's) | `internal/mcpserver/kg.go`, `internal/palace/kg.go` | every agent correcting a fact |
 | `am_delete_wing` agent registration | change — removed from the agent surface (`admin.go:198` gates it on `local` today, which is not a boundary) | `internal/mcpserver/admin.go` | agents (removed), operators (retained via CLI) |
 | recall response: `supersedes` + reason, truncated to 200 chars | add | `internal/mcpserver/drawers.go` | every recall — bounded so accumulation never grows the payload |
 | `am_search` / `am_list_drawers` | change — current records only, with an explicit history flag | `internal/mcpserver` | every recall |
@@ -490,6 +510,7 @@ briefly wrong — is the kind of state this repo keeps finding, and it is remova
 - Full event sourcing of the whole store (deferred: `docs/adr/BACKLOG.md`)
 - Retention or automatic pruning of ended records (permanent: accumulation is the value this record is built on, and a pruner would spend engineering effort undoing it. Erasure stays available to an operator for a leaked credential or a deletion request — a legal and safety path, not housekeeping)
 - Structured reasons — a taxonomy of why something ended (deferred: `docs/adr/BACKLOG.md`)
+- Giving TUNNELS a validity window (deferred: `docs/adr/BACKLOG.md` — found by auditing this record's own class on 2026-08-27. `tunnels` has zero validity columns and `DeleteTunnel` destroys; T4 takes `delete_tunnel` off the AGENT surface but leaves the operator path destroying an **authored** artifact with no trace, while this record's argument is that authored things are ended. Closets, hallways and anchors are derived or re-derivable and are correctly delete-only; tunnels are the one authored non-drawer artifact left delete-only, and 18 exist. Deferred rather than absorbed because a second validity window is a second migration and its own decision)
 - Deciding whether a date-only `valid_to` means *through* that day or *as of* it, and reconciling `status:"current"` with `as_of` (deferred: `docs/adr/BACKLOG.md` — issue #74. The atomic verb in point 9 sidesteps it by writing instants; answering it changes what 15 already-ended facts mean and is its own decision)
 - Applying the validity window to diary entries (deferred: `docs/adr/BACKLOG.md`)
 - Removing `delete_wing` from the OPERATOR surface (permanent: it is the erasure path this record requires to exist. **T4 removes it from the AGENT registration**, where it is reachable today whenever the server runs self-hosted — `registerDeleteWing` is gated on `local`, and "the operator is running it locally" is not a boundary, it is the case where agent and operator share a process)

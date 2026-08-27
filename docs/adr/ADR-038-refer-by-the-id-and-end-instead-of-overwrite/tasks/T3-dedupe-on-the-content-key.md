@@ -104,6 +104,16 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 - ~~`SaveUnembedded` is easy to miss.~~ **It is not optional and the task no longer offers the choice.** `AbsorbDrawers` calls it EXCLUSIVELY (`import.go:99` — it never calls `Save`), and `Add` falls to it whenever the embedder is down. With opaque mints and `SaveUnembedded` still keyed on `(team_id, id)`, **an import re-run duplicates every row** — the exact outcome this record's Alternatives rejects when it says import idempotency is load-bearing. Found by review 2026-08-27; the earlier wording let it be skipped with a written excuse.
 - An opaque id whose shape is indistinguishable from a hash invites the next reader to re-derive it. Mint it in a visibly different shape.
 
+## The other half of the success-reports-nothing audit
+
+`am_kg_invalidate` answered success for a fact it never touched because a returned `RowsAffected` was
+discarded (fixed in #73). That grep found the shape where the count EXISTS and is thrown away. The
+un-audited half is the shape where it does not exist: **14 of ~28 `Repo` write methods return a bare
+`error` with no count at all**, so the caller cannot check even if it wants to. Not all need one — an
+insert of a known set does not — but every method that UPDATEs or DELETEs **by predicate** does, and
+this task adds one (`purgeSource`'s set difference). Give it a count, and enumerate the other
+predicate-scoped writers here rather than leaving the sweep for the next incident.
+
 ## Stop Condition
 
 Stop and ask if moving the conflict target requires changing the primary key itself. It should not —

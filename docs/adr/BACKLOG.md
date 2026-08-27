@@ -1332,3 +1332,19 @@ as the deferral so the pointer has a receiving end.
   dates, deliberately: answering it changes what the 15 already-ended facts on this palace mean.
   **Trigger: before any second consumer of `as_of` ships, or the first time someone reports a fact
   that "did not go away today".**
+- **A validity window for TUNNELS.** Found auditing ADR-038's own class 2026-08-27. `tunnels` has zero
+  validity columns and `DeleteTunnel` destroys. ADR-038 T4 takes `delete_tunnel` off the AGENT surface
+  but leaves the operator path destroying an **authored** artifact with no trace, while that record's
+  whole argument is that authored things are ended rather than deleted. Closets, hallways and anchors
+  are derived or re-derivable and are correctly delete-only; tunnels are the one authored non-drawer
+  artifact left delete-only. 18 exist. **Trigger: the first time a deleted tunnel has to be
+  reconstructed from memory, or when ADR-038's migration is open anyway and a second additive window
+  is cheap.**
+- **The interval is CLOSED where a validity window wants half-open.** Extends issue #74 from the other
+  direction, found by review 2026-08-27 and reproduced: `inEffectAt` (`kg.go:955`) excludes only on
+  `>` and `<`, never `>=`/`<=`, so with `old.valid_to == new.valid_from == B` both rows are in effect
+  at exactly `B`. ADR-038's `am_kg_supersede` collapses the overlap from 86,400 seconds to 1 by
+  stamping instants instead of dates; it cannot remove the last one, because the shared endpoint IS
+  the mechanism. The one-character fix (`<` → `<=`) is the half-open semantics and re-reads every
+  ended fact by one boundary unit, including the 15 already ended. **Same decision as #74's — what a
+  `valid_to` means — so one record answers both.**
