@@ -121,6 +121,27 @@ Concretely:
 
 **What would make this FAIL, and does data that could produce that failure exist?** The backfill's unique index is the falsifiable part: two rows sharing a `(team_id, wing, room, source_file, chunk_index, content)` tuple would collide and the migration would abort. Measured 2026-08-27 on the live corpus: **1,705 non-diary rows produce 1,705 distinct keys, 0 collisions.** Valid for this corpus at this date; T1's migration must therefore fail loudly rather than skip a colliding row, so a corpus that does collide is a stop condition and not a silent partial backfill.
 
+**This decision makes loss DETECTABLE and removes one cause. It does not make loss RECOVERABLE, and
+that limit is the more important half.**
+
+Everything this record found — 27 rows whose id no longer describes them, 39 of 41 anchored drawers
+one re-file from losing their anchor, 16 knowledge-graph facts pointing at a drawer that is gone —
+is permanent, because a drawer is mutated and deleted in place and nothing is ever versioned. A
+`doctor --corpus` finding therefore reads *"this was lost"*, never *"here it is"*.
+
+**ADR-010 ("a memory is ended, not overwritten") is the record that fixes that, and it has been
+Proposed with 0 of its 3 tasks done since 2026-08-20.** It is named here rather than absorbed,
+because it is a different decision with its own tasks — but two things about the pair belong in this
+record:
+
+- **This ADR is ADR-010's unblocker.** ADR-010 rejected full event sourcing partly because *"the
+  store already has a working row model with vectors, chunking and anchors hanging off drawer
+  identity"*. Once an id is opaque and never re-derived, a second row for the same memory stops
+  being an identity problem and becomes an ordinary validity-window question.
+- **Executed alone, this ADR is the smaller half of the loop.** ADR-010 should be sequenced
+  immediately after it, and a reader of this record should not come away thinking memory loss was
+  fixed here. It was made visible here.
+
 **Re-chunking on update is NOT part of this decision.** This ADR removes the blocker that four records named; it does not spend it. ADR-027's remaining question — what happens to a reference pointing at a non-parent chunk that a re-chunk deletes — is still open and is re-pointed, not absorbed.
 
 ## Alternatives Considered
@@ -159,7 +180,7 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 ## Consequences
 
 - **Positive:** Re-filing a named source stops destroying the anchors of chunks it did not change — 39 of the palace's 41 anchored drawers are exposed to that today. The two `am_add_drawer` failure modes above stop being possible. The drift becomes checkable — 27 rows were found by an ad-hoc script, and after T3 a gate finds them. Four deferred records (ADR-010, ADR-015, ADR-019, ADR-027) lose the blocker they each named. A wing merge stops invalidating anything derived from an id, which is ADR-015's deferral, closed.
-- **Negative:** T2 is larger than it looks: it cannot ship the opaque mint without also converting `purgeSource`, because the two together are what keep a re-file from re-keying its source. Splitting them across commits leaves the tree in the regressed state. Two keys where there was one, and every mint path must write both — the classic shape of a field that gets forgotten on the fifth path. T3's gate exists for exactly that and must fail when a path is added without a key. The migration is a backfill over the whole `drawers` table; on the live corpus that is 1,705 rows and trivial, but it is still persistent state and needs the rollback below.
+- **Negative — the one to read first:** this makes loss visible and does not make it reversible. Nothing here versions a drawer, so every finding `doctor --corpus` reports is a loss already taken. ADR-010 is the other half and is unbuilt; shipping this alone improves detection and leaves recovery exactly where it is. T2 is larger than it looks: it cannot ship the opaque mint without also converting `purgeSource`, because the two together are what keep a re-file from re-keying its source. Splitting them across commits leaves the tree in the regressed state. Two keys where there was one, and every mint path must write both — the classic shape of a field that gets forgotten on the fifth path. T3's gate exists for exactly that and must fail when a path is added without a key. The migration is a backfill over the whole `drawers` table; on the live corpus that is 1,705 rows and trivial, but it is still persistent state and needs the rollback below.
 - **Neutral:** New rows get opaque ids while existing rows keep hash-shaped ones. That is heterogeneous on purpose: an id that cannot be told apart from a hash invites the next reader to re-derive it.
 
 ## Out of Scope
@@ -168,7 +189,7 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 - Changing `ChunkSize`, `ChunkOverlap` or `MaxEmbedRunes` (permanent: this ADR changes what an id means, never how text is split)
 - Re-keying existing drawers to opaque ids (permanent: rejected in Alternatives — the Qdrant re-upsert has no cross-store transaction, and the additive column delivers the same property)
 - Giving diary entries a content key (permanent: a journal must not dedupe — `chunk.go:157` already states why, and this ADR names it rather than changes it)
-- Validity windows, supersession or retraction on drawers (permanent: ADR-010 owns that, and it is a different question — *when* a memory is current, not *what its name means*)
+- Validity windows, supersession or retraction on drawers — ADR-010 owns that, and it is a different question: *when* a memory is current, not *what its name means*. This ADR is its unblocker and should be sequenced immediately before it (permanent: it is another accepted-corpus record with its own three tasks, not work to absorb here)
 - Repairing the 27 drifted rows (deferred: `docs/adr/BACKLOG.md`)
 - Whether re-filing a named source should discard an in-place edit to it at all (deferred: `docs/adr/BACKLOG.md`)
 
@@ -180,6 +201,7 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 | A future mint path writes an id and forgets the content key | Med | High | T3's gate derives its universe from the mint sites rather than a hand-kept list, so a path added tomorrow joins the check on the same commit. |
 | Someone re-derives an id for a lookup after this lands, reintroducing the coupling | Med | Med | T3's source check fails when `DrawerID` is called outside a content-key computation. Prove it by adding such a call and watching it go red. |
 | **`MergeWing` starts FAILING where it silently succeeded** | Low | Med | Today a merge relabels the wing and keeps the id, so an identical memory in source and target survives as two rows. Recomputing the key makes the second one collide and the unique index rejects the UPDATE — and ADR-015 already fails the whole merge on a failure. That converts a silent duplicate into a loud refusal, which is the better direction, but it IS a new failure mode on a shipped operation. Measured 2026-08-27: **0 tuples of `(team, room, source_file, chunk_index, content)` appear in more than one wing**, so no merge on today's corpus would hit it. T1 must give it a named error saying which drawer collided, not a bare constraint violation. |
+| **This ships and reads as "memory loss is fixed"** | **High** | Med | It is not: it removes one cause and makes the rest visible. This is the shape the ADR template warns about — the measuring half is the pleasant half to build, and "we improved the measurement" reads exactly like "we improved the thing" in a status report. Mitigation is stated rather than mechanical: the Decision says so in its own words, and ADR-010 is named as the sequencing partner rather than left to be inferred. |
 | **Every number in this record is from the local palace; the hosted corpus is unmeasured** | Med | Med | The 0-collision backfill premise, the 2,013 rows and the 65 anchors are one deployment. The same migration runs on the SaaS, where row counts and collision odds are unknown. Take the same three measurements against hosted BEFORE merging the migration — the queries are in T1 and they are read-only. |
 | **The backfill is an O(n) SHA-256 pass at startup, in Go rather than SQL** | Med | Low | SQLite cannot compute SHA-256, so every row must be read, hashed and written back on the boot that applies the migration. On this corpus that is 2,013 rows and unnoticeable; on a large hosted database it is a full-table read plus write while the server is coming up. Measure the hosted row count first, and if it is large, run the backfill as a bounded background repair rather than inline at boot. |
 | The migration number is renumbered at merge and re-runs on a database that applied it | Low | High | Allocate the number at merge, never at authoring — the crash loop and its repair are already documented in `README.md` (Development). |
@@ -200,4 +222,6 @@ The one state to detect is a **partially backfilled** column: rows with an empty
 ## Follow-ups
 
 - [ ] Report the first measured count of drifted rows after T3's gate lands, whichever way it falls — including "zero", which would mean the 27 were repaired by ordinary re-filing rather than by anything this ADR did.
+- [ ] Sequence ADR-010 immediately after this one, or record why not. Its three tasks (`T1-a-validity-window-on-a-drawer`, `T2-correcting-a-memory-supersedes-it`, `T3-recall-sees-only-what-is-current`) have been pending since 2026-08-20, and until one of them lands every loss `doctor --corpus` reports stays permanent.
+- [ ] Report the first `doctor --corpus` run against the hosted deployment, whichever way it falls — including "clean", which would mean the drift is local to one palace rather than a property of the write paths.
 - [ ] Decide whether ADR-027's remaining question — a reference pointing at a non-parent chunk that a re-chunk deletes — is answerable now that ids are opaque, or whether it needs its own record.
