@@ -31,6 +31,11 @@ var (
 	// "drawer not found: no CURRENT fact matches …", contradicting itself in one
 	// line. Callers that only care about the class check both; nothing here does.
 	ErrFactNotFound = errors.New("fact not found")
+	// ErrSourceDrawerNotFound reports a fact whose source_drawer_id names no row in
+	// this team — provenance that resolves to nothing. Distinct from
+	// ErrFactNotFound because the caller's mistake is different: the fact is fine
+	// and the citation is wrong, usually a shortened or retyped id.
+	ErrSourceDrawerNotFound = errors.New("source drawer not found")
 	// ErrInvalidInput is returned when a required argument is missing or empty.
 	ErrInvalidInput = errors.New("invalid input")
 )

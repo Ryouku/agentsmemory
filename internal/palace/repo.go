@@ -232,6 +232,29 @@ func (r *Repo) Get(ctx context.Context, teamID, id string) (Drawer, error) {
 	return fromRow(row), nil
 }
 
+// DrawerExists reports whether a row with this id exists in this team, INCLUDING
+// one that has been ended.
+//
+// ⚠ HISTORY-INCLUSIVE ON PURPOSE, and that is the whole subtlety. A fact citing a
+// drawer that was later corrected is the system working: provenance is a record of
+// what was believed then, and a supersede does not retract the fact somebody
+// derived from the row it ended. Scoping this to current rows would make every
+// correction break its own citations — the opposite of the defect it exists to
+// catch, which is a citation that resolved to nothing on the day it was written.
+//
+// It selects one id rather than the row: the caller wants existence, and a drawer
+// can hold 100,000 runes of content nobody asked for.
+func (r *Repo) DrawerExists(ctx context.Context, teamID, id string) (bool, error) {
+	var found []string
+	err := r.db.WithContext(ctx).Model(&drawerRow{}).
+		Where("team_id = ? AND id = ?", teamID, id).
+		Limit(1).Pluck("id", &found).Error
+	if err != nil {
+		return false, err
+	}
+	return len(found) == 1, nil
+}
+
 // IDsBySource returns the ids of every drawer filed from one source within a
 // (team, wing, room). add_drawer uses it to purge a named source's prior chunks
 // before re-filing it, so re-adding shorter content cannot leave stale

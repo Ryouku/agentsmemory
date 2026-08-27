@@ -622,6 +622,28 @@ func (s *Service) KGAdd(ctx context.Context, teamID, subject, predicate, object,
 // first, so re-validating here would only be a second place for the rules to
 // disagree.
 func kgAddOn(ctx context.Context, r *Repo, teamID, subj, pred, obj, vf, vt, sourceCloset, sourceFile, sourceDrawerID string) (KGAddResult, error) {
+	// Provenance is checked against the CORPUS, which is why it sits here rather
+	// than with the shape validation the doc above says not to repeat: no amount of
+	// looking at the string tells you whether the row is there.
+	//
+	// It runs BEFORE the entity upserts so a refused fact leaves nothing behind. The
+	// upserts mint kg_entities rows, and a check placed after them would refuse the
+	// write while still having created the two nodes it was called with.
+	if sourceDrawerID != "" {
+		exists, err := r.DrawerExists(ctx, teamID, sourceDrawerID)
+		if err != nil {
+			return KGAddResult{}, fmt.Errorf("check the source drawer: %w", err)
+		}
+		if !exists {
+			return KGAddResult{}, fmt.Errorf(
+				"%w: source_drawer_id %s names no drawer in this team, so the fact would "+
+					"carry provenance that resolves to nothing. Ids are full length and copied, "+
+					"never typed — a shortened one does not fail, it points elsewhere. Omit "+
+					"source_drawer_id if this fact does not come from a drawer",
+				ErrSourceDrawerNotFound, short12(sourceDrawerID))
+		}
+	}
+
 	subID, objID, p := normalizeEntityID(subj), normalizeEntityID(obj), normalizePredicate(pred)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := r.UpsertKGEntity(ctx, teamID, subID, subj, now); err != nil {

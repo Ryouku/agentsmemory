@@ -48,7 +48,7 @@ func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Serv
 		mcp.WithString("valid_to", mcp.Description("Optional end of validity; omit while the fact is current.")),
 		mcp.WithString("source_closet", mcp.Description("Optional closet id this fact came from.")),
 		mcp.WithString("source_file", mcp.Description("Optional source label.")),
-		mcp.WithString("source_drawer_id", mcp.Description("Optional drawer id this fact was extracted from.")),
+		mcp.WithString("source_drawer_id", mcp.Description("Optional drawer id this fact was extracted from. It is CHECKED: an id naming no drawer in this team is refused rather than stored, because provenance that resolves to nothing is worse than none — it reads as evidence. Pass the full id exactly as am_add_drawer or am_search returned it; a shortened one does not fail, it points elsewhere. An id whose drawer was later RETRACTED or superseded is accepted: a fact records what was believed then, and a correction does not withdraw it.")),
 	)
 	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
