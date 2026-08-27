@@ -75,6 +75,21 @@ Four records, one cause. None of them can move while the id that references a ro
 | `RelabelDrawerWing*` | `admin.go:295,313` | **Extend.** Must recompute the content key in the same statement that moves the wing. |
 | `pointID` (UUID5 of drawer id) | `store/qdrant/vector.go:29` | **Untouched.** No drawer id changes, so no vector is re-keyed. This is the reason for the shape chosen below. |
 | `randomID` | `recallstats.go:179` | **Reuse.** Already the house opaque-id mint, used for `search_events`. |
+| **`Service.CheckDuplicate` / `am_check_duplicate`** | `service.go:1854` | **Not reusable, and named here because it is the thing a reader will point at.** It is a SEMANTIC duplicate check — it embeds the content, runs a vector search for the single nearest hit and compares cosine similarity to a threshold. It is approximate, costs a model call, needs a live embedder, and answers "is something like this already filed" for a HUMAN to judge. A dedup key must be exact, free, and correct while the embedder is down (`SaveUnembedded` exists for exactly that state). Different question, different guarantees; it stays as it is. |
+
+**The class audit, because fixing an instance is not fixing a shape.** Four other identifiers in
+`internal/palace` are minted by hashing their own fields, and each was checked for the same defect —
+a path that mutates a hashed field in place while keeping the id:
+
+| Identifier | Hashes | Exposed? |
+|---|---|---|
+| `tunnelID` (`tunnel.go:33`) | its two endpoints | **No** — a tunnel is created or deleted, never re-pointed. |
+| `hallwayID` (`hallway.go:34`) | wing + the two entities | **No** — derived state, rebuilt wholesale by `RecomputeGraph`. |
+| `closetID` (`closet.go:174`) | team, wing, room, source, ordinal — **no content** | **No** — location-only, so a closet's document can change without moving its id. |
+| `anchorID` (`anchors.go:82`) | team, drawer id, path, normalized snippet | **No** — `ReplaceAnchors` swaps the set rather than patching a row. The in-place `Update`s on that table touch `last_checked`-style fields only. |
+
+`drawers` is the only member of the class with an in-place mutation of a hashed field, which is why
+this ADR is about one table and not five.
 
 ## Decision
 
@@ -163,6 +178,9 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 | Backfill hits a `(team_id, content_key)` collision and aborts mid-migration | Low | High | Measured 0 collisions across 1,705 non-diary rows on 2026-08-27. T1's migration aborts loudly rather than skipping — a silent partial backfill is the failure this repo keeps catching. Rollback is the down migration. |
 | A future mint path writes an id and forgets the content key | Med | High | T3's gate derives its universe from the mint sites rather than a hand-kept list, so a path added tomorrow joins the check on the same commit. |
 | Someone re-derives an id for a lookup after this lands, reintroducing the coupling | Med | Med | T3's source check fails when `DrawerID` is called outside a content-key computation. Prove it by adding such a call and watching it go red. |
+| **`MergeWing` starts FAILING where it silently succeeded** | Low | Med | Today a merge relabels the wing and keeps the id, so an identical memory in source and target survives as two rows. Recomputing the key makes the second one collide and the unique index rejects the UPDATE — and ADR-015 already fails the whole merge on a failure. That converts a silent duplicate into a loud refusal, which is the better direction, but it IS a new failure mode on a shipped operation. Measured 2026-08-27: **0 tuples of `(team, room, source_file, chunk_index, content)` appear in more than one wing**, so no merge on today's corpus would hit it. T1 must give it a named error saying which drawer collided, not a bare constraint violation. |
+| **Every number in this record is from the local palace; the hosted corpus is unmeasured** | Med | Med | The 0-collision backfill premise, the 2,013 rows and the 65 anchors are one deployment. The same migration runs on the SaaS, where row counts and collision odds are unknown. Take the same three measurements against hosted BEFORE merging the migration — the queries are in T1 and they are read-only. |
+| **The backfill is an O(n) SHA-256 pass at startup, in Go rather than SQL** | Med | Low | SQLite cannot compute SHA-256, so every row must be read, hashed and written back on the boot that applies the migration. On this corpus that is 2,013 rows and unnoticeable; on a large hosted database it is a full-table read plus write while the server is coming up. Measure the hosted row count first, and if it is large, run the backfill as a bounded background repair rather than inline at boot. |
 | The migration number is renumbered at merge and re-runs on a database that applied it | Low | High | Allocate the number at merge, never at authoring — the crash loop and its repair are already documented in `README.md` (Development). |
 | Diary rows are accidentally pulled into the unique index by a later change | Low | Med | T1's test asserts two diary entries with identical text, agent and topic coexist. |
 | **An opaque mint ships before `purgeSource` becomes a set difference** | Med | **High** | Every re-file of a named source would re-key every drawer under it, breaking every anchor, tunnel and KG pointer to them — the exact property this ADR protects, broken by this ADR. They are one task and one commit for that reason, and T2's first test is the one that fails if they are separated. |

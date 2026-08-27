@@ -18,6 +18,7 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
 | File | Change | Why |
 |------|--------|-----|
 | `db/migrations/000NN_drawers_content_key.sql` | add | the column and the unique index. **NN is allocated at merge, never at authoring** — a renumber at merge re-runs on a database that already applied it (`README.md`, Development) |
+| `db/migrations/00006_drawers.sql` | edit | line 18's comment on `id` reads `deterministic hash(team,wing,room,source,chunk) — idempotency key`. It is **factually wrong** — `DrawerID` hashes **content** too — and the phrase `idempotency key` names the primary key by its dedup job, which is the conflation this ADR ends. Safe to edit despite being applied: goose keys on version so the statement never re-runs, and a **fresh install runs this file**, so leaving it stale ships a new database whose schema lies about itself |
 | `internal/palace/palace.go` | edit | `Drawer` gains `ContentKey string` with its gorm tag — the field the column maps to |
 | `internal/palace/chunk.go` | edit | `DrawerID`'s doc comment stops calling it the identity of a drawer and calls it the content key; body unchanged |
 | `internal/palace/service.go` | edit | `Add` (`:660`) and `WriteDiary` (`:2054`) — the mint sites. Diary sets an EMPTY key; that is the line that SELECTS a journal out of dedup |
@@ -25,7 +26,7 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
 | `internal/palace/mine.go` | edit | `Mine` (`:155`) mints the key |
 | `internal/palace/copywing.go` | edit | `CopyWing` (`:130`) mints the key for the TARGET team, not the source |
 | `internal/palace/repo.go` | edit | `Update` (`:380`) recomputes the key in the same `updates` map that changes content/wing/room |
-| `internal/palace/admin.go` | edit | `RelabelDrawerWingReturningIDs` (`:295`) and `RelabelDrawerWing` (`:313`,`:324`,`:342`) recompute the key in the same statement that moves the wing — this is the line whose absence would leave a merged drawer describing a wing it no longer sits in |
+| `internal/palace/admin.go` | edit | `RelabelDrawerWingReturningIDs` (`:295`) and `RelabelDrawerWing` (`:313`,`:324`,`:342`) recompute the key in the same statement that moves the wing — this is the line whose absence would leave a merged drawer describing a wing it no longer sits in. It must also turn a key collision into a NAMED error saying which drawer in the target already holds that content, not a bare constraint violation |
 | `internal/palace/contentkey_test.go` | add | the failing tests |
 
 ## Ordered Steps
@@ -35,7 +36,10 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
    - a drawer filed by `Add` carries `ContentKey == DrawerID(team, wing, room, source, idx, content)`;
    - after `Update` rewrites the content, the key equals the hash of the NEW content;
    - after `MergeWing` moves a drawer, the key equals the hash computed with the TARGET wing;
-   - two diary entries with identical text, agent and topic both persist, and both carry an EMPTY key.
+   - two diary entries with identical text, agent and topic both persist, and both carry an EMPTY key;
+   - merging a wing into a target that already holds an identical drawer fails with an error naming
+     the colliding drawer, and leaves both wings unchanged (ADR-015 already fails the whole merge on
+     any failure). Measured 2026-08-27: 0 such tuples exist today, so this test constructs the case.
 2. Add the migration: `ALTER TABLE drawers ADD COLUMN content_key TEXT NOT NULL DEFAULT ''`, then a
    backfill `UPDATE` computing nothing (SQLite cannot SHA-256) — so the backfill is a Go step, see 3.
    Then `CREATE UNIQUE INDEX ... ON drawers(team_id, content_key) WHERE content_key != ''`. The
@@ -44,6 +48,8 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
    than skipping the row. A silent partial backfill is the failure shape this repo keeps catching;
    a failed migration is recoverable, a half-done one is invisible.
 4. Add `ContentKey` to `Drawer` and write it at all five mint sites and both mutation sites.
+4b. Correct `00006_drawers.sql:18` and give the new `content_key` column a comment that names its
+   job, so the two roles are legible in the schema rather than only in this record.
 5. Run the fence.
 
 ## Acceptance
@@ -89,6 +95,20 @@ nothing and a package with no tests both exit 0.
 
 - A mint path added between authoring and execution silently misses the key. T3's derived gate is the answer; until it lands, the Affected Files table is the list, and it was taken from `grep -n "DrawerID(" --include="*.go"` on 2026-08-27.
 - `NOT NULL DEFAULT ''` on a large table rewrites it on some SQLite versions. 2,013 rows on the live corpus; trivial, but confirm on the real database before merging rather than on a fixture.
+
+## Pre-flight against the hosted deployment — read-only, run BEFORE merging the migration
+
+Every number in the parent ADR is from one local palace. Take the same three against hosted and
+record them in the sign-off; each is a single read-only query:
+
+1. non-diary row count, and distinct content keys among them (the collision premise);
+2. anchors, and how many sit under a named source (the exposure the purge change repairs);
+3. tuples of `(team_id, room, source_file, chunk_index, content)` spanning more than one wing (the
+   merge-collision premise).
+
+If (1) shows a row count large enough that an O(n) SHA-256 pass at boot is not free, the backfill
+becomes a bounded background repair instead of an inline migration step. That is a decision to take
+with the number in hand, not a default to guess at.
 
 ## Stop Condition
 
