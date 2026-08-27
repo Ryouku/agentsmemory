@@ -25,6 +25,12 @@ import (
 var (
 	// ErrNotFound is returned when a drawer id does not exist for the team.
 	ErrNotFound = errors.New("drawer not found")
+	// ErrFactNotFound is the knowledge graph's equivalent: no CURRENT triple
+	// matches. A separate sentinel rather than a reuse of ErrNotFound, because that
+	// one's text says "drawer" and %w puts it in front — so the KG path rendered
+	// "drawer not found: no CURRENT fact matches …", contradicting itself in one
+	// line. Callers that only care about the class check both; nothing here does.
+	ErrFactNotFound = errors.New("fact not found")
 	// ErrInvalidInput is returned when a required argument is missing or empty.
 	ErrInvalidInput = errors.New("invalid input")
 )

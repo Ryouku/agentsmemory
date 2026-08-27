@@ -692,9 +692,9 @@ func (s *Service) KGInvalidate(ctx context.Context, teamID, subject, predicate, 
 		// cause is an already-ended fact, which is named too because it is the
 		// case that looks most like a bug from the outside.
 		return 0, "", "", fmt.Errorf(
-			"%w: no CURRENT fact matches %s → %s → %s. Either it was never filed, or it is already ended "+
+			"%w: %s → %s → %s. Either it was never filed, or it is already ended "+
 				"(am_kg_query with status \"ended\" shows it). Nothing was changed",
-			ErrNotFound, subID, p, objID)
+			ErrFactNotFound, subID, p, objID)
 	}
 	return n, subj + " → " + p + " → " + obj, e, nil
 }

@@ -35,8 +35,8 @@ func TestInvalidateAFactThatIsNotThereIsRefused(t *testing.T) {
 		t.Fatalf("KGInvalidate on a fact that does not exist returned nil error and n=%d; "+
 			"it must refuse, because the caller asked for a fact to stop being current and none did", n)
 	}
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("error = %v; want ErrNotFound so a caller can tell a miss from a malformed request", err)
+	if !errors.Is(err, ErrFactNotFound) {
+		t.Errorf("error = %v; want ErrFactNotFound so a caller can tell a miss from a malformed request", err)
 	}
 	// The message has to name what was SEARCHED for, not what was sent: the
 	// likeliest cause of a legitimate miss is normalization — normalizeEntityID
@@ -71,7 +71,7 @@ func TestInvalidateReportsHowManyFactsEnded(t *testing.T) {
 
 	// And ending it twice is a miss, not a second success: the fact is already
 	// historical, so there is no CURRENT row left to end.
-	if _, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("re-invalidating an already-ended fact returned %v; want ErrNotFound", err)
+	if _, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27"); !errors.Is(err, ErrFactNotFound) {
+		t.Errorf("re-invalidating an already-ended fact returned %v; want ErrFactNotFound", err)
 	}
 }
