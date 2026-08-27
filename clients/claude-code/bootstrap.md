@@ -341,34 +341,37 @@ whenever the answer would change what you do next:
 
 Four behaviours return a confident WRONG answer rather than an error. None of them
 raise anything; each looks like success at the call site, which is why every one of
-them cost a real session before it was written down.
+them cost a real session before it was written down. A tool that REFUSES is not on
+this list however sharp its edge — a refusal you can read is the system working.
 
-⚠**A MEMORY LONGER THAN ONE CHUNK CANNOT BE EDITED.** Content is split at roughly
-1600 characters, and `am_update_drawer` then REFUSES every change — content, wing
-*and* room — to any drawer of a multi-chunk memory, because moving or rewriting one
-chunk leaves the others live with the old text, still embedded and still returned by
-search. The error names the remedy: delete the memory and file it again as one
-piece. So decide before you write which kind of memory this is — a RECORD, written
-once and any length you like, or a DOCUMENT you intend to maintain, which has to
-stay under about 1600 characters to remain editable at all.
-
-⚠**`am_kg_add` NEVER CHECKS THAT YOUR ENTITIES EXIST.** It validates the shape of
-the three values and stores the edge. So a drawer id you shortened, truncated or
-retyped does not fail — it silently creates a NEW node, and the edge you meant to
-weave now points at nothing. **Ids are full length, always**, copied rather than
+⚠**`am_kg_add` NEVER CHECKS THAT WHAT YOU NAME EXISTS.** It validates the SHAPE of
+subject, predicate and object and stores the edge. So a drawer id you shortened,
+truncated or retyped does not fail — it silently creates a NEW node, and the edge
+you meant to weave points at nothing. `source_drawer_id` is unchecked the same way,
+which turns provenance into a citation resolving to no row. Measured 2026-08-27
+against one 2,037-drawer palace: **16 facts cite a row that does not exist**
+(`doctor --corpus` counts them). **Ids are full length, always** — copied, never
 typed.
 
-⚠**`am_get_drawer` RETURNS ONE CHUNK, AND IT LOOKS COMPLETE.** A memory past the
-chunk size is stored as several drawers sharing a parent, and a search hands back
-only the one that matched. Pass `whole: true` whenever you mean to READ a memory
-rather than merely confirm it exists.
+⚠**A LISTING CAN ARRIVE EMPTY BECAUSE IT WAS TOO BIG.** `am_list_drawers` returns
+whole drawers with no size budget, and past roughly 40-45KB a result stops reaching
+the model at all on the transports these agents use — it spills to a file nothing
+reads. An oversized listing is therefore not truncated, it is silently EMPTIER, and
+the conclusion it invites is "this room holds nothing". `am_search` bounds this and
+says so (`content_truncated`, plus a note naming the remedy); a listing does not.
+Page it — a small `limit`, walked with `offset`. **An empty-looking room is not
+evidence of an empty room.**
 
-⚠**A DRAWER WITH NO EDGE IS AN ORPHAN** — findable by search, invisible to
-traversal, and it will still turn up in *your* search, which is exactly why the
-agent who filed it believes it is reachable. `am_add_drawer` and `am_kg_add` in
-Step 4 are not two options to choose between; they are the two halves of one write.
-File the memory, then weave at least one edge to it, or the only way anyone reaches
-it later is by guessing the words you happened to use.
+⚠**`am_kg_query` FAILS OPEN ON A NAME IT DOES NOT KNOW.** An entity filed under a
+different spelling returns `count: 0` and no error — byte-identical to the answer
+for a graph that genuinely holds nothing about it. Zero rows is a cue to check the
+name, never a finding to report.
+
+⚠**`am_get_drawer` RETURNS ONE CHUNK, AND IT LOOKS COMPLETE.** A memory past the
+chunk size is several drawers sharing a parent, and a search hands back only the one
+that matched. Pass `whole: true` when you mean to READ a memory rather than confirm
+it exists — or ask the recall itself for whole memories with `snippet_chars: 0`,
+which returns them bounded and flags any it had to window.
 
 ## Step 2 — Plan
 
