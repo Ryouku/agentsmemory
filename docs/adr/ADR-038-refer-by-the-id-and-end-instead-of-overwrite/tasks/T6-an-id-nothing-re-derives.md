@@ -58,7 +58,7 @@ ladder, where the capability exists and its intended caller cannot discover it.
      list over a package is a guess about wording.
 
      **(b) A phrase sweep scoped to `internal/palace/` and `db/migrations/` only**, for the
-     incidental mentions that sit on OTHER declarations — `service.go:677` and `repo.go:98` are
+     incidental mentions that sit on OTHER declarations — `service.go:679` and `repo.go:98` are
      comments about `purgeSource` and `SaveUnembedded` that happen to assert the id's nature, and
      part (a) cannot see them. Scoping kills all four false positives. Allowlist entries carry a
      written reason, as `notOperatorFacing` does.

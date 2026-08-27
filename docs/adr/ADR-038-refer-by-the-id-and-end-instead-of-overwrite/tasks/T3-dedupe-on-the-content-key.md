@@ -22,7 +22,7 @@ exists to protect. Step 1's first test is what fails if they are separated.
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/palace/repo.go` | edit | **BOTH** conflict targets move to `(team_id, content_key)`: `Save` (`:85`) and `SaveUnembedded` (`:109`). The partial index's predicate must be repeated in the target — GORM `clause.OnConflict.TargetWhere` — as `ON CONFLICT (team_id, content_key) WHERE content_key != '' AND valid_to = ''`; a conflict target that does not name a partial index's predicate does not match that index |
+| `internal/palace/repo.go` | edit | **BOTH** conflict targets move to `(team_id, content_key)`: `Save` (`:85`) and `SaveUnembedded` (`:110`). The partial index's predicate must be repeated in the target — GORM `clause.OnConflict.TargetWhere` — as `ON CONFLICT (team_id, content_key) WHERE content_key != '' AND valid_to = ''`; a conflict target that does not name a partial index's predicate does not match that index |
 | `internal/palace/repo.go` | edit | `SaveUnembedded`'s doc comment (`:98–99`) says *"The id is a content hash, so content/wing/room/source/chunk never differ on a conflict"* — false for every new row after this task. T2 schedules `00006:18` and `DrawerID`'s comment and misses this one |
 | `internal/palace/chunk.go` | edit | add the opaque mint used for NEW rows; `DrawerID` stays as the content-key recipe |
 | `internal/palace/service.go` | edit | `Add` (`:660`) mints an opaque id and sets the content key rather than using the hash as the id |
@@ -79,7 +79,7 @@ go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnch
 (each chunk gets its own key — assert chunk 1 and chunk 2 of one memory do not collide); a named
 source, where `purgeSource` deletes before insert and the key is never consulted (assert unchanged);
 a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConflict` clause at
-`repo.go:109` — assert its target moves too — **not optional**, see Affected Files).
+`repo.go:110` — assert its target moves too — **not optional**, see Affected Files).
 
 ## Reachability
 

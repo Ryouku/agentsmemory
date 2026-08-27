@@ -34,7 +34,7 @@ So the palace already decided, in three places, that an id **is a reference, not
 
 **The cost of not saying so — two failure modes, one live, one latent.**
 
-A source-less `am_add_drawer` skips `purgeSource` (`service.go:677`) and relies on the content-hash id colliding with the stored row under `OnConflict{UpdateAll: true}` (`repo.go:85`). For a drawer that has since been edited in place:
+A source-less `am_add_drawer` skips `purgeSource` (`service.go:679`) and relies on the content-hash id colliding with the stored row under `OnConflict{UpdateAll: true}` (`repo.go:85`). For a drawer that has since been edited in place:
 
 - re-filing the **original** text mints the id the row still carries, and the edit is **silently reverted**;
 - re-filing the **edited** text mints a different id, and a **duplicate row** with identical content is created.
@@ -163,7 +163,7 @@ Four records, one cause. None of them can move while the id that references a ro
 |---|---|---|
 | `DrawerID` | `chunk.go:148` | **Reshape.** Its recipe is kept verbatim and becomes the **content key**. It stops being the primary key's definition. |
 | `diaryEntryID` | `chunk.go:164` | **Reuse unchanged.** It is already an opaque mint; this ADR names that role rather than inventing it. Diary rows carry **no** content key — a journal must not dedupe. |
-| `purgeSource` | `service.go:677` | **Reuse unchanged.** Named-source wholesale replacement is orthogonal and correct. |
+| `purgeSource` | `service.go:679` | **Reuse unchanged.** Named-source wholesale replacement is orthogonal and correct. |
 | `OnConflict{UpdateAll: true}` | `repo.go:85` | **Reshape.** The conflict target moves from the primary key to the content key. |
 | `RelabelDrawerWing*` | `admin.go:295,313` | **Extend.** Must recompute the content key in the same statement that moves the wing. |
 | `pointID` (UUID5 of drawer id) | `store/qdrant/vector.go:29` | **Untouched.** No drawer id changes, so no vector is re-keyed. This is the reason for the shape chosen below. |
@@ -542,7 +542,7 @@ briefly wrong — is the kind of state this repo keeps finding, and it is remova
 | Diary rows are accidentally pulled into the unique index by a later change | Low | Med | T2's test asserts two diary entries with identical text, agent and topic coexist. |
 | **An opaque mint ships before `purgeSource` becomes a set difference** | Med | **High** | Every re-file of a named source would re-key every drawer under it, breaking every anchor, tunnel and KG pointer to them — the exact property this ADR protects, broken by this ADR. They are one task and one commit for that reason, and T3's first test is the one that fails if they are separated. |
 | **The unique index ships without one of its two predicate conjuncts** | Low | **Data loss / permanent refusal** | Drop `content_key != ''` and every keyless row shares one index entry, so an upsert overwrites an unrelated memory — the only silent destroying failure here. Drop `valid_to = ''` and text that was once superseded can never be filed again — the interaction only visible once ADR-010 was absorbed. T2 tests the predicate directly, and the mutant is deleting each conjunct in turn. |
-| `SaveUnembedded` keeps its own `(team_id, id)` conflict target (`repo.go:109`) after `Save` moves | Med | Med | The deferred-embedding path would keep id-based dedup, so the silent-revert mechanism survives on the one path taken when the embedder is down. Named in T3's Tests table for that reason. |
+| `SaveUnembedded` keeps its own `(team_id, id)` conflict target (`repo.go:110`) after `Save` moves | Med | Med | The deferred-embedding path would keep id-based dedup, so the silent-revert mechanism survives on the one path taken when the embedder is down. Named in T3's Tests table for that reason. |
 | Backfill aborts partway, leaving rows with an empty key | Med | Low | Fails toward DUPLICATES, not loss: a keyless row sits outside the partial index and never matches, so a re-file inserts beside it rather than over it. Detected by the query in Rollback. |
 
 ## Rollback
