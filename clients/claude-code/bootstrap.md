@@ -353,14 +353,15 @@ against one 2,037-drawer palace: **16 facts cite a row that does not exist**
 (`doctor --corpus` counts them). **Ids are full length, always** — copied, never
 typed.
 
-⚠**A LISTING CAN ARRIVE EMPTY BECAUSE IT WAS TOO BIG.** `am_list_drawers` returns
-whole drawers with no size budget, and past roughly 40-45KB a result stops reaching
-the model at all on the transports these agents use — it spills to a file nothing
-reads. An oversized listing is therefore not truncated, it is silently EMPTIER, and
-the conclusion it invites is "this room holds nothing". `am_search` bounds this and
-says so (`content_truncated`, plus a note naming the remedy); a listing does not.
-Page it — a small `limit`, walked with `offset`. **An empty-looking room is not
-evidence of an empty room.**
+⚠**A LISTING CAN ARRIVE EMPTY BECAUSE IT WAS TOO BIG.** A big enough tool result
+does not reach you truncated — on some clients it does not reach you at all, spilled
+to a file nothing reads. So an oversized listing is not smaller, it is silently
+EMPTIER, and the conclusion it invites is "this room holds nothing". Both
+`am_search` and `am_list_drawers` now bound their responses and SAY when they cut
+(`content_truncated` with `full_length`, plus a note naming the remedy) — but the
+bound is a context budget, and where your client truncates is its own business and
+not published. Page a large room rather than asking for it whole: a small `limit`,
+walked with `offset`. **An empty-looking room is not evidence of an empty room.**
 
 ⚠**`am_kg_query` FAILS OPEN ON A NAME IT DOES NOT KNOW.** An entity filed under a
 different spelling returns `count: 0` and no error — byte-identical to the answer

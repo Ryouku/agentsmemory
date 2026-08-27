@@ -27,10 +27,10 @@ import (
 // were returned at all — a ~60x change in the resource envelope with nothing
 // bounding it.
 //
-// The failure it prevents is not a crash. Past roughly 40-45KB this transport
-// does not deliver a tool result to the agent at all; it spills to a file the
-// model never reads. So an unbounded response is not more generous, it is
-// silently emptier — and the agent's conclusion is that the palace has no answer.
+// The failure it prevents is not a crash. It is a response that spends a large
+// share of a session's context on text nobody asked for — and, on clients that
+// truncate, one that arrives smaller than it looks. See responseBudget for why the
+// number rests on the first of those and not the second.
 func TestWholeMemorySearchStaysWithinTheResponseBudget(t *testing.T) {
 	srv, ctx := budgetTestServer(t)
 
@@ -75,7 +75,7 @@ func TestWholeMemorySearchStaysWithinTheResponseBudget(t *testing.T) {
 		total += len([]rune(h.Content))
 	}
 	if total > responseBudget {
-		t.Errorf("whole-memory page carried %d runes, over the %d budget — past roughly 40-45KB "+
+		t.Errorf("whole-memory page carried %d runes, over the %d budget — a page this size "+
 			"this transport drops the result to a file instead of delivering it, so the caller "+
 			"would receive nothing at all", total, responseBudget)
 	}
@@ -174,10 +174,10 @@ func resultText(res *mcp.CallToolResult) string {
 //
 // am_search got a budget; am_list_drawers did not, and it returns WHOLE drawers at
 // a default limit of 50. Fifty drawers at ChunkSize is ~80,000 runes against a
-// transport that stops delivering past roughly 40-45KB — so an oversized listing
-// was not truncated, it was silently EMPTIER, and the answer it invited was "this
-// room holds nothing". That is the worst wrong answer a memory tool can give, and
-// it is this repository's signature shape: the fix applied to the path somebody
+// budget of 40,000 — so a single listing could spend twice a search page's whole
+// context allowance, unasked. On a client that truncates it is worse than costly:
+// the result arrives as nothing and reads as "this room holds nothing". Either way
+// it is this repository's signature shape — the fix applied to the path somebody
 // tested.
 func TestAListingStaysWithinTheResponseBudget(t *testing.T) {
 	srv, ctx := budgetTestServer(t)

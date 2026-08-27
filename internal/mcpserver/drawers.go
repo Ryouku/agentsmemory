@@ -51,11 +51,24 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 // single search could assemble ~10M runes — against roughly 1,920 before whole
 // memories were returned at all. Nothing capped it.
 //
-// The number is not arbitrary. Measured on this MCP transport, a tool result
-// past roughly 40-45KB is not delivered to the agent at all — it spills to a
-// file the model never reads. So beyond this point a bigger response is not a
-// more generous answer, it is a silently emptier one, and the honest behaviour
-// is to return less and SAY so rather than more and have it vanish.
+// ⚠ WHERE THE NUMBER COMES FROM, stated because the honest answer is not
+// "measured here". The figure this was originally justified by — a client
+// truncating somewhere around 40-45KB — traces to a note in model/draf1.md and to
+// nothing executable: no probe, no test, no command in this tree establishes it.
+// Nor could there be one on this side. Truncation is the CLIENT's behaviour, it is
+// not published, and it moves between versions, so a server-side gate asserting a
+// specific ceiling would be pinning someone else's constant.
+//
+// That observation is why a bound EXISTS. It is not the bound. A threshold whose
+// provenance is prose can motivate having a limit and must never be the limit, or
+// the number outlives whatever was true when somebody said it.
+//
+// What justifies 40,000 is ours to check: it is roughly 10k tokens, a large share
+// of any session's context, and a search page or a room listing is a NAVIGATION
+// aid rather than the payload — the caller asked what is there, and fetches what
+// it wants by id. A response past this point is not more generous, it is spending
+// context the caller did not choose to spend. The failure it also happens to avert
+// on truncating clients is a bonus, not the rationale.
 //
 // A response is filled in the order it was ranked or listed, so the budget spends
 // itself on what the caller most likely wanted and the tail degrades to a bounded
@@ -630,8 +643,7 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 				"%d of %d drawer(s) exceeded this response's size budget and carry their opening "+
 					"lines instead of their full text (content_truncated, with full_length). Read any "+
 					"of them in full with am_get_drawer(id, whole=true), or narrow the listing with "+
-					"room/limit — a larger response would not reach you: this transport drops a "+
-					"result past roughly 40-45KB to a file rather than delivering it.",
+					"room/limit. The budget is a context bound, not a page count: a listing tells you WHAT is there and you fetch what you want by id.",
 				trimmed, len(views))
 		}
 		return jsonResult(out), nil
@@ -962,7 +974,8 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 					"size budget, so they are windowed instead (content_truncated carries "+
 					"content_length). Fetch any of them in full with am_get_drawer(id, whole=true), "+
 					"or narrow the search — a larger response would not reach you: this transport "+
-					"drops a result past roughly 40-45KB to a file rather than delivering it.", overBudget)
+					"budget is a context bound: a page this size is most of a session's context, and "+
+					"most of it is text you did not ask for.", overBudget)
 		}
 		// A zero-hit page from a wing that holds nothing is not a miss, and the two
 		// were indistinguishable: same count, same empty list, same sub-second
