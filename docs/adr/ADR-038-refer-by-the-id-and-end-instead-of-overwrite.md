@@ -88,6 +88,38 @@ is wrong unless it is scoped to CURRENT rows, and nothing in the identity half k
 means while nothing in the lineage half knows there is an index. Keeping them apart would have
 shipped a store where text that was once superseded can never be filed again.
 
+**A live instance, found in review 2026-08-27 while this record was open.** An agent executing this
+repository's own wake-up protocol reported:
+
+> ⚠ One conflict to flag: the wing root's `must.decisions.permissions` edge points at drawer
+> `bf1ed1c3…` which no longer exists — a dangling `must.*` edge. Recovering that decision by search
+> instead.
+
+That is this decision's failure mode in the one place the protocol says an agent must read
+**everything**: `AGENTS.md` instructs every session to fetch every `must.*` edge, warning that
+skipping is silent because *"nothing reports the drawer you did not read"*. A deleted target makes
+the skip involuntary. The agent behaved correctly — it noticed and fell back to search — but it
+noticed by producing a human-readable warning, and **nothing in this tree makes that detection
+systematic**, which is what T6's `doctor --corpus` is for.
+
+**Reported from another palace, and NOT reproduced here — said plainly rather than absorbed as
+though measured.** This palace's `must_*` edges point at room and skill LABELS (`llm_index`,
+`effective-go`), not drawer ids, and `bf1ed1c3…` exists in no row here. What is measured here is the
+same class:
+
+| pointer | dangling |
+|---|---|
+| `holds` (derived containment, 64-hex drawer ids) | **0 of 8** |
+| other object-position drawer-id pointers | **2** |
+| `kg_triples.source_drawer_id` (provenance) | **16** |
+
+Eighteen pointers into drawers that no longer exist, and nothing reports any of them.
+
+**And it is the argument for ending rather than deleting, made by a real incident.** Under this
+decision that drawer would have been ENDED: the row still resolves, the edge still leads somewhere,
+and the traversal finds *"this was retracted on D, because R"* instead of finding nothing. A deleted
+target loses the decision AND the fact that a decision was taken.
+
 **Three records have already deferred to the primitive this ADR adds.** This is the part that makes it a decision rather than a cleanup:
 
 - **ADR-015** — *"Making `DrawerID` independent of the wing so a merge does not invalidate anything derived from the id"* (Out of Scope, deferred; receipted at `docs/adr/BACKLOG.md:665`).
