@@ -636,22 +636,22 @@ func (s *Service) KGAdd(ctx context.Context, teamID, subject, predicate, object,
 // KGInvalidate ends a current fact by setting its valid_to (defaulting to today).
 // It rejects an end that precedes the fact's own start. Ending a fact never
 // deletes it — the history stays queryable as-of an earlier time.
-func (s *Service) KGInvalidate(ctx context.Context, teamID, subject, predicate, object, ended string) (fact, resolvedEnded string, err error) {
+func (s *Service) KGInvalidate(ctx context.Context, teamID, subject, predicate, object, ended string) (endedFacts int64, fact, resolvedEnded string, err error) {
 	subj, err := sanitizeKGValue(subject, "subject")
 	if err != nil {
-		return "", "", err
+		return 0, "", "", err
 	}
 	pred, err := SanitizeName(predicate, "predicate")
 	if err != nil {
-		return "", "", err
+		return 0, "", "", err
 	}
 	obj, err := sanitizeKGValue(object, "object")
 	if err != nil {
-		return "", "", err
+		return 0, "", "", err
 	}
 	e, err := sanitizeISOTemporal(ended, "ended")
 	if err != nil {
-		return "", "", err
+		return 0, "", "", err
 	}
 	if e == "" {
 		e = time.Now().UTC().Format("2006-01-02")
@@ -661,17 +661,42 @@ func (s *Service) KGInvalidate(ctx context.Context, teamID, subject, predicate, 
 	// Reject an end before any matching fact's start (the inverted-interval guard).
 	current, err := s.repo.CurrentTriples(ctx, teamID, subID, p, objID)
 	if err != nil {
-		return "", "", err
+		return 0, "", "", err
 	}
 	for _, row := range current {
 		if row.ValidFrom != "" && temporalEndKey(e) < temporalStartKey(row.ValidFrom) {
-			return "", "", fmt.Errorf("%w: ended=%q is before valid_from=%q", ErrInvalidInput, e, row.ValidFrom)
+			return 0, "", "", fmt.Errorf("%w: ended=%q is before valid_from=%q", ErrInvalidInput, e, row.ValidFrom)
 		}
 	}
-	if _, err := s.repo.InvalidateKGTriples(ctx, teamID, subID, p, objID, e); err != nil {
-		return "", "", err
+	// RowsAffected is the ANSWER here, not a diagnostic, and discarding it was the
+	// defect M reported on 2026-08-27: this returned nil for a fact it had never
+	// touched and the MCP handler rendered a hardcoded "success": true. Reproduced
+	// against the running server — invalidating a triple that had never existed
+	// answered success while kg_triples ended nothing.
+	//
+	// It is this repository's characteristic defect wearing a temporal hat: a
+	// write that reports success and changes nothing. Worse here than elsewhere,
+	// because the entire purpose of an invalidation is that the fact stops being
+	// returned, so an agent that retracts a wrong fact, is told it worked, and
+	// finds it still current has been misled by the one operation that exists to
+	// keep the store honest.
+	n, err := s.repo.InvalidateKGTriples(ctx, teamID, subID, p, objID, e)
+	if err != nil {
+		return 0, "", "", err
 	}
-	return subj + " → " + p + " → " + obj, e, nil
+	if n == 0 {
+		// Name the NORMALIZED terms, not the caller's spelling. normalizeEntityID
+		// and normalizePredicate rewrite all three, so the likeliest cause of a
+		// legitimate miss is a spelling that resolved somewhere the caller did not
+		// expect — and echoing their own input back explains nothing. The other
+		// cause is an already-ended fact, which is named too because it is the
+		// case that looks most like a bug from the outside.
+		return 0, "", "", fmt.Errorf(
+			"%w: no CURRENT fact matches %s → %s → %s. Either it was never filed, or it is already ended "+
+				"(am_kg_query with status \"ended\" shows it). Nothing was changed",
+			ErrNotFound, subID, p, objID)
+	}
+	return n, subj + " → " + p + " → " + obj, e, nil
 }
 
 // kgComplementStatus returns the status a withheld tally must count: what a query
