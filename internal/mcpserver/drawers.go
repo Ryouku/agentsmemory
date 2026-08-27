@@ -36,8 +36,14 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerReconnect(reg, drawers, usageSvc)
 }
 
-// wholeMemoryBudget bounds the TOTAL whole-memory content one search response
-// may carry, in runes.
+// responseBudget bounds the TOTAL content one tool response may carry, in runes.
+//
+// It is shared, and being shared is the point. It was written for search alone as
+// responseBudget, and am_list_drawers — which returns WHOLE drawers at a default
+// limit of 50, so ~80,000 runes at ChunkSize — went unbounded beside it for exactly
+// as long. One transport ceiling deserves one number: a second constant of the same
+// value is the same knowledge in two places, and the second copy is the one that
+// does not get updated.
 //
 // snippet_chars=0 means "give me whole memories" and that is a documented,
 // deliberate request. What was missing is a ceiling on the PAGE: a memory may be
@@ -51,9 +57,34 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 // more generous answer, it is a silently emptier one, and the honest behaviour
 // is to return less and SAY so rather than more and have it vanish.
 //
-// Hits are filled in rank order, so the budget spends itself on the best matches
-// and the tail degrades to a bounded window rather than the page being cut.
-const wholeMemoryBudget = 40_000
+// A response is filled in the order it was ranked or listed, so the budget spends
+// itself on what the caller most likely wanted and the tail degrades to a bounded
+// head rather than the page being cut. Nothing is ever dropped silently: a trimmed
+// record says so and carries its full length.
+const responseBudget = 40_000
+
+// headWithin returns the opening of content bounded by BOTH a preferred head size
+// and whatever is left of the response budget, and reports whether it had to cut.
+//
+// The second bound is the one that was missing. A budget checked only before the
+// content is added still overshoots by the size of every replacement head — with a
+// limit of 100 and a 400-rune head that is 40,000 runes past a 40,000 budget, which
+// is the ceiling doubled by the very branch that exists to respect it. Trimming to
+// `remaining` makes the bound hold for the whole response instead of for the
+// records that happened to fit.
+func headWithin(content string, head, remaining int) (string, bool) {
+	runes := []rune(content)
+	if len(runes) <= remaining {
+		return content, false
+	}
+	if head > remaining {
+		head = remaining
+	}
+	if head < 0 {
+		head = 0
+	}
+	return string(runes[:head]), true
+}
 
 // drawerView is the agent-facing JSON shape of a drawer. It omits TeamID (the
 // caller already knows its own scope) and gives every field an explicit snake_case
@@ -82,6 +113,11 @@ type drawerView struct {
 	// it; superseded_reason is capped so a page cannot grow with the corpus.
 	Supersedes       string `json:"supersedes,omitempty"`
 	SupersededReason string `json:"superseded_reason,omitempty"`
+	// Set when the response budget trimmed this drawer's content. Both fields or
+	// neither: "truncated" without the original length tells a caller something is
+	// missing and not how much, which is not enough to decide whether to fetch it.
+	Truncated  bool `json:"content_truncated,omitempty"`
+	FullLength int  `json:"full_length,omitempty"`
 }
 
 // toView projects a domain Drawer onto its wire shape.
@@ -538,7 +574,7 @@ func registerInvalidateDrawer(reg *registrar, drawers *palace.Service, usageSvc 
 // registerListDrawers: paginate a team's drawers, optionally filtered by wing/room.
 func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Service, scopeSearchToWing bool) {
 	tool := newTool("list_drawers",
-		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
+		mcp.WithDescription("List drawers (newest first), optionally narrowed to a wing and/or room, with limit/offset paging. A listing carries whole drawers, so a large page is bounded: once the response budget is spent the remaining drawers carry their opening lines with content_truncated and full_length set, and a note says how many. Nothing is dropped — read any of them in full with am_get_drawer(id, whole=true), or narrow with room/limit. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise omission lists every wing. Pass \"*\" to list every wing deliberately."),
 		mcp.WithString("wing", mcp.Description("Only drawers in this wing. Omitted, scoped to this registration's default_wing only when one is configured and SEARCH_SCOPE is not workspace; otherwise every wing. Pass \"*\" for every wing deliberately."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
@@ -569,11 +605,36 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		// A listing returns whole drawers, and fifty of them at ChunkSize is roughly
+		// twice what this transport delivers. Past the ceiling the WHOLE result
+		// spills to a file the model never reads, so an unbounded listing does not
+		// return too much — it returns nothing, and reads as an empty room. Trim the
+		// tail to a bounded head instead, and say so on every record that was cut.
 		views := make([]drawerView, len(listed))
+		spent, trimmed := 0, 0
 		for i, d := range listed {
 			views[i] = toView(d)
+			// The head, not a window: a listing has no query to centre on, and the
+			// opening line is what its author wrote to say what the memory is.
+			if head, cut := headWithin(d.Content, palace.DefaultSnippetChars, responseBudget-spent); cut {
+				views[i].Content = head
+				views[i].Truncated = true
+				views[i].FullLength = len([]rune(d.Content))
+				trimmed++
+			}
+			spent += len([]rune(views[i].Content))
 		}
-		return jsonResult(map[string]any{"drawers": views, "count": len(views)}), nil
+		out := map[string]any{"drawers": views, "count": len(views)}
+		if trimmed > 0 {
+			out["note"] = fmt.Sprintf(
+				"%d of %d drawer(s) exceeded this response's size budget and carry their opening "+
+					"lines instead of their full text (content_truncated, with full_length). Read any "+
+					"of them in full with am_get_drawer(id, whole=true), or narrow the listing with "+
+					"room/limit — a larger response would not reach you: this transport drops a "+
+					"result past roughly 40-45KB to a file rather than delivering it.",
+				trimmed, len(views))
+		}
+		return jsonResult(out), nil
 	})
 }
 
@@ -756,7 +817,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 		}
 		hits := page.Hits
 		snippetChars := req.GetInt("snippet_chars", palace.DefaultSnippetChars)
-		// spent/overBudget bound the WHOLE-memory expansion. See wholeMemoryBudget.
+		// spent/overBudget bound the WHOLE-memory expansion. See responseBudget.
 		spent, overBudget := 0, 0
 		views := make([]searchHitView, len(hits))
 		ids := make([]string, len(hits))
@@ -809,11 +870,15 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			}
 			// snippet_chars=0 asks for whole memories, and that request is honoured
 			// until the page as a whole stops being deliverable — see
-			// wholeMemoryBudget. Past it the remaining hits fall back to a bounded
+			// responseBudget. Past it the remaining hits fall back to a bounded
 			// window, marked truncated with the full length like any other trim, so
 			// a caller can tell it happened and ask for the rest by id.
-			if snippetChars <= 0 && spent+len([]rune(fullContent)) > wholeMemoryBudget {
-				views[i].Content = palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
+			if snippetChars <= 0 && spent+len([]rune(fullContent)) > responseBudget {
+				// Bounded by what is LEFT, not only by the head size. The window is
+				// still query-centred where it fits; past that the budget wins, because
+				// a page that overshoots reaches the caller as nothing at all.
+				window := palace.SnippetWithHead(fullContent, query, palace.DefaultSnippetChars, true)
+				views[i].Content, _ = headWithin(window, len([]rune(window)), responseBudget-spent)
 				views[i].Truncated = true
 				views[i].FullLength = len([]rune(fullContent))
 				overBudget++
