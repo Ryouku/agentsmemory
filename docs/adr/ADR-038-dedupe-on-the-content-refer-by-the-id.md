@@ -38,7 +38,9 @@ A source-less `am_add_drawer` skips `purgeSource` (`service.go:677`) and relies 
 - re-filing the **original** text mints the id the row still carries, and the edit is **silently reverted**;
 - re-filing the **edited** text mints a different id, and a **duplicate row** with identical content is created.
 
-Measured on the same corpus: **0 of the 27 drifted rows have `source_file = ''`**, so this is a mechanism with no shipped instances today — reported as a mechanism, not an incident. The live half is the other one: all 27 carry a named source, and `purgeSource` replaces a named source wholesale, so **each of those 27 in-place edits will be discarded by the next re-file of its source**. Several of the sources are recurring briefings.
+Measured on the same corpus: **0 of the 27 drifted rows have `source_file = ''`**, so this is a mechanism with no shipped instances today — reported as a mechanism, not an incident. The live half is the other one: all 27 carry a named source, and `purgeSource` **hard-deletes** every drawer under a `(wing, room, source_file)` triple before inserting the new set (`service.go:844` — vectors, derived edges and rows), so **each of those 27 in-place edits is destroyed by the next re-file of its source**, across 19 distinct source triples.
+
+**How likely that re-file is cannot be measured from this corpus, and an earlier draft of this record implied otherwise.** The obvious test — does a source triple carry more than one distinct `filed_at` — returns 0 for all 27, and that number is worthless: `purgeSource` deletes its predecessor, so a re-filed source leaves no trace of having been re-filed. The check cannot produce a non-zero answer for a named source, which makes it a gate that cannot fail. What is certain is the mechanism and the 27 rows exposed to it; the rate is unknown.
 
 **Three records have already deferred to the primitive this ADR adds.** This is the part that makes it a decision rather than a cleanup:
 
@@ -67,7 +69,9 @@ Four records, one cause. None of them can move while the id that references a ro
 
 Concretely:
 
-1. A migration adds `content_key TEXT` to `drawers`, with a unique index on `(team_id, content_key)`, backfilled for every non-diary row by computing `DrawerID` from that row's **current** fields. Diary rows get an empty key and are excluded from the index — SQLite permits repeated empties in a unique index, and a journal must never dedupe.
+1. A migration adds `content_key TEXT` to `drawers`, with a unique index on `(team_id, content_key)` **carrying the partial predicate `WHERE content_key != ''`**, backfilled for every non-diary row by computing `DrawerID` from that row's **current** fields. Diary rows get an empty key and are excluded from the index, because a journal must never dedupe.
+
+   **That predicate is the single load-bearing clause in this decision and it gets its own test.** Without it every empty-key row shares one index entry, and once T2 points the upsert at that index, filing any keyless drawer would OVERWRITE an unrelated memory. It is the only line in this ADR whose absence destroys data rather than duplicating it, and the only one where the failure is silent.
 2. Every mint path (`Add`, `AbsorbDrawers`, `Mine`, `CopyWing`) writes the content key beside the id. Every in-place mutation path (`Update`, `MergeWing`) **recomputes** it in the same statement that changes a hashed field.
 3. Dedup and idempotency move to the content key: `Add` and the import path upsert on `(team_id, content_key)` and mint a fresh opaque id when there is no match. Import's contract at `import.go:21` — *"the only field recomputed is the id … so re-running an import upserts rather than duplicates"* — is preserved, now by the key rather than by the id.
 4. `id` is never recomputed, never compared to a hash, and never used to infer anything about a row's content. A source check (T3) fails when `DrawerID` is called anywhere other than a content-key computation.
@@ -134,6 +138,9 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 | Someone re-derives an id for a lookup after this lands, reintroducing the coupling | Med | Med | T3's source check fails when `DrawerID` is called outside a content-key computation. Prove it by adding such a call and watching it go red. |
 | The migration number is renumbered at merge and re-runs on a database that applied it | Low | High | Allocate the number at merge, never at authoring — the crash loop and its repair are already documented in `README.md` (Development). |
 | Diary rows are accidentally pulled into the unique index by a later change | Low | Med | T1's test asserts two diary entries with identical text, agent and topic coexist. |
+| **The unique index ships without its `WHERE content_key != ''` predicate** | Low | **Data loss** | The only failure in this ADR that destroys rather than duplicates: every keyless row would share one index entry and an upsert would overwrite an unrelated memory. T1 tests the predicate directly, and the mutant is deleting it. |
+| `SaveUnembedded` keeps its own `(team_id, id)` conflict target (`repo.go:109`) after `Save` moves | Med | Med | The deferred-embedding path would keep id-based dedup, so the silent-revert mechanism survives on the one path taken when the embedder is down. Named in T2's Tests table for that reason. |
+| Backfill aborts partway, leaving rows with an empty key | Med | Low | Fails toward DUPLICATES, not loss: a keyless row sits outside the partial index and never matches, so a re-file inserts beside it rather than over it. Detected by the query in Rollback. |
 
 ## Rollback
 

@@ -65,6 +65,7 @@ nothing and a package with no tests both exit 0.
 | `TestMergeWingRecomputesTheContentKey` | `internal/palace/contentkey_test.go` | a wing move updates the key — the path that is easiest to forget | — |
 | `TestTwoIdenticalDiaryEntriesBothPersistWithNoContentKey` | `internal/palace/contentkey_test.go` | a journal is not deduped, and the partial index is what allows it | — |
 | `TestBackfillAbortsOnCollision` | `internal/palace/contentkey_test.go` | a colliding corpus fails the migration rather than skipping a row | — |
+| `TestTheContentKeyIndexIsPartial` | `internal/palace/contentkey_test.go` | reads the real index definition via `pragma_index_list`/`sql` and fails when the `WHERE content_key != ''` predicate is absent — **the one clause in this ADR whose loss destroys data rather than duplicating it** | — |
 
 ## Reachability
 
@@ -81,7 +82,8 @@ nothing and a package with no tests both exit 0.
 
 - No drawer id changes. Anything that would re-key a row belongs to a different decision.
 - The vector store is not written during the migration — there is no cross-store transaction to get wrong.
-- Diary rows never enter the unique index.
+- Diary rows never enter the unique index, and the partial predicate — not a convention — is what keeps them out.
+- Every failure mode of this task ends in a duplicate row, never in an overwritten one. The partial predicate is the whole reason that is true.
 
 ## Risks
 
