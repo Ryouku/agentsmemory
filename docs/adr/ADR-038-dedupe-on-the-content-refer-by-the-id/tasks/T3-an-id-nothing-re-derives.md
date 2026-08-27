@@ -4,14 +4,23 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `TestNoPathRederivesADrawerID`, `TestEveryDrawerMintWritesAContentKey`, and the drift query
+**Produces:** `TestNoPathRederivesADrawerID`, `TestEveryDrawerMintWritesAContentKey`, and `doctor --corpus`
 **Consumes:** `Repo.Save` upserting on `(team_id, content_key)` (T2)
-**Data dependency:** hermetic for both gates. The drift query is run against a real corpus and its result recorded in the sign-off line, not in the gate.
+**Data dependency:** hermetic for both source gates. `doctor --corpus` needs a real database by definition; its unit tests are hermetic and build the drift they assert on.
 
 ## Goal
 
 The two properties this ADR decides are checked by exit code rather than by prose: nothing re-derives
-a drawer id, and no mint path writes a drawer without its content key.
+a drawer id, and no mint path writes a drawer without its content key. And the drift they prevent
+becomes something an operator can ASK about, instead of a script somebody has to think to write.
+
+**Why the third one is not optional.** Every finding behind this ADR — 27 drifted rows, 39 of 41
+anchored drawers exposed to a re-file, 16 knowledge-graph facts pointing at a drawer that no longer
+exists — was produced by a throwaway script on 2026-08-27 and by nothing in the tree. `doctor`
+already exists and already carries three integrity checks that exit non-zero on a finding
+(`--index`, `--schema`, `--roles`), and not one of them reads the corpus. A drift query recorded in
+a sign-off line is the state that let those 27 rows sit unnoticed; it is rung 3 of this repo's own
+ladder, where the capability exists and its intended caller cannot discover it.
 
 ## Affected Files
 
@@ -19,7 +28,9 @@ a drawer id, and no mint path writes a drawer without its content key.
 |------|--------|-----|
 | `internal/palace/identityrole_test.go` | add | both gates |
 | `internal/palace/chunk.go` | edit | `DrawerID`'s doc comment names the one legal use, so the gate's rule is readable where the function is |
-| `AGENTS.md` | edit | the Reachability section lists the gates in this tree and `TestAgentsMdNamesGatesThatExist` pins it — two new gates means two new lines, in this commit |
+| `cmd/server/doctor.go` | edit | a `--corpus` flag beside `--index`/`--schema`/`--roles`, and its line in the Description's integrity block — **the line that makes the check discoverable**, without which it is a function no operator will ever call |
+| `cmd/server/doctorcorpus.go` | add | the check: rows whose `content_key` disagrees with the hash of their own fields, and, since it is walking the corpus anyway, references that no longer resolve — `parent_id`, `drawer_anchors.drawer_id`, `kg_triples.source_drawer_id` (16 dangling, measured 2026-08-27). Ids and counts only, never memory text: a doctor report gets pasted (`doctor.go:92`) |
+| `AGENTS.md` | edit | the Reachability section lists the gates in this tree and `TestAgentsMdNamesGatesThatExist` pins it — new gates mean new lines, in this commit |
 
 ## Ordered Steps
 
@@ -34,16 +45,19 @@ a drawer id, and no mint path writes a drawer without its content key.
      sets `ContentKey: ""` explicitly, which satisfies the gate and documents the exemption at the
      site rather than in a list beside it.
 2. Make them pass.
-3. Add the drift query to the task as a recorded command (not part of the fence): count rows where
-   `content_key != ''` and it does not equal the hash of the row's current fields. On 2026-08-27 the
-   equivalent ad-hoc script found 27 of 1,705. Record the number this run produces in the sign-off.
+3. Add `doctor --corpus`, exiting non-zero on a finding exactly as `--index` and `--schema` do, and
+   add its line to the Description's integrity block so `--help` advertises it. Its unit tests build
+   a drifted row and a dangling reference and assert each is reported — a check whose fixture cannot
+   exhibit the defect is unfalsifiable however it is worded.
+   Run it against the real corpus and record the numbers in the sign-off. On 2026-08-27 the ad-hoc
+   equivalents found 27 drifted of 1,705 and 16 dangling `source_drawer_id` of 207 facts.
 4. Add the two gate names to `AGENTS.md`'s list and confirm `TestAgentsMdNamesGatesThatExist` passes.
 5. Run the fence.
 
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out
+go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./cmd/server/ -run 'TestDoctorCorpus'  -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out
 ```
 
 The whole tree runs in the second command because this task edits `AGENTS.md`, which
@@ -55,6 +69,8 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 |-----------|------|----------|--------|
 | `TestNoPathRederivesADrawerID` | `internal/palace/identityrole_test.go` | the id is never recomputed for a lookup or a comparison | — |
 | `TestEveryDrawerMintWritesAContentKey` | `internal/palace/identityrole_test.go` | a mint path that forgets the key fails the build's gate, derived from the source | — |
+| `TestDoctorCorpusReportsDriftAndDanglingReferences` | `cmd/server/doctorcorpus_test.go` | a drifted row and each kind of dangling reference are reported and exit non-zero | — |
+| `TestDoctorCorpusIsAdvertisedInHelp` | `cmd/server/doctorcorpus_test.go` | the flag appears in the Description's integrity block — rung 3, and the only rung a behavioural test cannot reach | — |
 
 ## Reachability
 
@@ -62,8 +78,8 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 |------|------------------------|
 | 1 — exists | both gates run and pass |
 | 2 — something selects it | `go test ./...` runs them; mutation: add a `DrawerID` lookup and a `Drawer{ID: ...}` literal with no `ContentKey`, and each gate goes red for its own reason |
-| 3 — the caller can discover it | `AGENTS.md`'s Reachability list names both, pinned by `TestAgentsMdNamesGatesThatExist` — the gate on the documentation is the one that stops the list rotting into a claim about tests nobody kept |
-| 4 — it is used | the drift query, run against a real corpus and recorded in the sign-off. Its result is a number, not a pass — a corpus with drift is information, not a failure. |
+| 3 — the caller can discover it | `doctor --help`'s integrity block names `--corpus`, asserted by `TestDoctorCorpusIsAdvertisedInHelp`; `AGENTS.md`'s Reachability list names the source gates, pinned by `TestAgentsMdNamesGatesThatExist`. **This is the rung the ADR was failing** — a drift query living in a sign-off line is a capability no operator can find. |
+| 4 — it is used | `doctor --corpus` run against the real corpus, numbers in the sign-off. Whether anyone runs it afterwards is not measured here, and ADR-015 already recorded that operators may not run `doctor` at all — worth saying rather than assuming. |
 
 ## Mutation Log
 
@@ -71,7 +87,8 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 
 - The gates derive their universe from the source, never from a hand-kept list.
 - A comment naming `DrawerID` neither satisfies nor trips `TestNoPathRederivesADrawerID` — that is why it parses instead of grepping.
-- The drift query stays OUT of the acceptance fence: it depends on a corpus, and a gate whose verdict depends on data nobody controls is a gate people learn to skip.
+- `doctor --corpus` stays OUT of the acceptance fence against a REAL corpus — a gate whose verdict depends on data nobody controls is one people learn to skip. Its hermetic unit tests, which build the drift they assert on, are in the fence.
+- The report prints ids and counts, never memory text (`doctor.go:92`).
 
 ## Risks
 

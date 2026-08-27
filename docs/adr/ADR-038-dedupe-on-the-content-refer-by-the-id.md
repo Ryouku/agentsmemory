@@ -7,7 +7,7 @@
 **Cross-references:** ADR-010 (a memory is ended, not overwritten — rejects event sourcing because "anchors hang off drawer identity", which is the coupling this ADR removes), ADR-013 (a page of memories, not chunks), ADR-015 (a wing merge must correct the index it invalidates — **this ADR closes its deferral**), ADR-019 (the agent sees a quarter of the memory — rejected re-chunking on the same id grounds), ADR-024 (rank memories, not chunks), ADR-027 (a maintained document is a set of records — **this ADR unblocks its rejected alternative**), ADR-036 (the knowledge graph on the read path — `kg_triples.source_drawer_id` is a consumer of drawer identity), `internal/palace/chunk.go:148` (`DrawerID`), `:164` (`diaryEntryID`), `internal/palace/service.go:660` (the mint), `:677` (`purgeSource`), `internal/palace/repo.go:85` (`OnConflict{UpdateAll: true}`), `:377` (the id-is-stable contract), `internal/palace/admin.go:306` (`MergeWing` relabels the wing in place), `internal/palace/import.go:21` (import idempotency rests on the recomputed id), `internal/store/qdrant/vector.go:29` (`pointID` = UUID5 of the drawer id), issue #39 part 2
 **Governs:** `internal/palace/chunk.go`, `internal/palace/repo.go`, `internal/palace/service.go`, `internal/palace/import.go`, `internal/palace/mine.go`, `internal/palace/copywing.go`, `internal/palace/admin.go`, `db/migrations/*_drawers_content_key.sql`
 **Invalidates:** none — checked. Grepped ADR-001..037 for `DrawerID`, `drawer id`, `content hash`, `idempotent`, `re-chunk` and `new ids`: no accepted ADR pins the id to its content, and the two records that touch it (ADR-015, ADR-027) both **defer** to this decision rather than depend on the current shape. It **closes** ADR-015's deferral and the id half of ADR-027's; the remainder of ADR-027's is re-pointed, not silently absorbed.
-**Served-path change:** **Yes.** Re-filing a memory that has since been edited in place stops silently reverting the edit, and re-filing the edited text stops creating a duplicate row. `am_add_drawer`, `am_update_drawer` and the import path all change behaviour; no tool signature changes.
+**Served-path change:** **Yes.** Re-filing a memory that has since been edited in place stops silently reverting the edit, re-filing the edited text stops creating a duplicate row, and re-filing a named source stops stripping the anchors of chunks it did not change. `am_add_drawer`, `am_update_drawer` and the import path all change behaviour; no MCP tool signature changes. The CLI gains `doctor --corpus`.
 
 ## Context
 
@@ -143,6 +143,7 @@ Concretely:
 | `Repo.Save` conflict target | `id` → `(team_id, content_key)` | `internal/palace/repo.go` | `Service.Add`, `Service.AbsorbDrawers` |
 | `DrawerID` role | primary-key recipe → content-key recipe (function body unchanged) | `internal/palace/chunk.go` | every mint path |
 | Drawer id minting | content hash → `randomID`-style opaque mint for NEW rows | `internal/palace/chunk.go` | every mint path |
+| `doctor --corpus` (new CLI flag + `--help` text) | new integrity check beside `--index`, `--schema`, `--roles`; exits non-zero on a finding | `cmd/server/doctor.go` | operators |
 
 ## Inter-task Contracts
 
