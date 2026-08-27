@@ -58,7 +58,7 @@ ladder, where the capability exists and its intended caller cannot discover it.
      list over a package is a guess about wording.
 
      **(b) A phrase sweep scoped to `internal/palace/` and `db/migrations/` only**, for the
-     incidental mentions that sit on OTHER declarations — `service.go:677` and `repo.go:98` are
+     incidental mentions that sit on OTHER declarations — `service.go:679` and `repo.go:98` are
      comments about `purgeSource` and `SaveUnembedded` that happen to assert the id's nature, and
      part (a) cannot see them. Scoping kills all four false positives. Allowlist entries carry a
      written reason, as `notOperatorFacing` does.
@@ -112,7 +112,44 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 | 3 — the caller can discover it | `doctor --help`'s integrity block names `--corpus`, asserted by `TestDoctorCorpusIsAdvertisedInHelp`; `AGENTS.md`'s Reachability list names the source gates, pinned by `TestAgentsMdNamesGatesThatExist`. **This is the rung the ADR was failing** — a drift query living in a sign-off line is a capability no operator can find. |
 | 4 — it is used | `doctor --corpus` run against the real corpus, numbers in the sign-off. Whether anyone runs it afterwards is not measured here, and ADR-015 already recorded that operators may not run `doctor` at all — worth saying rather than assuming. |
 
+> **Sign-off, 2026-08-27 — run against the REAL corpus, in the running container.**
+>
+> An earlier version of this note said the number was not reachable from a local checkout. That was
+> wrong and is corrected here rather than deleted: the local checkout's database is an empty demo
+> workspace, but the palace this repository actually runs is in the container's volume, and the
+> rebuilt binary reads it directly.
+>
+> ```
+> $ agentsmemory doctor --db /data/agentsmemory.db --corpus --project local
+> corpus "local": 2037 drawers, 214 facts
+>   1 fact(s) cite a retracted or superseded drawer — expected: provenance is historical
+>   16 facts name no row (provenance that resolves to nothing — NOT the same as citing an ended
+>      drawer, above)
+> exit 1
+> ```
+>
+> Three things this establishes, none of which the hermetic tests could:
+>
+> 1. **It reproduces the ADR's own finding.** 16 dangling `source_drawer_id` — the same 16 the
+>    throwaway script found on 2026-08-27, now produced by a command with an exit code instead of by
+>    somebody remembering to write the query.
+> 2. **The drift is GONE.** 0 content keys disagree with their rows, against 27 of 1,705 before this
+>    ADR. T2's backfill and T3's key-on-every-mint are what closed it, and this is the first
+>    independent measurement of that.
+> 3. **The three-state rule earns itself on real data.** One fact cites a drawer that was superseded,
+>    and it is reported as expected rather than as a defect. A two-state check would have called it
+>    the 17th dangling reference — a phantom that would grow with every correction the team makes,
+>    which is exactly the shape that teaches operators to ignore a report.
+>
+> Repairing the 16 is out of scope and already deferred (`docs/adr/BACKLOG.md`). What changed today is
+> that they are now findable by anyone, rather than by whoever thinks to look.
+
 ## Mutation Log
+
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `internal/palace/mine.go` · a mint path re-derives the id directly, skipping the diary exemption — the defect M reproduced on #76 · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `cmd/server/doctor.go` · the corpus check becomes unreachable while the flag stays declared, documented and read · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `cmd/server/doctorcorpus.go` · an ENDED source is reported as lost, so every palace that uses corrections grows a pile of phantom defects · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `internal/palace/import.go` · a mint path forgets its content key, so it never matches the dedup conflict target and every re-file inserts beside it · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
 
 ## Invariants
 
@@ -141,3 +178,4 @@ mutant entry is the evidence.
 - Re-chunking on update (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log
+- 2026-08-27 · 49e4f62* · exit 0 · `go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey|TestNoCommentClaimsADrawerIdIsDerivedFromItsContent' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./cmd/server/ -run 'TestDoctorCorpus'  -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out` · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43

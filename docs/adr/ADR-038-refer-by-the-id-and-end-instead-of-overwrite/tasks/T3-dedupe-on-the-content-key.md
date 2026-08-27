@@ -22,7 +22,7 @@ exists to protect. Step 1's first test is what fails if they are separated.
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/palace/repo.go` | edit | **BOTH** conflict targets move to `(team_id, content_key)`: `Save` (`:85`) and `SaveUnembedded` (`:109`). The partial index's predicate must be repeated in the target — GORM `clause.OnConflict.TargetWhere` — as `ON CONFLICT (team_id, content_key) WHERE content_key != '' AND valid_to = ''`; a conflict target that does not name a partial index's predicate does not match that index |
+| `internal/palace/repo.go` | edit | **BOTH** conflict targets move to `(team_id, content_key)`: `Save` (`:85`) and `SaveUnembedded` (`:110`). The partial index's predicate must be repeated in the target — GORM `clause.OnConflict.TargetWhere` — as `ON CONFLICT (team_id, content_key) WHERE content_key != '' AND valid_to = ''`; a conflict target that does not name a partial index's predicate does not match that index |
 | `internal/palace/repo.go` | edit | `SaveUnembedded`'s doc comment (`:98–99`) says *"The id is a content hash, so content/wing/room/source/chunk never differ on a conflict"* — false for every new row after this task. T2 schedules `00006:18` and `DrawerID`'s comment and misses this one |
 | `internal/palace/chunk.go` | edit | add the opaque mint used for NEW rows; `DrawerID` stays as the content-key recipe |
 | `internal/palace/service.go` | edit | `Add` (`:660`) mints an opaque id and sets the content key rather than using the hash as the id |
@@ -31,7 +31,7 @@ exists to protect. Step 1's first test is what fails if they are separated.
 | `internal/palace/copywing.go` | edit | `CopyWing` (`:130`) likewise |
 | `internal/palace/service.go` | edit | `purgeSource` (`:844`) becomes a set difference: upsert the new set by content key, then END only the rows under the triple whose key is not in it. Today it deletes rows, vectors, derived edges AND anchors (`repo.go:225`) before `Add` re-inserts |
 | `internal/palace/repo.go` | edit | a by-key variant of `IDsBySource`/`DeleteBySource` so the purge can name what to keep — the line that SELECTS survival for an unchanged chunk |
-| `internal/palace/dedup_test.go` | add | the failing tests below |
+| `internal/palace/refile_test.go` | add | the failing tests below |
 
 ## Ordered Steps
 
@@ -63,23 +63,24 @@ exists to protect. Step 1's first test is what fails if they are separated.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors|TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out
+go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors|TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey|TestFilingContentAnotherWriterAlreadyHoldsUpsertsOntoIt' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out
 ```
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors` | `internal/palace/dedup_test.go` | a re-file of identical content changes no id and strips no anchor — the regression guard, and a repair of the pre-existing anchor loss | — |
-| `TestRefilingTheOriginalTextDoesNotRevertAnEdit` | `internal/palace/dedup_test.go` | the silent-revert mechanism is gone | — |
-| `TestRefilingTheEditedTextDoesNotDuplicate` | `internal/palace/dedup_test.go` | the duplicate-row mechanism is gone | — |
-| `TestAbsorbDrawersStaysIdempotentOnTheContentKey` | `internal/palace/dedup_test.go` | the migration path's re-run safety survives the move | — |
+| `TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors` | `internal/palace/refile_test.go` | a re-file of identical content changes no id and strips no anchor — the regression guard, and a repair of the pre-existing anchor loss | — |
+| `TestRefilingTheOriginalTextDoesNotRevertAnEdit` | `internal/palace/refile_test.go` | the silent-revert mechanism is gone | — |
+| `TestRefilingTheEditedTextDoesNotDuplicate` | `internal/palace/refile_test.go` | the duplicate-row mechanism is gone | — |
+| `TestAbsorbDrawersStaysIdempotentOnTheContentKey` | `internal/palace/refile_test.go` | the migration path's re-run safety survives the move | — |
+| `TestFilingContentAnotherWriterAlreadyHoldsUpsertsOntoIt` | `internal/palace/refile_test.go` | **added during execution.** Reverting `Save`'s conflict target to the id SURVIVED the rest of this fence, because `mintOrReuse` resolves an existing id first and the target never fires on the ordinary path. It earns its keep only when a row holding the key was not visible to that resolve — a concurrent writer, or another path writing between the lookup and the insert — which this test plants deterministically | — |
 
 **Shapes the creation path can already produce, decided rather than assumed:** a multi-chunk memory
 (each chunk gets its own key — assert chunk 1 and chunk 2 of one memory do not collide); a named
 source, where `purgeSource` deletes before insert and the key is never consulted (assert unchanged);
 a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConflict` clause at
-`repo.go:109` — assert its target moves too — **not optional**, see Affected Files).
+`repo.go:110` — assert its target moves too — **not optional**, see Affected Files).
 
 ## Reachability
 
@@ -90,7 +91,44 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 | 3 — the caller can discover it | n/a: no declared interface — `am_add_drawer`'s schema and response are unchanged; the behaviour change is that the tool stops being wrong |
 | 4 — it is used | every `am_add_drawer` call exercises it, and every import. Observable as the absence of duplicate-content rows: `doctor --corpus` in **T6** reports it. |
 
+## The surviving mutant, left in and explained
+
+**Reverting `Save`'s conflict target from `(team_id, content_key)` to `(team_id, id)` SURVIVES this
+fence, twice, and the second attempt was written specifically to kill it.** The log keeps both.
+
+The reason is that `mintOrReuse` resolves an existing id *before* the insert, so on every path a test
+can drive, the row already carries the id the insert will use and the target never fires.
+`TestFilingContentAnotherWriterAlreadyHoldsUpsertsOntoIt` plants a row under a foreign id to
+simulate another writer — and that row is perfectly visible to the resolve, so it is not the case the
+target exists for.
+
+**What the target actually buys is race behaviour, and it is kept on that basis.** Two writers filing
+the same content concurrently both resolve "no existing row" and both mint. With the target on the
+content key the second upserts onto the first and both succeed; with it on the id, the second insert
+passes the primary key and is rejected by the partial unique index, so one writer's `am_add_drawer`
+fails. Converting a race into an upsert rather than an error is the better behaviour and is what T3's
+Affected Files asks for.
+
+**Not covered by a deterministic test, and saying so is the point.** Forcing the interleaving needs
+real concurrency against SQLite, which this suite does not do. An honest `survived` entry with the
+reason is worth more than a contrived kill: the next reader learns which mechanism is proven and
+which rests on an argument.
+
 ## Mutation Log
+
+- 2026-08-27 · 6a67ed4* · mutant killed · exit 1 · `internal/palace/contentkey.go` · mintOrReuse stops reusing an existing id, so a re-file renames the memory and every reference to it dangles · acceptance-sha256:dbb62acefb2c8a3c7247d98eb2785595397ef82ac4a22c55ca111deb8409a838
+- 2026-08-27 · 6a67ed4* · mutant killed · exit 1 · `internal/palace/service.go` · purgeSource stops diffing and ends every row under the source, including the ones the re-file did not change · acceptance-sha256:dbb62acefb2c8a3c7247d98eb2785595397ef82ac4a22c55ca111deb8409a838
+- 2026-08-27 · 6a67ed4* · mutant survived · exit 0 · `internal/palace/repo.go` · Save conflicts on the id again, so a re-file of edited text inserts beside the row instead of updating it · acceptance-sha256:dbb62acefb2c8a3c7247d98eb2785595397ef82ac4a22c55ca111deb8409a838
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-27 · 6a67ed4* · mutant survived · exit 0 · `internal/palace/repo.go` · Save conflicts on the id again — only observable when another writer already holds the content key, which is what the new test plants · acceptance-sha256:4d2cd14f6bb3754b8ac11bee3809b6b53375028b2384611d1f99cf47908518fb
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-27 · 6a67ed4* · mutant killed · exit 1 · `internal/palace/contentkey.go` · mintOrReuse stops reusing an existing id, so a re-file renames the memory and every reference to it dangles · acceptance-sha256:4d2cd14f6bb3754b8ac11bee3809b6b53375028b2384611d1f99cf47908518fb
+- 2026-08-27 · 6a67ed4* · mutant killed · exit 1 · `internal/palace/service.go` · purgeSource stops diffing and ends every row under the source, including the ones the re-file did not change · acceptance-sha256:4d2cd14f6bb3754b8ac11bee3809b6b53375028b2384611d1f99cf47908518fb
+- 2026-08-27 · 6a67ed4* · mutant killed · exit 1 · `internal/palace/repo.go` · SaveUnembedded stops refreshing metadata on re-absorb, so an import re-run leaves stale entities behind · acceptance-sha256:4d2cd14f6bb3754b8ac11bee3809b6b53375028b2384611d1f99cf47908518fb
 
 ## Invariants
 
@@ -127,3 +165,5 @@ rollback rests on has broken.
 - Re-chunking on update (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log
+- 2026-08-27 · 6a67ed4* · exit 0 · `go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors|TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey|TestFilingContentAnotherWriterAlreadyHoldsUpsertsOntoIt' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out` · acceptance-sha256:dbb62acefb2c8a3c7247d98eb2785595397ef82ac4a22c55ca111deb8409a838
+- 2026-08-27 · 6a67ed4* · exit 0 · `go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors|TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey|TestFilingContentAnotherWriterAlreadyHoldsUpsertsOntoIt' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out` · acceptance-sha256:4d2cd14f6bb3754b8ac11bee3809b6b53375028b2384611d1f99cf47908518fb
