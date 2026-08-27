@@ -176,8 +176,9 @@ acceptance is the falsification measurement above.
 
 ## Out of Scope
 
-- **Re-chunking on update** (deferred: `docs/adr/BACKLOG.md`, issue #39 part 2 — it
-  changes which ids exist and owns its own ADR)
+- **Re-chunking on update** — issue #39 part 2. ADR-038 removes the blocker this bullet
+  named (an id that is also a content hash); what remains is a reference-survival rule for
+  non-parent chunks (deferred: docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md)
 - **Every server-side improvement surfaced in the same session** (deferred: each
   needs its own issue). Folding any of them in would widen this decision silently,
   which is how a decision stops being one:

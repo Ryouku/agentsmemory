@@ -288,7 +288,10 @@ Refusing is the safe half of the fix, not the whole one. Two things are still op
   particular code.
 
 Still open from this cluster: re-chunking on update (above), which stays an ADR rather than a bug
-fix because it changes which ids exist.
+fix because it changes which ids exist. **ADR-038 (Proposed, 2026-08-27) removes the blocker** — it
+splits the id that dedupes from the id that refers, so re-chunking no longer invalidates anything
+pointing at a drawer. It does NOT do the re-chunking; the open question it leaves is what happens to
+a reference pointing at a non-parent chunk that a re-chunk deletes. See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md`.
 
 ## The ADR evidence chain depends on a tool outside the repository
 
@@ -670,6 +673,9 @@ without the exit-code trap the first version had.
   wing would remove the whole class of merge-drift, and it would also rewrite every id and
   invalidate every anchor, tunnel and knowledge-graph source pointer. Too large for ADR-015; worth
   deciding deliberately rather than inheriting.
+  **Taken up by ADR-038 (Proposed, 2026-08-27)**, which answers the concern without the rewrite:
+  `DrawerID` still hashes the wing, but nothing derives identity from it any more, so a merge
+  invalidates nothing. Close this entry when ADR-038 is executed or withdrawn.
 - **The drift check looks only at `wing`** — a point's payload also carries `room`, and nothing
   compares it. `room` has no relabel path today, which is why it is not urgent, and "no path today"
   is exactly the assumption that produced the wing drift.
@@ -1281,3 +1287,20 @@ as the deferral so the pointer has a receiving end.
   the production reporter — the table prints recall and MRR and not the answered/cases fraction the
   arm exists to produce. **Trigger: before the first answerable-rate is quoted anywhere; until then
   that number can only be produced by a test, which is not the instrument this ADR claimed.**
+
+## From ADR-038 (dedupe on the content, refer by the id)
+
+- **Re-chunking on update, now unblocked.** ADR-038 makes a drawer id opaque and moves dedup onto a
+  content key, so changing which chunk rows exist no longer invalidates any anchor, tunnel or
+  knowledge-graph pointer. What it does NOT answer is ADR-027's question: what happens to a
+  reference pointing at a **non-parent** chunk that a re-chunk deletes. **Trigger: whenever
+  `Service.Update`'s multi-chunk refusal blocks real work again — it already blocks one live drawer
+  measured at 6,448 runes.** Owner: whoever takes ADR-027's remaining half.
+- **Repairing the drifted rows.** Measured 2026-08-27: 27 of 1,705 non-diary drawers carry an id
+  that no longer derives from their current fields — 5 explained by a wing move, 1 by a room move,
+  21 unattributed (an upper bound on in-place content edits, since a merge from a wing that now
+  holds no drawers is undetectable by wing substitution). ADR-038 makes the drift *checkable* and
+  deliberately does not repair it: every one of those rows is correct as stored, and the only thing
+  wrong is that nothing recorded which key described it. **Trigger: the first time T3's drift query
+  reports a row whose content key ALSO disagrees, which would mean a write path is losing the key
+  rather than history explaining it.** See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md`.
