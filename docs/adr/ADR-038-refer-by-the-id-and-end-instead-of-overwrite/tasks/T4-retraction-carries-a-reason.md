@@ -29,7 +29,11 @@ erase.
 | `internal/palace/anchors.go` | edit | carry the old record's anchors onto the successor with `status = 'unchecked'`, `checked_at = ''`. `anchorID` folds in the drawer id, so the copies mint new ids for free — no dedupe problem |
 | `internal/mcpserver/kg.go` | edit | `am_kg_invalidate` gains a required `reason`; **`am_kg_supersede` is declared and registered** — the line that makes the atomic verb reachable, without which `KGSupersede` is a function no agent can call |
 | `internal/palace/kg.go` | edit | `KGSupersede` — end the old and add the new in ONE transaction (there is no `Transaction(` anywhere in this file today), stamping both `old.valid_to` and `new.valid_from` with the same RFC3339 **datetime** so `temporalEndKey`'s date-only stretch never applies |
-| `db/migrations/000NN_kg_ended_reason.sql` | add | the column the KG reason lands in. NN allocated at merge |
+| `db/migrations/00032_kg_ended_reason.sql` | add | the column the KG reason lands in |
+| `internal/palace/supersede.go` | add | `Supersede` / `supersedeInto`, `InvalidateDrawer`, `carryAnchors`, `KGSupersede` |
+| `internal/palace/repo.go` | edit | `DrawerPatch.Reason`, required whenever `Content` is set |
+| `internal/palace/kg.go` | edit | `kgAddOn` split out of `KGAdd` so the transaction-bound path shares it rather than copying it; `KGInvalidate` gains `reason`; `KGFact.EndedReason` surfaces it |
+| `cmd/server/drawer.go` | add | `agentsmemory drawer erase` — the operator path, gated on the database file exactly as `wing delete` is |
 | `README.md` | edit | the tool table — `TestEveryCatalogToolIsNamedInTheReadme` requires a first-cell row per catalogue tool, so adding one tool and removing three is a README change in this commit |
 
 ## Ordered Steps
@@ -61,7 +65,7 @@ erase.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestASupersedeCarriesAnchorsAsUnchecked|TestKgSupersedeLeavesNoBoundaryOverlap|TestKgSupersedeIsAtomic' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
+go test ./internal/palace/ ./internal/mcpserver/ ./cmd/server/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestUpdateReturnsTheNewIdNamingTheOneItEnded|TestUpdateAppliesAnchorsToTheCorrectingRecord|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestKgSupersedeIsReachableFromTheToolSurface|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestAdminOffersNoErasure|TestASupersedeCarriesAnchorsAsUnchecked|TestKgSupersedeLeavesNoBoundaryOverlap|TestKgSupersedeRecordsWhyTheOldFactEnded|TestKgSupersedeIsAtomic|TestDrawerEraseNeedsTheIdSpelledTwice|TestDrawerEraseRemovesEveryChunk' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
 ```
 
 The whole tree runs second because this task edits `README.md`, which `TestEveryCatalogToolIsNamedInTheReadme` reads from another package.
@@ -72,12 +76,14 @@ The whole tree runs second because this task edits `README.md`, which `TestEvery
 |-----------|------|----------|--------|
 | `TestCorrectingAMemorySupersedesIt` | `internal/palace/supersede_test.go` | a new row, the old one ended, the link written | — |
 | `TestTheEndedTextIsStillReadableById` | `internal/palace/supersede_test.go` | ending is not deleting — the whole point | — |
-| `TestUpdateWithoutAReasonIsRefused` | `internal/mcpserver/drawers_test.go` | the reason is required where an agent supplies it | — |
-| `TestInvalidateDrawerEndsWithNoSuccessor` | `internal/mcpserver/drawers_test.go` | a retraction that replaces nothing is expressible | — |
+| `TestUpdateWithoutAReasonIsRefused` | `internal/mcpserver/supersede_test.go` | the reason is required where an agent supplies it. Also `internal/palace/supersede_test.go` at the service boundary | — |
+| `TestInvalidateDrawerEndsWithNoSuccessor` | `internal/mcpserver/supersede_test.go` | a retraction that replaces nothing is expressible, and its text survives | — |
 | `TestKgInvalidateRequiresAReason` | `internal/mcpserver/kg_test.go` | the half of the store that kept history stops keeping only *that* a fact ended | — |
-| `TestKgSupersedeLeavesNoBoundaryOverlap` | `internal/palace/kgsupersede_test.go` | `as_of` at the boundary instant returns ONE value — red today, reproduced in #74 | — |
-| `TestKgSupersedeIsAtomic` | `internal/palace/kgsupersede_test.go` | a failure injected between the end and the add leaves the graph unchanged, not with zero or two current values | — |
+| `TestKgSupersedeLeavesNoBoundaryOverlap` | `internal/palace/kgsupersede_test.go` | both windows carry the same INSTANT, so the day-scale overlap #74 reproduced is gone. ⚠ Deliberately not asserted AT the boundary instant — that is #74's half-open question and `inEffectAt` is inclusive on both ends, so the assertion here passes under either semantics and says so | — |
+| `TestKgSupersedeIsAtomic` | `internal/palace/kgsupersede_test.go` | a failure injected between the end and the add (a gorm Create callback that errors on `kg_triples`) leaves the graph unchanged, not with zero or two current values | — |
 | `TestASupersedeCarriesAnchorsAsUnchecked` | `internal/palace/supersede_test.go` | anchors reach the successor and are NOT marked verified — an unverified pin must never read as a checked one | — |
+| `TestUpdateAppliesAnchorsToTheCorrectingRecord` | `internal/mcpserver/supersede_test.go` | `code_anchors` land on the id the update RETURNED, not the one it ended — otherwise the argument silently stops doing the only thing it was written for | — |
+| `TestDrawerEraseRemovesEveryChunk` / `TestDrawerEraseNeedsTheIdSpelledTwice` | `cmd/server/drawer_test.go` | the operator erasure path exists, takes the id twice, and reaches every chunk | — |
 | `TestDestructiveToolsAreAbsentFromTheAgentCatalogue` | `internal/mcpserver/catalog_test.go` | **rung 3** — a registration check, since a behavioural test that never calls a tool passes whether or not it is offered | — |
 
 **Shapes the creation path can already produce, decided rather than assumed:** a multi-chunk memory
@@ -98,6 +104,11 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 | 4 — it is used | the ratio of supersedes to invalidates over a month of real writes, and the median `reason` length. Nothing measures it today; the ADR carries a Follow-up to report it. |
 
 ## Mutation Log
+
+- 2026-08-27 · 3800814* · mutant killed · exit 1 · `internal/mcpserver/drawers.go` · anchors written to the ENDED record instead of the correction · acceptance-sha256:615bd85ff75149f9ea1b43bed7504b476922767aa87861b9114c286158995e13
+- 2026-08-27 · 3800814* · mutant killed · exit 1 · `internal/palace/supersede.go` · the successor-insert error is swallowed, so the transaction commits with the old fact ended and nothing replacing it · acceptance-sha256:615bd85ff75149f9ea1b43bed7504b476922767aa87861b9114c286158995e13
+- 2026-08-27 · 3800814* · mutant killed · exit 1 · `internal/mcpserver/drawers.go` · the retraction verb is written but never registered — the classic finished-and-unreachable defect · acceptance-sha256:615bd85ff75149f9ea1b43bed7504b476922767aa87861b9114c286158995e13
+- 2026-08-27 · 3800814* · mutant killed · exit 1 · `internal/palace/service.go` · the content path falls back to the in-place edit — the id survives and the old text is destroyed · acceptance-sha256:615bd85ff75149f9ea1b43bed7504b476922767aa87861b9114c286158995e13
 
 ## Invariants
 
@@ -132,3 +143,4 @@ unimplementable as written.
 - Structured reasons — a taxonomy (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log
+- 2026-08-27 · 3800814* · exit 0 · `go test ./internal/palace/ ./internal/mcpserver/ ./cmd/server/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestUpdateReturnsTheNewIdNamingTheOneItEnded|TestUpdateAppliesAnchorsToTheCorrectingRecord|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestKgSupersedeIsReachableFromTheToolSurface|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestAdminOffersNoErasure|TestASupersedeCarriesAnchorsAsUnchecked|TestKgSupersedeLeavesNoBoundaryOverlap|TestKgSupersedeRecordsWhyTheOldFactEnded|TestKgSupersedeIsAtomic|TestDrawerEraseNeedsTheIdSpelledTwice|TestDrawerEraseRemovesEveryChunk' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out` · acceptance-sha256:615bd85ff75149f9ea1b43bed7504b476922767aa87861b9114c286158995e13

@@ -109,6 +109,7 @@ func rootCommand(def config.Config) *cli.Command {
 			stdioCommand(def),
 			syncCommand(def),
 			wingCommand(def),
+			drawerCommand(def),
 			importCommand(),
 			evalCommand(def),
 			kgExtractCommand(def),

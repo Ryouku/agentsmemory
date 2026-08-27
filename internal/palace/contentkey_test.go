@@ -42,13 +42,21 @@ func TestUpdateRecomputesTheContentKey(t *testing.T) {
 	res, _ := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "before"})
 	id := res.Drawers[0].ID
 	after := "after"
-	if _, err := svc.Update(ctx, team, id, DrawerPatch{Content: &after}); err != nil {
+	up, err := svc.Update(ctx, team, id, DrawerPatch{Content: &after, Reason: "the first version was wrong"})
+	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	d, _ := svc.Get(ctx, team, id)
 	want := DrawerID(team, "w", "r", "", 0, "after")
-	if d.ContentKey != want {
-		t.Errorf("ContentKey = %q after an in-place edit; want the hash of the NEW content %q", d.ContentKey, want)
+	if up.Drawer.ContentKey != want {
+		t.Errorf("ContentKey = %q on the correcting record; want the hash of the NEW content %q",
+			up.Drawer.ContentKey, want)
+	}
+	// The ended record keeps the key of the text it still holds. Both rows carry a
+	// key at once, which the partial unique index permits precisely because it is
+	// scoped to valid_to = '' — a key is unique among CURRENT rows, not for all time.
+	prev, _ := svc.Get(ctx, team, id)
+	if prev.ContentKey != DrawerID(team, "w", "r", "", 0, "before") {
+		t.Errorf("the superseded row's ContentKey = %q; it keeps its text, so it keeps its key", prev.ContentKey)
 	}
 }
 

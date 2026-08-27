@@ -30,7 +30,7 @@ func TestInvalidateAFactThatIsNotThereIsRefused(t *testing.T) {
 	svc := newTestService(t)
 	const team = "team-kginv"
 
-	n, _, _, err := svc.KGInvalidate(ctx, team, "no such subject", "never asserted", "no such object", "2026-08-27")
+	n, _, _, err := svc.KGInvalidate(ctx, team, "no such subject", "never asserted", "no such object", "2026-08-27", "the fact was withdrawn")
 	if err == nil {
 		t.Fatalf("KGInvalidate on a fact that does not exist returned nil error and n=%d; "+
 			"it must refuse, because the caller asked for a fact to stop being current and none did", n)
@@ -61,7 +61,7 @@ func TestInvalidateReportsHowManyFactsEnded(t *testing.T) {
 	if _, err := svc.KGAdd(ctx, team, "Alice", "works at", "Acme", "2024-01-01", "", "", "", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	n, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27")
+	n, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27", "she left")
 	if err != nil {
 		t.Fatalf("KGInvalidate on a fact that exists: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestInvalidateReportsHowManyFactsEnded(t *testing.T) {
 
 	// And ending it twice is a miss, not a second success: the fact is already
 	// historical, so there is no CURRENT row left to end.
-	if _, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27"); !errors.Is(err, ErrFactNotFound) {
+	if _, _, _, err := svc.KGInvalidate(ctx, team, "Alice", "works at", "Acme", "2026-08-27", "she left"); !errors.Is(err, ErrFactNotFound) {
 		t.Errorf("re-invalidating an already-ended fact returned %v; want ErrFactNotFound", err)
 	}
 }

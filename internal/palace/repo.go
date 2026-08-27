@@ -406,6 +406,14 @@ type DrawerPatch struct {
 	Content *string
 	Wing    *string
 	Room    *string
+	// Reason is WHY the memory changed, and it is required whenever Content is
+	// set: a content change supersedes the record, and a correction that keeps
+	// only THAT something changed destroys the one thing worth keeping about the
+	// change. It is unused for a wing/room move, which corrects nothing.
+	//
+	// Not a pointer, unlike the fields above, because there is no difference
+	// between "reason omitted" and "reason set empty" — both are refused.
+	Reason string
 }
 
 // Update applies a patch to an existing drawer in place, keyed by its id (the id

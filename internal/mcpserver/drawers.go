@@ -25,7 +25,7 @@ func registerDrawers(reg *registrar, drawers *palace.Service, usageSvc *usage.Se
 	registerAddDrawer(reg, drawers, usageSvc)
 	registerGetDrawer(reg, drawers, usageSvc)
 	registerUpdateDrawer(reg, drawers, usageSvc)
-	registerDeleteDrawer(reg, drawers, usageSvc)
+	registerInvalidateDrawer(reg, drawers, usageSvc)
 	registerListDrawers(reg, drawers, usageSvc, scopeSearchToWing)
 	registerSearch(reg, drawers, usageSvc, scopeSearchToWing)
 	registerCheckDuplicate(reg, drawers, usageSvc)
@@ -69,21 +69,32 @@ type drawerView struct {
 	ParentID    string   `json:"parent_id,omitempty"`
 	FiledAt     string   `json:"filed_at"`
 	ContentDate string   `json:"content_date,omitempty"`
+	// The validity window, omitted while the memory is current. A reader that
+	// cannot see these has no way to tell a live memory from a retracted one, and
+	// until recall filters (T5) an ended record still comes back from every
+	// default route — so the marking is the only thing standing between a reader
+	// and a claim the team withdrew.
+	ValidTo      string `json:"valid_to,omitempty"`
+	EndedReason  string `json:"ended_reason,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 // toView projects a domain Drawer onto its wire shape.
 func toView(d palace.Drawer) drawerView {
 	return drawerView{
-		ID:          d.ID,
-		Wing:        d.Wing,
-		Room:        d.Room,
-		SourceFile:  d.SourceFile,
-		ChunkIndex:  d.ChunkIndex,
-		Content:     d.Content,
-		Entities:    d.Entities,
-		ParentID:    d.ParentID,
-		FiledAt:     d.FiledAt,
-		ContentDate: d.ContentDate,
+		ID:           d.ID,
+		Wing:         d.Wing,
+		Room:         d.Room,
+		SourceFile:   d.SourceFile,
+		ChunkIndex:   d.ChunkIndex,
+		Content:      d.Content,
+		Entities:     d.Entities,
+		ParentID:     d.ParentID,
+		FiledAt:      d.FiledAt,
+		ContentDate:  d.ContentDate,
+		ValidTo:      d.ValidTo,
+		EndedReason:  d.EndedReason,
+		SupersededBy: d.SupersededBy,
 	}
 }
 
@@ -110,10 +121,11 @@ func registerAddDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithDescription(fmt.Sprintf(
 			"File a verbatim memory (drawer) into a wing/room. Content over %d runes is chunked into "+
 				"several drawers sharing a parent; re-adding the same source is idempotent. ⚠That "+
-				"threshold binds at CREATION and is one-way: a multi-chunk memory can never be edited "+
-				"in place or moved to another wing or room, because am_update_drawer refuses it. A "+
-				"memory created at or under %d runes stays ONE row and stays editable for life, so "+
-				"anything you intend to maintain must be filed under it.", palace.ChunkSize, palace.ChunkSize)),
+				"threshold binds at CREATION: a multi-chunk memory can be CORRECTED (am_update_drawer "+
+				"with content supersedes the whole memory) but never MOVED, because moving one chunk "+
+				"would split the memory across two scopes and no single search would return all of it. "+
+				"A memory created at or under %d runes stays ONE row and can be relocated for life.",
+			palace.ChunkSize, palace.ChunkSize)),
 		mcp.WithString("wing", mcp.Description("Project namespace the memory belongs to. Optional when this MCP was registered for a project — then it defaults to that project's wing.")),
 		mcp.WithString("room", mcp.Required(), mcp.Description("Aspect within the wing, e.g. \"backend\" or \"decisions\".")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The verbatim text to remember — stored exactly, never summarised.")),
@@ -375,29 +387,32 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 	})
 }
 
-// registerUpdateDrawer: edit a drawer's content/wing/room in place. Only the
-// fields actually supplied are changed, and EVERY accepted update re-embeds the
-// whole memory — a wing/room move included, because the vector is rewritten
-// unconditionally rather than when the content differs.
+// registerUpdateDrawer: correct or relocate a memory. Which one it is depends on
+// which field moves, and the two differ in whether the id survives (ADR-038):
+// content SUPERSEDES — a new record, the old one ended with the caller's reason,
+// and the two linked — while a wing/room move keeps the id, because minting a new
+// record for a relocation would invalidate every anchor, tunnel and fact pointing
+// at it in exchange for nothing.
 func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("update_drawer",
-		mcp.WithDescription("Update a drawer's content, wing, or room in place (its id is unchanged). Only supplied fields are modified."),
-		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to update.")),
+		mcp.WithDescription("Correct or relocate a memory. Sending content is a CORRECTION: it writes a NEW record, ends the old one with your reason, and links them — so the id changes and the old text stays readable by its own id, because the version that was replaced is the thing nothing else can recover. Sending only wing/room is a relocation and keeps the id. Only supplied fields are modified."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to correct or move. Any chunk's id: a correction replaces the WHOLE memory.")),
 		mcp.WithString("content", mcp.Description(fmt.Sprintf(
-			"New verbatim content, at most %d characters — longer is REFUSED, not truncated. Update never "+
-				"re-chunks, so whatever you send becomes ONE vector, and the embedder shortens an oversized "+
-				"input instead of failing: the tail would read back whole from get_drawer while being "+
-				"unfindable by search. File long content with add_drawer, which chunks it so every part "+
-				"embeds in full. Note that any accepted update re-embeds the whole memory, including a "+
-				"wing/room move that leaves the content untouched.", palace.MaxEmbedRunes))),
-		mcp.WithString("wing", mcp.Description("Move the drawer to this wing.")),
-		mcp.WithString("room", mcp.Description("Move the drawer to this room.")),
+			"New verbatim content, at most %d characters, which SUPERSEDES the record rather than editing it: "+
+				"you get back a new id and the id you sent stays readable, ended, and linked to the new one. "+
+				"Long content is chunked exactly as add_drawer chunks it, so a multi-chunk memory is "+
+				"correctable — every old chunk ends and one new set is written. Requires reason.",
+			palace.MaxContentLength))),
+		mcp.WithString("reason", mcp.Description("REQUIRED with content: why the old record stopped applying. Not a changelog — the sentence a reader six months from now needs in order to know whether this correction still holds. \"obsolete\" tells them nothing that valid_to did not already say.")),
+		mcp.WithString("wing", mcp.Description("Move the memory to this wing. With content, the correcting record is filed here.")),
+		mcp.WithString("room", mcp.Description("Move the memory to this room. With content, the correcting record is filed here.")),
 		mcp.WithArray("code_anchors", mcp.Description(
 			"REPLACE this memory's code anchors, as [{\"path\":\"internal/x/y.go\",\"snippet\":\"<verbatim lines>\",\"repo\":\"<optional label>\"}]. "+
 				"Send [] to remove them all. Omit the field to leave them untouched. "+
-				"Correcting a memory without re-anchoring it leaves the old anchor pinned to text that "+
-				"changed, so the staleness check meant to protect the memory is what marks the correction "+
-				"out of date — that is the case this exists for.")),
+				"With content, these are applied to the CORRECTING record, not the one being ended. "+
+				"A correction carries the old record's anchors forward as unchecked, so send this only "+
+				"to point the correction somewhere else — the staleness check that protects a memory is "+
+				"otherwise what marks the correction out of date, which is the case this exists for.")),
 	)
 	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -416,6 +431,7 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 			v := req.GetString("content", "")
 			patch.Content = &v
 		}
+		patch.Reason = req.GetString("reason", "")
 		if _, ok := args["wing"]; ok {
 			v := req.GetString("wing", "")
 			patch.Wing = &v
@@ -444,26 +460,47 @@ func registerUpdateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 			}
 		}
 
-		d, err := drawers.Update(ctx, t.TeamID, id, patch)
+		res, err := drawers.Update(ctx, t.TeamID, id, patch)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		out := map[string]any{"drawer": toView(res.Drawer)}
+		if res.Supersedes != "" {
+			out["supersedes"] = res.Supersedes
+			out["reason"] = res.Reason
+			out["ended_at"] = res.EndedAt
+		}
 		if wantsAnchors {
-			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, id, anchors)
+			// On the id the update RETURNED, never the one the caller sent. Once a
+			// content change supersedes, those are different rows, and writing to the
+			// caller's id anchors the record that was just ended — leaving the
+			// correction with no anchors and this parameter silently not doing the
+			// only thing it was written for.
+			n, aerr := drawers.ReplaceAnchors(ctx, t.TeamID, res.Drawer.ID, anchors)
 			if aerr != nil {
 				return mcp.NewToolResultError(aerr.Error()), nil
 			}
-			return jsonResult(map[string]any{"drawer": toView(d), "code_anchors": n}), nil
+			out["code_anchors"] = n
 		}
-		return jsonResult(toView(d)), nil
+		return jsonResult(out), nil
 	})
 }
 
-// registerDeleteDrawer: remove a drawer (row + vector) by id.
-func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
-	tool := newTool("delete_drawer",
-		mcp.WithDescription("Delete a memory by the id of any of its drawers (removes every chunk's metadata and embedding). A memory over the chunk size is several drawers sharing a parent, and deleting one of them would leave the rest live and searchable with nothing to belong to, so all of them go."),
-		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id to delete.")),
+// registerInvalidateDrawer: retract a memory that nothing replaces.
+//
+// It is what stands where delete_drawer stood, and the pair is the point of
+// ADR-038: an agent that finds a memory wrong needs to say so, and the verb it
+// was given destroyed the record instead. Retraction is now the only thing an
+// agent can do; erasure moved to the operator, who has the database file.
+//
+// Separate from update_drawer because plenty of retractions replace nothing —
+// "we are not doing this after all" has no successor, and forcing one makes an
+// agent invent a placeholder memory to express an absence.
+func registerInvalidateDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
+	tool := newTool("invalidate_drawer",
+		mcp.WithDescription("Retract a memory that nothing replaces: it stops being current, its text stays readable by id, and the reason is recorded. Use update_drawer with content instead when something DOES replace it. The whole memory is retracted — a memory over the chunk size is several drawers sharing a parent, and retracting one of them would leave the rest current and still answering with the claim you just withdrew. This is not a delete: nothing is destroyed, and only an operator with the database can erase."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Any chunk's id of the memory to retract.")),
+		mcp.WithString("reason", mcp.Required(), mcp.Description("Why it stopped being true. This is the whole difference between a retraction and a delete — the row already records THAT it ended, and only you can say why.")),
 	)
 	reg.addWrite(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -474,11 +511,14 @@ func registerDeleteDrawer(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		n, err := drawers.Delete(ctx, t.TeamID, id)
+		reason, err := req.RequireString("reason")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"ok": true, "deleted": id, "chunks_deleted": n}), nil
+		if err := drawers.InvalidateDrawer(ctx, t.TeamID, id, reason); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"ok": true, "ended": id, "reason": reason}), nil
 	})
 }
 

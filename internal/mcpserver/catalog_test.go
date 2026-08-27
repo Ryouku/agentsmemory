@@ -68,8 +68,12 @@ func liveSurface(t *testing.T, local bool) ([]CatalogEntry, []mcp.Tool) {
 // against any value the file happens to hold.
 func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 	const (
-		wantHosted = 42 // every tool except delete_wing
-		wantLocal  = 43 // + delete_wing, safe only when the agent owns the machine
+		// Equal since ADR-038 T4. delete_wing was the only tool local added, and
+		// removing it from the agent surface removed the difference: an agent may
+		// not erase on either deployment, because "the agent owns the machine" was
+		// never a reason for the agent to be able to destroy the record.
+		wantHosted = 41
+		wantLocal  = 41
 	)
 
 	hosted, local := fullCatalog(false), fullCatalog(true)
@@ -111,6 +115,58 @@ func TestCatalogSizeIsWhatTheReadmeClaims(t *testing.T) {
 		if !strings.Contains(reconnectRow, want) {
 			t.Errorf("README am_reconnect row does not explain its backend write; missing %q: %s", want, reconnectRow)
 		}
+	}
+}
+
+// TestDestructiveToolsAreAbsentFromTheAgentCatalogue is rung 3 for ADR-038's
+// erasure boundary, and it is a REGISTRATION check on purpose: a behavioural test
+// that never calls a tool passes whether or not the tool is offered, so only the
+// catalogue can fail on this.
+//
+// ⚠ It is built with local=true, and that is load-bearing. delete_wing is
+// registered only when local, so a fixture on the default hosted server finds it
+// absent today, passes for the wrong reason, and stays green if someone restores
+// the line. local was never a boundary — it is the case where the agent and the
+// operator share a process, which is the case where an agent CAN erase.
+//
+// Erasure does not disappear; it moves to the operator, who has the database file
+// and no palace protocol telling them a delete is a correction.
+func TestDestructiveToolsAreAbsentFromTheAgentCatalogue(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		name := "hosted"
+		if local {
+			name = "local"
+		}
+		t.Run(name, func(t *testing.T) {
+			offered := map[string]bool{}
+			for _, n := range fullCatalog(local) {
+				offered[n] = true
+			}
+			for _, gone := range []string{
+				mcpprotocol.ToolPrefix + "delete_drawer",
+				mcpprotocol.ToolPrefix + "delete_tunnel",
+				mcpprotocol.ToolPrefix + "delete_hallway",
+				mcpprotocol.ToolPrefix + "delete_wing",
+			} {
+				if offered[gone] {
+					t.Errorf("%s is still in the %s catalogue. A tool an agent can SEE is a tool an "+
+						"agent will call: an agent doing a retraction currently gets an erasure, and "+
+						"the destroyed record is the one thing irrecoverable at any price",
+						gone, name)
+				}
+			}
+			// The replacements must be there, or this is a removal rather than a
+			// boundary and an agent that cannot delete files a duplicate instead.
+			for _, want := range []string{
+				mcpprotocol.ToolPrefix + "invalidate_drawer",
+				mcpprotocol.ToolPrefix + "kg_supersede",
+			} {
+				if !offered[want] {
+					t.Errorf("%s is not in the %s catalogue; removing erasure without offering the "+
+						"correction leaves an agent no way to say a memory is wrong", want, name)
+				}
+			}
+		})
 	}
 }
 
@@ -175,12 +231,26 @@ func TestLiveToolMetadataMatchesRegistrationPolicy(t *testing.T) {
 	}
 }
 
-func TestLocalCatalogAddsOnlyDeleteWing(t *testing.T) {
+// TestLocalAndHostedOfferTheSameTools replaces TestLocalCatalogAddsOnlyDeleteWing.
+//
+// local used to add exactly one tool — delete_wing — on the reasoning that a
+// self-hoster has no dashboard, so the alternative to an agent deleting a wing was
+// nobody deleting it. ADR-038 removed it: local is the case where the operator
+// boundary is ABSENT, not the case where destroying a record is safe, and erasure
+// moved to `agentsmemory wing delete`.
+//
+// Asserting the two surfaces are now IDENTICAL is what keeps that from being
+// undone quietly — a tool added behind the local flag would fail here, and the
+// flag is exactly where a destructive verb would be tempting to hide.
+func TestLocalAndHostedOfferTheSameTools(t *testing.T) {
 	_, hosted := liveSurface(t, false)
 	_, local := liveSurface(t, true)
 	hostedNames := make(map[string]bool, len(hosted))
 	for _, tool := range hosted {
 		hostedNames[tool.Name] = true
+	}
+	if len(hosted) == 0 {
+		t.Fatal("the hosted surface is empty; this check reads nothing")
 	}
 	var extra []string
 	for _, tool := range local {
@@ -188,8 +258,12 @@ func TestLocalCatalogAddsOnlyDeleteWing(t *testing.T) {
 			extra = append(extra, tool.Name)
 		}
 	}
-	if len(extra) != 1 || extra[0] != "am_delete_wing" {
-		t.Fatalf("local-only tools = %v, want [am_delete_wing]", extra)
+	if len(extra) != 0 {
+		t.Errorf("local offers tools hosted does not: %v. Since ADR-038 the deployments differ in "+
+			"who runs the server, not in what an agent may destroy", extra)
+	}
+	if len(local) != len(hosted) {
+		t.Errorf("local has %d tools and hosted %d", len(local), len(hosted))
 	}
 }
 

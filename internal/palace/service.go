@@ -955,15 +955,39 @@ func (s *Service) GetMemory(ctx context.Context, teamID, id string) (chunks []Dr
 	return chunks, err
 }
 
-// Update edits an existing drawer's content/wing/room in place (its id is
-// stable). A supplied field must be non-empty — update_drawer must not be a back
-// door around the non-empty invariant add_drawer enforces (a blank wing/room
-// would file the drawer into an unaddressable taxonomy bucket). Any change
-// re-embeds the drawer's final content and re-upserts the vector *before* the row
-// is written, so a failed embed leaves the drawer fully consistent in its old
-// state rather than with a row ahead of its stale vector. A no-op patch just
-// returns the current drawer.
-func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPatch) (updated Drawer, err error) {
+// UpdateResult is what an update produced: the record that now holds the memory,
+// and — when the change was a CORRECTION — the record it replaced.
+//
+// Both halves, because an agent told only "ok" learns neither the id to keep
+// working with nor the id it just ended. Supersedes is empty for a move, which is
+// how a caller tells a correction from a relocation without asking twice.
+type UpdateResult struct {
+	Drawer     Drawer `json:"drawer"`
+	Supersedes string `json:"supersedes,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	EndedAt    string `json:"ended_at,omitempty"`
+}
+
+// Update changes an existing memory. What it does depends on WHICH field moves,
+// and the split is the point of ADR-038:
+//
+//   - CONTENT is a correction, and a correction supersedes. A new record is
+//     written, the old one is ended with the caller's reason, and the two are
+//     linked. The old text survives; only in-place editing destroyed the rejected
+//     alternative, which is the one thing irrecoverable at any price.
+//   - WING or ROOM alone is a relocation. The memory is the same memory in a
+//     different place, so it keeps its id and is edited in place — minting a new
+//     record for a move would invalidate every anchor, tunnel and fact pointing at
+//     it in exchange for nothing.
+//
+// A supplied field must be non-empty — update_drawer must not be a back door
+// around the non-empty invariant add_drawer enforces (a blank wing/room would
+// file the drawer into an unaddressable taxonomy bucket). A move re-embeds the
+// drawer's final content and re-upserts the vector *before* the row is written,
+// so a failed embed leaves the drawer fully consistent in its old state rather
+// than with a row ahead of its stale vector. A no-op patch just returns the
+// current drawer.
+func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPatch) (result UpdateResult, err error) {
 	_, sp := telemetry.Start(ctx, telemetry.StageUpdate)
 	defer func() { endStage(sp, err) }()
 	for _, f := range []struct {
@@ -971,18 +995,44 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		val  *string
 	}{{"content", patch.Content}, {"wing", patch.Wing}, {"room", patch.Room}} {
 		if f.val != nil && strings.TrimSpace(*f.val) == "" {
-			return Drawer{}, fmt.Errorf("%w: %s cannot be set empty", ErrInvalidInput, f.name)
+			return UpdateResult{}, fmt.Errorf("%w: %s cannot be set empty", ErrInvalidInput, f.name)
 		}
 	}
 
 	current, err := s.Get(ctx, teamID, id) // also maps unknown id -> ErrNotFound
 	if err != nil {
-		return Drawer{}, err
+		return UpdateResult{}, err
 	}
 
 	// Nothing to change.
 	if patch.Content == nil && patch.Wing == nil && patch.Room == nil {
-		return current, nil
+		return UpdateResult{Drawer: current}, nil
+	}
+
+	// A content change is a CORRECTION, and it leaves this function here.
+	//
+	// This branch is placed BEFORE the multi-chunk refusal below deliberately. That
+	// refusal told the caller to "delete the memory and file it again as one
+	// piece"; a supersede is that instruction performed correctly and without the
+	// delete, so keeping the guard ahead of it would make correction impossible for
+	// exactly the long documents that most need it.
+	if patch.Content != nil {
+		wing, room := current.Wing, current.Room
+		if patch.Wing != nil {
+			wing = *patch.Wing
+		}
+		if patch.Room != nil {
+			room = *patch.Room
+		}
+		res, serr := s.supersedeInto(ctx, teamID, id, *patch.Content, patch.Reason, wing, room)
+		if serr != nil {
+			return UpdateResult{}, serr
+		}
+		d, gerr := s.Get(ctx, teamID, res.ID)
+		if gerr != nil {
+			return UpdateResult{}, gerr
+		}
+		return UpdateResult{Drawer: d, Supersedes: res.Supersedes, Reason: res.Reason, EndedAt: res.EndedAt}, nil
 	}
 
 	// A memory over ChunkSize is several rows sharing a parent, and this function
@@ -1006,21 +1056,15 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 	// reader that what they got is a fragment.
 	chunks, err := s.repo.MemoryChunks(ctx, teamID, id)
 	if err != nil {
-		return Drawer{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
+		return UpdateResult{}, fmt.Errorf("look up the memory this drawer belongs to: %w", err)
 	}
 	if len(chunks) > 1 {
-		what := "content"
-		harm := "leave the other chunk(s) live with the old text — still embedded, still returned " +
-			"by search, and with nothing marking them retracted"
-		if patch.Content == nil {
-			what = "wing or room"
-			harm = "move this chunk away from the rest of the memory, so no single scope returns " +
-				"all of it and a scoped search answers with a fragment that does not say it is one"
-		}
-		return Drawer{}, fmt.Errorf(
-			"%w: drawer %s is chunk %d of a %d-chunk memory, and changing its %s would %s. "+
-				"Delete the memory and file it again as one piece",
-			ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks), what, harm)
+		return UpdateResult{}, fmt.Errorf(
+			"%w: drawer %s is chunk %d of a %d-chunk memory, and changing its wing or room would "+
+				"move this chunk away from the rest, so no single scope returns all of it and a "+
+				"scoped search answers with a fragment that does not say it is one. Moving a whole "+
+				"multi-chunk memory is not expressible yet",
+			ErrInvalidInput, short12(id), current.ChunkIndex, len(chunks))
 	}
 
 	// Compute the post-patch state and refresh the derived index first.
@@ -1035,33 +1079,20 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		finalRoom = *patch.Room
 	}
 
-	// Refuse BEFORE embedding, not after. Update never re-chunks, so this content
-	// becomes one vector however long it is — and the embedder is asked to
-	// truncate rather than fail, so past the model's window it returns a vector
-	// for the prefix and reports success. The memory would still read back whole
-	// from am_get_drawer while being unfindable by anything after the cut, which
-	// is the worst shape a storage bug can take: no error, no warning, and the
-	// symptom appears later as "search cannot find something I know is filed".
+	// There is no length guard here, and its absence is deliberate. One used to
+	// stand at this line: Update re-embedded a whole memory with EmbedOne and never
+	// chunked, so a memory created small and grown in place was the one unbounded
+	// input, and the embedder truncates rather than failing — the tail read back
+	// whole from am_get_drawer while being unfindable by search.
 	//
-	// Refusing rather than truncating or re-chunking keeps this consistent with
-	// the multi-chunk refusal above: the caller is told what to do instead, and
-	// Add is the path that handles arbitrary length (it chunks). Re-chunking here
-	// is the real fix and is an ADR, not a bug fix — docs/adr/BACKLOG.md, because
-	// it changes which ids exist and therefore what every anchor, tunnel and
-	// knowledge-graph fact still points at.
-	if n := len([]rune(finalContent)); n > MaxEmbedRunes {
-		return Drawer{}, fmt.Errorf(
-			"%w: updated content is %d characters and the embedder takes at most %d in one piece, "+
-				"so the text past that point would be stored but never findable. "+
-				"Delete this memory and file it again with add_drawer, which splits long content into "+
-				"chunks that each embed in full — note that re-filing mints new ids, so any anchor, "+
-				"tunnel or knowledge-graph fact pointing at this drawer must be re-pointed",
-			ErrInvalidInput, n, MaxEmbedRunes)
-	}
-
+	// A content change no longer arrives here (it supersedes, and Add chunks), so
+	// finalContent is now always the text this row was ALREADY storing. Refusing a
+	// relocation because that text is long would block the move without improving
+	// the vector, which is truncated to exactly the same prefix either way.
+	//
 	vec, err := s.embed.EmbedOne(ctx, finalContent)
 	if err != nil {
-		return Drawer{}, fmt.Errorf("re-embed updated drawer: %w", err)
+		return UpdateResult{}, fmt.Errorf("re-embed updated drawer: %w", err)
 	}
 	point := store.Point{
 		ID:      id,
@@ -1069,18 +1100,18 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		Payload: map[string]any{"wing": finalWing, "room": finalRoom},
 	}
 	if err := s.vectors.Upsert(ctx, teamID, []store.Point{point}); err != nil {
-		return Drawer{}, fmt.Errorf("re-upsert updated vector: %w", err)
+		return UpdateResult{}, fmt.Errorf("re-upsert updated vector: %w", err)
 	}
 
 	// Index is current; now commit the authoritative row.
-	updated, err = s.repo.Update(ctx, teamID, id, patch)
+	updated, err := s.repo.Update(ctx, teamID, id, patch)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return Drawer{}, ErrNotFound
+		return UpdateResult{}, ErrNotFound
 	}
 	if err != nil {
-		return Drawer{}, err
+		return UpdateResult{}, err
 	}
-	return updated, nil
+	return UpdateResult{Drawer: updated}, nil
 }
 
 // Delete removes a drawer's metadata row and its vector. The row goes first so

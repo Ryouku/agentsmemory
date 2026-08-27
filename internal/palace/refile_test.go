@@ -64,13 +64,14 @@ func TestRefilingTheOriginalTextDoesNotRevertAnEdit(t *testing.T) {
 	res, _ := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "the original"})
 	id := res.Drawers[0].ID
 	edited := "the correction"
-	if _, err := svc.Update(ctx, team, id, DrawerPatch{Content: &edited}); err != nil {
+	up, err := svc.Update(ctx, team, id, DrawerPatch{Content: &edited, Reason: "the original was wrong"})
+	if err != nil {
 		t.Fatalf("edit: %v", err)
 	}
 	if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "the original"}); err != nil {
 		t.Fatalf("re-file the original: %v", err)
 	}
-	d, _ := svc.Get(ctx, team, id)
+	d, _ := svc.Get(ctx, team, up.Drawer.ID)
 	if d.Content != "the correction" {
 		t.Errorf("re-filing the ORIGINAL text reverted the edit (content=%q).\n"+
 			"Before this task the original's hash WAS the row's id, so the upsert overwrote the "+
@@ -86,9 +87,11 @@ func TestRefilingTheEditedTextDoesNotDuplicate(t *testing.T) {
 	res, _ := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "before"})
 	id := res.Drawers[0].ID
 	edited := "after"
-	if _, err := svc.Update(ctx, team, id, DrawerPatch{Content: &edited}); err != nil {
+	up, err := svc.Update(ctx, team, id, DrawerPatch{Content: &edited, Reason: "the first version was wrong"})
+	if err != nil {
 		t.Fatalf("edit: %v", err)
 	}
+	id = up.Drawer.ID
 	if _, err := svc.Add(ctx, team, AddInput{Wing: "w", Room: "r", Content: "after"}); err != nil {
 		t.Fatalf("re-file the edited text: %v", err)
 	}
