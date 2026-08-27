@@ -1,6 +1,28 @@
 # ADR-010: A memory is ended, not overwritten — and retraction is not erasure
 
-**Status:** Proposed
+> ## CLOSED 2026-08-27 — superseded by ADR-038
+>
+> **This decision was never wrong; it was never built.** Proposed 2026-08-20, 0 of 3 tasks, still
+> pending seven days later while the store kept overwriting and deleting in place.
+>
+> It is absorbed **in full** into
+> [`ADR-038: Refer by the id, dedupe on the content, end instead of overwrite`](ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md) —
+> the validity window, retraction-versus-erasure, the required `reason`, current-only recall, the
+> affordability argument and the pre-registered falsification all move there unchanged in substance.
+> Its three task files are **frozen and must not be executed**: ADR-038 re-authors them as its T1, T4
+> and T5, because composing the two records changed them.
+>
+> **What composing them found, and what neither record could see alone:** ADR-038's unique index on
+> the content key is wrong unless it is scoped to CURRENT rows. The identity half does not know what
+> "current" means; the lineage half does not know there is an index. Shipped separately they produce
+> a store where text that was once superseded can never be filed again, and no gate in either record
+> would have caught it. That interaction is why this is one decision now.
+>
+> **Both records are Proposed, so this closure only takes effect if ADR-038 is accepted.** They are
+> now one decision and are accepted or rejected together. Everything below is kept verbatim as the
+> reasoning ADR-038 inherits — read it there, decide it there.
+
+**Status:** Superseded by ADR-038
 **Date:** 2026-08-20
 **Owner:** unassigned
 **Spec:** None — no spec stage

@@ -1,11 +1,11 @@
-# Task ADR-038-T2: Dedupe on the content key, and mint an opaque id for a new row
+# Task ADR-038-T3: Dedupe on the content key, mint an opaque id, and end what a re-file dropped
 
-**Depends-on:** T1
+**Depends-on:** T2
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `Repo.Save` upserting on `(team_id, content_key)`; new drawers minted with an opaque id; `purgeSource` as a set difference on the content key
-**Consumes:** `drawers.content_key` + `Drawer.ContentKey` (T1)
+**Produces:** `Repo.Save` upserting on `(team_id, content_key)`; new drawers minted with an opaque id; `purgeSource` as a set difference on the content key that ENDS rather than deletes
+**Consumes:** `drawers.content_key` + `Drawer.ContentKey` (T2); `drawers.valid_to` (T1)
 **Data dependency:** hermetic
 
 ## Goal
@@ -28,7 +28,7 @@ exists to protect. Step 1's first test is what fails if they are separated.
 | `internal/palace/import.go` | edit | `AbsorbDrawers` (`:82`) likewise — `import.go:21` documents re-run safety as resting on the recomputed id; that sentence moves to the key |
 | `internal/palace/mine.go` | edit | `Mine` (`:155`) likewise |
 | `internal/palace/copywing.go` | edit | `CopyWing` (`:130`) likewise |
-| `internal/palace/service.go` | edit | `purgeSource` (`:844`) becomes a set difference: upsert the new set by content key, then delete only rows under the triple whose key is not in it. Today it deletes rows, vectors, derived edges AND anchors (`repo.go:225`) before `Add` re-inserts |
+| `internal/palace/service.go` | edit | `purgeSource` (`:844`) becomes a set difference: upsert the new set by content key, then END only the rows under the triple whose key is not in it. Today it deletes rows, vectors, derived edges AND anchors (`repo.go:225`) before `Add` re-inserts |
 | `internal/palace/repo.go` | edit | a by-key variant of `IDsBySource`/`DeleteBySource` so the purge can name what to keep — the line that SELECTS survival for an unchanged chunk |
 | `internal/palace/dedup_test.go` | add | the failing tests below |
 
@@ -50,8 +50,9 @@ exists to protect. Step 1's first test is what fails if they are separated.
      Assert exactly ONE row exists. Today the hash of the new content differs from the stored id, so
      a second row with identical content is inserted.
 2. Move `Save`'s conflict target to `(team_id, content_key)`.
-2b. Convert `purgeSource` to a set difference on the content key — upsert the new set, delete only
-   the rows under the triple whose key is absent from it.
+2b. Convert `purgeSource` to a set difference on the content key — upsert the new set, and set
+   `valid_to` on the rows under the triple whose key is absent from it. Nothing is deleted, no
+   vector is dropped, no anchor is stripped.
 3. Mint opaque ids for new rows at all four mint sites. **Not before 2b**: with the delete-all purge
    still in place this step alone re-keys every drawer under every named source on every re-file.
 4. Confirm import idempotency still holds — re-run `AbsorbDrawers` over the same batch twice and
@@ -94,7 +95,7 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 
 - No existing drawer id changes. New rows get opaque ids; old rows keep theirs — **including across a re-file of their source**, which is the invariant step 2b exists for.
 - A chunk whose content did not change keeps its anchors through a re-file.
-- A named source still ends up holding exactly the chunks that were filed for it: nothing that left the source survives, and nothing that stayed is re-keyed.
+- A named source still RESOLVES to exactly the chunks last filed for it: what left the source is ended and leaves recall, what stayed is neither re-keyed nor un-anchored, and nothing is destroyed.
 - A journal still never dedupes: diary rows carry an empty key and sit outside the partial index.
 
 ## Risks
@@ -110,7 +111,7 @@ rollback rests on has broken.
 
 ## Out of Scope
 
-- The gate that keeps future paths honest — T3.
+- The gate that keeps future paths honest — T6.
 - Whether a re-file should discard an in-place edit to that source at all — this task preserves today's answer (it does) and only stops the collateral damage to chunks the re-file did not touch (deferred: `docs/adr/BACKLOG.md`)
 - Re-chunking on update (deferred: `docs/adr/BACKLOG.md`)
 

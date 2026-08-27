@@ -1,11 +1,11 @@
-# Task ADR-038-T3: A gate that fails when an id is re-derived, or a mint path forgets its key
+# Task ADR-038-T6: A gate that fails when an id is re-derived, or a mint path forgets its key
 
-**Depends-on:** T2
+**Depends-on:** T5
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
 **Produces:** `TestNoPathRederivesADrawerID`, `TestEveryDrawerMintWritesAContentKey`, and `doctor --corpus`
-**Consumes:** `Repo.Save` upserting on `(team_id, content_key)` (T2)
+**Consumes:** `Repo.Save` upserting on `(team_id, content_key)` (T3); current-only recall (T5)
 **Data dependency:** hermetic for both source gates. `doctor --corpus` needs a real database by definition; its unit tests are hermetic and build the drift they assert on.
 
 ## Goal
@@ -29,7 +29,7 @@ ladder, where the capability exists and its intended caller cannot discover it.
 | `internal/palace/identityrole_test.go` | add | both gates |
 | `internal/palace/chunk.go` | edit | `DrawerID`'s doc comment names the one legal use, so the gate's rule is readable where the function is |
 | `cmd/server/doctor.go` | edit | a `--corpus` flag beside `--index`/`--schema`/`--roles`, and its line in the Description's integrity block — **the line that makes the check discoverable**, without which it is a function no operator will ever call |
-| `cmd/server/doctorcorpus.go` | add | the check: rows whose `content_key` disagrees with the hash of their own fields, and, since it is walking the corpus anyway, references that no longer resolve — `parent_id`, `drawer_anchors.drawer_id`, `kg_triples.source_drawer_id` (16 dangling, measured 2026-08-27). Ids and counts only, never memory text: a doctor report gets pasted (`doctor.go:92`) |
+| `cmd/server/doctorcorpus.go` | add | the check: rows whose `content_key` disagrees with the hash of their own fields, and, since it is walking the corpus anyway, references that no longer resolve — `parent_id`, `drawer_anchors.drawer_id`, `kg_triples.source_drawer_id` (16 dangling, measured 2026-08-27) — and, now that endings exist, it must distinguish ENDED from LOST: an ended row is the system working, a dangling pointer is not, and a check that conflates them reports the feature as a fault. Ids and counts only, never memory text: a doctor report gets pasted (`doctor.go:92`) |
 | `AGENTS.md` | edit | the Reachability section lists the gates in this tree and `TestAgentsMdNamesGatesThatExist` pins it — new gates mean new lines, in this commit |
 
 ## Ordered Steps

@@ -1,11 +1,11 @@
-# Task ADR-038-T1: Store what the id used to promise, on every path that mints or moves a drawer
+# Task ADR-038-T2: Store what the id used to promise, on every path that mints or moves a drawer
 
-**Depends-on:** none
+**Depends-on:** T1
 **Covers:** none — no spec
 **Estimated scope:** L (cross-boundary — schema + every write path)
 **Owner:** unassigned
-**Produces:** `drawers.content_key` column + unique index `(team_id, content_key)`; `Drawer.ContentKey` field; `DrawerID` re-documented as the content-key recipe
-**Consumes:** none
+**Produces:** `drawers.content_key` column + unique index `(team_id, content_key)` scoped to CURRENT rows; `Drawer.ContentKey` field; `DrawerID` re-documented as the content-key recipe
+**Consumes:** `drawers.valid_to` (T1) — the index predicate's second conjunct
 **Data dependency:** hermetic — the migration and its tests run from an empty database. The backfill was SIZED against the live corpus (1,705 non-diary rows, 0 collisions, measured 2026-08-27), but nothing in this task requires that corpus to run.
 
 ## Goal
@@ -42,8 +42,13 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
      any failure). Measured 2026-08-27: 0 such tuples exist today, so this test constructs the case.
 2. Add the migration: `ALTER TABLE drawers ADD COLUMN content_key TEXT NOT NULL DEFAULT ''`, then a
    backfill `UPDATE` computing nothing (SQLite cannot SHA-256) — so the backfill is a Go step, see 3.
-   Then `CREATE UNIQUE INDEX ... ON drawers(team_id, content_key) WHERE content_key != ''`. The
-   partial predicate is what keeps diary rows and any un-backfilled row out of the index.
+   Then `CREATE UNIQUE INDEX ... ON drawers(team_id, content_key) WHERE content_key != '' AND valid_to = ''`.
+   **Both conjuncts are load-bearing and each fails differently.** `content_key != ''` keeps diary
+   rows and any un-backfilled row out of the index; without it they share one entry and an upsert
+   overwrites an unrelated memory. `valid_to = ''` scopes uniqueness to CURRENT rows; without it a
+   superseded row keeps competing for content it no longer asserts, and text that was once
+   superseded could never be filed again. T1 must land first for the second conjunct to be
+   writable at all — that ordering is the only reason this task is not first.
 3. Add the backfill as a startup repair that runs once and **aborts on the first collision** rather
    than skipping the row. A silent partial backfill is the failure shape this repo keeps catching;
    a failed migration is recoverable, a half-done one is invisible.
@@ -71,7 +76,8 @@ nothing and a package with no tests both exit 0.
 | `TestMergeWingRecomputesTheContentKey` | `internal/palace/contentkey_test.go` | a wing move updates the key — the path that is easiest to forget | — |
 | `TestTwoIdenticalDiaryEntriesBothPersistWithNoContentKey` | `internal/palace/contentkey_test.go` | a journal is not deduped, and the partial index is what allows it | — |
 | `TestBackfillAbortsOnCollision` | `internal/palace/contentkey_test.go` | a colliding corpus fails the migration rather than skipping a row | — |
-| `TestTheContentKeyIndexIsPartial` | `internal/palace/contentkey_test.go` | reads the real index definition via `pragma_index_list`/`sql` and fails when the `WHERE content_key != ''` predicate is absent — **the one clause in this ADR whose loss destroys data rather than duplicating it** | — |
+| `TestTheContentKeyIndexIsPartialOnBothConjuncts` | `internal/palace/contentkey_test.go` | reads the real index definition via `pragma_index_list`/`sql` and fails when EITHER conjunct is absent. Two mutants, one per conjunct — **`content_key != ''` is the clause whose loss destroys data; `valid_to = ''` is the clause whose loss makes a re-file impossible forever** | — |
+| `TestAnEndedRowDoesNotBlockRefilingItsOwnText` | `internal/palace/contentkey_test.go` | supersede a drawer, then file its original text again: it must succeed. Red without the `valid_to = ''` conjunct — the interaction that only became visible when ADR-010 was absorbed | — |
 
 ## Reachability
 
@@ -89,6 +95,7 @@ nothing and a package with no tests both exit 0.
 - No drawer id changes. Anything that would re-key a row belongs to a different decision.
 - The vector store is not written during the migration — there is no cross-store transaction to get wrong.
 - Diary rows never enter the unique index, and the partial predicate — not a convention — is what keeps them out.
+- Uniqueness is a property of CURRENT rows only. An ended row is history, and history does not compete for a name.
 - Every failure mode of this task ends in a duplicate row, never in an overwritten one. The partial predicate is the whole reason that is true.
 
 ## Risks
@@ -122,5 +129,6 @@ of aborting. That is why step 3 says abort — a skip makes the check unfalsifia
 
 - Reading the key for dedup — that is T2's job.
 - Repairing the 27 drifted rows (deferred: `docs/adr/BACKLOG.md`)
+- The validity window itself — that is T1, and this task only consumes its column.
 
 ## Verification Log

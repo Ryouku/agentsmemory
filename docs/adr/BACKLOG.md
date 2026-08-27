@@ -291,7 +291,7 @@ Still open from this cluster: re-chunking on update (above), which stays an ADR 
 fix because it changes which ids exist. **ADR-038 (Proposed, 2026-08-27) removes the blocker** — it
 splits the id that dedupes from the id that refers, so re-chunking no longer invalidates anything
 pointing at a drawer. It does NOT do the re-chunking; the open question it leaves is what happens to
-a reference pointing at a non-parent chunk that a re-chunk deletes. See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md`.
+a reference pointing at a non-parent chunk that a re-chunk deletes. See `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`.
 
 ## The ADR evidence chain depends on a tool outside the repository
 
@@ -504,7 +504,11 @@ without the exit-code trap the first version had.
 
 ## From ADR-010 (supersede, do not overwrite)
 
-- **Ordering a supersession chain when history is asked for** — ADR-010 T3 returns the chain newest-first behind `include_history`, and stops there: nothing decides whether a history response should be RANKED by relevance, or by what, once a chain runs past a handful of records. Filed because T3's Out of Scope pointed at ADR-004 as "it owns ordering" and that ADR holds nothing of the kind — it is Accepted, it measures where a stale drawer lands in DEFAULT recall as the gate on populating the graph, states "No MCP surface change" and "production ranking unchanged", and never mentions history at all. `include_history` does not exist until T3 creates it, so no ADR owns this yet and the pointer resolved to a real file that could not have received it.
+**Owner changed 2026-08-27: ADR-010 was superseded by ADR-038 (`docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`), which absorbed its decision
+in full. Every item below is now ADR-038's, and its Out of Scope carries them. They are left under
+this heading rather than moved, so that a search for ADR-010 still finds where its obligations went.**
+
+- **Ordering a supersession chain when history is asked for** — now ADR-038 T5, formerly ADR-010 T3 returns the chain newest-first behind `include_history`, and stops there: nothing decides whether a history response should be RANKED by relevance, or by what, once a chain runs past a handful of records. Filed because T3's Out of Scope pointed at ADR-004 as "it owns ordering" and that ADR holds nothing of the kind — it is Accepted, it measures where a stale drawer lands in DEFAULT recall as the gate on populating the graph, states "No MCP surface change" and "production ranking unchanged", and never mentions history at all. `include_history` does not exist until T3 creates it, so no ADR owns this yet and the pointer resolved to a real file that could not have received it.
 - **Full event sourcing of the whole store** — an append-only log as the source of truth with current state as a projection: the stronger form of the validity window ADR-010 chose instead. Rejected there on risk rather than on merit — drawer identity already carries vectors, chunking and anchors hanging off it, and rebuilding that as a projection is a rewrite the window's benefit does not pay for. The stated trigger is a SECOND consumer of history; today the only one is the explicit history flag on recall, and nobody has written down what else would read the log. Revisit when that second consumer exists, not on principle.
 - **Validity windows on diary entries** — ADR-010 gives drawers `valid_to`, `superseded_by` and a required reason; diary entries get none of them, deferred on the ground that a diary is append-only by construction so nothing overwrites an entry. This file already records the counter-evidence: `DrawerID` drops agent and topic, so two byte-identical entries in one wing collapse to a single row on import, which the portability section above calls a silent violation of the append-only guarantee `diaryEntryID`'s own doc comment states. Append-only-by-construction is therefore the premise to check first, not the reason to skip the work. The retraction half is untouched either way — an entry whose decision later reversed stays current and competes with its correction, and since there is no way to mark one ended, no instance has ever been recorded.
 - **Structured reasons — a taxonomy of why something ended** — ADR-010 makes `reason` required free text on every retraction and on `am_kg_invalidate`, deliberately uncategorised, because a taxonomy chosen before there are reasons to classify is a guess. What would settle it is the corpus that field produces — median reason length plus a human reading a sample, which ADR-010 measures and which does not exist yet. The risk it would address is recorded there already: a required field an agent fills with "obsolete" buys nothing. Better tool prompting is the first remedy; a closed set only if the writing stays uninformative once there is writing to read.
@@ -1303,7 +1307,7 @@ as the deferral so the pointer has a receiving end.
   deliberately does not repair it: every one of those rows is correct as stored, and the only thing
   wrong is that nothing recorded which key described it. **Trigger: the first time T3's drift query
   reports a row whose content key ALSO disagrees, which would mean a write path is losing the key
-  rather than history explaining it.** See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md`.
+  rather than history explaining it.** See `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`.
 - **Should re-filing a named source discard an in-place edit to it?** `purgeSource` deletes every
   drawer under a `(wing, room, source_file)` triple before inserting the new set, so an
   `am_update_drawer` edit is destroyed by the next `am_add_drawer` for that source. Measured
