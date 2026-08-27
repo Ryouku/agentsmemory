@@ -25,7 +25,7 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
 | `internal/palace/import.go` | edit | `AbsorbDrawers` (`:82`) mints the key |
 | `internal/palace/mine.go` | edit | `Mine` (`:155`) mints the key |
 | `internal/palace/copywing.go` | edit | `CopyWing` (`:130`) mints the key for the TARGET team, not the source |
-| `internal/palace/repo.go` | edit | `Update` (`:380`) recomputes the key in the same `updates` map that changes content/wing/room |
+| `internal/palace/repo.go` | edit | `Update` (`:380`) recomputes the key in the same `updates` map that changes content/wing/room, and turns a key collision into a NAMED error saying which drawer already holds that content — the same treatment `admin.go`'s row demands, because an in-place wing/room move stays in-place forever and is the one path T4's supersede never covers |
 | `internal/palace/admin.go` | edit | `RelabelDrawerWingReturningIDs` (`:295`) and `RelabelDrawerWing` (`:313`,`:324`,`:342`) recompute the key in the same statement that moves the wing — this is the line whose absence would leave a merged drawer describing a wing it no longer sits in. It must also turn a key collision into a NAMED error saying which drawer in the target already holds that content, not a bare constraint violation |
 | `internal/palace/contentkey_test.go` | add | the failing tests |
 
@@ -49,9 +49,14 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
    superseded row keeps competing for content it no longer asserts, and text that was once
    superseded could never be filed again. T1 must land first for the second conjunct to be
    writable at all — that ordering is the only reason this task is not first.
-3. Add the backfill as a startup repair that runs once and **aborts on the first collision** rather
-   than skipping the row. A silent partial backfill is the failure shape this repo keeps catching;
-   a failed migration is recoverable, a half-done one is invisible.
+3. Add the backfill as a startup repair that **re-runs until it completes**, and aborts on the first
+   collision rather than skipping the row. "Runs once" is the wrong contract and the record used to
+   say it: goose records the migration version the first time the SQL runs, so the SQL never runs
+   again — a backfill that aborted halfway would therefore never resume. Gate it on work remaining
+   (rows in a non-diary room with an empty `content_key`), not on the goose version, so an aborted
+   run is retried on the next boot and a completed one costs one cheap count. A silent partial
+   backfill is the failure shape this repo keeps catching; a failed migration is recoverable, a
+   half-done one is invisible.
 4. Add `ContentKey` to `Drawer` and write it at all five mint sites and both mutation sites.
 4b. Correct `00006_drawers.sql:18` and give the new `content_key` column a comment that names its
    job, so the two roles are legible in the schema rather than only in this record.
@@ -60,10 +65,10 @@ path that mints a drawer and recomputed by every path that changes a hashed fiel
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestAddStampsTheContentKey|TestUpdateRecomputesTheContentKey|TestMergeWingRecomputesTheContentKey|TestTwoIdenticalDiaryEntriesBothPersistWithNoContentKey' -count=1 2>&1 | tee /tmp/acc38a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38a.out && go test ./internal/palace/ ./internal/store/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38b.out
+go test ./internal/palace/ -run 'TestAddStampsTheContentKey|TestUpdateRecomputesTheContentKey|TestMergeWingRecomputesTheContentKey|TestTwoIdenticalDiaryEntriesBothPersistWithNoContentKey|TestTheContentKeyIndexIsPartialOnBothConjuncts|TestAnEndedRowDoesNotBlockRefilingItsOwnText|TestBackfillAbortsOnCollision' -count=1 2>&1 | tee /tmp/acc38a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38a.out && go test ./internal/palace/ ./internal/store/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38b.out
 ```
 
-The four new tests run ALONE first, so the already-green palace suite in the second command cannot
+All seven new tests run ALONE first, so the already-green palace suite in the second command cannot
 carry the verdict by itself. `no test files` is in the guard because a `-run` filter that matches
 nothing and a package with no tests both exit 0.
 
@@ -86,7 +91,7 @@ nothing and a package with no tests both exit 0.
 | 1 — exists | the four unit tests above |
 | 2 — something selects it | every mint/mutation site writes the key; mutation: delete the write in `RelabelDrawerWing` and `TestMergeWingRecomputesTheContentKey` goes red |
 | 3 — the caller can discover it | n/a: no declared interface — the column is internal, no tool argument or response field changes in this task |
-| 4 — it is used | T2 is the consumer. Until T2 lands the column is written and read by nothing, which is deliberate and is why T2 is not optional. |
+| 4 — it is used | **T3** is the consumer. Until T3 lands the column is written and read by nothing, which is deliberate and is why T3 is not optional. |
 
 ## Mutation Log
 
@@ -100,7 +105,7 @@ nothing and a package with no tests both exit 0.
 
 ## Risks
 
-- A mint path added between authoring and execution silently misses the key. T3's derived gate is the answer; until it lands, the Affected Files table is the list, and it was taken from `grep -n "DrawerID(" --include="*.go"` on 2026-08-27.
+- A mint path added between authoring and execution silently misses the key. T6's derived gate is the answer; until it lands, the Affected Files table is the list, and it was taken from `grep -n "DrawerID(" --include="*.go"` on 2026-08-27.
 - `NOT NULL DEFAULT ''` on a large table rewrites it on some SQLite versions. 2,013 rows on the live corpus; trivial, but confirm on the real database before merging rather than on a fixture.
 
 ## Pre-flight against the hosted deployment — read-only, run BEFORE merging the migration
@@ -127,7 +132,7 @@ of aborting. That is why step 3 says abort — a skip makes the check unfalsifia
 
 ## Out of Scope
 
-- Reading the key for dedup — that is T2's job.
+- Reading the key for dedup — that is **T3**'s job.
 - Repairing the 27 drifted rows (deferred: `docs/adr/BACKLOG.md`)
 - The validity window itself — that is T1, and this task only consumes its column.
 

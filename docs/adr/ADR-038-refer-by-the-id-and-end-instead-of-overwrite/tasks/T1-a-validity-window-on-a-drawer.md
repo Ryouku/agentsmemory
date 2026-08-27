@@ -9,7 +9,7 @@
 **Owner:** unassigned
 **Produces:** `drawers.valid_to`, `superseded_by`, `ended_reason`, `ended_at`, and the repo predicates that read them
 **Consumes:** none
-**Data dependency:** hermetic for the tests; the migration is additionally checked against a copy of a real database, because "every existing row reads as current with no backfill" is a claim about rows nobody wrote for this test
+**Data dependency:** needs a copy of a real database for `TestExistingRowsReadAsCurrentAfterMigration`; hermetic for the other four. The header previously read `hermetic for the tests`, which was wrong — the one data-dependent test is the Stop Condition's own guard, the worst one to let skip
 
 ## Goal
 
@@ -44,11 +44,17 @@ no backfill.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent|TestEndSetsTheWindowAndKeepsTheRow|TestEndRefusesAnAlreadyEndedDrawer|TestEndRefusesAnEmptyReason' -count=1 2>&1 | tee /tmp/acc38t1a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t1a.out && go test ./internal/palace/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38t1b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t1b.out
+go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent|TestEndSetsTheWindowAndKeepsTheRow|TestEndRefusesAnAlreadyEndedDrawer|TestEndRefusesAnEmptyReason|TestExistingRowsReadAsCurrentAfterMigration' -count=1 2>&1 | tee /tmp/acc38t1a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t1a.out && go test ./internal/palace/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38t1b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t1b.out
 ```
 
-The four new tests run ALONE first, so the already-green palace suite in the second command cannot
+All five new tests run ALONE first, so the already-green palace suite in the second command cannot
 carry the verdict by itself.
+
+⚠ `TestExistingRowsReadAsCurrentAfterMigration` needs a real database and is the Stop Condition's
+anti-tautology guard, so it must not be allowed to SKIP silently. Point it at a copy via an env var
+and **fail rather than skip when that var is unset** — otherwise the guard is satisfied by not
+running. The fence greps for `no tests to run`; it does not grep for a skip, and a skipped guard and
+a passing one carry the same exit code.
 
 ## Tests
 
@@ -85,7 +91,7 @@ embedding (`embedded_at IS NULL` — ending it must not resurrect it into the em
 ## Risks
 
 - A column added and never read is exactly the defect this repo keeps catching. Mitigated only by T2 and T4 landing; if this ADR stops after T1, the migration should be reverted rather than left as dead schema.
-- `NOT NULL DEFAULT ''` on a large table rewrites it on some SQLite versions. 2,024 rows locally; confirm against the hosted row count before merging (T2 carries the pre-flight).
+- `NOT NULL DEFAULT ''` on a large table rewrites it on some SQLite versions. ~2,029 rows locally on 2026-08-27; confirm against the hosted row count before merging (T2 carries the pre-flight).
 
 ## Stop Condition
 

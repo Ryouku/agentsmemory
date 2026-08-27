@@ -22,7 +22,8 @@ exists to protect. Step 1's first test is what fails if they are separated.
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/palace/repo.go` | edit | `Save`'s `clause.OnConflict` target moves from the primary key to `(team_id, content_key)` — this is the ONE line that selects the new behaviour, and deleting it restores both defects |
+| `internal/palace/repo.go` | edit | **BOTH** conflict targets move to `(team_id, content_key)`: `Save` (`:85`) and `SaveUnembedded` (`:109`). The partial index's predicate must be repeated in the target — GORM `clause.OnConflict.TargetWhere` — as `ON CONFLICT (team_id, content_key) WHERE content_key != '' AND valid_to = ''`; a conflict target that does not name a partial index's predicate does not match that index |
+| `internal/palace/repo.go` | edit | `SaveUnembedded`'s doc comment (`:98–99`) says *"The id is a content hash, so content/wing/room/source/chunk never differ on a conflict"* — false for every new row after this task. T2 schedules `00006:18` and `DrawerID`'s comment and misses this one |
 | `internal/palace/chunk.go` | edit | add the opaque mint used for NEW rows; `DrawerID` stays as the content-key recipe |
 | `internal/palace/service.go` | edit | `Add` (`:660`) mints an opaque id and sets the content key rather than using the hash as the id |
 | `internal/palace/import.go` | edit | `AbsorbDrawers` (`:82`) likewise — `import.go:21` documents re-run safety as resting on the recomputed id; that sentence moves to the key |
@@ -78,7 +79,7 @@ go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnch
 (each chunk gets its own key — assert chunk 1 and chunk 2 of one memory do not collide); a named
 source, where `purgeSource` deletes before insert and the key is never consulted (assert unchanged);
 a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConflict` clause at
-`repo.go:109` — assert its target moves too, or state in the task why it does not).
+`repo.go:109` — assert its target moves too — **not optional**, see Affected Files).
 
 ## Reachability
 
@@ -87,7 +88,7 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 | 1 — exists | the three unit tests |
 | 2 — something selects it | `Save`'s conflict target, and the set-difference branch in `purgeSource`. Mutations: restore the conflict target to `id`, and separately restore the delete-all purge — each kills a different test, which is what proves the two are not one mechanism wearing two names |
 | 3 — the caller can discover it | n/a: no declared interface — `am_add_drawer`'s schema and response are unchanged; the behaviour change is that the tool stops being wrong |
-| 4 — it is used | every `am_add_drawer` call exercises it. Observable as the absence of duplicate-content rows: the query in T3 reports it. |
+| 4 — it is used | every `am_add_drawer` call exercises it, and every import. Observable as the absence of duplicate-content rows: `doctor --corpus` in **T6** reports it. |
 
 ## Mutation Log
 
@@ -100,7 +101,7 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 
 ## Risks
 
-- `SaveUnembedded` has its own `OnConflict` (`repo.go:109`) and is easy to miss — it is the deferred-embedding path, and missing it means a drawer filed while the embedder is down keeps the old behaviour. Named in the Tests section for that reason.
+- ~~`SaveUnembedded` is easy to miss.~~ **It is not optional and the task no longer offers the choice.** `AbsorbDrawers` calls it EXCLUSIVELY (`import.go:99` — it never calls `Save`), and `Add` falls to it whenever the embedder is down. With opaque mints and `SaveUnembedded` still keyed on `(team_id, id)`, **an import re-run duplicates every row** — the exact outcome this record's Alternatives rejects when it says import idempotency is load-bearing. Found by review 2026-08-27; the earlier wording let it be skipped with a written excuse.
 - An opaque id whose shape is indistinguishable from a hash invites the next reader to re-derive it. Mint it in a visibly different shape.
 
 ## Stop Condition

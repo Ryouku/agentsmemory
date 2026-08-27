@@ -28,7 +28,7 @@ ladder, where the capability exists and its intended caller cannot discover it.
 |------|--------|-----|
 | `internal/palace/identityrole_test.go` | add | both gates |
 | `internal/palace/chunk.go` | edit | `DrawerID`'s doc comment names the one legal use, so the gate's rule is readable where the function is |
-| `cmd/server/doctor.go` | edit | a `--corpus` flag beside `--index`/`--schema`/`--roles`, and its line in the Description's integrity block — **the line that makes the check discoverable**, without which it is a function no operator will ever call |
+| `cmd/server/doctor.go` | edit | THREE edits, not one. (a) the `--corpus` flag; (b) its line in the Description's integrity block — **the line that makes the check discoverable**; (c) **the dispatch guard at `:58`**, which refuses unless one of `--index/--graph/--roles/--schema/--windows` is set, so `--corpus` alone exits with *"nothing to check"*. And `--index` `return`s at `:83` rather than falling through, so a `--corpus` block placed after it is unreachable when both flags are passed |
 | `cmd/server/doctorcorpus.go` | add | the check: rows whose `content_key` disagrees with the hash of their own fields, and, since it is walking the corpus anyway, references that no longer resolve — `parent_id`, `drawer_anchors.drawer_id`, `kg_triples.source_drawer_id` (16 dangling, measured 2026-08-27) — and, now that endings exist, it must distinguish ENDED from LOST. An ended row is the system working; a dangling pointer is not; and a KG fact whose `source_drawer_id` points at an ENDED drawer is **also** the system working (T5's decision — provenance is historical), so the check reports three states, not two. Conflating any pair of them reports the feature as a fault. Ids and counts only, never memory text: a doctor report gets pasted (`doctor.go:92`) |
 | `AGENTS.md` | edit | the Reachability section lists the gates in this tree and `TestAgentsMdNamesGatesThatExist` pins it — new gates mean new lines, in this commit |
 
@@ -39,6 +39,9 @@ ladder, where the capability exists and its intended caller cannot discover it.
      mentioning the name must not satisfy or trip it) and fails when `DrawerID(...)` appears anywhere
      other than an assignment to a `ContentKey` field or to a variable passed as one. Confirm it is
      red by adding a `DrawerID` call used as a lookup and watching it fail.
+   - `TestDoctorCorpusIsReachable` — run `doctor --corpus` ALONE and assert it does not exit with
+     "nothing to check", then run it WITH `--index` and assert both reports appear. **`TestEveryFlagIsRead`
+     passes either way**: `--corpus` is read, in a block nothing can reach. Only a dispatch test sees this.
    - `TestEveryDrawerMintWritesAContentKey` **derives its universe** from the source: every composite
      literal of type `palace.Drawer` that sets `ID` must also set `ContentKey`. Derived, not
      hand-listed, so a mint path added tomorrow joins the check on the same commit. The diary mint
@@ -71,6 +74,7 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 | `TestEveryDrawerMintWritesAContentKey` | `internal/palace/identityrole_test.go` | a mint path that forgets the key fails the build's gate, derived from the source | — |
 | `TestDoctorCorpusReportsDriftAndDanglingReferences` | `cmd/server/doctorcorpus_test.go` | a drifted row and each kind of dangling reference are reported and exit non-zero | — |
 | `TestDoctorCorpusIsAdvertisedInHelp` | `cmd/server/doctorcorpus_test.go` | the flag appears in the Description's integrity block — rung 3, and the only rung a behavioural test cannot reach | — |
+| `TestDoctorCorpusIsReachable` | `cmd/server/doctorcorpus_test.go` | `--corpus` alone is dispatched, and `--corpus` with `--index` yields both — **rung 2**, invisible to `TestEveryFlagIsRead`, which passes while the flag is read in unreachable code | — |
 
 ## Reachability
 

@@ -16,7 +16,7 @@
 
 | population | rows | note |
 |---|---|---|
-| all drawers | 2,013 | |
+| all drawers | 2,013 | the count when the ids were recomputed, early on 2026-08-27. **Later paragraphs say 2,024 and `am_status` said 2,029 the same afternoon** — the corpus grew during the session that wrote this record, mostly from its own filings. Stated rather than silently reconciled, because 1,705 below is a denominator. |
 | diary rows, excluded | 308 | `diaryEntryID` is a **different function** — it folds agent, topic and an unstored random seed (`service.go:2100`), so a diary id is **permanently non-derivable by construction**. Including them would report 100% drift and be a false alarm. |
 | non-diary, checked | 1,705 | |
 | id **matches** the hash of its own row | 1,678 | |
@@ -74,8 +74,11 @@ longer true, where the old text is evidence: *"we used Kafka until March, then r
 rebalancing stalled"* is a better record than either half alone. *Erasure* — an operator decides
 data must not exist: a leaked secret, a deletion request, a retention policy. `am_delete_drawer` is
 exposed to **agents** and performs **erasure**, and the palace's own protocol tells agents to correct
-memories that turn out wrong. Five agent-facing tools destroy: `delete_drawer`, `delete_tunnel`,
-`delete_hallway`, `delete_wing`, `merge_wing`.
+memories that turn out wrong. Agent-facing tools that destroy: `delete_drawer`, `delete_tunnel`,
+`delete_hallway` and `merge_wing` unconditionally, plus `delete_wing` whenever the server runs
+self-hosted (`registerDeleteWing` is gated on `local`, `admin.go:198`). ADR-010 said the last two
+were *"already outside the agent surface"*; **that was wrong, and this record inherited the error
+until review caught it on 2026-08-27.**
 
 **The third gap is the one that costs most.** Nothing records *why* something stopped applying.
 `am_kg_invalidate` takes a date and no reason; the schema has `valid_to` and no column for one. A
@@ -157,7 +160,7 @@ a path that mutates a hashed field in place while keeping the id:
 
 | Identifier | Hashes | Exposed? |
 |---|---|---|
-| `tunnelID` (`tunnel.go:33`) | its two endpoints | **No** — a tunnel is created or deleted, never re-pointed. |
+| `canonicalTunnelID` (`tunnel.go:26`, hashing at `:33`) | its two endpoints | **No** — a tunnel is created or deleted, never re-pointed. |
 | `hallwayID` (`hallway.go:34`) | wing + the two entities | **No** — derived state, rebuilt wholesale by `RecomputeGraph`. |
 | `closetID` (`closet.go:174`) | team, wing, room, source, ordinal — **no content** | **No** — location-only, so a closet's document can change without moving its id. |
 | `anchorID` (`anchors.go:82`) | team, drawer id, path, normalized snippet | **No** — `ReplaceAnchors` swaps the set rather than patching a row. The in-place `Update`s on that table touch `last_checked`-style fields only. |
@@ -391,7 +394,8 @@ Inherited from ADR-010, for the lineage half:
 | Surface | Change | Producer | Consumer(s) |
 |---------|--------|----------|-------------|
 | `drawers.content_key` (schema) | new `TEXT` column + unique index `(team_id, content_key)` | `db/migrations/*_drawers_content_key.sql` | `Add`, `AbsorbDrawers`, `Mine`, `CopyWing`, `Update`, `MergeWing` |
-| `Repo.Save` conflict target | `id` → `(team_id, content_key)` | `internal/palace/repo.go` | `Service.Add`, `Service.AbsorbDrawers` |
+| `Repo.Save` conflict target | `id` → `(team_id, content_key)`, **with the partial index's predicate repeated as `TargetWhere`** | `internal/palace/repo.go` | `Service.Add` (embedded path only) |
+| `Repo.SaveUnembedded` conflict target | `(team_id, id)` → `(team_id, content_key)`, same `TargetWhere` | `internal/palace/repo.go` | `Service.AbsorbDrawers` (**every** import — `import.go:99` never calls `Save`), and `Service.Add` whenever the embedder is down |
 | `DrawerID` role | primary-key recipe → content-key recipe (function body unchanged) | `internal/palace/chunk.go` | every mint path |
 | Drawer id minting | content hash → `randomID`-style opaque mint for NEW rows | `internal/palace/chunk.go` | every mint path |
 | `doctor --corpus` (new CLI flag + `--help` text) | new integrity check beside `--index`, `--schema`, `--roles`; exits non-zero on a finding | `cmd/server/doctor.go` | operators |
@@ -443,7 +447,8 @@ briefly wrong — is the kind of state this repo keeps finding, and it is remova
 - Retention or automatic pruning of ended records (permanent: accumulation is the value this record is built on, and a pruner would spend engineering effort undoing it. Erasure stays available to an operator for a leaked credential or a deletion request — a legal and safety path, not housekeeping)
 - Structured reasons — a taxonomy of why something ended (deferred: `docs/adr/BACKLOG.md`)
 - Applying the validity window to diary entries (deferred: `docs/adr/BACKLOG.md`)
-- Removing `merge_wing` and `delete_wing` from the OPERATOR surface (permanent: they are the erasure path this record requires to exist; the decision is that agents cannot reach them, not that nobody can)
+- Removing `delete_wing` from the OPERATOR surface (permanent: it is the erasure path this record requires to exist. **T4 removes it from the AGENT registration**, where it is reachable today whenever the server runs self-hosted — `registerDeleteWing` is gated on `local`, and "the operator is running it locally" is not a boundary, it is the case where agent and operator share a process)
+- Taking `merge_wing` off the agent surface (deferred: `docs/adr/BACKLOG.md` — **it is not erasure**, it is a move, and ADR-015 governs what a move invalidates. `registerMergeWing` is unconditional today, so an agent reaches it everywhere; that is a real hazard and it is a different decision from this one. Found by review 2026-08-27, and the parenthetical it corrects previously claimed a property no task delivered)
 - Changing `ChunkSize`, `ChunkOverlap` or `MaxEmbedRunes` (permanent: this record changes what an id means and how long a memory is current, never how text is split)
 - Re-keying existing drawers to opaque ids (permanent: rejected in Alternatives — the Qdrant re-upsert has no cross-store transaction, and the additive column delivers the same property)
 - Giving diary entries a content key (permanent: a journal must not dedupe — `chunk.go:157` already states why, and this record names it rather than changes it)
