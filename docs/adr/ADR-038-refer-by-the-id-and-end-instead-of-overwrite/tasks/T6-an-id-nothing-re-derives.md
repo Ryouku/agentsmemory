@@ -112,7 +112,34 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 | 3 — the caller can discover it | `doctor --help`'s integrity block names `--corpus`, asserted by `TestDoctorCorpusIsAdvertisedInHelp`; `AGENTS.md`'s Reachability list names the source gates, pinned by `TestAgentsMdNamesGatesThatExist`. **This is the rung the ADR was failing** — a drift query living in a sign-off line is a capability no operator can find. |
 | 4 — it is used | `doctor --corpus` run against the real corpus, numbers in the sign-off. Whether anyone runs it afterwards is not measured here, and ADR-015 already recorded that operators may not run `doctor` at all — worth saying rather than assuming. |
 
+> **Sign-off note, 2026-08-27 — the rung-4 number is NOT available from here, and saying so is the
+> point.** Step 3 asks for `doctor --corpus` run against the real corpus with the numbers recorded.
+> It was run, end to end, against the only corpus this machine can reach:
+>
+> ```
+> corpus "demo": 0 drawers, 0 facts
+>   0 fact(s) cite a retracted or superseded drawer — expected: provenance is historical
+>   no drift and no lost references
+> ```
+>
+> That proves the command dispatches, opens a palace, walks it and renders — and measures **nothing**,
+> because the workspace is empty. The 1,705-drawer corpus the ADR's findings came from lives on the
+> hosted server, and this command reads the SQLite file directly, so it cannot reach it from a local
+> checkout. **The 27-drifted / 16-dangling figures are therefore NOT reproduced by this task**, and a
+> sign-off claiming otherwise would be the exact shape of evidence this ADR exists to remove.
+>
+> What IS proven: the hermetic tests build the drift they assert on
+> (`TestDoctorCorpusFindsRealDriftInARealDatabase` drifts a real row in a real migrated database and
+> requires the walk to find exactly it), and the three-state rule is asserted at the query, not only
+> in the report. The Reachability table's rung 4 already said the ratio is "not measured here"; this
+> extends that honesty to the corpus numbers.
+
 ## Mutation Log
+
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `internal/palace/mine.go` · a mint path re-derives the id directly, skipping the diary exemption — the defect M reproduced on #76 · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `cmd/server/doctor.go` · the corpus check becomes unreachable while the flag stays declared, documented and read · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `cmd/server/doctorcorpus.go` · an ENDED source is reported as lost, so every palace that uses corrections grows a pile of phantom defects · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
+- 2026-08-27 · 49e4f62* · mutant killed · exit 1 · `internal/palace/import.go` · a mint path forgets its content key, so it never matches the dedup conflict target and every re-file inserts beside it · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43
 
 ## Invariants
 
@@ -141,3 +168,4 @@ mutant entry is the evidence.
 - Re-chunking on update (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log
+- 2026-08-27 · 49e4f62* · exit 0 · `go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID|TestEveryDrawerMintWritesAContentKey|TestNoCommentClaimsADrawerIdIsDerivedFromItsContent' -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./cmd/server/ -run 'TestDoctorCorpus'  -count=1 2>&1 | tee /tmp/acc38e.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38e.out && go test ./... -count=1 2>&1 | tee /tmp/acc38f.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38f.out` · acceptance-sha256:2404b3c24f2e4e6d51f86ce3f94db7fa0ffa77277c3613efc83d061de009ca43

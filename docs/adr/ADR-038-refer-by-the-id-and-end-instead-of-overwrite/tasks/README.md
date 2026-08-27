@@ -41,7 +41,7 @@ Two links in the chain are not merely conventional and are worth stating:
 | T3 | Dedupe on the content key, mint an opaque id, and end what a re-file dropped | done | — | `go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors\|...' -count=1 ...` |
 | T4 | Retraction carries a reason, and erasure leaves the agent surface | done | — | `go test ./internal/palace/ ./internal/mcpserver/ ./cmd/server/ -run 'TestCorrectingAMemorySupersedesIt\|...' -count=1 ...` |
 | T5 | Recall returns what is current — and carries the reason forward | done | — | `go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -run 'TestAnEndedRecordIsReturnedByNoDefaultRoute\|...' -count=1 ...` |
-| T6 | A gate that fails when an id is re-derived, or a mint path forgets its key | pending | — | `go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID\|...' -count=1 ...` |
+| T6 | A gate that fails when an id is re-derived, or a mint path forgets its key | done | — | `go test ./internal/palace/ -run 'TestNoPathRederivesADrawerID\|...' -count=1 ...` |
 
 Status: `pending` | `running` | `blocked` | `done` | `failed`.
 
