@@ -35,11 +35,10 @@ func currentScope(dbq *gorm.DB) *gorm.DB { return dbq.Where("valid_to = ''") }
 // CurrentDrawers returns a team's drawers that are still current, optionally
 // narrowed to one wing.
 //
-// ⚠ NOTHING ON THE RECALL PATH CALLS THIS YET, and that is deliberate: ADR-038
-// T5 composes currentScope into search, list and get, and doing it here would
-// change what am_search returns inside a task whose acceptance cannot observe
-// recall. Until T5 lands, an ended drawer is still returned by every default
-// route — say so in the T1 commit, because a half-landed pair looks like a bug.
+// The recall path does NOT go through here — T5 composes currentScope into
+// Repo.ListCurrent and the ended branch of survivorsFrom instead, because each of
+// those needs the predicate inside its own query rather than a second whole-wing
+// read. This stays as the wing-wide enumeration the corpus checks use.
 func (r *Repo) CurrentDrawers(ctx context.Context, teamID, wing string) ([]Drawer, error) {
 	q := r.db.WithContext(ctx).Model(&drawerRow{}).Where("team_id = ?", teamID)
 	if strings.TrimSpace(wing) != "" {
@@ -85,7 +84,10 @@ func (s *Service) EndDrawer(ctx context.Context, teamID, id, reason string) erro
 		return fmt.Errorf("%w: a reason is required to end a memory — an ending with no why "+
 			"records that something stopped applying and destroys the only thing worth keeping about it", ErrInvalidInput)
 	}
-	current, err := s.Get(ctx, teamID, id) // also maps an unknown id to ErrNotFound
+	// GetAnyVersion, not Get: the refusal below is ABOUT an ended record, and the
+	// current-only route answers "not found" for one — turning a precise "already
+	// ended on X, and here is the reason" into a bare miss for a row that exists.
+	current, err := s.GetAnyVersion(ctx, teamID, id) // also maps an unknown id to ErrNotFound
 	if err != nil {
 		return err
 	}

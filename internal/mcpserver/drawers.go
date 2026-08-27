@@ -77,24 +77,31 @@ type drawerView struct {
 	ValidTo      string `json:"valid_to,omitempty"`
 	EndedReason  string `json:"ended_reason,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
+	// What this record REPLACED, on the default route. A session about to redo a
+	// rejected thing does not know to ask for history, so the live record carries
+	// it; superseded_reason is capped so a page cannot grow with the corpus.
+	Supersedes       string `json:"supersedes,omitempty"`
+	SupersededReason string `json:"superseded_reason,omitempty"`
 }
 
 // toView projects a domain Drawer onto its wire shape.
 func toView(d palace.Drawer) drawerView {
 	return drawerView{
-		ID:           d.ID,
-		Wing:         d.Wing,
-		Room:         d.Room,
-		SourceFile:   d.SourceFile,
-		ChunkIndex:   d.ChunkIndex,
-		Content:      d.Content,
-		Entities:     d.Entities,
-		ParentID:     d.ParentID,
-		FiledAt:      d.FiledAt,
-		ContentDate:  d.ContentDate,
-		ValidTo:      d.ValidTo,
-		EndedReason:  d.EndedReason,
-		SupersededBy: d.SupersededBy,
+		ID:               d.ID,
+		Wing:             d.Wing,
+		Room:             d.Room,
+		SourceFile:       d.SourceFile,
+		ChunkIndex:       d.ChunkIndex,
+		Content:          d.Content,
+		Entities:         d.Entities,
+		ParentID:         d.ParentID,
+		FiledAt:          d.FiledAt,
+		ContentDate:      d.ContentDate,
+		ValidTo:          d.ValidTo,
+		EndedReason:      d.EndedReason,
+		SupersededBy:     d.SupersededBy,
+		Supersedes:       d.Supersedes,
+		SupersededReason: d.SupersededReason,
 	}
 }
 
@@ -339,6 +346,7 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
 		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
 		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is recorded on the request's trace span, not yet stored durably — pass it and nothing changes in what you get back, which is what lets clients adopt it before the durable join lands.")),
+		mcp.WithBoolean("include_history", mcp.Description("Also return memories that have been RETRACTED or superseded (default false). Off by default because an ended record keeps its embedding: without the filter a withdrawn claim competes with the correction that replaced it, and can outrank it. Turn it on to audit what a wing used to say. Every returned record carries valid_to and ended_reason, so history is never mistaken for current.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Inert for STORAGE — recording the join durably is its own task with its
@@ -368,8 +376,9 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		// An agent handed one chunk of a long note had no second call to complete
 		// it, which is why collapsing a search page to one hit per memory could
 		// not ship on its own.
+		history := req.GetBool("include_history", false)
 		if req.GetBool("whole", false) {
-			chunks, err := drawers.GetMemory(ctx, t.TeamID, id)
+			chunks, err := drawers.GetMemoryAnyVersion(ctx, t.TeamID, id, history)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -379,7 +388,11 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 			}
 			return jsonResult(map[string]any{"chunks": views, "count": len(views)}), nil
 		}
-		d, err := drawers.Get(ctx, t.TeamID, id)
+		get := drawers.Get
+		if history {
+			get = drawers.GetAnyVersion
+		}
+		d, err := get(ctx, t.TeamID, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -530,6 +543,7 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		mcp.WithString("room", mcp.Description("Only drawers in this room.")),
 		mcp.WithNumber("limit", mcp.Description("Max drawers to return (default 50).")),
 		mcp.WithNumber("offset", mcp.Description("Number of drawers to skip (default 0).")),
+		mcp.WithBoolean("include_history", mcp.Description("Also return memories that have been RETRACTED or superseded (default false). Off by default because an ended record keeps its embedding: without the filter a withdrawn claim competes with the correction that replaced it, and can outrank it. Turn it on to audit what a wing used to say. Every returned record carries valid_to and ended_reason, so history is never mistaken for current.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		t, errResult, ok := admit(ctx, usageSvc)
@@ -545,14 +559,18 @@ func registerListDrawers(reg *registrar, drawers *palace.Service, usageSvc *usag
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		list, err := drawers.List(ctx, t.TeamID,
+		list := drawers.List
+		if req.GetBool("include_history", false) {
+			list = drawers.ListAnyVersion
+		}
+		listed, err := list(ctx, t.TeamID,
 			wing, req.GetString("room", ""),
 			req.GetInt("limit", 50), req.GetInt("offset", 0))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		views := make([]drawerView, len(list))
-		for i, d := range list {
+		views := make([]drawerView, len(listed))
+		for i, d := range listed {
 			views[i] = toView(d)
 		}
 		return jsonResult(map[string]any{"drawers": views, "count": len(views)}), nil
@@ -692,6 +710,7 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 	tool := newTool("search",
 		mcp.WithDescription("Semantically recall distinct memories most similar to a query. Optionally filter by wing/room and a max cosine distance. Each hit carries blended_score: the value the page was actually ordered by, combining the cross-encoder and the fused lexical/vector score. It is POOL-RELATIVE — comparable between hits on one page, meaningless across pages, and not to be averaged. A page is often not monotonic in rerank_score, which is the blend working rather than a reranker that failed."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("What to recall (max 250 chars).")),
+		mcp.WithBoolean("include_history", mcp.Description("Also return memories that have been RETRACTED or superseded (default false). Off by default because an ended record keeps its embedding: without the filter a withdrawn claim competes with the correction that replaced it, and can outrank it. Turn it on to audit what a wing used to say. Every returned record carries valid_to and ended_reason, so history is never mistaken for current.")),
 		mcp.WithNumber("limit", mcp.Description("Max distinct memories after chunk collapse in the legacy control (before ranking in the memory-level treatment), 1-100 (default 5).")),
 		mcp.WithString("wing", mcp.Description("Restrict to this wing. Omitted, a recall is scoped to the wing this MCP registration was created for — but ONLY if it was registered with one: am_status reports it as default_wing, and when that is empty (or SEARCH_SCOPE=workspace) omitting the argument searches every wing instead. Pass a wing to look at one project, or \"*\" to search EVERY wing deliberately — worth doing when the question is about something shared, such as an infrastructure decision that explains an application's behaviour."), searchWingProperty()),
 		mcp.WithString("room", mcp.Description("Restrict to this room.")),
@@ -729,6 +748,8 @@ func registerSearch(reg *registrar, drawers *palace.Service, usageSvc *usage.Ser
 			Limit:       req.GetInt("limit", palace.DefaultSearchLimit),
 			MaxDistance: req.GetFloat("max_distance", palace.DefaultMaxDistance),
 			Context:     req.GetString("context", ""),
+
+			IncludeHistory: req.GetBool("include_history", false),
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

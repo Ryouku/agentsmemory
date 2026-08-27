@@ -650,7 +650,7 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 	// the caller are the ids the database ends up with.
 	keys := make([]string, 0, len(chunks))
 	for _, c := range chunks {
-		keys = append(keys, DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content))
+		keys = append(keys, contentKeyOf(teamID, wing, room, in.SourceFile, c.Index, c.Content))
 	}
 	existing, err := s.repo.IDsByContentKeys(ctx, teamID, keys)
 	if err != nil {
@@ -923,7 +923,31 @@ func (s *Service) Get(ctx context.Context, teamID, id string) (d Drawer, err err
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Drawer{}, ErrNotFound
 	}
-	return d, err
+	if err != nil {
+		return Drawer{}, err
+	}
+	// Ended records are not on the default route (ADR-038 T5), and the refusal
+	// NAMES the way in. An agent reaches an ended id by holding the `supersedes`
+	// a correction just handed it; a bare "not found" for a row that plainly
+	// exists is a dead end at exactly the moment the agent is doing the right
+	// thing.
+	if d.ValidTo != "" {
+		// The successor clause only when there IS one. A retraction replaces
+		// nothing, and "or read , which replaced it" is the shape of a bug — it
+		// reads as a lost id rather than as an absence that is meant.
+		successor := ""
+		if d.SupersededBy != "" {
+			successor = fmt.Sprintf(", or read %s, which replaced it", short12(d.SupersededBy))
+		}
+		return Drawer{}, fmt.Errorf("%w: drawer %s was ended on %s (%q). Pass include_history to "+
+			"read it%s",
+			ErrNotFound, short12(id), d.ValidTo, truncateReason(d.EndedReason), successor)
+	}
+	one := []Drawer{d}
+	if err := s.attachSupersedes(ctx, teamID, one); err != nil {
+		return Drawer{}, err
+	}
+	return one[0], nil
 }
 
 // GetMemory returns every chunk of the memory the given drawer belongs to, in
@@ -952,7 +976,30 @@ func (s *Service) GetMemory(ctx context.Context, teamID, id string) (chunks []Dr
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
-	return chunks, err
+	if err != nil {
+		return nil, err
+	}
+	// Ended chunks are off the default route with the rest (ADR-038 T5). A memory
+	// ends whole — T4 ends every chunk in one pass and TestNoMemoryEndsHalfway
+	// asserts it — so this filter either keeps all of them or none, and a mixed
+	// result would mean the invariant broke rather than that the filter is
+	// partial.
+	current := chunks[:0]
+	for _, c := range chunks {
+		if c.ValidTo == "" {
+			current = append(current, c)
+		}
+	}
+	if len(current) == 0 {
+		return nil, ErrNotFound
+	}
+	// Lineage on this route too. get_drawer whole=true is how an agent reads a long
+	// memory as it was written, and a reader who cannot see that this text replaced
+	// something is exactly the reader the carried reason exists for.
+	if err := s.attachSupersedes(ctx, teamID, current); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 
 // UpdateResult is what an update produced: the record that now holds the memory,
@@ -999,9 +1046,21 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		}
 	}
 
-	current, err := s.Get(ctx, teamID, id) // also maps unknown id -> ErrNotFound
+	// GetAnyVersion so an ended record produces the refusals below — the supersede
+	// path's "already ended on X" and the move guard — rather than a bare miss.
+	current, err := s.GetAnyVersion(ctx, teamID, id) // also maps unknown id -> ErrNotFound
 	if err != nil {
 		return UpdateResult{}, err
+	}
+	// A MOVE of an ended record is refused here; a CORRECTION of one is refused by
+	// supersedeInto with the reason and date attached. Neither is allowed, because
+	// the first ending is the one that is true and relocating history rewrites
+	// where a decision was taken.
+	if current.ValidTo != "" && patch.Content == nil {
+		return UpdateResult{}, fmt.Errorf(
+			"%w: drawer %s was ended on %s (%q) and cannot be moved. Correct the record that "+
+				"replaced it, not the one it replaced",
+			ErrInvalidInput, short12(id), current.ValidTo, truncateReason(current.EndedReason))
 	}
 
 	// Nothing to change.
@@ -1028,7 +1087,7 @@ func (s *Service) Update(ctx context.Context, teamID, id string, patch DrawerPat
 		if serr != nil {
 			return UpdateResult{}, serr
 		}
-		d, gerr := s.Get(ctx, teamID, res.ID)
+		d, gerr := s.Get(ctx, teamID, res.ID) // the successor is current by construction
 		if gerr != nil {
 			return UpdateResult{}, gerr
 		}
@@ -1159,7 +1218,14 @@ func (s *Service) Delete(ctx context.Context, teamID, id string) (n int, err err
 
 // List paginates a team's drawers, optionally narrowed to a wing and/or room.
 func (s *Service) List(ctx context.Context, teamID, wing, room string, limit, offset int) ([]Drawer, error) {
-	return s.repo.List(ctx, teamID, wing, room, limit, offset)
+	out, err := s.repo.ListCurrent(ctx, teamID, wing, room, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachSupersedes(ctx, teamID, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SearchQuery is the mempalace_search input.
@@ -1184,6 +1250,15 @@ type SearchQuery struct {
 	// is also zero, the candidateKFor formula). It widens only; a value below
 	// the formula is ignored. The page Limit is unchanged.
 	RetrieveK int
+	// IncludeHistory returns records that have been ended alongside current ones.
+	// Default false, which is the point of ADR-038 T5: an ended record keeps its
+	// vector, so without this filter a retracted claim competes with the
+	// correction that replaced it and can outrank it.
+	//
+	// It is a filter, never a ranking change — ended records that survive it are
+	// scored exactly as current ones are. Ranking history differently is deferred
+	// (docs/adr/BACKLOG.md).
+	IncludeHistory bool
 }
 
 // rerankQuery returns the text the cross-encoder scores against: the (already
@@ -1332,6 +1407,27 @@ func (s *Service) SearchPage(ctx context.Context, teamID string, q SearchQuery) 
 		return SearchResult{}, err
 	}
 
+	// What each returned record REPLACED, resolved on the ranked page only.
+	//
+	// Here rather than inside rankRetrieved because the eval arms call that
+	// directly and measure ordering: adding a payload lookup to it would make
+	// every arm pay for a field no arm reads. Recall is where a session meets a
+	// memory, so it is the route that has to carry the reason — a session about to
+	// redo a rejected thing does not know to ask for history.
+	if err := s.attachSupersedesToHits(searchCtx, teamID, results); err != nil {
+		// FAIL CLOSED, unlike the fact block below, and the difference is that this
+		// one is an invariant rather than an enrichment. T5 states "the ending
+		// REASON always reaches the default route" without qualification; a warning
+		// logged server-side and a page that silently omits it is that invariant
+		// quietly false, and the reader has no way to tell a record that replaced
+		// nothing from one whose lineage lookup failed.
+		//
+		// It is one indexed query against the page's own roots, so a failure here
+		// means something is wrong that a recall should not paper over.
+		parent.End(telemetry.FailedClosed)
+		return SearchResult{}, fmt.Errorf("resolve what these records replaced: %w", err)
+	}
+
 	// The fact block is assembled AFTER ranking and never feeds it. A failure
 	// here degrades the answer to drawers-only rather than failing the recall:
 	// the drawers are what a caller had before this existed, and losing them
@@ -1432,7 +1528,8 @@ func (s *Service) rankRetrieved(ctx context.Context, teamID, query string, q Sea
 		telemetry.Annotate(ctx,
 			attribute.Int("am.dropped_orphan", drops.Orphan),
 			attribute.Int("am.dropped_out_of_scope", drops.OutOfScope),
-			attribute.Int("am.dropped_over_distance", drops.OverDistance))
+			attribute.Int("am.dropped_over_distance", drops.OverDistance),
+			attribute.Int("am.dropped_superseded", drops.Superseded))
 	}
 
 	// Collapse HERE, before scoring, so every consumer of rankRetrieved ranks
@@ -1943,24 +2040,40 @@ func (s *Service) CheckDuplicate(ctx context.Context, teamID, content string, th
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("embed content: %w", err)
 	}
-	searchRes, err := s.vectors.Search(ctx, teamID, vec, 1, nil)
+	// duplicateProbeK, not 1. An ended drawer keeps its vector, so the nearest
+	// neighbour can be a record the team retracted — and asking for exactly one
+	// then discarding it would report "no duplicate" while a current near-identical
+	// memory sat second. The whole point of this tool is to stop an agent filing
+	// something the palace already holds, so a false negative is the expensive
+	// direction.
+	searchRes, err := s.vectors.Search(ctx, teamID, vec, duplicateProbeK, nil)
 	if err != nil {
 		return DuplicateResult{}, fmt.Errorf("vector search: %w", err)
 	}
-	hits := searchRes.H
-	if len(hits) == 0 {
-		return DuplicateResult{IsDuplicate: false}, nil
-	}
-	top := hits[0]
-	sim := float64(top.Score)
-	res := DuplicateResult{IsDuplicate: sim >= threshold, Similarity: sim}
-	if res.IsDuplicate {
-		if d, err := s.repo.Get(ctx, teamID, top.ID); err == nil {
+	for _, top := range searchRes.H {
+		d, err := s.repo.Get(ctx, teamID, top.ID)
+		if err != nil {
+			continue // orphan vector: the row is gone, so it duplicates nothing
+		}
+		if d.ValidTo != "" {
+			continue // retracted: the team stopped asserting this, so re-filing it is not a duplicate
+		}
+		sim := float64(top.Score)
+		res := DuplicateResult{IsDuplicate: sim >= threshold, Similarity: sim}
+		if res.IsDuplicate {
 			res.Drawer = &d
 		}
+		return res, nil
 	}
-	return res, nil
+	return DuplicateResult{IsDuplicate: false}, nil
 }
+
+// duplicateProbeK is how deep check_duplicate looks for the nearest CURRENT
+// neighbour. Small on purpose: it answers "is this already filed", and a
+// retracted record ahead of a current one is the only case that needs the extra
+// depth. Ten covers a memory superseded several times over without turning a
+// cheap probe into a recall.
+const duplicateProbeK = 10
 
 // Taxonomy is the get_taxonomy view: every wing with its rooms and counts.
 type Taxonomy struct {

@@ -55,7 +55,7 @@ func TestEndSetsTheWindowAndKeepsTheRow(t *testing.T) {
 	if err := svc.EndDrawer(ctx, team, id, "replaced by NATS after rebalancing stalled"); err != nil {
 		t.Fatalf("end: %v", err)
 	}
-	d, err := svc.Get(ctx, team, id)
+	d, err := svc.GetAnyVersion(ctx, team, id)
 	if err != nil {
 		t.Fatalf("the ended row must still be readable by id — ending is not deleting: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestEndRefusesAnAlreadyEndedDrawer(t *testing.T) {
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("err = %v; want ErrInvalidInput", err)
 	}
-	d, _ := svc.Get(ctx, team, id)
+	d, _ := svc.GetAnyVersion(ctx, team, id)
 	if d.EndedReason != "first ending" {
 		t.Errorf("EndedReason=%q; the refused second ending must not have overwritten it", d.EndedReason)
 	}

@@ -58,7 +58,7 @@ func (s *Service) AbsorbDrawers(ctx context.Context, teamID string, in []ImportD
 	keys := make([]string, 0, len(in))
 	for _, r := range in {
 		wing, room := strings.TrimSpace(r.Wing), strings.TrimSpace(r.Room)
-		keys = append(keys, DrawerID(teamID, wing, room, r.SourceFile, r.ChunkIndex, r.Content))
+		keys = append(keys, contentKeyOf(teamID, wing, room, r.SourceFile, r.ChunkIndex, r.Content))
 	}
 	// import.go:21's contract — "re-running an import upserts rather than
 	// duplicates" — now rests on the content key rather than on a derived id, so

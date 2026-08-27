@@ -473,7 +473,16 @@ func (r *Repo) Update(ctx context.Context, teamID, id string, patch DrawerPatch)
 			Where("team_id = ? AND id = ?", teamID, id).
 			Updates(updates)
 		if res.Error != nil {
-			return Drawer{}, res.Error
+			// Named, not raw. A move into a wing that already holds identical text
+			// is an ordinary curation action — "this wing already has that memory"
+			// is precisely when someone relocates one — and the bare driver error
+			// ("UNIQUE constraint failed: drawers.team_id, drawers.content_key")
+			// says something collided and nothing about what. Reported on #76 after
+			// T4 moved the content path out of here and left the move as the way in;
+			// RecomputeContentKeys has said this properly since T2 and this was the
+			// second caller that did not.
+			key, _ := updates["content_key"].(string)
+			return Drawer{}, r.namedCollision(ctx, teamID, key, id, res.Error)
 		}
 		if res.RowsAffected == 0 {
 			return Drawer{}, gorm.ErrRecordNotFound
@@ -508,9 +517,28 @@ func (r *Repo) deleteAnchors(ctx context.Context, teamID string, drawerIDs []str
 }
 
 // List returns drawers for a team, optionally narrowed to a wing and/or room,
-// newest first. limit bounds the page (a non-positive limit defaults to 50 to
-// avoid an unbounded scan); offset paginates.
+// newest first, INCLUDING records that have been ended. limit bounds the page (a
+// non-positive limit defaults to 50 to avoid an unbounded scan); offset paginates.
+//
+// History-inclusive is right for its callers — a wing bundle, a cross-workspace
+// copy, a sync — because each of them moves the whole record and an export that
+// silently dropped what a team retracted would lose the only account of why. The
+// recall path uses ListCurrent instead.
 func (r *Repo) List(ctx context.Context, teamID, wing, room string, limit, offset int) ([]Drawer, error) {
+	return r.list(ctx, teamID, wing, room, limit, offset, false)
+}
+
+// ListCurrent is List narrowed to records that have not been ended.
+//
+// The predicate is pushed into SQL rather than applied to the returned page,
+// because limit/offset are applied by the database: filtering afterwards would
+// return SHORT pages and, worse, a page that skips records as the offset walks
+// past ended rows the caller never saw.
+func (r *Repo) ListCurrent(ctx context.Context, teamID, wing, room string, limit, offset int) ([]Drawer, error) {
+	return r.list(ctx, teamID, wing, room, limit, offset, true)
+}
+
+func (r *Repo) list(ctx context.Context, teamID, wing, room string, limit, offset int, currentOnly bool) ([]Drawer, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -523,6 +551,9 @@ func (r *Repo) List(ctx context.Context, teamID, wing, room string, limit, offse
 	}
 	if room != "" {
 		q = q.Where("room = ?", room)
+	}
+	if currentOnly {
+		q = currentScope(q)
 	}
 	var rows []drawerRow
 	// filed_at DESC, id ASC is a stable total order so paging never skips or
@@ -622,7 +653,13 @@ func diaryScope(db *gorm.DB, teamID, agent, wing string) *gorm.DB {
 	if wing != "" {
 		q = q.Where("wing = ?", wing)
 	}
-	return q
+	// A journal is append-only, so a diary entry is rarely ended — but it CAN be:
+	// am_invalidate_drawer takes any drawer id, and nothing stops an agent
+	// retracting a reflection it decides was wrong. Both the page and the count go
+	// through here, so the filter is applied once and neither can drift from the
+	// other — a total that includes retracted entries while the page excludes them
+	// tells an agent its journal is larger than what it can read.
+	return currentScope(q)
 }
 
 // Diary returns an agent's most recent diary entries (newest first), scoped via
@@ -917,8 +954,13 @@ func (r *Repo) DrawersByIDs(ctx context.Context, teamID string, ids []string) ([
 		return nil, nil
 	}
 	var rows []drawerRow
-	if err := r.db.WithContext(ctx).
-		Where("team_id = ? AND id IN ?", teamID, ids).Find(&rows).Error; err != nil {
+	// CURRENT only. This hydrates am_bootstrap's inline records, which is a default
+	// read route and the FIRST one a waking session takes — an entry edge is
+	// written when a drawer is written and outlives an ending, so a retracted
+	// record reached this way is a withdrawn claim presented as the thing to read
+	// before doing anything else.
+	if err := currentScope(r.db.WithContext(ctx).
+		Where("team_id = ? AND id IN ?", teamID, ids)).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	byID := make(map[string]Drawer, len(rows))

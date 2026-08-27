@@ -137,7 +137,7 @@ func (s *Service) Mine(ctx context.Context, teamID string, in MineInput) (result
 	// exactly the chunk's own locating tuple, so the two cannot drift.
 	keep := make([]string, 0, len(chunks))
 	for _, c := range chunks {
-		keep = append(keep, DrawerID(teamID, wing, room, source, c.Index, c.Content))
+		keep = append(keep, contentKeyOf(teamID, wing, room, source, c.Index, c.Content))
 	}
 	if err := s.purgeSource(ctx, teamID, wing, room, source, keep); err != nil {
 		return MineResult{}, err

@@ -27,7 +27,7 @@ func TestCorrectingAMemorySupersedesIt(t *testing.T) {
 	if res.Supersedes != old {
 		t.Errorf("the new record names %q as its predecessor; want %q", res.Supersedes, old)
 	}
-	prev, err := svc.Get(ctx, team, old)
+	prev, err := svc.GetAnyVersion(ctx, team, old)
 	if err != nil {
 		t.Fatalf("the superseded row must still be readable: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestTheEndedTextIsStillReadableById(t *testing.T) {
 	if _, err := svc.Supersede(ctx, team, old, "the chosen one", "measured slower"); err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
-	got, err := svc.Get(ctx, team, old)
+	got, err := svc.GetAnyVersion(ctx, team, old)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -84,7 +84,10 @@ func TestInvalidateDrawerEndsWithNoSuccessor(t *testing.T) {
 	if err := svc.InvalidateDrawer(ctx, team, id, "the plan was dropped"); err != nil {
 		t.Fatalf("invalidate: %v", err)
 	}
-	d, _ := svc.Get(ctx, team, id)
+	d, err := svc.GetAnyVersion(ctx, team, id)
+	if err != nil {
+		t.Fatalf("the retracted row must still be readable through the history route: %v", err)
+	}
 	if d.ValidTo == "" {
 		t.Error("the record was not ended")
 	}

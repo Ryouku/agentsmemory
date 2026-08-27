@@ -2,6 +2,10 @@ package mcpserver
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -264,6 +268,145 @@ func TestLocalAndHostedOfferTheSameTools(t *testing.T) {
 	}
 	if len(local) != len(hosted) {
 		t.Errorf("local has %d tools and hosted %d", len(local), len(hosted))
+	}
+}
+
+// TestIncludeHistoryIsDeclaredInEveryToolThatHonoursIt is rung 3 for ADR-038 T5.
+//
+// A handler that honours an argument the schema never advertises is a capability
+// nobody will ever send. That is this repository's characteristic defect in its
+// mildest-looking form: the code is finished, the tests pass, and the one line
+// that lets a caller select it was never written. am_update_drawer shipped exactly
+// this once — its handler read code_anchors from the moment it was written and the
+// tool never DECLARED the argument.
+//
+// The universe is DERIVED, not listed: every register* function that reads
+// "include_history" out of the request must declare it on the tool it builds. A
+// hardcoded list of three tool names would be a guess about which tools have the
+// argument today, and it would go stale the moment a fourth honours it — silently,
+// which is the failure mode a gate exists to remove.
+//
+// It reads the LIVE tools/list schema for the declaration half, because the wire
+// is what an agent receives and a description that never reaches it is not
+// documentation.
+func TestIncludeHistoryIsDeclaredInEveryToolThatHonoursIt(t *testing.T) {
+	const arg = "include_history"
+	// requestVar is the parameter name every handler closure gives the incoming
+	// request. Pinned rather than inferred: it is one identifier, the same in every
+	// register* function, and a mismatch is reported below rather than matching
+	// nothing quietly.
+	const requestVar = "req"
+
+	pkgs, err := parser.ParseDir(token.NewFileSet(), ".", notATest, 0)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+
+	honours := map[string][]string{} // register func -> tool names it builds
+	var unattributed []string
+	var mentions int
+
+	// EVERY occurrence of the literal in the package, not only those inside a
+	// register* body — that narrower walk was the gate's own hole. Moving the read
+	// into a one-line helper (`func historyFlag(r mcp.CallToolRequest) bool`) put
+	// the literal in a function no walk visited, and the check went green with a
+	// tool honouring an argument it never declared. Found by review 2026-08-27 and
+	// reproduced before this rewrite.
+	for _, p := range pkgs {
+		for _, f := range p.Files {
+			// The enclosing top-level function, so an occurrence can be attributed
+			// (or reported as unattributable) rather than silently dropped.
+			for _, d := range f.Decls {
+				fn, ok := d.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				isRegister := strings.HasPrefix(fn.Name.Name, "register")
+				var tools []string
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok || len(call.Args) == 0 {
+						return true
+					}
+					lit, ok := call.Args[0].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						return true
+					}
+					value := strings.Trim(lit.Value, `"`)
+					if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "newTool" {
+						tools = append(tools, mcpprotocol.ToolPrefix+value)
+						return true
+					}
+					if value != arg {
+						return true
+					}
+					mentions++
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok {
+						unattributed = append(unattributed, fn.Name.Name+": "+types.ExprString(call.Fun))
+						return true
+					}
+					recv, isIdent := sel.X.(*ast.Ident)
+					switch {
+					case isRegister && isIdent && recv.Name == requestVar && strings.HasPrefix(sel.Sel.Name, "Get"):
+						honours[fn.Name.Name] = nil // filled in after the walk
+					case isIdent && recv.Name == "mcp":
+						// the declaration; verified on the wire below
+					default:
+						unattributed = append(unattributed, fn.Name.Name+": "+types.ExprString(call.Fun))
+					}
+					return true
+				})
+				if _, reads := honours[fn.Name.Name]; reads {
+					honours[fn.Name.Name] = tools
+				}
+			}
+		}
+	}
+
+	if mentions == 0 {
+		t.Fatalf("the literal %q appears nowhere in this package, so this check reads nothing. "+
+			"Either the argument was renamed and the gate went quiet, or the capability is gone", arg)
+	}
+	if len(honours) == 0 {
+		t.Fatalf("%q is mentioned %d time(s) but no register* function reads it directly off %s; "+
+			"the gate can no longer attribute any tool", arg, mentions, requestVar)
+	}
+	for _, where := range unattributed {
+		t.Errorf("%s names %q where this gate cannot attribute it to a tool. Read it directly as "+
+			"%s.GetBool(%q, …) inside the register* function, or teach this check to trace it — an "+
+			"occurrence it cannot follow is a tool whose schema nothing is checking.",
+			where, arg, requestVar, arg)
+	}
+
+	_, tools := liveSurface(t, false)
+	declared := map[string]bool{}
+	for _, tool := range tools {
+		if tool.InputSchema.Properties == nil {
+			continue
+		}
+		if _, ok := tool.InputSchema.Properties[arg]; ok {
+			declared[tool.Name] = true
+		}
+	}
+
+	for fn, built := range honours {
+		if len(built) != 1 {
+			// Loud rather than silently unattributed: with two tools in one function
+			// this check cannot say WHICH honours the argument, and a gate that
+			// quietly stops attributing is a gate that stops gating.
+			t.Errorf("%s honours %q and builds %d tools (%v); this check cannot attribute the "+
+				"argument. Split the registration, or extend the check to walk each tool's own "+
+				"handler closure", fn, arg, len(built), built)
+			continue
+		}
+		if !declared[built[0]] {
+			t.Errorf("%s reads %q from the request, and %s does not publish it in its schema.\n"+
+				"  An agent reads the schema to decide what it may send, so an argument that is "+
+				"honoured and undeclared is a capability nobody will ever use — the code is "+
+				"finished and the one line that makes it selectable was never written.",
+				fn, arg, built[0])
+		}
 	}
 }
 

@@ -89,6 +89,20 @@ type Drawer struct {
 	// did, so a caller learns it without a second query.
 	HasEdge     bool `json:"has_edge,omitempty"`
 	EdgeDerived bool `json:"edge_derived,omitempty"`
+
+	// Supersedes and SupersededReason name the record THIS one replaced, and why.
+	// They are not persisted either — the predecessor row holds the truth in its
+	// SupersededBy and EndedReason, and these are resolved onto the live record
+	// when it is read (ADR-038 T5).
+	//
+	// They ride the DEFAULT path deliberately. ADR-010 first put history behind a
+	// flag and then corrected itself: hiding it AND expecting retractions to stop
+	// re-litigation cannot both hold, because a session about to redo a rejected
+	// thing does not know to ask for history. So the current record carries what
+	// it replaced, and SupersededReason is capped at maxCarriedReasonRunes — the
+	// full text stays on the predecessor, reachable by the history route.
+	Supersedes       string `json:"supersedes,omitempty"`
+	SupersededReason string `json:"superseded_reason,omitempty"`
 }
 
 // Dynamics are the L7 "living connection" fields every hallway and tunnel carries:

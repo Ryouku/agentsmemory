@@ -224,7 +224,10 @@ func TestDeletingADrawerTakesItsDerivedEdge(t *testing.T) {
 		if n := edgesNaming(t, svc, old); n == 0 {
 			t.Errorf("the edge naming %s is gone; a re-file must END the old chunk, not destroy it", old)
 		}
-		if _, err := svc.Get(ctx, team, old); err != nil {
+		// GetAnyVersion: the question is whether the ROW is still there, and an ended
+		// record is still a record. The default route hides it (T5) and that is not
+		// what makes an edge dangle — a deleted row is.
+		if _, err := svc.GetAnyVersion(ctx, team, old); err != nil {
 			t.Errorf("the edge names %s but the row no longer resolves (%v) — THAT is the orphan "+
 				"this test exists to catch", old, err)
 		}

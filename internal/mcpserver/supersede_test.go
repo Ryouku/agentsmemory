@@ -103,8 +103,15 @@ func TestInvalidateDrawerEndsWithNoSuccessor(t *testing.T) {
 		t.Errorf("ended = %v; want %q", res["ended"], id)
 	}
 
+	// Off the default route, and the refusal names the way in — an agent reaches
+	// this id by holding what the retraction just returned.
+	refused := h.MustRefuse(t, "am_get_drawer", map[string]any{"id": id})
+	if !strings.Contains(refused, "include_history") {
+		t.Errorf("the refusal does not name the history route: %s", refused)
+	}
+
 	// The text survives. Ending is not deleting, and that is the whole point.
-	d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": id}))
+	d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": id, "include_history": true}))
 	if !strings.Contains(d["content"].(string), "not doing this after all") {
 		t.Errorf("the retracted text is gone; a retraction that erases is a delete wearing a new "+
 			"name. got: %v", d)

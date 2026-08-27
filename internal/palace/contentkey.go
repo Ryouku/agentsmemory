@@ -53,10 +53,31 @@ func opaqueDrawerID() string {
 // two entries, and the index's `content_key != ”` conjunct is what keeps them
 // out of dedup.
 func contentKeyFor(d Drawer) string {
-	if d.Room == DiaryRoom {
+	return contentKeyOf(d.TeamID, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content)
+}
+
+// contentKeyOf is contentKeyFor for a caller that has the fields but not yet a
+// Drawer — which is every mint path, because the key is needed to decide the id
+// the Drawer will carry.
+//
+// ⚠ THE DIARY BRANCH LIVES HERE AND NOWHERE ELSE, and that is the whole point of
+// this function existing. It was written as one branch inside contentKeyFor, and
+// four of the five mint paths — Add, Mine, AbsorbDrawers and CopyWing — called
+// DrawerID directly and never saw it. Reported and reproduced on #76: two
+// identical journal entries went into AbsorbDrawers, ONE row came out, and the
+// call reported 2. A journal is append-only and two identical reflections are two
+// entries; deduping them is silent data loss.
+//
+// The T2 test that was supposed to prevent exactly this drove WriteDiary, the one
+// path that was already right — the repository's signature defect in its
+// documented form: the test exercised the component rather than the selection.
+// TestEveryMintPathHonoursTheDiaryExemption is the replacement, and it is written
+// against the paths rather than the function.
+func contentKeyOf(teamID, wing, room, sourceFile string, chunkIndex int, content string) string {
+	if room == DiaryRoom {
 		return ""
 	}
-	return DrawerID(d.TeamID, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content)
+	return DrawerID(teamID, wing, room, sourceFile, chunkIndex, content)
 }
 
 // namedCollision turns a bare UNIQUE-constraint violation into an error that says
@@ -244,7 +265,20 @@ func (r *Repo) CurrentBySource(ctx context.Context, teamID, wing, room, source s
 // returned id would pin to a row that does not exist.
 func (r *Repo) IDsByContentKeys(ctx context.Context, teamID string, keys []string) (map[string]string, error) {
 	out := make(map[string]string, len(keys))
-	for _, batch := range chunkIDs(keys) {
+	// An empty key is the diary exemption, not a key. Left in, `content_key IN
+	// ('')` matches every exempt row in the team and the lookup answers with an
+	// unrelated id — harmless today only because mintOrReuse guards on the same
+	// emptiness, which is one guard too few to rely on.
+	lookup := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k != "" {
+			lookup = append(lookup, k)
+		}
+	}
+	if len(lookup) == 0 {
+		return out, nil
+	}
+	for _, batch := range chunkIDs(lookup) {
 		var rows []drawerRow
 		err := r.db.WithContext(ctx).
 			Select("id", "content_key").

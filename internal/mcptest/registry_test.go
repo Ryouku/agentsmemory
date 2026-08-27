@@ -222,28 +222,45 @@ var scenarios = []mcptest.Scenario{
 			// in the FIRST chunk while the check sweeps ALL of them: a supersede
 			// that ended only the row it was given would leave the tail current,
 			// which is the same shape as the defect this scenario exists for.
-			hits := h.JSON(t, h.MustCall(t, "am_search", map[string]any{
+			got := h.MustCall(t, "am_search", map[string]any{
 				"query": "brief from the index file", "wing": "wing_chunked", "limit": 20,
+			})
+			if !contains(got, "CORRECTED-MARKER") {
+				t.Errorf("the correction is not searchable at all:\n%s", got)
+			}
+			if contains(got, "SUPERSEDED-MARKER") {
+				t.Errorf("the superseded text is still on the default recall route, competing with "+
+					"the correction that replaced it — and it kept its embedding, so it can "+
+					"outrank it:\n%s", got)
+			}
+			// Every chunk of the old memory is ended, not just the one the caller
+			// named. Read through the one explicit route, since the default one has
+			// just been asserted not to carry them.
+			hits := h.JSON(t, h.MustCall(t, "am_search", map[string]any{
+				"query": "brief from the index file", "wing": "wing_chunked",
+				"limit": 20, "include_history": true,
 			}))
-			var sawCorrection bool
+			var sawEnded bool
 			for _, hid := range searchHitIDs(t, hits) {
-				d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": hid}))
+				d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{
+					"id": hid, "include_history": true,
+				}))
 				body, _ := d["content"].(string)
 				switch {
 				case contains(body, "CORRECTED-MARKER"):
-					sawCorrection = true
 					if d["valid_to"] != nil {
 						t.Errorf("the correction itself is marked ended: %v", d)
 					}
 				case contains(body, "SUPERSEDED-MARKER") || contains(body, "index file"):
+					sawEnded = true
 					if d["valid_to"] == nil {
-						t.Errorf("a chunk of the superseded memory is still current, so it keeps "+
-							"answering with the retracted text and outranks the correction: %v", d)
+						t.Errorf("a chunk of the superseded memory is still current: %v", d)
 					}
 				}
 			}
-			if !sawCorrection {
-				t.Errorf("the correction is not searchable at all:\n%v", hits)
+			if !sawEnded {
+				t.Errorf("include_history reached no chunk of the superseded memory, so the "+
+					"per-chunk assertion above ran against nothing:\n%v", hits)
 			}
 		},
 	},
@@ -280,18 +297,34 @@ var scenarios = []mcptest.Scenario{
 			// Checked by BOTH routes, and the pair is the point: a get of the
 			// parent said "gone" while the children were still embedded and
 			// searchable. Either route alone would have reported this fixed.
-			parent := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": id}))
+			parent := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{
+				"id": id, "include_history": true,
+			}))
 			if parent["ended_reason"] != "the rollback procedure was replaced by the runbook" {
 				t.Errorf("the retracted parent carries no reason — a retraction without one is a "+
 					"delete that kept the bytes: %v", parent)
 			}
-			hits := h.JSON(t, h.MustCall(t, "am_search", map[string]any{
+			// The marker sits in the LAST chunk precisely so this can see a child
+			// that outlived the retraction: a retraction that ended only the row it
+			// was handed leaves the tail searchable, which is the defect wearing a
+			// new verb's name.
+			if got := h.MustCall(t, "am_search", map[string]any{
 				"query": "rollback procedure for the queue worker", "wing": "wing_orphan", "limit": 20,
+			}); contains(got, "ORPHAN-MARKER") {
+				t.Errorf("a chunk outlived the retraction and is still on the default recall "+
+					"route:\n%s", got)
+			}
+			// And every chunk is reachable through the one explicit route, ended.
+			hits := h.JSON(t, h.MustCall(t, "am_search", map[string]any{
+				"query": "rollback procedure for the queue worker", "wing": "wing_orphan",
+				"limit": 20, "include_history": true,
 			}))
 			for _, hid := range searchHitIDs(t, hits) {
-				if d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": hid})); d["valid_to"] == nil {
-					t.Errorf("a chunk outlived the retraction and is still current — the marker sits "+
-						"in the LAST chunk precisely so this can see it: %v", d)
+				d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{
+					"id": hid, "include_history": true,
+				}))
+				if d["valid_to"] == nil {
+					t.Errorf("chunk %v is still current after the retraction: %v", hid, d)
 				}
 			}
 		},
@@ -660,7 +693,12 @@ var scenarios = []mcptest.Scenario{
 				"id": id, "reason": "the rewrite was cancelled, not rescheduled",
 			})
 
-			d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": id}))
+			// Off the default route now (T5), and reached by the one explicit one.
+			if refused := h.MustRefuse(t, "am_get_drawer", map[string]any{"id": id}); !contains(refused, "include_history") {
+				t.Errorf("the refusal does not name the history route, so an agent holding this id "+
+					"dead-ends on a record that plainly exists:\n%s", refused)
+			}
+			d := h.JSON(t, h.MustCall(t, "am_get_drawer", map[string]any{"id": id, "include_history": true}))
 			body, _ := d["content"].(string)
 			if !contains(body, "RETRACTED-MARKER") {
 				t.Errorf("the retracted text is gone; ending is not deleting, and the version that "+
