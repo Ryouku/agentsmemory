@@ -637,6 +637,20 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 	vectors := s.embedOrDefer(ctx, chunks)
 
 	filedAt := time.Now().UTC().Format(time.RFC3339)
+
+	// Reuse the id of any CURRENT row already holding one of these content keys,
+	// so re-filing unchanged text updates the row in place and every anchor,
+	// tunnel and provenance pointer at it survives — and so the ids returned to
+	// the caller are the ids the database ends up with.
+	keys := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		keys = append(keys, DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content))
+	}
+	existing, err := s.repo.IDsByContentKeys(ctx, teamID, keys)
+	if err != nil {
+		return AddResult{}, fmt.Errorf("look up rows already holding these content keys: %w", err)
+	}
+
 	drawers := make([]Drawer, len(chunks))
 	for i, c := range chunks {
 		// The first chunk is the parent the rest of a multi-chunk write point
@@ -657,8 +671,8 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 		// them to become a hallway, rather than every chunk inheriting the whole
 		// memory's entities and manufacturing connections the text never made.
 		drawers[i] = Drawer{
-			ID:          DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
-			ContentKey:  DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
+			ID:          mintOrReuse(existing, keys[i]),
+			ContentKey:  keys[i],
 			TeamID:      teamID,
 			Wing:        wing,
 			Room:        room,
@@ -677,7 +691,11 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 	// content cannot leave orphaned higher-index chunks behind. A source-less add
 	// is a standalone memory (deduped by its CONTENT KEY, not its id), so it is not purged.
 	if in.SourceFile != "" {
-		if err := s.purgeSource(ctx, teamID, wing, room, in.SourceFile); err != nil {
+		keep := make([]string, 0, len(drawers))
+		for _, d := range drawers {
+			keep = append(keep, d.ContentKey)
+		}
+		if err := s.purgeSource(ctx, teamID, wing, room, in.SourceFile, keep); err != nil {
 			return AddResult{}, err
 		}
 	}
@@ -842,30 +860,48 @@ func (s *Service) upsertDrawerVectors(ctx context.Context, teamID string, drawer
 // purgeSource deletes every drawer (row + vector) previously filed from a source
 // within a (team, wing, room), so a re-add of that source replaces rather than
 // accumulates. Vectors are dropped by the ids the rows carry, then the rows.
-func (s *Service) purgeSource(ctx context.Context, teamID, wing, room, source string) error {
-	ids, err := s.repo.IDsBySource(ctx, teamID, wing, room, source)
+func (s *Service) purgeSource(ctx context.Context, teamID, wing, room, source string, keep []string) error {
+	rows, err := s.repo.CurrentBySource(ctx, teamID, wing, room, source)
 	if err != nil {
 		return fmt.Errorf("list source drawers: %w", err)
+	}
+	kept := make(map[string]bool, len(keep))
+	for _, k := range keep {
+		kept[k] = true
+	}
+	var ids []string
+	for _, row := range rows {
+		if !kept[row.ContentKey] {
+			ids = append(ids, row.ID)
+		}
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := s.vectors.Delete(ctx, teamID, ids); err != nil {
-		return fmt.Errorf("purge source vectors: %w", err)
-	}
-	// The derived edges go with the rows. Left behind they stay CURRENT and point
-	// at ids that no longer resolve — an edge asserting a record exists where none
-	// does — and they accumulate on every re-file of changed content, since a
-	// changed drawer gets a new id and a new edge beside the stale one. Authored
-	// edges are deliberately left for a human.
-	if err := s.repo.DropDerivedEdgesFor(ctx, teamID, ids); err != nil {
-		return fmt.Errorf("purge derived edges: %w", err)
-	}
-	if err := s.repo.DeleteBySource(ctx, teamID, wing, room, source); err != nil {
-		return fmt.Errorf("purge source rows: %w", err)
+	// ENDED, not deleted, and the vectors and anchors STAY.
+	//
+	// This used to delete every row under the triple — with its vectors, its
+	// derived edges and, through DeleteBySource, its ANCHORS — and let Add
+	// re-insert. That was survivable only because ids were derived from content,
+	// so an unchanged chunk came back with the same id. It never saved the
+	// anchors: 39 of the 41 anchored drawers in the live palace were one re-file
+	// from losing their pin, and nothing reported it.
+	//
+	// Now only the rows whose content key LEFT the source are touched, and they
+	// are ended rather than destroyed: a chunk a re-file dropped is a memory the
+	// team stopped asserting, which is a retraction, not an erasure.
+	for _, id := range ids {
+		if err := s.EndDrawer(ctx, teamID, id, "dropped from "+source+" on re-file"); err != nil {
+			return fmt.Errorf("end drawer %s dropped from the source: %w", short12(id), err)
+		}
 	}
 	return nil
 }
+
+// An ended row KEEPS its vector and its derived edges. Nothing is deleted by a
+// re-file any more: T5 composes current() into recall, which is what stops an
+// ended row being returned, and destroying the vector would make an ending
+// irreversible in the one store a rollback cannot repair.
 
 // Get returns one drawer, mapping an unknown id to ErrNotFound.
 func (s *Service) Get(ctx context.Context, teamID, id string) (d Drawer, err error) {

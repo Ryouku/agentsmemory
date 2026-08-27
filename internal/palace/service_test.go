@@ -360,12 +360,14 @@ func TestServiceReAddNamedSourcePurgesStaleChunks(t *testing.T) {
 	}
 	mustAdd(t, svc, team, AddInput{Wing: "w", Room: "r", SourceFile: "notes.md", Content: short})
 
-	list, err := svc.List(ctx, team, "w", "r", 50, 0)
+	// CURRENT rows: a re-file now ENDS the chunks it dropped rather than deleting
+	// them (ADR-038 T3), and List does not filter by validity until T5.
+	list, err := svc.repo.CurrentDrawers(ctx, team, "w")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("re-adding a shorter source should purge stale chunks; want 1 drawer, got %d", len(list))
+		t.Fatalf("re-adding a shorter source should leave one CURRENT drawer; got %d", len(list))
 	}
 }
 

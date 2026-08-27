@@ -117,6 +117,17 @@ func (s *Service) copyDrawerBatch(ctx context.Context, reader vectorReader, from
 	if err != nil {
 		return 0, 0, fmt.Errorf("read source vectors: %w", err)
 	}
+	// Keys first, so a copy into a team that already holds the same memory updates
+	// that row rather than renaming it — the same reuse every other mint path does.
+	copyKeys := make([]string, 0, len(src))
+	for _, d := range src {
+		copyKeys = append(copyKeys, DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content))
+	}
+	existingKeys, err := s.repo.IDsByContentKeys(ctx, toTeam, copyKeys)
+	if err != nil {
+		return 0, 0, fmt.Errorf("look up rows already holding these content keys: %w", err)
+	}
+
 	dstDrawers := make([]Drawer, 0, len(src))
 	dstVectors := make([][]float32, 0, len(src))
 	skipped := 0
@@ -127,7 +138,7 @@ func (s *Service) copyDrawerBatch(ctx context.Context, reader vectorReader, from
 			continue
 		}
 		dstDrawers = append(dstDrawers, Drawer{
-			ID:          DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content),
+			ID:          mintOrReuse(existingKeys, DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content)),
 			ContentKey:  DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content),
 			TeamID:      toTeam,
 			Wing:        d.Wing,

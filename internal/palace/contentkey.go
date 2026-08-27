@@ -2,6 +2,8 @@ package palace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,6 +22,31 @@ const contentKeyMigrationVersion int64 = 31
 // tell it apart from an ordinary write failure: a collision is a corpus fact
 // somebody must look at, not a transient error to retry.
 var ErrContentKeyCollision = errors.New("content key collision")
+
+// opaqueDrawerID mints a NEW drawer's name. It is random, never derived, and
+// never compared to anything — its whole job is to be a stable handle that
+// anchors, tunnels, kg_triples.source_drawer_id and parent_id can point at while
+// the row's content changes underneath it.
+//
+// ⚠ 32 random bytes, so it is the SAME SHAPE as the old content hash — 64 lowercase
+// hex — and that is a deliberate reversal of the ADR's own preference. ADR-038
+// says an id indistinguishable from a hash "invites the next reader to re-derive
+// it", which argued for a visibly different shape. But repohygiene's privacy gate
+// finds palace identifiers in tracked fixtures by matching \b[0-9a-f]{64}\b
+// (adr036_fixtures_test.go:17), so a shorter or prefixed id would slip past the
+// check that stops real drawer ids being committed. A readability preference lost
+// to a privacy gate; the doc comments carry the "never re-derive this" rule
+// instead, and T6's gate enforces it.
+func opaqueDrawerID() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Falling back to the content hash would reintroduce exactly the coupling
+		// this decision removes, so the failure is returned as an unusable id the
+		// caller's insert will reject rather than as a silently derived one.
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // contentKeyFor computes the key for a row as it currently stands. Diary rows
 // get an empty key — a journal is append-only, so two identical reflections are
@@ -181,3 +208,65 @@ func chunkIDs(ids []string) [][]string {
 }
 
 var _ = gorm.ErrRecordNotFound
+
+// CurrentBySource returns the CURRENT rows filed from one source within a
+// (team, wing, room). It is what a re-file diffs against: the rows whose content
+// key is absent from the new set are the ones the source dropped.
+//
+// Scoped to current rows on purpose. An already-ended row is history; a re-file
+// neither revives it nor ends it twice, and including it would make the second
+// ending overwrite the first one's reason.
+func (r *Repo) CurrentBySource(ctx context.Context, teamID, wing, room, source string) ([]Drawer, error) {
+	var rows []drawerRow
+	err := r.db.WithContext(ctx).
+		Where("team_id = ? AND wing = ? AND room = ? AND source_file = ? AND valid_to = ''",
+			teamID, wing, room, source).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Drawer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromRow(row))
+	}
+	return out, nil
+}
+
+// IDsByContentKeys maps content keys to the id of the CURRENT row already
+// holding each, for the keys that exist.
+//
+// It is what keeps a re-file from renaming a memory. A mint path computes its
+// keys first and reuses the id of any row that already holds one, so the upsert
+// updates that row in place rather than inserting beside it — and, just as
+// importantly, so the ids the caller is TOLD about are the ids the database ends
+// up with. Minting blindly and letting the conflict clause sort it out leaves the
+// row correct and the response wrong, which is worse: an agent that anchors to a
+// returned id would pin to a row that does not exist.
+func (r *Repo) IDsByContentKeys(ctx context.Context, teamID string, keys []string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, batch := range chunkIDs(keys) {
+		var rows []drawerRow
+		err := r.db.WithContext(ctx).
+			Select("id", "content_key").
+			Where("team_id = ? AND valid_to = '' AND content_key IN ?", teamID, batch).
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			out[row.ContentKey] = row.ID
+		}
+	}
+	return out, nil
+}
+
+// mintOrReuse returns the id a drawer with this content key must carry: the one
+// the current row already has, or a fresh opaque name.
+func mintOrReuse(existing map[string]string, key string) string {
+	if key != "" {
+		if id, ok := existing[key]; ok && id != "" {
+			return id
+		}
+	}
+	return opaqueDrawerID()
+}

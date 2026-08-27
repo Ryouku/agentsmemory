@@ -98,11 +98,19 @@ func (r *Repo) Save(ctx context.Context, drawers []Drawer) error {
 	// written by a filing path.
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "team_id"}, {Name: "id"}},
+			// The conflict target must repeat the PARTIAL index's predicate: a target
+			// that names only the columns does not match a partial index, so SQLite
+			// would reject the statement rather than upsert. Both conjuncts, exactly
+			// as 00031 declares them.
+			Columns:     []clause.Column{{Name: "team_id"}, {Name: "content_key"}},
+			TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "content_key != '' AND valid_to = ''"}}},
+			// The id is NOT in this list, and that is the point: on a conflict the
+			// EXISTING row keeps its name while its content is refreshed, so every
+			// anchor, tunnel and provenance pointer at it survives a re-file.
 			DoUpdates: clause.AssignmentColumns([]string{
 				"wing", "room", "source_file", "chunk_index", "content",
 				"entities", "parent_id", "filed_at", "content_date", "agent", "topic",
-				"content_key", "embedded_at",
+				"embedded_at",
 			}),
 		}).
 		Create(&rows).Error
@@ -117,8 +125,10 @@ func (r *Repo) Save(ctx context.Context, drawers []Drawer) error {
 // metadata (entities, dates, agent/topic the source may have re-derived) yet
 // preserves an already-indexed drawer's embedded_at — so an identical re-run never
 // needlessly re-queues a valid vector, and never resets pending→embedded or back.
-// (The id is a content hash, so content/wing/room/source/chunk never differ on a
-// conflict; updating them is a harmless no-op.)
+// It conflicts on the CONTENT KEY, not the id — AbsorbDrawers calls this method
+// exclusively (import.go never calls Save) and Add falls to it whenever the
+// embedder is down, so leaving it keyed on the id would make every import re-run
+// duplicate a whole palace once ids stopped being derived from content.
 func (r *Repo) SaveUnembedded(ctx context.Context, drawers []Drawer) error {
 	if len(drawers) == 0 {
 		return nil
@@ -129,8 +139,12 @@ func (r *Repo) SaveUnembedded(ctx context.Context, drawers []Drawer) error {
 	}
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "team_id"}, {Name: "id"}},
-			// Every column except the (team_id, id) key and embedded_at.
+			// The conflict target must repeat the PARTIAL index's predicate: a target
+			// that names only the columns does not match a partial index, so SQLite
+			// would reject the statement rather than upsert. Both conjuncts, exactly
+			// as 00031 declares them.
+			Columns:     []clause.Column{{Name: "team_id"}, {Name: "content_key"}},
+			TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "content_key != '' AND valid_to = ''"}}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"wing", "room", "source_file", "chunk_index", "content",
 				"entities", "parent_id", "filed_at", "content_date", "agent", "topic",
