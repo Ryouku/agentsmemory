@@ -43,7 +43,10 @@ erase.
    - `am_kg_invalidate` without a reason is refused;
    - **superseding a fact is atomic and leaves no observable boundary.** Add a fact, supersede it,
      and assert `as_of` ONE UNIT PAST the boundary returns exactly one value, and that the day-scale
-     overlap is gone. **Not the boundary instant itself** — `inEffectAt` is inclusive on both ends,
+     overlap is gone. ⚠ **This assertion passes under inclusive AND half-open semantics alike, so it
+     cannot fail on the thing #74 will decide — say so at the assertion**, or the next reader sees
+     boundary coverage where there is none and #74 lands against a test that already looks green.
+     **Not the boundary instant itself** — `inEffectAt` is inclusive on both ends,
      so that one is #74's and asserting it here would make the test unsatisfiable;
    - **the four destructive tools are absent from the agent catalogue** — a source or registration
      check, because a behavioural test that never calls them passes either way (rung 3);

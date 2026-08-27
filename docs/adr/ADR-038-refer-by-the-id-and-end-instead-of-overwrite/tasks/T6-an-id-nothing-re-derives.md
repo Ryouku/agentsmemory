@@ -39,13 +39,32 @@ ladder, where the capability exists and its intended caller cannot discover it.
      mentioning the name must not satisfy or trip it) and fails when `DrawerID(...)` appears anywhere
      other than an assignment to a `ContentKey` field or to a variable passed as one. Confirm it is
      red by adding a `DrawerID` call used as a lookup and watching it fail.
-   - `TestNoCommentClaimsADrawerIdIsDerivedFromItsContent` — sweep Go comments and `db/migrations/*.sql`
-     for the phrases asserting content-derivation (`content hash`, `deterministic hash of`,
-     `content-hash id`, `hash of its content`) and require each hit to sit in an allowlist carrying a
-     written reason, exactly as `notOperatorFacing` does. **Five instances of this class were fixed one
-     at a time as somebody pointed at each** — `00006:18`, `DrawerID`, `SaveUnembedded:98`,
-     `palace.go:19`, `service.go:677` — a hand-kept list where this repo's culture demands a derived
-     gate. `internal/doclint` already exists; this is the same instrument aimed at one claim.
+   - `TestNoCommentClaimsADrawerIdIsDerivedFromItsContent`, in **two parts, because the first draft of
+     this gate was 3-for-5 against the very instances that motivated it** (found by review
+     2026-08-27, and verified by running its four phrases against the tree: `00006:18` reads
+     `deterministic hash(team,…)` with no *"of"*, and `DrawerID`'s comment says *"the deterministic
+     IDENTITY of a drawer"* — **zero of the four phrases match either**. Reverting either fix would
+     have left the gate green: a test that cannot fail, aimed at the mechanism meant to end that
+     shape. It was also over-inclusive the other way — the same phrases hit four CSS-cache-buster
+     comments outside `internal/palace`, so it would have shipped four allowlist entries about
+     stylesheet hashing to guard one claim about drawer ids, which is the noise that gets an
+     allowlist rubber-stamped):
+
+     **(a) Declaration-anchored, and exhaustive by construction.** There are exactly THREE
+     declarations where the claim "a drawer id is derived from its content" can be made: the
+     `Drawer.ID` field (`palace.go:19`), the `id` column in `00006_drawers.sql:18`, and `DrawerID`'s
+     own doc comment. Assert each against its declaration — `internal/doclint` already resolves a
+     comment to the declaration it sits on. Three known sites cannot be under-inclusive; a phrase
+     list over a package is a guess about wording.
+
+     **(b) A phrase sweep scoped to `internal/palace/` and `db/migrations/` only**, for the
+     incidental mentions that sit on OTHER declarations — `service.go:677` and `repo.go:98` are
+     comments about `purgeSource` and `SaveUnembedded` that happen to assert the id's nature, and
+     part (a) cannot see them. Scoping kills all four false positives. Allowlist entries carry a
+     written reason, as `notOperatorFacing` does.
+
+     Run both against the tree BEFORE the fixes land: (a) must be red on all three, (b) red on the
+     other two. A gate whose motivating instances it cannot see is worse than no gate.
    - `TestDoctorCorpusIsReachable` — run `doctor --corpus` ALONE and assert it does not exit with
      "nothing to check", then run it WITH `--index` and assert both reports appear. **`TestEveryFlagIsRead`
      passes either way**: `--corpus` is read, in a block nothing can reach. Only a dispatch test sees this.

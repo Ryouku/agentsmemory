@@ -1337,9 +1337,11 @@ as the deferral so the pointer has a receiving end.
   but leaves the operator path destroying an **authored** artifact with no trace, while that record's
   whole argument is that authored things are ended rather than deleted. Closets, hallways and anchors
   are derived or re-derivable and are correctly delete-only; tunnels are the one authored non-drawer
-  artifact left delete-only. 18 exist. **Trigger: the first time a deleted tunnel has to be
-  reconstructed from memory, or when ADR-038's migration is open anyway and a second additive window
-  is cheap.**
+  artifact left delete-only. 18 exist. **BLOCKED, not merely deferred:** a tunnel's PK is `canonicalTunnelID(endpoints)` and
+  `UpsertExplicitTunnel` conflicts on it, so an ENDED tunnel would swallow every attempt to re-create
+  the same link — the id is minted identically and the upsert updates the corpse. Tunnels need an
+  opaque id before they can have a validity window. **Trigger: when someone takes on opaque ids for
+  the graph tables, not before.**
 - **The interval is CLOSED where a validity window wants half-open.** Extends issue #74 from the other
   direction, found by review 2026-08-27 and reproduced: `inEffectAt` (`kg.go:955`) excludes only on
   `>` and `<`, never `>=`/`<=`, so with `old.valid_to == new.valid_from == B` both rows are in effect
@@ -1348,3 +1350,19 @@ as the deferral so the pointer has a receiving end.
   the mechanism. The one-character fix (`<` → `<=`) is the half-open semantics and re-reads every
   ended fact by one boundary unit, including the 15 already ended. **Same decision as #74's — what a
   `valid_to` means — so one record answers both.**
+- **The other half of the "a write reports success and changed nothing" sweep.** #73 fixed the shape
+  where a count EXISTS and is discarded. The other shape is a write that returns no count at all, so
+  the caller cannot check. **Find them with the predicate, not with a list** — a list is a snapshot
+  and rots exactly as the doc-comment list did:
+
+      grep -nE '^func \(r \*Repo\) (Save|Update|Delete|Invalidate|Relabel|Drop|Mark|Upsert|Add|Replace)[A-Za-z]*\(' internal/palace/*.go
+
+  On 2026-08-27 that returned 14 of 29 package-wide returning a bare `error`. Not all need a count —
+  an insert of a known set does not — but every predicate-scoped UPDATE or DELETE does. **Trigger:
+  the next time a write is reported as having done something it did not.**
+- **`merge_wing` on the agent surface.** ADR-038 leaves it, because it is a MOVE — `MergeWing`
+  (`admin.go:47`) relabels via `RelabelDrawerWingReturningIDs` and `RelabelClosetWingReturningIDs`
+  and deletes nothing. **The trigger is a condition, not a date:** ADR-038 T2 makes a merge into a
+  target holding identical content REFUSE rather than silently duplicate. If that refusal is ever
+  softened to "end the loser and keep going", `merge_wing` becomes an ending operation performed by
+  an agent and the surface question reopens.
