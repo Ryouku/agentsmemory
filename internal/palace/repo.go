@@ -31,6 +31,7 @@ type drawerRow struct {
 	// is what makes the migration backfill-free: every pre-existing row is
 	// already correct. '' rather than NULL matches kg_triples, so one concept
 	// does not need two sentinels across two tables.
+	ContentKey   string `gorm:"column:content_key"`
 	ValidTo      string `gorm:"column:valid_to"`
 	SupersededBy string `gorm:"column:superseded_by"`
 	EndedReason  string `gorm:"column:ended_reason"`
@@ -89,8 +90,21 @@ func (r *Repo) Save(ctx context.Context, drawers []Drawer) error {
 		row.EmbeddedAt = &now
 		rows = append(rows, row)
 	}
+	// NOT UpdateAll. Re-filing the exact text of an ENDED drawer mints the same id
+	// (the recipe is unchanged at this task), so UpdateAll would reset valid_to,
+	// ended_at and ended_reason to their zero values and silently RESURRECT a
+	// retracted memory — undoing a decision somebody took, with no trace. The
+	// validity columns are therefore owned by EndDrawer alone and are never
+	// written by a filing path.
 	return r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{UpdateAll: true}).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "team_id"}, {Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"wing", "room", "source_file", "chunk_index", "content",
+				"entities", "parent_id", "filed_at", "content_date", "agent", "topic",
+				"content_key", "embedded_at",
+			}),
+		}).
 		Create(&rows).Error
 }
 
@@ -411,6 +425,26 @@ func (r *Repo) Update(ctx context.Context, teamID, id string, patch DrawerPatch)
 	if patch.Room != nil {
 		updates["room"] = *patch.Room
 	}
+	// The content key hashes wing, room and content, so any patch touching one
+	// must carry it. Computed from the POST-patch state — the row as it will be —
+	// rather than from the patch alone, so a partial patch cannot produce a key
+	// describing neither the old row nor the new one.
+	if patch.Content != nil || patch.Wing != nil || patch.Room != nil {
+		cur, err := r.Get(ctx, teamID, id)
+		if err != nil {
+			return Drawer{}, err
+		}
+		if patch.Content != nil {
+			cur.Content = *patch.Content
+		}
+		if patch.Wing != nil {
+			cur.Wing = *patch.Wing
+		}
+		if patch.Room != nil {
+			cur.Room = *patch.Room
+		}
+		updates["content_key"] = contentKeyFor(cur)
+	}
 	if len(updates) > 0 {
 		res := r.db.WithContext(ctx).
 			Model(&drawerRow{}).
@@ -622,6 +656,7 @@ func toRow(d Drawer) drawerRow {
 		ContentDate:  d.ContentDate,
 		Agent:        d.Agent,
 		Topic:        d.Topic,
+		ContentKey:   d.ContentKey,
 		ValidTo:      d.ValidTo,
 		SupersededBy: d.SupersededBy,
 		EndedReason:  d.EndedReason,
@@ -646,6 +681,7 @@ func fromRow(row drawerRow) Drawer {
 		ParentID:     row.ParentID,
 		Agent:        row.Agent,
 		Topic:        row.Topic,
+		ContentKey:   row.ContentKey,
 		ValidTo:      row.ValidTo,
 		SupersededBy: row.SupersededBy,
 		EndedReason:  row.EndedReason,

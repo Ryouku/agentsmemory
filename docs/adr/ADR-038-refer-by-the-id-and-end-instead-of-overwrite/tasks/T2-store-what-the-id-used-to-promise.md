@@ -95,7 +95,41 @@ nothing and a package with no tests both exit 0.
 | 3 — the caller can discover it | n/a: no declared interface — the column is internal, no tool argument or response field changes in this task |
 | 4 — it is used | **T3** is the consumer. Until T3 lands the column is written and read by nothing, which is deliberate and is why T3 is not optional. |
 
+## What execution found that the task did not predict
+
+**1. `Save`'s `UpdateAll: true` would have resurrected ended memories.** Re-filing the exact text of
+a drawer ended by T1 mints the same id, and `UpdateAll` writes every column — resetting `valid_to`,
+`ended_at` and `ended_reason` to their zero values and silently undoing a retraction somebody
+decided. The conflict clause is now an explicit column list; the validity columns are owned by
+`EndDrawer` alone and no filing path writes them. This is a T1×T2 interaction neither task named.
+
+**2. The diary exemption had two mechanisms and only one was live.** The mint hardcoded
+`ContentKey: ""` *and* `contentKeyFor` special-cased `DiaryRoom`, so a mutant deleting the exemption
+**survived** — measured, the fence passed with the mechanism broken. Collapsed to one: the mint calls
+`contentKeyFor`. Recorded because "two ways to do it" reads as belt-and-braces and is actually a dead
+branch nothing can test.
+
+**3. `BackfillContentKeys` could loop forever.** Its exit condition is "no rows left to key", so a row
+that can never be keyed is re-selected every pass. Surfaced by the diary mutant, which turned the
+backfill from failing into **hanging** — and a hang and a pass are indistinguishable from a
+timed-out gate. It now counts progress per batch and errors, naming the first stuck row, rather than
+spinning.
+
+**4. `TestAnEndedRowDoesNotBlockRefilingItsOwnText` is scoped to a SOURCE-LESS drawer.** With a named
+source, `purgeSource` still hard-deletes the whole source before re-inserting, so the test would have
+been measuring T3's job. Here the question is only whether the unique index blocks the re-file and
+whether `Save` resurrects the ended row.
+
 ## Mutation Log
+
+- 2026-08-27 · 223600a* · mutant killed · exit 1 · `db/migrations/00031_drawers_content_key.sql` · drop the content_key != '' conjunct — every keyless row shares one index entry and an upsert overwrites an unrelated memory · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6
+- 2026-08-27 · 223600a* · mutant killed · exit 1 · `db/migrations/00031_drawers_content_key.sql` · drop the valid_to = '' conjunct — a superseded row keeps competing, so text once superseded can never be filed again · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6
+- 2026-08-27 · 223600a* · mutant survived · exit 0 · `internal/palace/contentkey.go` · diary rows stop being exempt, so a journal starts deduping · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-27 · 223600a* · mutant killed · exit 1 · `internal/palace/repo.go` · Save writes the validity columns again, so re-filing an ended row resurrects it · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6
+- 2026-08-27 · 223600a* · mutant killed · exit 1 · `internal/palace/admin.go` · a wing move stops carrying the content key, leaving it describing a wing the row left · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6
 
 ## Invariants
 
@@ -139,3 +173,4 @@ of aborting. That is why step 3 says abort — a skip makes the check unfalsifia
 - The validity window itself — that is T1, and this task only consumes its column.
 
 ## Verification Log
+- 2026-08-27 · 223600a* · exit 0 · `go test ./internal/palace/ -run 'TestAddStampsTheContentKey|TestUpdateRecomputesTheContentKey|TestMergeWingRecomputesTheContentKey|TestTwoIdenticalDiaryEntriesBothPersistWithNoContentKey|TestTheContentKeyIndexIsPartialOnBothConjuncts|TestAnEndedRowDoesNotBlockRefilingItsOwnText|TestBackfillAbortsOnCollision' -count=1 2>&1 | tee /tmp/acc38a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38a.out && go test ./internal/palace/ ./internal/store/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38b.out` · acceptance-sha256:bc0c2f2e8cc7e69166a4dc2536b794491a747368e1a138c19f894e4f398cf7e6

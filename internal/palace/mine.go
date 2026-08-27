@@ -153,6 +153,7 @@ func (s *Service) Mine(ctx context.Context, teamID string, in MineInput) (result
 		}
 		drawers[i] = Drawer{
 			ID:          DrawerID(teamID, wing, room, source, c.Index, c.Content),
+			ContentKey:  DrawerID(teamID, wing, room, source, c.Index, c.Content),
 			TeamID:      teamID,
 			Wing:        wing,
 			Room:        room,

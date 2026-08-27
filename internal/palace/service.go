@@ -658,6 +658,7 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 		// memory's entities and manufacturing connections the text never made.
 		drawers[i] = Drawer{
 			ID:          DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
+			ContentKey:  DrawerID(teamID, wing, room, in.SourceFile, c.Index, c.Content),
 			TeamID:      teamID,
 			Wing:        wing,
 			Room:        room,
@@ -674,7 +675,7 @@ func (s *Service) Add(ctx context.Context, teamID string, in AddInput) (result A
 	// Re-filing a *named* source replaces it wholesale: purge the source's prior
 	// drawers (rows + vectors) before writing the new set, so shrinking the
 	// content cannot leave orphaned higher-index chunks behind. A source-less add
-	// is a standalone memory (deduped by its content-hash id), so it is not purged.
+	// is a standalone memory (deduped by its CONTENT KEY, not its id), so it is not purged.
 	if in.SourceFile != "" {
 		if err := s.purgeSource(ctx, teamID, wing, room, in.SourceFile); err != nil {
 			return AddResult{}, err
@@ -2051,7 +2052,13 @@ func (s *Service) WriteDiary(ctx context.Context, teamID string, in DiaryWriteIn
 			parentID = drawers[0].ID
 		}
 		drawers[i] = Drawer{
-			ID:         diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
+			ID: diaryEntryID(teamID, wing, agent, topic, c.Index, c.Content, seed),
+			// Through contentKeyFor, NOT a hardcoded "". Both produce an empty key
+			// for a diary row, and that is exactly the problem with the literal: it
+			// makes contentKeyFor's diary branch dead on this path, so a mutant that
+			// deletes the branch survives — measured 2026-08-27, the fence passed
+			// with the exemption removed. One rule, one place that states it.
+			ContentKey: contentKeyFor(Drawer{TeamID: teamID, Wing: wing, Room: DiaryRoom, ChunkIndex: c.Index, Content: c.Content}),
 			TeamID:     teamID,
 			Wing:       wing,
 			Room:       DiaryRoom,

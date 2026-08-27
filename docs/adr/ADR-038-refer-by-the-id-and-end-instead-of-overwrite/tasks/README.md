@@ -37,7 +37,7 @@ Two links in the chain are not merely conventional and are worth stating:
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
 | T1 | Give a drawer a validity window | done | — | `go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent\|...' -count=1 ...` |
-| T2 | Store what the id used to promise, on every path that mints or moves a drawer | pending | — | `go test ./internal/palace/ -run 'TestAddStampsTheContentKey\|...' -count=1 ...` |
+| T2 | Store what the id used to promise, on every path that mints or moves a drawer | done | — | `go test ./internal/palace/ -run 'TestAddStampsTheContentKey\|...' -count=1 ...` |
 | T3 | Dedupe on the content key, mint an opaque id, and end what a re-file dropped | pending | — | `go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors\|...' -count=1 ...` |
 | T4 | Retraction carries a reason, and erasure leaves the agent surface | pending | — | `go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt\|...' -count=1 ...` |
 | T5 | Recall returns what is current — and carries the reason forward | pending | — | `go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -run 'TestAnEndedRecordIsReturnedByNoDefaultRoute\|...' -count=1 ...` |

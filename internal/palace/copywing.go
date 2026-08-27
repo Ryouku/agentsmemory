@@ -128,6 +128,7 @@ func (s *Service) copyDrawerBatch(ctx context.Context, reader vectorReader, from
 		}
 		dstDrawers = append(dstDrawers, Drawer{
 			ID:          DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content),
+			ContentKey:  DrawerID(toTeam, d.Wing, d.Room, d.SourceFile, d.ChunkIndex, d.Content),
 			TeamID:      toTeam,
 			Wing:        d.Wing,
 			Room:        d.Room,

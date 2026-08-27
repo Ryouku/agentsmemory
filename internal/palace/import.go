@@ -80,6 +80,7 @@ func (s *Service) AbsorbDrawers(ctx context.Context, teamID string, in []ImportD
 		}
 		drawers = append(drawers, Drawer{
 			ID:          DrawerID(teamID, wing, room, r.SourceFile, r.ChunkIndex, r.Content),
+			ContentKey:  DrawerID(teamID, wing, room, r.SourceFile, r.ChunkIndex, r.Content),
 			TeamID:      teamID,
 			Wing:        wing,
 			Room:        room,

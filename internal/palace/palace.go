@@ -16,8 +16,16 @@ import "strings"
 // metadata. The cardinal rule from the Python tool carries over — a drawer is
 // never a summary; the exact source text is preserved so recall is lossless.
 type Drawer struct {
-	// ID is a deterministic hash of (team, wing, room, source, chunkIndex) so
-	// re-mining the same source is idempotent rather than duplicative.
+	// ID is the drawer's OPAQUE name. It is minted once and never recomputed,
+	// never compared to a hash, and never used to infer anything about the row's
+	// content — it exists so that anchors, tunnels, kg_triples.source_drawer_id,
+	// parent_id, search_events and the vector store have something stable to point
+	// at (ADR-038).
+	//
+	// It previously read "a deterministic hash of (team, wing, room, source,
+	// chunkIndex)", which was wrong twice over: the recipe also hashed CONTENT,
+	// and three shipped paths mutate those fields in place while keeping the id.
+	// What that sentence described is now ContentKey.
 	ID string
 
 	// TeamID is the owning tenant; it selects the Qdrant collection.
@@ -42,6 +50,15 @@ type Drawer struct {
 	// chunk, so a multi-chunk write can be recognised as a single logical memory.
 	// Empty for single-chunk drawers.
 	ParentID string
+
+	// ContentKey is the hash dedup matches on: DrawerID over this row's own
+	// fields (ADR-038, migration 00031). It is what ID used to be, moved to a
+	// column of its own so the id can stay put while the content changes.
+	//
+	// EMPTY for diary rows, because a journal is append-only and two identical
+	// reflections are two entries — the unique index's `content_key != ''`
+	// conjunct is what keeps them out of dedup.
+	ContentKey string
 
 	// ValidTo, SupersededBy, EndedReason and EndedAt are the validity window
 	// (ADR-038, migration 00030). A drawer is CURRENT while ValidTo is empty,
