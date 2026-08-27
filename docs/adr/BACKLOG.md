@@ -1304,3 +1304,12 @@ as the deferral so the pointer has a receiving end.
   wrong is that nothing recorded which key described it. **Trigger: the first time T3's drift query
   reports a row whose content key ALSO disagrees, which would mean a write path is losing the key
   rather than history explaining it.** See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id.md`.
+- **Should re-filing a named source discard an in-place edit to it?** `purgeSource` deletes every
+  drawer under a `(wing, room, source_file)` triple before inserting the new set, so an
+  `am_update_drawer` edit is destroyed by the next `am_add_drawer` for that source. Measured
+  2026-08-27: 27 drifted rows across 19 source triples are in that state; the RATE cannot be
+  measured, because a re-file leaves no trace of its predecessor. ADR-038 deliberately preserves
+  this behaviour and fixes only the collateral damage — chunks the re-file did not change keep their
+  ids and their anchors. Two defensible answers: a re-file means "replace the source" and the edit
+  should go, or an edit is a correction and re-filing stale text over it is loss. **Trigger: the
+  first time someone reports losing an edit this way; until then it is a known trade, not a bug.**

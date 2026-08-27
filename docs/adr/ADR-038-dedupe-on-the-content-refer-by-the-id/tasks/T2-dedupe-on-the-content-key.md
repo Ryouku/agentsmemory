@@ -4,14 +4,19 @@
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** `Repo.Save` upserting on `(team_id, content_key)`; new drawers minted with an opaque id
+**Produces:** `Repo.Save` upserting on `(team_id, content_key)`; new drawers minted with an opaque id; `purgeSource` as a set difference on the content key
 **Consumes:** `drawers.content_key` + `Drawer.ContentKey` (T1)
 **Data dependency:** hermetic
 
 ## Goal
 
-Re-filing a memory that has since been edited in place stops reverting the edit, and re-filing the
-edited text stops creating a duplicate row.
+Re-filing a memory that has since been edited in place stops reverting the edit, re-filing the
+edited text stops creating a duplicate row, and re-filing a named source stops re-keying and
+un-anchoring the chunks it did not change.
+
+**The opaque mint and the `purgeSource` change are ONE commit.** Shipping the mint alone makes every
+re-file of a named source re-key every drawer under it — a regression on the property this ADR
+exists to protect. Step 1's first test is what fails if they are separated.
 
 ## Affected Files
 
@@ -23,12 +28,20 @@ edited text stops creating a duplicate row.
 | `internal/palace/import.go` | edit | `AbsorbDrawers` (`:82`) likewise — `import.go:21` documents re-run safety as resting on the recomputed id; that sentence moves to the key |
 | `internal/palace/mine.go` | edit | `Mine` (`:155`) likewise |
 | `internal/palace/copywing.go` | edit | `CopyWing` (`:130`) likewise |
-| `internal/palace/dedup_test.go` | add | the two failing tests below |
+| `internal/palace/service.go` | edit | `purgeSource` (`:844`) becomes a set difference: upsert the new set by content key, then delete only rows under the triple whose key is not in it. Today it deletes rows, vectors, derived edges AND anchors (`repo.go:225`) before `Add` re-inserts |
+| `internal/palace/repo.go` | edit | a by-key variant of `IDsBySource`/`DeleteBySource` so the purge can name what to keep — the line that SELECTS survival for an unchanged chunk |
+| `internal/palace/dedup_test.go` | add | the failing tests below |
 
 ## Ordered Steps
 
-1. Write the two failing tests first. Both are RED against `main` today, and both were the measured
-   failure modes in the ADR's Context:
+1. Write the failing tests first. All are RED against `main` today, and each was a measured failure
+   mode in the ADR's Context:
+   - **the re-key regression, and it must be written BEFORE the mint changes.** File a named source
+     of three chunks, attach an anchor to chunk 0, re-file the source with **identical** content,
+     and assert every id is unchanged and the anchor still exists. It is red today for the anchor
+     (`DeleteBySource` strips it — 39 of the palace's 41 anchored drawers are exposed) and it goes
+     red for the ids the moment step 3 lands without step 2b. This test is the reason the mint and
+     the purge are one commit.
    - **the silent revert.** File a source-less drawer, `Update` its content, then `Add` the ORIGINAL
      text again. Assert the edited row still holds the edit, and that a SECOND row now exists
      holding the original. Today the re-add mints the id the row still carries and
@@ -37,7 +50,10 @@ edited text stops creating a duplicate row.
      Assert exactly ONE row exists. Today the hash of the new content differs from the stored id, so
      a second row with identical content is inserted.
 2. Move `Save`'s conflict target to `(team_id, content_key)`.
-3. Mint opaque ids for new rows at all four mint sites.
+2b. Convert `purgeSource` to a set difference on the content key — upsert the new set, delete only
+   the rows under the triple whose key is absent from it.
+3. Mint opaque ids for new rows at all four mint sites. **Not before 2b**: with the delete-all purge
+   still in place this step alone re-keys every drawer under every named source on every re-file.
 4. Confirm import idempotency still holds — re-run `AbsorbDrawers` over the same batch twice and
    assert the row count does not grow. This is `import.go:21`'s contract and it now rests on the key.
 5. Run the fence.
@@ -45,13 +61,14 @@ edited text stops creating a duplicate row.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ -run 'TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out
+go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors|TestRefilingTheOriginalTextDoesNotRevertAnEdit|TestRefilingTheEditedTextDoesNotDuplicate|TestAbsorbDrawersStaysIdempotentOnTheContentKey' -count=1 2>&1 | tee /tmp/acc38c.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38c.out && go test ./internal/palace/ ./internal/mcpserver/ ./internal/mcptest/ -count=1 2>&1 | tee /tmp/acc38d.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38d.out
 ```
 
 ## Tests
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
+| `TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors` | `internal/palace/dedup_test.go` | a re-file of identical content changes no id and strips no anchor — the regression guard, and a repair of the pre-existing anchor loss | — |
 | `TestRefilingTheOriginalTextDoesNotRevertAnEdit` | `internal/palace/dedup_test.go` | the silent-revert mechanism is gone | — |
 | `TestRefilingTheEditedTextDoesNotDuplicate` | `internal/palace/dedup_test.go` | the duplicate-row mechanism is gone | — |
 | `TestAbsorbDrawersStaysIdempotentOnTheContentKey` | `internal/palace/dedup_test.go` | the migration path's re-run safety survives the move | — |
@@ -67,7 +84,7 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 | Rung | How this task shows it |
 |------|------------------------|
 | 1 — exists | the three unit tests |
-| 2 — something selects it | `Save`'s conflict target. Mutation: restore the target to `id` and both new tests go red |
+| 2 — something selects it | `Save`'s conflict target, and the set-difference branch in `purgeSource`. Mutations: restore the conflict target to `id`, and separately restore the delete-all purge — each kills a different test, which is what proves the two are not one mechanism wearing two names |
 | 3 — the caller can discover it | n/a: no declared interface — `am_add_drawer`'s schema and response are unchanged; the behaviour change is that the tool stops being wrong |
 | 4 — it is used | every `am_add_drawer` call exercises it. Observable as the absence of duplicate-content rows: the query in T3 reports it. |
 
@@ -75,8 +92,9 @@ a drawer filed while the embedder is down (`SaveUnembedded`, a different `OnConf
 
 ## Invariants
 
-- No existing drawer id changes. New rows get opaque ids; old rows keep theirs.
-- `purgeSource`'s named-source wholesale replacement is untouched.
+- No existing drawer id changes. New rows get opaque ids; old rows keep theirs — **including across a re-file of their source**, which is the invariant step 2b exists for.
+- A chunk whose content did not change keeps its anchors through a re-file.
+- A named source still ends up holding exactly the chunks that were filed for it: nothing that left the source survives, and nothing that stayed is re-keyed.
 - A journal still never dedupes: diary rows carry an empty key and sit outside the partial index.
 
 ## Risks
@@ -93,6 +111,7 @@ rollback rests on has broken.
 ## Out of Scope
 
 - The gate that keeps future paths honest — T3.
+- Whether a re-file should discard an in-place edit to that source at all — this task preserves today's answer (it does) and only stops the collateral damage to chunks the re-file did not touch (deferred: `docs/adr/BACKLOG.md`)
 - Re-chunking on update (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log

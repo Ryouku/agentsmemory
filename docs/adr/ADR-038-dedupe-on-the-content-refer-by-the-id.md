@@ -42,6 +42,19 @@ Measured on the same corpus: **0 of the 27 drifted rows have `source_file = ''`*
 
 **How likely that re-file is cannot be measured from this corpus, and an earlier draft of this record implied otherwise.** The obvious test — does a source triple carry more than one distinct `filed_at` — returns 0 for all 27, and that number is worthless: `purgeSource` deletes its predecessor, so a re-filed source leaves no trace of having been re-filed. The check cannot produce a non-zero answer for a named source, which makes it a gate that cannot fail. What is certain is the mechanism and the 27 rows exposed to it; the rate is unknown.
 
+**A second live loss vector, found while answering "are we losing memory?" on 2026-08-27.**
+`purgeSource` calls `DeleteBySource`, and `DeleteBySource` deletes the **anchors** of every drawer
+under the triple first (`repo.go:225`, *"Anchors first, while the drawers that name them are still
+queryable"*). Because ids are deterministic today, an unchanged chunk comes straight back with the
+**same id and no anchors**. The drawer survives; its pin to the code it explains does not, and
+nothing reports it.
+
+Measured 2026-08-27 against the live palace: **65 anchors on 41 drawers, and 39 of those drawers sit
+under a named source** across 39 source triples. So 95% of every anchor in the palace is destroyed by
+the next re-file of its source. As with the drift rate above, **how often that happens cannot be
+measured** — a re-file leaves no trace of its predecessor — so this is an exposure, not an incident
+count.
+
 **Three records have already deferred to the primitive this ADR adds.** This is the part that makes it a decision rather than a cleanup:
 
 - **ADR-015** — *"Making `DrawerID` independent of the wing so a merge does not invalidate anything derived from the id"* (Out of Scope, deferred; receipted at `docs/adr/BACKLOG.md:665`).
@@ -75,6 +88,19 @@ Concretely:
 2. Every mint path (`Add`, `AbsorbDrawers`, `Mine`, `CopyWing`) writes the content key beside the id. Every in-place mutation path (`Update`, `MergeWing`) **recomputes** it in the same statement that changes a hashed field.
 3. Dedup and idempotency move to the content key: `Add` and the import path upsert on `(team_id, content_key)` and mint a fresh opaque id when there is no match. Import's contract at `import.go:21` — *"the only field recomputed is the id … so re-running an import upserts rather than duplicates"* — is preserved, now by the key rather than by the id.
 4. `id` is never recomputed, never compared to a hash, and never used to infer anything about a row's content. A source check (T3) fails when `DrawerID` is called anywhere other than a content-key computation.
+
+5. **Re-filing a named source becomes a set difference on the content key, not a delete-then-insert.**
+   `purgeSource` currently deletes every row under a `(wing, room, source_file)` triple — with its
+   vectors, derived edges and anchors — and `Add` then re-inserts. Under this decision it upserts the
+   new set by content key and deletes only the rows under that triple whose key is **not** in it.
+
+   **This is not a bonus; without it this ADR is a regression.** Ids are deterministic today, so a
+   re-file of unchanged content re-inserts the same ids and every reference survives. Mint an opaque
+   id and that stops being true: the purge deletes the row, the upsert finds no key to match, and a
+   fresh id is minted — so **every re-file of a named source would re-key every drawer under it**,
+   breaking exactly the resolvability this decision exists to protect. The set difference removes the
+   regression, and it repairs the pre-existing anchor loss above in the same change, because a row
+   that is never deleted never loses its anchors.
 
 **Existing ids do not change.** No row is re-keyed, so no `code_anchor`, tunnel, `kg_triples.source_drawer_id`, `parent_id`, `search_events` row or Qdrant point is re-pointed, and nothing needs a transaction spanning SQLite and Qdrant. The migration is additive and the rollback is a dropped column. That is the whole reason for choosing this shape over minting new opaque ids, and it is what makes the decision cheap enough to be reversible.
 
@@ -116,8 +142,8 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 
 ## Consequences
 
-- **Positive:** The two `am_add_drawer` failure modes above stop being possible. The drift becomes checkable — 27 rows were found by an ad-hoc script, and after T3 a gate finds them. Four deferred records (ADR-010, ADR-015, ADR-019, ADR-027) lose the blocker they each named. A wing merge stops invalidating anything derived from an id, which is ADR-015's deferral, closed.
-- **Negative:** Two keys where there was one, and every mint path must write both — the classic shape of a field that gets forgotten on the fifth path. T3's gate exists for exactly that and must fail when a path is added without a key. The migration is a backfill over the whole `drawers` table; on the live corpus that is 1,705 rows and trivial, but it is still persistent state and needs the rollback below.
+- **Positive:** Re-filing a named source stops destroying the anchors of chunks it did not change — 39 of the palace's 41 anchored drawers are exposed to that today. The two `am_add_drawer` failure modes above stop being possible. The drift becomes checkable — 27 rows were found by an ad-hoc script, and after T3 a gate finds them. Four deferred records (ADR-010, ADR-015, ADR-019, ADR-027) lose the blocker they each named. A wing merge stops invalidating anything derived from an id, which is ADR-015's deferral, closed.
+- **Negative:** T2 is larger than it looks: it cannot ship the opaque mint without also converting `purgeSource`, because the two together are what keep a re-file from re-keying its source. Splitting them across commits leaves the tree in the regressed state. Two keys where there was one, and every mint path must write both — the classic shape of a field that gets forgotten on the fifth path. T3's gate exists for exactly that and must fail when a path is added without a key. The migration is a backfill over the whole `drawers` table; on the live corpus that is 1,705 rows and trivial, but it is still persistent state and needs the rollback below.
 - **Neutral:** New rows get opaque ids while existing rows keep hash-shaped ones. That is heterogeneous on purpose: an id that cannot be told apart from a hash invites the next reader to re-derive it.
 
 ## Out of Scope
@@ -128,6 +154,7 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 - Giving diary entries a content key (permanent: a journal must not dedupe — `chunk.go:157` already states why, and this ADR names it rather than changes it)
 - Validity windows, supersession or retraction on drawers (permanent: ADR-010 owns that, and it is a different question — *when* a memory is current, not *what its name means*)
 - Repairing the 27 drifted rows (deferred: `docs/adr/BACKLOG.md`)
+- Whether re-filing a named source should discard an in-place edit to it at all (deferred: `docs/adr/BACKLOG.md`)
 
 ## Risks
 
@@ -138,6 +165,7 @@ See `docs/adr/ADR-038-dedupe-on-the-content-refer-by-the-id/tasks/README.md`. Th
 | Someone re-derives an id for a lookup after this lands, reintroducing the coupling | Med | Med | T3's source check fails when `DrawerID` is called outside a content-key computation. Prove it by adding such a call and watching it go red. |
 | The migration number is renumbered at merge and re-runs on a database that applied it | Low | High | Allocate the number at merge, never at authoring — the crash loop and its repair are already documented in `README.md` (Development). |
 | Diary rows are accidentally pulled into the unique index by a later change | Low | Med | T1's test asserts two diary entries with identical text, agent and topic coexist. |
+| **An opaque mint ships before `purgeSource` becomes a set difference** | Med | **High** | Every re-file of a named source would re-key every drawer under it, breaking every anchor, tunnel and KG pointer to them — the exact property this ADR protects, broken by this ADR. They are one task and one commit for that reason, and T2's first test is the one that fails if they are separated. |
 | **The unique index ships without its `WHERE content_key != ''` predicate** | Low | **Data loss** | The only failure in this ADR that destroys rather than duplicates: every keyless row would share one index entry and an upsert would overwrite an unrelated memory. T1 tests the predicate directly, and the mutant is deleting it. |
 | `SaveUnembedded` keeps its own `(team_id, id)` conflict target (`repo.go:109`) after `Save` moves | Med | Med | The deferred-embedding path would keep id-based dedup, so the silent-revert mechanism survives on the one path taken when the embedder is down. Named in T2's Tests table for that reason. |
 | Backfill aborts partway, leaving rows with an empty key | Med | Low | Fails toward DUPLICATES, not loss: a keyless row sits outside the partial index and never matches, so a re-file inserts beside it rather than over it. Detected by the query in Rollback. |
