@@ -123,6 +123,31 @@ decision that drawer would have been ENDED: the row still resolves, the edge sti
 and the traversal finds *"this was retracted on D, because R"* instead of finding nothing. A deleted
 target loses the decision AND the fact that a decision was taken.
 
+**The same defect exists one table over, and it is reproduced.** Correcting a FACT has no atomic
+verb: `kg.go:567`'s frozen no-auto-supersede rule says *"to replace a fact, invalidate it first"*, so
+an agent hand-rolls invalidate + add. There is **no transaction anywhere in `kg.go`** — grepped, zero
+`Transaction(` or `Begin()`. Upstream (`mempalace`, MIT) has `kg_supersede` and its protocol says why:
+*"do NOT hand-roll invalidate + add, which leaves the old and new values overlapping at the
+boundary."* agentsmemory has zero hits for any such verb.
+
+Reproduced 2026-08-27 with the agent doing everything RIGHT — invalidating first, then adding, in the
+order the frozen rule demands:
+
+```
+KGAdd("svc","deploys to","old-host", validFrom:"2026-01-01")
+KGInvalidate("svc","deploys to","old-host", ended:"2026-08-24")
+KGAdd("svc","deploys to","new-host", validFrom:"2026-08-24")
+KGQuery(entity:"svc", as_of:"2026-08-24")  →  [old-host new-host]
+```
+
+Two contradictory answers to *"where does svc deploy on the 24th"*, on every changeover day.
+`temporalEndKey` (`kg.go:117`) stretches a **date-only** `valid_to` to `T23:59:59Z`, and `inEffectAt`
+(`kg.go:962`) excludes only below `as_of` — so the ended fact stays in effect for the whole changeover
+day while its replacement is already in effect. Filed as issue #74; **insourced here on M's call
+2026-08-27, because supersession in the graph and supersession in the drawer table are the same
+decision applied to two tables, and this record has already learned to audit the class rather than
+the instance.**
+
 **Three records have already deferred to the primitive this ADR adds.** This is the part that makes it a decision rather than a cleanup:
 
 - **ADR-015** — *"Making `DrawerID` independent of the wing so a merge does not invalidate anything derived from the id"* (Out of Scope, deferred; receipted at `docs/adr/BACKLOG.md:665`).
@@ -280,6 +305,23 @@ characters in a recall response, with the full text behind an explicit history f
    about to redo a rejected thing does not know to ask for history* — not knowing is the whole
    problem. So the reason reaches the default path while the stale text does not.
 
+**9. Correcting a FACT gets the same treatment as correcting a memory: `am_kg_supersede(subject,
+predicate, old, new, reason)`, atomic.** One call, one transaction, ending the old and adding the new
+so neither a gap nor an overlap can be observed between them, and carrying the same required `reason`
+point 7 puts on every other retraction.
+
+   **It writes an instant, never a date, and that is what removes the overlap without changing what
+   an existing row means.** `temporalEndKey` stretches a date-only `valid_to` to `T23:59:59Z`; a
+   supersede that stamps both `old.valid_to` and `new.valid_from` with the same RFC3339 **datetime**
+   is never date-only, so no stretch happens and no instant has two current values. The 15 already-
+   ended facts on this palace keep the meaning they were written with, and nothing is migrated.
+
+   **What this does NOT decide:** whether a date-only `valid_to` should mean *through* that day
+   (today's inclusive reading) or *as of* it. Both are defensible, `status:"current"` and `as_of`
+   disagree for exactly one day, nothing documents that they differ, and no test pins either. The
+   atomic verb sidesteps the question rather than answering it — deliberately, because answering it
+   silently would be worse than the bug.
+
 **Existing ids do not change.** No row is re-keyed, so no `code_anchor`, tunnel,
 `kg_triples.source_drawer_id`, `parent_id`, `search_events` row or Qdrant point is re-pointed, and
 nothing needs a transaction spanning SQLite and Qdrant. Both migrations are additive and the rollback
@@ -403,6 +445,8 @@ Inherited from ADR-010, for the lineage half:
 | `am_update_drawer` content edit | change — supersedes instead of overwriting; returns the NEW id and names the ended one | `internal/mcpserver/drawers.go` | every agent that corrects a memory |
 | `am_invalidate_drawer(id, reason)` | add | `internal/mcpserver/drawers.go` | any agent retracting a memory |
 | `am_kg_invalidate` `reason` | add — required, mirroring the drawer verb | `internal/mcpserver/kg.go` | anyone reading why a fact ended |
+| `am_kg_supersede(subject, predicate, old, new, reason)` | **add** — one atomic call replacing hand-rolled invalidate+add; stamps a datetime boundary so no instant holds both values | `internal/mcpserver/kg.go`, `internal/palace/kg.go` | every agent correcting a fact |
+| `am_delete_wing` agent registration | change — removed from the agent surface (`admin.go:198` gates it on `local` today, which is not a boundary) | `internal/mcpserver/admin.go` | agents (removed), operators (retained via CLI) |
 | recall response: `supersedes` + reason, truncated to 200 chars | add | `internal/mcpserver/drawers.go` | every recall — bounded so accumulation never grows the payload |
 | `am_search` / `am_list_drawers` | change — current records only, with an explicit history flag | `internal/mcpserver` | every recall |
 | `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` | change — leave the agent surface for the operator one | `internal/mcpserver` | agents (removed), operators (retained) |
@@ -414,7 +458,7 @@ Inherited from ADR-010, for the lineage half:
 | `drawers.valid_to`, `superseded_by`, `ended_reason`, `ended_at` (T1) | T1 | T2, T3, T4, T5, T6 | No — additive; empty `valid_to` is every existing row, which is correct |
 | `drawers.content_key` + `Drawer.ContentKey` + the two-conjunct unique index (T2) | T2 | T3, T6 | No — additive column, empty for diary rows |
 | `Repo.Save` upserting on `(team_id, content_key)`, opaque mint, set-difference `purgeSource` (T3) | T3 | T4, T6 | Yes — a re-file no longer deletes, and a new row's id is no longer derivable |
-| supersede semantics on `am_update_drawer` + `am_invalidate_drawer(id, reason)` (T4) | T4 | T5 | **Yes** — `am_update_drawer` returns a different id than the one it was given |
+| supersede semantics on `am_update_drawer`, `am_invalidate_drawer(id, reason)`, `am_kg_supersede(...)` (T4) | T4 | T5, T6 | **Yes** — `am_update_drawer` returns a different id than the one it was given, and three tools leave the agent surface |
 | current-only recall + history flag + the carried reason (T5) | T5 | T6 | Yes — search stops returning ended records |
 
 ## Implementation
@@ -446,6 +490,7 @@ briefly wrong — is the kind of state this repo keeps finding, and it is remova
 - Full event sourcing of the whole store (deferred: `docs/adr/BACKLOG.md`)
 - Retention or automatic pruning of ended records (permanent: accumulation is the value this record is built on, and a pruner would spend engineering effort undoing it. Erasure stays available to an operator for a leaked credential or a deletion request — a legal and safety path, not housekeeping)
 - Structured reasons — a taxonomy of why something ended (deferred: `docs/adr/BACKLOG.md`)
+- Deciding whether a date-only `valid_to` means *through* that day or *as of* it, and reconciling `status:"current"` with `as_of` (deferred: `docs/adr/BACKLOG.md` — issue #74. The atomic verb in point 9 sidesteps it by writing instants; answering it changes what 15 already-ended facts mean and is its own decision)
 - Applying the validity window to diary entries (deferred: `docs/adr/BACKLOG.md`)
 - Removing `delete_wing` from the OPERATOR surface (permanent: it is the erasure path this record requires to exist. **T4 removes it from the AGENT registration**, where it is reachable today whenever the server runs self-hosted — `registerDeleteWing` is gated on `local`, and "the operator is running it locally" is not a boundary, it is the case where agent and operator share a process)
 - Taking `merge_wing` off the agent surface (deferred: `docs/adr/BACKLOG.md` — **it is not erasure**, it is a move, and ADR-015 governs what a move invalidates. `registerMergeWing` is unconditional today, so an agent reaches it everywhere; that is a real hazard and it is a different decision from this one. Found by review 2026-08-27, and the parenthetical it corrects previously claimed a property no task delivered)

@@ -9,7 +9,7 @@
 **Covers:** none — no spec
 **Estimated scope:** L (cross-boundary — palace + mcpserver + tool surface)
 **Owner:** unassigned
-**Produces:** `am_invalidate_drawer(id, reason)`; supersede semantics on `am_update_drawer`; a required `reason` on `am_kg_invalidate`; erasure moved to the operator surface
+**Produces:** `am_invalidate_drawer(id, reason)`; supersede semantics on `am_update_drawer`; `am_kg_supersede(subject, predicate, old, new, reason)`; a required `reason` on `am_kg_invalidate`; erasure moved to the operator surface
 **Consumes:** `End(id, reason)` and the validity window (T1); the opaque mint (T3)
 **Data dependency:** hermetic
 
@@ -23,11 +23,12 @@ erase.
 | File | Change | Why |
 |------|--------|-----|
 | `internal/palace/service.go` | edit | `Update`'s content path becomes a supersede: mint a new row, `End` the old with the reason, link `superseded_by`. The multi-chunk refusal at `:951` is re-scoped — a supersede replaces the whole memory, which is what that refusal said to do by hand |
-| `internal/mcpserver/drawers.go` | edit | `am_invalidate_drawer` declared and registered; `am_update_drawer` gains a required `reason` and returns the NEW id naming the ended one; `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` **removed from the agent registration** — this is the line that SELECTS the boundary, and deleting it puts erasure back in an agent's hands |
+| `internal/mcpserver/drawers.go` | edit | `am_invalidate_drawer` declared and registered; `am_update_drawer` gains a required `reason` and returns the NEW id naming the ended one; `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` **and `am_delete_wing`** removed from the agent registration (`registerDeleteWing` at `admin.go:198` is gated on `local`, which is not a boundary — it is the case where agent and operator share a process) — this is the line that SELECTS the boundary, and deleting it puts erasure back in an agent's hands |
 | `internal/mcpserver/server.go` | edit | the registration list — a tool removed from the agent surface must be absent from the catalogue an agent reads, not merely refused at call time |
 | `cmd/server/` | edit | the operator erasure path for a single drawer, beside `wing delete`, so removal stays possible for a leaked secret |
 | `internal/palace/anchors.go` | edit | carry the old record's anchors onto the successor with `status = 'unchecked'`, `checked_at = ''`. `anchorID` folds in the drawer id, so the copies mint new ids for free — no dedupe problem |
-| `internal/mcpserver/kg.go` | edit | `am_kg_invalidate` gains a required `reason`; the schema has `valid_to` and no column for one today |
+| `internal/mcpserver/kg.go` | edit | `am_kg_invalidate` gains a required `reason`; **`am_kg_supersede` is declared and registered** — the line that makes the atomic verb reachable, without which `KGSupersede` is a function no agent can call |
+| `internal/palace/kg.go` | edit | `KGSupersede` — end the old and add the new in ONE transaction (there is no `Transaction(` anywhere in this file today), stamping both `old.valid_to` and `new.valid_from` with the same RFC3339 **datetime** so `temporalEndKey`'s date-only stretch never applies |
 | `db/migrations/000NN_kg_ended_reason.sql` | add | the column the KG reason lands in. NN allocated at merge |
 | `README.md` | edit | the tool table — `TestEveryCatalogToolIsNamedInTheReadme` requires a first-cell row per catalogue tool, so adding one tool and removing three is a README change in this commit |
 
@@ -40,7 +41,10 @@ erase.
    - `am_update_drawer` without a reason is refused;
    - `am_invalidate_drawer(id, reason)` ends a memory that nothing replaces;
    - `am_kg_invalidate` without a reason is refused;
-   - **the three destructive tools are absent from the agent catalogue** — a source or registration
+   - **superseding a fact is atomic and leaves no observable boundary.** Add a fact, supersede it,
+     and assert `as_of` at the boundary instant returns exactly ONE value. This is red today and is
+     reproduced in issue #74: the hand-rolled sequence returns two;
+   - **the four destructive tools are absent from the agent catalogue** — a source or registration
      check, because a behavioural test that never calls them passes either way (rung 3);
    - a corrected memory's anchors appear on the SUCCESSOR with status `unchecked`, and are gone from
      nothing — the old record keeps its own, because it keeps its text.
@@ -53,7 +57,7 @@ erase.
 ## Acceptance
 
 ```bash
-go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestASupersedeCarriesAnchorsAsUnchecked' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
+go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt|TestTheEndedTextIsStillReadableById|TestUpdateWithoutAReasonIsRefused|TestInvalidateDrawerEndsWithNoSuccessor|TestKgInvalidateRequiresAReason|TestDestructiveToolsAreAbsentFromTheAgentCatalogue|TestASupersedeCarriesAnchorsAsUnchecked|TestKgSupersedeLeavesNoBoundaryOverlap|TestKgSupersedeIsAtomic' -count=1 2>&1 | tee /tmp/acc38t4a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t4a.out && go test ./... -count=1 2>&1 | tee /tmp/acc38t4b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t4b.out
 ```
 
 The whole tree runs second because this task edits `README.md`, which `TestEveryCatalogToolIsNamedInTheReadme` reads from another package.
@@ -67,6 +71,8 @@ The whole tree runs second because this task edits `README.md`, which `TestEvery
 | `TestUpdateWithoutAReasonIsRefused` | `internal/mcpserver/drawers_test.go` | the reason is required where an agent supplies it | — |
 | `TestInvalidateDrawerEndsWithNoSuccessor` | `internal/mcpserver/drawers_test.go` | a retraction that replaces nothing is expressible | — |
 | `TestKgInvalidateRequiresAReason` | `internal/mcpserver/kg_test.go` | the half of the store that kept history stops keeping only *that* a fact ended | — |
+| `TestKgSupersedeLeavesNoBoundaryOverlap` | `internal/palace/kgsupersede_test.go` | `as_of` at the boundary instant returns ONE value — red today, reproduced in #74 | — |
+| `TestKgSupersedeIsAtomic` | `internal/palace/kgsupersede_test.go` | a failure injected between the end and the add leaves the graph unchanged, not with zero or two current values | — |
 | `TestASupersedeCarriesAnchorsAsUnchecked` | `internal/palace/supersede_test.go` | anchors reach the successor and are NOT marked verified — an unverified pin must never read as a checked one | — |
 | `TestDestructiveToolsAreAbsentFromTheAgentCatalogue` | `internal/mcpserver/catalog_test.go` | **rung 3** — a registration check, since a behavioural test that never calls a tool passes whether or not it is offered | — |
 
@@ -93,6 +99,8 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 
 - Ending goes through T1's single `End`. This task adds callers, never a second ending path.
 - The old text survives every correction, and so do its own anchors.
+- Superseding a fact never leaves an instant with zero or two current values for one subject+predicate.
+- `KGSupersede` writes datetimes, never date-only values, so it never depends on `temporalEndKey`'s stretch.
 - A carried anchor is never `verified` until a client says so. The server never mints a verification verdict.
 - No agent-reachable tool destroys a drawer, a tunnel or a hallway after this task.
 - Erasure remains possible for an operator — a store that cannot forget a leaked secret is not deployable.

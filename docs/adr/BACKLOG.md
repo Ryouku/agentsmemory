@@ -1317,3 +1317,18 @@ as the deferral so the pointer has a receiving end.
   ids and their anchors. Two defensible answers: a re-file means "replace the source" and the edit
   should go, or an edit is a correction and re-filing stale text over it is loss. **Trigger: the
   first time someone reports losing an edit this way; until then it is a known trade, not a bug.**
+- **Taking `merge_wing` off the agent surface.** ADR-038 T4 removes `delete_drawer`, `delete_tunnel`,
+  `delete_hallway` and `delete_wing` from the agent registration. `merge_wing` stays, and the reason
+  is that it is not erasure — it is a move, and ADR-015 governs what a move invalidates. But
+  `registerMergeWing` (`admin.go:196`) is UNCONDITIONAL, so an agent reaches it everywhere, and
+  ADR-015 exists because a merge can silently invalidate a search index. **Trigger: whenever an agent
+  is found to have merged a wing nobody asked it to merge.** Found by review 2026-08-27, correcting an
+  ADR-010 claim that both were "already outside the agent surface" — they were not.
+- **Does a date-only `valid_to` mean *through* that day, or *as of* it?** Issue #74. `temporalEndKey`
+  (`kg.go:117`) stretches a date-only `valid_to` to `T23:59:59Z`; `inEffectAt` (`:962`) excludes only
+  below `as_of`. So `status:"current"` drops an ended fact immediately while `as_of` keeps it for the
+  rest of that day — two filters, two answers, one day, nothing documenting the difference and no test
+  pinning either reading. ADR-038's `am_kg_supersede` sidesteps it by stamping instants rather than
+  dates, deliberately: answering it changes what the 15 already-ended facts on this palace mean.
+  **Trigger: before any second consumer of `as_of` ships, or the first time someone reports a fact
+  that "did not go away today".**
