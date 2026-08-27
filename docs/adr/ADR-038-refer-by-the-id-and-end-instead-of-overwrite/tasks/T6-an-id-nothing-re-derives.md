@@ -112,27 +112,37 @@ The whole tree runs in the second command because this task edits `AGENTS.md`, w
 | 3 — the caller can discover it | `doctor --help`'s integrity block names `--corpus`, asserted by `TestDoctorCorpusIsAdvertisedInHelp`; `AGENTS.md`'s Reachability list names the source gates, pinned by `TestAgentsMdNamesGatesThatExist`. **This is the rung the ADR was failing** — a drift query living in a sign-off line is a capability no operator can find. |
 | 4 — it is used | `doctor --corpus` run against the real corpus, numbers in the sign-off. Whether anyone runs it afterwards is not measured here, and ADR-015 already recorded that operators may not run `doctor` at all — worth saying rather than assuming. |
 
-> **Sign-off note, 2026-08-27 — the rung-4 number is NOT available from here, and saying so is the
-> point.** Step 3 asks for `doctor --corpus` run against the real corpus with the numbers recorded.
-> It was run, end to end, against the only corpus this machine can reach:
+> **Sign-off, 2026-08-27 — run against the REAL corpus, in the running container.**
+>
+> An earlier version of this note said the number was not reachable from a local checkout. That was
+> wrong and is corrected here rather than deleted: the local checkout's database is an empty demo
+> workspace, but the palace this repository actually runs is in the container's volume, and the
+> rebuilt binary reads it directly.
 >
 > ```
-> corpus "demo": 0 drawers, 0 facts
->   0 fact(s) cite a retracted or superseded drawer — expected: provenance is historical
->   no drift and no lost references
+> $ agentsmemory doctor --db /data/agentsmemory.db --corpus --project local
+> corpus "local": 2037 drawers, 214 facts
+>   1 fact(s) cite a retracted or superseded drawer — expected: provenance is historical
+>   16 facts name no row (provenance that resolves to nothing — NOT the same as citing an ended
+>      drawer, above)
+> exit 1
 > ```
 >
-> That proves the command dispatches, opens a palace, walks it and renders — and measures **nothing**,
-> because the workspace is empty. The 1,705-drawer corpus the ADR's findings came from lives on the
-> hosted server, and this command reads the SQLite file directly, so it cannot reach it from a local
-> checkout. **The 27-drifted / 16-dangling figures are therefore NOT reproduced by this task**, and a
-> sign-off claiming otherwise would be the exact shape of evidence this ADR exists to remove.
+> Three things this establishes, none of which the hermetic tests could:
 >
-> What IS proven: the hermetic tests build the drift they assert on
-> (`TestDoctorCorpusFindsRealDriftInARealDatabase` drifts a real row in a real migrated database and
-> requires the walk to find exactly it), and the three-state rule is asserted at the query, not only
-> in the report. The Reachability table's rung 4 already said the ratio is "not measured here"; this
-> extends that honesty to the corpus numbers.
+> 1. **It reproduces the ADR's own finding.** 16 dangling `source_drawer_id` — the same 16 the
+>    throwaway script found on 2026-08-27, now produced by a command with an exit code instead of by
+>    somebody remembering to write the query.
+> 2. **The drift is GONE.** 0 content keys disagree with their rows, against 27 of 1,705 before this
+>    ADR. T2's backfill and T3's key-on-every-mint are what closed it, and this is the first
+>    independent measurement of that.
+> 3. **The three-state rule earns itself on real data.** One fact cites a drawer that was superseded,
+>    and it is reported as expected rather than as a defect. A two-state check would have called it
+>    the 17th dangling reference — a phantom that would grow with every correction the team makes,
+>    which is exactly the shape that teaches operators to ignore a report.
+>
+> Repairing the 16 is out of scope and already deferred (`docs/adr/BACKLOG.md`). What changed today is
+> that they are now findable by anyone, rather than by whoever thinks to look.
 
 ## Mutation Log
 
