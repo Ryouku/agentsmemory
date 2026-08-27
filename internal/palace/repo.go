@@ -27,6 +27,14 @@ type drawerRow struct {
 	ContentDate string `gorm:"column:content_date"`
 	Agent       string `gorm:"column:agent"` // diary: whose journal (lowercased); "" for normal drawers
 	Topic       string `gorm:"column:topic"` // diary: free grouping tag; "" for normal drawers
+	// The validity window (migration 00030). Empty ValidTo means CURRENT, which
+	// is what makes the migration backfill-free: every pre-existing row is
+	// already correct. '' rather than NULL matches kg_triples, so one concept
+	// does not need two sentinels across two tables.
+	ValidTo      string `gorm:"column:valid_to"`
+	SupersededBy string `gorm:"column:superseded_by"`
+	EndedReason  string `gorm:"column:ended_reason"`
+	EndedAt      string `gorm:"column:ended_at"`
 	// EmbeddedAt is RFC3339 when the vector was built, or NULL while the row is
 	// awaiting background embedding (migration 00013). A pointer so "" and NULL
 	// are distinct: the sync filing paths stamp it now; absorb leaves it nil.
@@ -601,19 +609,23 @@ func (r *Repo) DiaryCount(ctx context.Context, teamID, agent, wing string) (int6
 // semicolons (the frozen palace's on-disk encoding).
 func toRow(d Drawer) drawerRow {
 	return drawerRow{
-		TeamID:      d.TeamID,
-		ID:          d.ID,
-		Wing:        d.Wing,
-		Room:        d.Room,
-		SourceFile:  d.SourceFile,
-		ChunkIndex:  d.ChunkIndex,
-		Content:     d.Content,
-		Entities:    strings.Join(d.Entities, ";"),
-		ParentID:    d.ParentID,
-		FiledAt:     d.FiledAt,
-		ContentDate: d.ContentDate,
-		Agent:       d.Agent,
-		Topic:       d.Topic,
+		TeamID:       d.TeamID,
+		ID:           d.ID,
+		Wing:         d.Wing,
+		Room:         d.Room,
+		SourceFile:   d.SourceFile,
+		ChunkIndex:   d.ChunkIndex,
+		Content:      d.Content,
+		Entities:     strings.Join(d.Entities, ";"),
+		ParentID:     d.ParentID,
+		FiledAt:      d.FiledAt,
+		ContentDate:  d.ContentDate,
+		Agent:        d.Agent,
+		Topic:        d.Topic,
+		ValidTo:      d.ValidTo,
+		SupersededBy: d.SupersededBy,
+		EndedReason:  d.EndedReason,
+		EndedAt:      d.EndedAt,
 	}
 }
 
@@ -621,19 +633,23 @@ func toRow(d Drawer) drawerRow {
 // entities back into a slice (empty string -> nil, not a one-element [""]).
 func fromRow(row drawerRow) Drawer {
 	return Drawer{
-		ID:          row.ID,
-		TeamID:      row.TeamID,
-		Wing:        row.Wing,
-		Room:        row.Room,
-		SourceFile:  row.SourceFile,
-		ChunkIndex:  row.ChunkIndex,
-		Content:     row.Content,
-		Entities:    splitEntities(row.Entities),
-		FiledAt:     row.FiledAt,
-		ContentDate: row.ContentDate,
-		ParentID:    row.ParentID,
-		Agent:       row.Agent,
-		Topic:       row.Topic,
+		ID:           row.ID,
+		TeamID:       row.TeamID,
+		Wing:         row.Wing,
+		Room:         row.Room,
+		SourceFile:   row.SourceFile,
+		ChunkIndex:   row.ChunkIndex,
+		Content:      row.Content,
+		Entities:     splitEntities(row.Entities),
+		FiledAt:      row.FiledAt,
+		ContentDate:  row.ContentDate,
+		ParentID:     row.ParentID,
+		Agent:        row.Agent,
+		Topic:        row.Topic,
+		ValidTo:      row.ValidTo,
+		SupersededBy: row.SupersededBy,
+		EndedReason:  row.EndedReason,
+		EndedAt:      row.EndedAt,
 	}
 }
 

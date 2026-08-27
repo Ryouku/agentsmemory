@@ -43,6 +43,20 @@ type Drawer struct {
 	// Empty for single-chunk drawers.
 	ParentID string
 
+	// ValidTo, SupersededBy, EndedReason and EndedAt are the validity window
+	// (ADR-038, migration 00030). A drawer is CURRENT while ValidTo is empty,
+	// exactly as a knowledge-graph fact already is — ending a memory never
+	// deletes it, so the record of why a decision changed survives the change.
+	//
+	// EndedReason is required at every ending and is the point of the window: an
+	// invalidation that records only THAT something ended destroys the only thing
+	// worth keeping about it. SupersededBy names the successor when a correction
+	// replaces this record, and is empty for a retraction that replaces nothing.
+	ValidTo      string
+	SupersededBy string
+	EndedReason  string
+	EndedAt      string
+
 	// Agent and Topic carry the two extra fields a diary entry needs and a normal
 	// drawer leaves empty (migration 00007). Agent is whose journal the entry
 	// belongs to — stored lowercased so diary_read is case-insensitive, matching

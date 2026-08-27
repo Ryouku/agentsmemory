@@ -22,16 +22,16 @@ no backfill.
 |------|--------|-----|
 | `db/migrations/000NN_drawers_validity_window.sql` | add | the four columns. **NN allocated at merge, never at authoring** (`README.md`, Development) |
 | `internal/palace/palace.go` | edit | `Drawer` gains `ValidTo`, `SupersededBy`, `EndedReason`, `EndedAt` with their gorm tags |
-| `internal/palace/repo.go` | edit | a `current()` scope every read predicate composes with, and `End(id, reason)` — the ONE place a row becomes historical, so a second ending path cannot diverge from the first |
+| `internal/palace/repo.go` | edit | a `current()` scope every read predicate composes with, and `EndDrawer(id, reason)` — the ONE place a row becomes historical, so a second ending path cannot diverge from the first |
 | `internal/palace/validity_test.go` | add | the failing tests |
 
 ## Ordered Steps
 
 1. Write the failing tests first — RED because the fields do not exist, so they do not compile:
    - a freshly filed drawer is current (`valid_to` empty), and `current()` returns it;
-   - `End(id, reason)` sets `valid_to`, `ended_at` and `ended_reason`, leaves `content` and the row
+   - `EndDrawer(id, reason)` sets `valid_to`, `ended_at` and `ended_reason`, leaves `content` and the row
      itself untouched, and `current()` stops returning it;
-   - `End` on an already-ended drawer is refused rather than silently re-ending it with a new reason,
+   - `EndDrawer` on an already-ended drawer is refused rather than silently re-ending it with a new reason,
      because the first ending is the one that is true;
    - an ending with an empty reason is refused — the reason is the whole point of recording an end.
 2. Add the migration: four columns, all `NOT NULL DEFAULT ''`. **Empty `valid_to` means current, so
@@ -76,17 +76,58 @@ embedding (`embedded_at IS NULL` — ending it must not resurrect it into the em
 | Rung | How this task shows it |
 |------|------------------------|
 | 1 — exists | the four unit tests |
-| 2 — something selects it | nothing yet, deliberately: T2 consumes the column in its index predicate and T4 calls `End`. **A task whose new capability nothing selects is normally this repo's characteristic defect** — it is acceptable here only because two named siblings consume it, and if either is dropped this column must be dropped with it |
+| 2 — something selects it | nothing yet, deliberately: T2 consumes the column in its index predicate and T4 calls `EndDrawer`. **A task whose new capability nothing selects is normally this repo's characteristic defect** — it is acceptable here only because two named siblings consume it, and if either is dropped this column must be dropped with it |
 | 3 — the caller can discover it | n/a: no declared interface — no tool argument or response field changes in this task |
 | 4 — it is used | T4 and T5. Until they land this is schema nothing reads, which is why they are not optional. |
 
+## Deviations from this task as written, recorded rather than made silently
+
+**1. `EndDrawer(id, reason)` shipped as `EndDrawer(id, reason)`.** A bare `End` in `internal/palace`
+poisons `TestMutatingCallListIsComplete`, whose analysis is deliberately name-keyed and
+receiver-blind (*"small enough to read in one glance, which is the point"*). Every traced function in
+the package calls `span.End()` in its telemetry defer — 15 call sites across three files — so a
+mutating `Service.End` makes the fixed point classify `Get`, `GetMemory`, `KGQuery`, `Traverse`,
+`Bootstrap`, `EntryPoint` and `FollowTunnels` as mutating, and each would then need a `mutatingCalls`
+entry to stay green. **Proven two-sided:** stashing this task's changes makes the gate exit 0; the
+same changes with the method named `End` make it exit 1. The gate is right and the name was wrong.
+
+**2. `TestExistingRowsReadAsCurrentAfterMigration` is hermetic, not env-var gated.** This task asked
+for a copy of a real database behind an env var, failing rather than skipping when unset. That is
+unworkable as written — a test that fails on an unset env var makes `go test ./...` permanently red
+for everyone — and skipping is the hole it was trying to close. The requirement underneath it is real
+and is met a better way: **migrate to the version before the window, insert rows with raw SQL exactly
+as the old schema held them, then apply the migration and read them back.** Those rows were never
+touched by post-migration code, which is what "rows nobody wrote for this test" actually means, and
+the guard runs on every invocation instead of only when someone remembers to configure it.
+
+## Class audit
+
+**The class:** a `palace` method whose name collides with a method on a FOREIGN type used in the same
+package, breaking name-keyed static analysis.
+
+**The exhaustive detector is `TestMutatingCallListIsComplete` itself** — a fixed point over the whole
+package, not a grep. It is green, so no other colliding name is currently write-reaching. A first
+attempt to sweep this by hand (`grep` for method names also called on another receiver) returned 148
+"collisions" and was worthless: it could not tell `svc.Get(...)` from a different type's `Get`, so it
+counted a method's own call sites as collisions with itself. Recorded because a sweep that found
+nothing and a sweep that was wrong look identical in a report.
+
+**Residual, and it is deliberate:** the gate only fires when the colliding name is *mutating*. A
+read-only collision is invisible to it and harmless to it — the fixed point never propagates through
+one. So the class is covered for exactly the cases that can do damage.
+
 ## Mutation Log
+
+- 2026-08-27 · 45804b6* · mutant killed · exit 1 · `internal/palace/validity.go` · currentScope stops filtering ended rows out of current() · acceptance-sha256:07f7f9a98595efafa18dcde31f4851ff6165834316fc21a6d6c174162b1a62bd
+- 2026-08-27 · 45804b6* · mutant killed · exit 1 · `internal/palace/validity.go` · EndDrawer stops requiring a reason · acceptance-sha256:07f7f9a98595efafa18dcde31f4851ff6165834316fc21a6d6c174162b1a62bd
+- 2026-08-27 · 45804b6* · mutant killed · exit 1 · `internal/palace/validity.go` · EndDrawer stops refusing an already-ended drawer, so a second ending overwrites the first reason · acceptance-sha256:07f7f9a98595efafa18dcde31f4851ff6165834316fc21a6d6c174162b1a62bd
+- 2026-08-27 · 45804b6* · mutant killed · exit 1 · `db/migrations/00030_drawers_validity_window.sql` · empty-means-current is what makes the migration backfill-free; a non-empty default silently ends every pre-existing row · acceptance-sha256:07f7f9a98595efafa18dcde31f4851ff6165834316fc21a6d6c174162b1a62bd
 
 ## Invariants
 
 - Ending never deletes a row, a vector, an anchor or an edge.
 - Empty `valid_to` means current. No migration ever backfills a value into it.
-- `End` is the single place a row becomes historical.
+- `EndDrawer` is the single place a row becomes historical.
 
 ## Risks
 
@@ -109,3 +150,4 @@ database.
 - Applying the window to diary entries (deferred: `docs/adr/BACKLOG.md`)
 
 ## Verification Log
+- 2026-08-27 · 45804b6* · exit 0 · `go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent|TestEndSetsTheWindowAndKeepsTheRow|TestEndRefusesAnAlreadyEndedDrawer|TestEndRefusesAnEmptyReason|TestExistingRowsReadAsCurrentAfterMigration' -count=1 2>&1 | tee /tmp/acc38t1a.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL|no test files" /tmp/acc38t1a.out && go test ./internal/palace/ ./cmd/server/ -count=1 2>&1 | tee /tmp/acc38t1b.out && ! grep -qE "^FAIL|^--- FAIL" /tmp/acc38t1b.out` · acceptance-sha256:07f7f9a98595efafa18dcde31f4851ff6165834316fc21a6d6c174162b1a62bd

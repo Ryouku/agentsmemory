@@ -36,7 +36,7 @@ Two links in the chain are not merely conventional and are worth stating:
 
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
-| T1 | Give a drawer a validity window | pending | — | `go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent\|...' -count=1 ...` |
+| T1 | Give a drawer a validity window | done | — | `go test ./internal/palace/ -run 'TestAFreshDrawerIsCurrent\|...' -count=1 ...` |
 | T2 | Store what the id used to promise, on every path that mints or moves a drawer | pending | — | `go test ./internal/palace/ -run 'TestAddStampsTheContentKey\|...' -count=1 ...` |
 | T3 | Dedupe on the content key, mint an opaque id, and end what a re-file dropped | pending | — | `go test ./internal/palace/ -run 'TestRefilingAnUnchangedSourceKeepsItsIdsAndAnchors\|...' -count=1 ...` |
 | T4 | Retraction carries a reason, and erasure leaves the agent surface | pending | — | `go test ./internal/palace/ ./internal/mcpserver/ -run 'TestCorrectingAMemorySupersedesIt\|...' -count=1 ...` |
@@ -49,7 +49,7 @@ Status: `pending` | `running` | `blocked` | `done` | `failed`.
 
 | Producer | Contract | Consumer(s) | Ordering note |
 |----------|----------|-------------|---------------|
-| T1 | `drawers.valid_to`, `superseded_by`, `ended_reason`, `ended_at`; `End(id, reason)` | T2, T3, T4, T5, T6 | T1 first — the index predicate, the set difference and the supersede verb all read it |
+| T1 | `drawers.valid_to`, `superseded_by`, `ended_reason`, `ended_at`; `EndDrawer(id, reason)` | T2, T3, T4, T5, T6 | T1 first — the index predicate, the set difference and the supersede verb all read it |
 | T2 | `drawers.content_key` + the two-conjunct unique index | T3, T6 | T2 before T3 — nothing to dedupe on until the column exists and is written |
 | T3 | `Repo.Save` on `(team_id, content_key)`; opaque mint; set-difference `purgeSource` | T4, T6 | T3 before T4 — a supersede mints a new row, and that is only safe once the mint is opaque |
 | T4 | supersede semantics; `am_invalidate_drawer(id, reason)` | T5 | T4 before T5 — nothing to hide from recall until something can end |

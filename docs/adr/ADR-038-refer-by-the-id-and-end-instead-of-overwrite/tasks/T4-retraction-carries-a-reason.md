@@ -10,7 +10,7 @@
 **Estimated scope:** L (cross-boundary — palace + mcpserver + tool surface)
 **Owner:** unassigned
 **Produces:** `am_invalidate_drawer(id, reason)`; supersede semantics on `am_update_drawer`; `am_kg_supersede(subject, predicate, old, new, reason)`; a required `reason` on `am_kg_invalidate`; erasure moved to the operator surface
-**Consumes:** `End(id, reason)` and the validity window (T1); the opaque mint (T3)
+**Consumes:** `EndDrawer(id, reason)` and the validity window (T1); the opaque mint (T3)
 **Data dependency:** hermetic
 
 ## Goal
@@ -22,7 +22,7 @@ erase.
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/palace/service.go` | edit | `Update`'s content path becomes a supersede: mint a new row, `End` the old with the reason, link `superseded_by`. The multi-chunk refusal at `:951` is re-scoped — a supersede replaces the whole memory, which is what that refusal said to do by hand |
+| `internal/palace/service.go` | edit | `Update`'s content path becomes a supersede: mint a new row, `EndDrawer` the old with the reason, link `superseded_by`. The multi-chunk refusal at `:951` is re-scoped — a supersede replaces the whole memory, which is what that refusal said to do by hand |
 | `internal/mcpserver/drawers.go` | edit | `am_invalidate_drawer` declared and registered; `am_update_drawer` gains a required `reason` and returns the NEW id naming the ended one; `am_delete_drawer`, `am_delete_tunnel`, `am_delete_hallway` **and `am_delete_wing`** removed from the agent registration (`registerDeleteWing` at `admin.go:198` is gated on `local`, which is not a boundary — it is the case where agent and operator share a process) — this is the line that SELECTS the boundary, and deleting it puts erasure back in an agent's hands |
 | `internal/mcpserver/server.go` | edit | the registration list — a tool removed from the agent surface must be absent from the catalogue an agent reads, not merely refused at call time |
 | `cmd/server/` | edit | the operator erasure path for a single drawer, beside `wing delete`, so removal stays possible for a leaked secret |
@@ -52,7 +52,7 @@ erase.
      check, because a behavioural test that never calls them passes either way (rung 3);
    - a corrected memory's anchors appear on the SUCCESSOR with status `unchecked`, and are gone from
      nothing — the old record keeps its own, because it keeps its text.
-2. Implement the supersede path in `Service`, ending through T1's single `End`.
+2. Implement the supersede path in `Service`, ending through T1's single `EndDrawer`.
 3. Declare `am_invalidate_drawer`; add the required reasons; remove the three tools from the agent
    registration and add the operator single-drawer erasure path.
 4. Update the README tool table.
@@ -101,7 +101,7 @@ a source-less drawer (no `purgeSource`, so the supersede is the only path — as
 
 ## Invariants
 
-- Ending goes through T1's single `End`. This task adds callers, never a second ending path.
+- Ending goes through T1's single `EndDrawer`. This task adds callers, never a second ending path.
 - The old text survives every correction, and so do its own anchors.
 - Superseding a fact never leaves an instant with ZERO current values, and never leaves more than the boundary instant with two. The boundary instant itself is issue #74's — `inEffectAt` is inclusive on both ends, so a shared endpoint is in effect for both rows.
 - `KGSupersede` writes datetimes, never date-only values, so it never depends on `temporalEndKey`'s stretch.
