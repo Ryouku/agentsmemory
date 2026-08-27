@@ -77,7 +77,7 @@ func registerKGAdd(reg *registrar, drawers *palace.Service, usageSvc *usage.Serv
 
 func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("kg_invalidate",
-		mcp.WithDescription("Mark a current fact as no longer true by ending its validity window. The fact is kept (queryable as-of an earlier time), not deleted."),
+		mcp.WithDescription("Mark a current fact as no longer true by ending its validity window. The fact is kept (queryable as-of an earlier time), not deleted. Returns ended_facts: how many CURRENT rows this ended — one triple can match several. REFUSES when nothing matched, rather than reporting success for a fact it never touched: either it was never filed, or it is already ended."),
 		mcp.WithString("subject", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's subject entity. A SHORT LABEL (max %d characters), not a sentence — the entity is a node the graph is queried by, so put explanation in a drawer and point at it with source_drawer_id.", palace.MaxKGValueLen))),
 		mcp.WithString("predicate", mcp.Required(), mcp.Description("The relationship.")),
 		mcp.WithString("object", mcp.Required(), mcp.Description(fmt.Sprintf("The fact's object entity. A SHORT LABEL (max %d characters), not a sentence — evidence, commit ids and repro steps belong in a drawer referenced by source_drawer_id, never smuggled in here.", palace.MaxKGValueLen))),
@@ -100,11 +100,15 @@ func registerKGInvalidate(reg *registrar, drawers *palace.Service, usageSvc *usa
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		fact, ended, err := drawers.KGInvalidate(ctx, t.TeamID, subject, predicate, object, req.GetString("ended", ""))
+		n, fact, ended, err := drawers.KGInvalidate(ctx, t.TeamID, subject, predicate, object, req.GetString("ended", ""))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return jsonResult(map[string]any{"success": true, "fact": fact, "ended": ended}), nil
+		// ended_facts is returned rather than implied. One (subject, predicate,
+		// object) can match several CURRENT rows — the same fact re-asserted with a
+		// different valid_from — so "it worked" and "three facts ended" are
+		// different answers, and only the second one is checkable.
+		return jsonResult(map[string]any{"success": true, "fact": fact, "ended": ended, "ended_facts": n}), nil
 	})
 }
 
