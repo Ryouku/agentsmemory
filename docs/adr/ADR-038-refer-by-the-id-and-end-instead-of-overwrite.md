@@ -1,6 +1,6 @@
 # ADR-038: Refer by the id, dedupe on the content, end instead of overwrite
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-27
 **Owner:** M
 **Spec:** None — no spec stage; grounded in a recomputation of every drawer id in the live palace against `DrawerID`'s own recipe on 2026-08-27, and in three prior records that each deferred to the primitive this ADR adds. Numbers recorded inline.
