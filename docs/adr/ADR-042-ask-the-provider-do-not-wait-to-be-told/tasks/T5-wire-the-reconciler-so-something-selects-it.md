@@ -55,7 +55,7 @@ actually reaches the plan flip — and add the gate that fails when that wiring 
 ## Acceptance
 
 ```bash
-{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \
+{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel|TestEndToEndOpenCollectiveActivation' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t5-new.out && \
 grep -q "^ok" /tmp/adr042-t5-new.out && \
 go test ./cmd/server/ -run 'TestEveryConfigFieldIsPopulatedAndRead|TestEveryFlagIsRead|TestDocumentedEnvVarsAreRead|TestReadEnvVarsAreDocumented|TestNotOperatorFacingIsJustified' -count=1 && \
@@ -74,6 +74,13 @@ because this task is exactly the kind of change they exist to catch.
 | `TestBillingConfigReadsOpenCollectiveReconcileVars` | `cmd/server/ocreconcile_test.go` | All four env vars land on `Config` | — |
 | `TestBillingConfigDefaultsTheReconcileKnobs` | `cmd/server/ocreconcile_test.go` | An unset API URL and interval default rather than yielding an empty URL and a zero period that would spin the loop | — |
 | `TestReconcileLoopStopsOnContextCancel` | `internal/billing/reconcile_test.go` | The goroutine exits on shutdown rather than leaking a poller past the process's intent to run | — |
+| `TestEndToEndOpenCollectiveActivation` | `internal/billing/e2e_opencollective_test.go` | The WHOLE chain against a fake Open Collective: upgrade click → attributed checkout URL → the contribution appearing in the API with that tag echoed back → one reconcile pass → the workspace on Pro, with the order id and period end recorded and `HasRelationship` true. Nothing is stubbed except the provider | — |
+
+**Why the end-to-end test is here and not in T4.** Each of T2–T4 proves its own unit and none of them
+proves a payment activates anything; that is exactly the gap this ADR exists to close, so the test
+that walks the whole chain belongs to the task that makes the chain reachable. It is also the only
+test that would catch the seams being individually correct and jointly wrong — a tag written in one
+format and matched in another, say, which every unit test would happily pass.
 
 Existing gates that must stay green and are load-bearing here:
 `TestEveryConfigFieldIsPopulatedAndRead`, `TestDocumentedEnvVarsAreRead`,
@@ -108,6 +115,9 @@ A gate can be green because it is looking at the wrong thing.
 - 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it. Previously SURVIVED because the gate matched ANY .Run( and this package has four unrelated ones; the gate now binds Run to the reconciler variable. · acceptance-sha256:d62824b69bdc3b15b92c8c4eac787e38df7d0615c8d06a6e35c6d8e2ce659e9b
 - 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/main.go` · Removes the single call that makes the whole decision reachable: every component below it keeps its tests green while no payment activates anything. · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
 - 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it. Previously SURVIVED because the gate matched ANY .Run( and this package has four unrelated ones; the gate now binds Run to the reconciler variable. · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
+- 2026-08-28 · 3a40b20* · mutant killed · exit 1 · `cmd/server/main.go` · Removes the single call that makes the whole decision reachable: every component below it keeps its tests green while no payment activates anything. · acceptance-sha256:ea592223a4cbebd775faa1600ce4d7f2a8ec2570ce3e33a6808eddff9b29ef01
+- 2026-08-28 · 3a40b20* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it — the subtler half of the reachability defect. · acceptance-sha256:ea592223a4cbebd775faa1600ce4d7f2a8ec2570ce3e33a6808eddff9b29ef01
+- 2026-08-28 · 3a40b20* · mutant killed · exit 1 · `internal/billing/opencollective.go` · Writes a tag the reconciler cannot match back, simulating the two seams being individually correct and jointly wrong. Only the end-to-end test can see this: every unit test still passes because each side is internally consistent. · acceptance-sha256:ea592223a4cbebd775faa1600ce4d7f2a8ec2570ce3e33a6808eddff9b29ef01
 
 ## Invariants
 
@@ -149,4 +159,5 @@ than the gate being weakened.
      fence has been restructured so its recorded command stays on one line. -->
 
 - 2026-08-28 · 04543c8* · exit 0 · `go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:d62824b69bdc3b15b92c8c4eac787e38df7d0615c8d06a6e35c6d8e2ce659e9b
-- 2026-08-28 · 04543c8* · exit 0 · `{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
+- 2026-08-28 · 04543c8* · exit 0 · `{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel|TestEndToEndOpenCollectiveActivation' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
+- 2026-08-28 · 3a40b20* · exit 0 · `{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel|TestEndToEndOpenCollectiveActivation' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:ea592223a4cbebd775faa1600ce4d7f2a8ec2570ce3e33a6808eddff9b29ef01
