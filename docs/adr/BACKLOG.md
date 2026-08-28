@@ -2302,3 +2302,73 @@ measurement: dropping stale hits shrinks an already-scarce payload, and a stale 
 worthless — it is evidence that something changed, which is occasionally the most useful thing in
 the page. The choice is between dropping them and labelling them, and that is F-10's kind of
 question.
+
+## The palace enforces its most expensive action and leaves its cheapest optional — 2026-08-28
+
+Measured in OUTPUT tokens, which is the currency an agent spends, as distinct from context, which is
+what a result consumes. The two were conflated in every earlier discussion here and the conclusions
+invert when they are separated.
+
+| what the model emits | output tokens |
+|---|---|
+| `am_skillset` / `am_status`, no arguments | ~15 |
+| `am_search(query, wing)` | ~30 |
+| `am_get_drawer(id, whole:true)` | ~45 |
+| a content-bearing `am_add_drawer` (~1,500 runes) | ~400 |
+| a diary entry | ~525 |
+| deliberating which drawers to fetch | 500–1,500 |
+
+**So the Stop hook's three mandatory content-bearing writes cost ~1,400–2,000 output tokens per
+session, roughly 10× the entire read-side protocol, and every read is optional.** Nothing fails when
+a session skips recall; a session that files nothing is reminded until it does.
+
+⚠ **AND THE ONE INSTRUMENT THAT WOULD PRICE THAT MANDATE IS INERT HERE.** `recall-observe` (ADR-041
+T1) has written `recall-observations.jsonl` for exactly ONE project on this machine and NOT for this
+repository, despite six transcripts. The 7.6% baseline in this file was produced by a hand-run scan,
+not by the mechanism built to produce it. `agentsmemory_recall_observe` is invoked only from
+`clients/claude-code/hooks/agentsmemory-stats.sh`, which is SOURCED by the session-end hook rather
+than registered, needs `aiagentmemory` on PATH and `$TRANSCRIPT` set, and exits 0 silently on every
+failure path (deliberately — ADR-041 T1, spec F-5). One of those preconditions is not holding and
+nothing reports which.
+
+**The change this argues for is a predicate, not advice.** "Write less" cannot be enforced by asking.
+The Stop hook already sees the session's tool history: a session that recalled nothing and decided
+nothing has nothing worth filing, and a session that made a decision does. Same hook, conditional
+instead of unconditional three.
+
+**Not taken here, because it is a decision rather than a fix.** It changes what the corpus
+accumulates, which is a product question, and it should not be made before the measurement below
+says whether the accumulation is worth anything. Filed rather than done.
+
+**One number that would make this urgent or moot:** see the next entry.
+
+## Nothing measures whether a filed drawer is ever read — 2026-08-28
+
+`am_recall_stats` reports searches, `answered_pct`, drawers held and the queries that found nothing.
+It does not report, and nothing in the tree reports, **what fraction of filed drawers has ever been
+returned by any search.**
+
+At the write-to-read ratios this repository keeps measuring — 1.9:1 across one long session, and
+**3.0:1** (6 searches against 18 writes) in the two-hour window on 2026-08-28 during which an agent
+was explicitly instructed to recall more — the median drawer may never have been returned to anyone.
+Nobody has checked, and this entry deliberately makes no claim about the answer.
+
+**The measurement, stated precisely enough to be run:** join `search_events` (or whatever durably
+records which memories a page returned) against the drawer table, over the whole corpus, and report
+the fraction of drawers with at least one recall, split by wing and by room. `wing_agentmemories`
+holds 1,077 drawers of which 719 are in `sessions` — bulk-mined transcripts — so the split matters:
+a low overall figure driven entirely by mined sessions means something different from a low figure in
+`decisions`.
+
+⚠ **BEFORE RUNNING IT, ESTABLISH THAT THE INSTRUMENT CAN SEE A POSITIVE.** This repository's rule,
+earned seven times over on 2026-08-28: run the canary before trusting any zero. `search_events` is
+written only by `Search`, so a drawer reached by `am_get_drawer`, by `am_bootstrap`, or by a
+traversal is invisible to it and would score as never-read while being read constantly. A figure
+taken without that check measures the telemetry's coverage and reports it as the corpus's value.
+
+**Why it reorders work rather than adding to it.** If the fraction is high, the corpus is earning its
+keep and the read-side facts in `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` are the right
+next thing. If it is low, the constraint is not retrieval quality at all — it is that we are writing
+material nobody will read, and every read-side improvement optimises retrieval over a corpus that
+should be smaller. That would promote the entry above and demote the spec, and it is the only
+measurement on this page that can do that.
