@@ -1398,6 +1398,59 @@ as the deferral so the pointer has a receiving end.
   softened to "end the loser and keep going", `merge_wing` becomes an ending operation performed by
   an agent and the surface question reopens.
 
+## Two tests name a property their fixtures never drive — 2026-08-28
+
+Found by mutation while re-recording the corpus; both mutants SURVIVED first and the survivals are
+kept in the task files rather than replaced by the kills that followed.
+
+**`TestClosetDeltaExcludesUnreachableAndAbsentCases`** (`internal/palace/evalstats_test.go`) asks
+`ClosetDelta` for `CatSingle`. The loop's first check is `if d.Category != category { continue }`,
+so the absent case is filtered out before the `if category == CatAbsent` guard can run. Deleting
+that guard changes nothing the test can see. The exclusion in the test's NAME is undriven; a call of
+`ClosetDelta(report, CatAbsent)` would exercise it.
+
+**ADR-004 T5's fence** is `TestSupersessionGate*`, which drives `SupersessionVerdict`. It never
+reaches `gatedArm`, so returning a named arm where none reconstructs the served ranking — the exact
+defect `SupersessionGatedArmFor`'s doc comment says "is how the gate judged a pipeline nobody runs"
+— goes unnoticed by the gate that task is verified against.
+
+Neither is a bug in shipped behaviour. Both are gates weaker than their names, which is the
+condition this repository's checks exist to remove.
+
+## The entry point resolves to nothing on every wing — 2026-08-28
+
+`am_bootstrap` and `am_entry_point` exist to solve the cold-start problem the fork letter to
+MemPalace describes: *"you cannot retrieve what you don't know to ask for. The entry point has to be
+reachable by address, not by search."* Measured against the local palace 2026-08-28:
+
+```
+am_bootstrap(wing_agentmemories) → entry_point.resolution "unknown_term", eager null, on_demand null
+am_bootstrap(wing_craft)         → same
+am_entry_point(wing_craft)       → node "", resolution "unknown_term"
+```
+
+Every wing tried, including `wing_craft`, which had three drawers written to it MINUTES BEFORE the
+call. So the mechanism is registered, described, documented in `AGENTS.md` as the one-call
+replacement for the manual traversal, and returns nothing.
+
+⚠ **`edge_derived: true` on a write is NOT an entry-point edge.** `am_add_drawer` returns
+`"edge_derived": true, "has_edge": true`, and `am_entry_point` for that same wing then reports
+`node: ""`. Two different edges with similar names; the first reads like evidence for the second and
+is not. Anyone checking whether the derivation runs will hit this.
+
+**Scope not established.** This was measured on a `mode: local` server (workspace slug `local`).
+Production was validated at v0.0.99 separately and may differ — that is the first thing to check,
+not to assume in either direction.
+
+**Why it matters beyond tidiness.** `AGENTS.md` already tells sessions the one-call path returns
+`unknown_term` here and to use the manual `must.*` walk instead — a walk whose four silent-failure
+modes that same file documents. And the letter to MemPalace advertises this mechanism while its own
+§1.1 finding is "implemented, tested, documented — and unreachable". Sending that with our entry
+point in this state undercuts the letter's thesis.
+
+**The fix is the backfill** for corpora whose `llm_init` drawers predate the derived edge, which
+`AGENTS.md` already names as filed and not run.
+
 ## A `--socket` install's hooks still speak HTTP — 2026-08-28
 
 Found by an independent review of PR #85, not by our own tests.
