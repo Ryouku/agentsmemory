@@ -38,6 +38,14 @@ const statsHelperAsset = "hooks/agentsmemory-stats.sh"
 // the gap, and a mechanism that decisive should not need hand-registration.
 const subagentHookAsset = "hooks/agentsmemory-subagent-start-hook.sh"
 
+// recallHookAsset is the embedded recall hook: it PERFORMS a recall and injects
+// the result, so a fresh context does not start blind (ADR-041 T4).
+//
+// ADR-017 named this mechanism in 2026-08 and left it unbuilt pending measurement
+// — "a subagent cannot skip a recall that already happened". The measurement is
+// ADR-041 T2's baseline; this is the mechanism it was waiting on.
+const recallHookAsset = "hooks/agentsmemory-recall-hook.sh"
+
 const (
 	// hookFile is where the Stop hook is installed: flat in the config dir, not
 	// under hooks/. The directory name matters because a sandbox is shared — pi
@@ -57,6 +65,9 @@ const (
 
 	// sessionEndHookFile is where the SessionEnd hook lands.
 	sessionEndHookFile = "agentsmemory-session-end-hook.sh"
+
+	// recallHookFile is where the recall hook lands, beside the others.
+	recallHookFile = "agentsmemory-recall-hook.sh"
 
 	// statsHelperFile is the sourced /stats helper, beside the hook scripts.
 	statsHelperFile = "agentsmemory-stats.sh"
@@ -649,6 +660,14 @@ func (i *Installer) writeAssets() error {
 		}
 		i.ok("hook %s", filepath.Base(i.sessionEndHookPath()))
 
+		recallHook, err := i.source().ReadFile(recallHookAsset)
+		if err != nil {
+			return err
+		}
+		if err := i.writeFile(i.recallHookPath(), recallHook, 0o755); err != nil {
+			return err
+		}
+		i.ok("hook %s", filepath.Base(i.recallHookPath()))
 	}
 	// Only a hook-owning kit relocates the script: it is the one that also
 	// re-registers the new path, so no agent is left pointing at a deleted file.
@@ -771,6 +790,11 @@ func (i *Installer) subagentHookPath() string {
 // sessionEndHookPath is where the SessionEnd hook is installed.
 func (i *Installer) sessionEndHookPath() string {
 	return filepath.Join(i.targetDir, sessionEndHookFile)
+}
+
+// recallHookPath is where the recall hook is installed.
+func (i *Installer) recallHookPath() string {
+	return filepath.Join(i.targetDir, recallHookFile)
 }
 
 // statsHelperPath is where the sourced /stats helper lands, beside the scripts
@@ -958,6 +982,22 @@ func (i *Installer) hookPlans() []hookPlan {
 			event: "SessionEnd",
 			cmd:   i.hookCommand(i.sessionEndHookPath()),
 			note:  "registered SessionEnd hook (reports what recall did this session)",
+		},
+		// ADR-041 T4. THIS LINE IS THE MECHANISM: the script is inert without it,
+		// and a hook that is written but never registered is this repository's
+		// characteristic defect wearing a shell script.
+		//
+		// ⚠ THE EVENT IS PART OF THE MECHANISM, not a label on it. This shipped
+		// first as PreCompact, where Claude Code sends a hook's stdout to the
+		// debug log and no further: the recall ran, printed, and was discarded,
+		// and every test passed because they asserted what the script wrote. Only
+		// SessionStart, UserPromptSubmit and UserPromptExpansion inject stdout
+		// into the model's context. TestEveryInjectingHookIsOnAnInjectingEvent
+		// is what makes that a gate rather than a paragraph.
+		hookPlan{
+			event: "SessionStart",
+			cmd:   i.hookCommand(i.recallHookPath()),
+			note:  "registered SessionStart hook (a fresh context starts with a recall already done)",
 		},
 	)
 }
