@@ -38,8 +38,8 @@ which does not exist in this package.
    paid-plan workspace with no `subscriptions` row yields `CanManage == false`, and
    `TestUpgradeCardDoesNotNameAProviderItMayNotUse` asserting the rendered `UpgradeCard` contains no
    "Stripe" and makes no "land back here" promise. Confirm both are RED.
-2. Add `HasBillingRelationship` to `ProjectVM`, populated from `billing.Service` by asking whether a
-   subscription row exists for the team.
+2. (Superseded during execution — see the deviation note above: no `ProjectVM` field was added, the
+   value is a local in `projectsForUser`.)
 3. Add the lookup to `Service` as a small, nil-safe method (`HasRelationship(ctx, teamID) bool`)
    rather than exposing `*Repo` to the web layer — the consumer keeps depending on the two methods
    it uses, per the existing `PlanStore` precedent.
@@ -52,14 +52,14 @@ which does not exist in this package.
 ## Acceptance
 
 ```bash
-go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestUpgradeCardDoesNotNameAProviderItMayNotUse' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \
+go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestCanUpgradeIsUnaffectedByTheRelationshipGate|TestUpgradeCardDoesNotNameAProviderItMayNotUse|TestUpgradeCardStillExplainsTheHandoff' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t1-new.out && \
 grep -q "^ok" /tmp/adr042-t1-new.out && \
 go build ./... && go vet ./... && go test ./internal/web/... ./internal/billing/ -count=1
 ```
 
-The first command runs ONLY the two new tests, so the regression suites in the last command cannot
-carry the verdict by themselves. The `grep -q "^ok"` is what makes this red today: with the tests
+The first command runs ONLY this task's four new tests, so the regression suites in the last command
+cannot carry the verdict by themselves. The `grep -q "^ok"` is what makes this red today: with the tests
 absent, `-run` matches nothing, Go prints `ok … [no tests to run]` and exits 0, so the exit code
 alone would pass on an empty tree.
 
@@ -82,7 +82,7 @@ rather than crediting a mutant that never ran.
 | Rung | How this task shows it |
 |------|------------------------|
 | 1 — exists | `TestCanManageRequiresARecordedSubscription` |
-| 2 — something selects it | `handlers.go:231` is itself the selection; the mutation removing `&& hasRelationship` proves the test reaches it |
+| 2 — something selects it | the `canManage` expression in `projectsForUser` is itself the selection; the `hasRelationship := true` mutant proves the test reaches it |
 | 3 — the caller can discover it | n/a: no declared interface — this removes a control rather than adding one |
 | 4 — it is used | Observable as the absence of a failing flash; nothing measures this yet |
 
@@ -94,6 +94,8 @@ rather than crediting a mutant that never ran.
   ```
 - 2026-08-28 · 71cfd56* · mutant killed · exit 1 · `internal/web/handlers.go` · Makes the relationship lookup always answer yes — the exact pre-ADR-042 behaviour, since gating on the plan alone is equivalent to assuming a relationship exists. Chosen over deleting the condition because that mutant does not compile (unused variable) and so tests nothing. · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
 - 2026-08-28 · 71cfd56* · mutant killed · exit 1 · `internal/web/views/project_templ.go` · Restores the exact shipped falsehood in the GENERATED file, which is what compiles and what the test renders — editing project.templ alone would not reach the test without regeneration, so the mutant targets the artifact actually under test. · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
+- 2026-08-28 · 307bf33* · mutant killed · exit 1 · `internal/web/handlers.go` · Makes the relationship lookup always answer yes — the exact pre-ADR-042 behaviour, since gating on the plan alone assumes a relationship exists. Chosen over deleting the condition because that mutant does not compile (unused variable) and so tests nothing. · acceptance-sha256:d92110e33a3cdf6c3d54da3e9d2de192facbce9fe483e410b007e9c4c6329021
+- 2026-08-28 · 307bf33* · mutant killed · exit 1 · `internal/web/views/project_templ.go` · Restores the exact shipped falsehood in the GENERATED file, which is what compiles and what the test renders. · acceptance-sha256:d92110e33a3cdf6c3d54da3e9d2de192facbce9fe483e410b007e9c4c6329021
 
 ## Invariants
 
@@ -122,4 +124,5 @@ implementation detail, and it changes this task's shape.
 - The `getBillingSuccess` copy, which OpenCollective never reaches today and T5 revisits.
 
 ## Verification Log
-- 2026-08-28 · 71cfd56* · exit 0 · `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestUpgradeCardDoesNotNameAProviderItMayNotUse' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \ …` · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
+- 2026-08-28 · 71cfd56* · exit 0 · `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestCanUpgradeIsUnaffectedByTheRelationshipGate|TestUpgradeCardDoesNotNameAProviderItMayNotUse|TestUpgradeCardStillExplainsTheHandoff' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \ …` · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
+- 2026-08-28 · 307bf33* · exit 0 · `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestCanUpgradeIsUnaffectedByTheRelationshipGate|TestUpgradeCardDoesNotNameAProviderItMayNotUse|TestUpgradeCardStillExplainsTheHandoff' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \ …` · acceptance-sha256:d92110e33a3cdf6c3d54da3e9d2de192facbce9fe483e410b007e9c4c6329021
