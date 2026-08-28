@@ -8,6 +8,113 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 `(permanent: <why>)` in its originating ADR because we decided it should never happen.
 
 
+## A pointer in prose is checked by nothing, and most of this corpus's pointers are prose — 2026-08-28
+
+Surveyed after four review rounds in which a majority of findings were claims nothing in the tree
+could contradict.
+
+⚠ **NO FROZEN COUNTS LIVE HERE.** The first draft of this entry carried five, and one was false at
+the commit carrying it — the entry's own prose added three ADR citations to the number it was
+reporting. That is verbatim the recurrence `internal/repohygiene/citation_test.go` already records
+about two shipped counts, with the remedy written beside it: *"a hand-maintained integrity number is
+not a check, it is a second source of truth… the gate logs the live figure on every `-v` run; read
+it there."* A second count differed from a reviewer's by 30% purely because we extracted it with
+different regexes, so these numbers are METHOD-dependent as well as time-dependent. Both live
+figures come from the gates:
+
+```bash
+go test ./internal/repohygiene -run 'TestEveryCitedADRResolvesInDocsToo|TestNoDocCitesItsOwnLineNumbers' -v
+```
+
+For the ungated rows, the method is the command rather than the answer:
+
+⚠ **The first version of this command could not reproduce its own answer**, and that is worth
+keeping visible because it inverted the argument it was published to make. `tracked` was a `set` and
+the resolver took `c[0]` from it, so a bare basename with more than one candidate — a third of the
+references in this corpus — resolved to whichever file the set happened to yield. Six verbatim runs
+on one clean tree returned six different figures for the third number. A frozen count is at least
+falsifiable; a method that returns a different answer each run is worse than the number it replaced.
+
+It sorts now, and it no longer resolves an ambiguous basename at all — the same rule the Go gate
+adopted: 31 `README.md` in this tree means a basename is not an identity, so an ambiguous reference
+is reported as its own class rather than guessed into one of the other two.
+
+```bash
+# source file:line citations written in docs, split by whether the file resolves
+python3 - <<'EOF'
+import re,subprocess
+tracked=sorted(subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split())
+pl=re.compile(r"([A-Za-z0-9_./-]+\.(?:go|sh|yml|yaml)):(\d+)")
+tot=nofile=amb=oob=0
+for d in (t for t in tracked if t.endswith(".md")):
+    for m in pl.finditer(open(d,encoding="utf-8",errors="replace").read()):
+        p,ln=m.group(1),int(m.group(2)); tot+=1
+        c=[t for t in tracked if t==p or t.endswith("/"+p)]
+        if not c: nofile+=1
+        elif len(c)>1: amb+=1          # a basename several files can mean: never guessed
+        elif ln>sum(1 for _ in open(c[0],encoding="utf-8",errors="replace")): oob+=1
+print(tot,"total,",nofile,"naming no tracked file,",amb,"ambiguous,",oob,"out of bounds")
+EOF
+```
+
+**Two pointer classes are now gated; two deliberately are not.**
+
+**Gated — ADR citations in docs.** `TestEveryCitedADRResolvesInDocsToo`. The Go gate reads `.go`
+only, so the large majority of this corpus's ADR citations — the ones in ADRs, task files, the README
+and this file — were unchecked. A renamed or withdrawn record leaves a pointer to nothing that still
+reads as provenance.
+
+Every unresolved citation the survey found turned out to be a MENTION rather than a pointer: a
+Numbering line saying which numbers an open PR still claims, and two records that must DISPLAY an
+unresolvable number to explain the citation gate itself. Shipped without an exemption list this gate
+would have been all false alarms on day one, which is how a gate gets switched off; this repo has
+already had one such incident (issue #16, the AGENTS.md gate false-positiving on every fresh
+install). Exemptions are keyed by **file and number** — keying by file alone took 36 working
+pointers out of the gate to hide one word — and `TestDocCitedADRExemptionsAreJustified` refuses a
+blank reason or one that no longer applies.
+
+**Gated — a doc citing its own line numbers.** `TestNoDocCitesItsOwnLineNumbers`. Zero findings, and
+that is the point: a gate against recurrence, not a cleanup. The form cannot survive its own file —
+one entry's self-citation drifted `:690` to `:716` to `:744` to `:763` across four review rounds
+because the entry doing the citing kept inserting lines above its own target, and a second sat in
+ADR-038 pointing at a receipt that had moved.
+
+⚠ **A basename is not an identity here.** The first version compared `filepath.Base`, and this tree
+holds 31 files called `README.md` and 28 called `CLAUDE.md` — so one README citing ANOTHER by line
+read as self-reference. Reproduced in review by appending a correct cross-file pointer to a nested
+README and watching the gate go red, with an error telling the author to cite a heading instead.
+Self-reference is now decided by PATH, and **ambiguity is not a finding**: a bare `README.md:5` that
+31 files could mean is left alone. That costs a real false negative and buys the gate's credibility,
+which is the right trade — a missed finding costs one drifted pointer; a false alarm costs the gate.
+
+**NOT gated — unresolved repo-relative paths.** Most are legitimate FORWARD references: a task file
+naming files it will create (`cmd/server/abstain_test.go` in ADR-001 T4,
+`internal/palace/anchor_evidence_test.go` in ADR-002 T3, both unexecuted). Telling a planned artifact
+from a stale one needs the task's status — more machinery than the finding is worth.
+
+**NOT gated — `file:line` refs whose file does not resolve.** Suggested in review as the cheap
+subclass where the forward-reference objection does not apply. It does not survive reading the four
+instances: `server/session.go:301` and `server/server.go:581` are mcp-go's source, and `up.go:82` is
+goose's — the citing sentence names `goose v3.27.1` beside it. They are deliberate citations into
+pinned third-party source, and a gate over them would be four findings and four false alarms. The
+same shape as the mentions above, one class over.
+
+**NOT gated — `file:line` refs pointing past the end of a file that does exist.** Real, and the floor
+of the true number, since a citation naming the wrong-but-existing line is undetectable. Left as a
+command rather than a gate because most point into refactored files where the correct line is
+unknowable, so "fix them" means guesses that drift again — the fix this corpus has already disproved
+four times.
+
+**Scope, stated honestly.** These two gates cover ADR citations and self-references. By the survey's
+own commands that is well under half of the pointers in the corpus, and the largest ungated class —
+source `file:line` — is the one the title is about. This retires two classes and measures the rest;
+it does not retire the problem.
+
+**What none of it catches, and it is the larger half.** The two sharpest findings of the last four
+rounds were a sentence that CONCEDED the premise it was meant to reinforce, and a check whose scope
+could not see the defect it was written to prevent. Both semantic; no linter finds either. The
+mechanical gates exist so review attention goes where only a reader can judge.
+
 ## adr-lint cannot express a cross-record dependency — 2026-08-28
 
 **The general finding stands; the instance I filed it with was refuted in review and is corrected
@@ -1539,15 +1646,17 @@ it inherited the flag. The number is an artifact, not an achievement.
 *(Two corrections, and the second is the same error one layer further out. First: an earlier version
 said "#3 of 8,256", which was the first PALACE call — `am_skillset` — not the first RECALL call.
 Second: the correction then claimed the latch "cannot flip on a wake-up call". `recallTools` is
-`am_search` and `am_get_drawer` (`recallrate.go:51`), and `AGENTS.md:370` mandates
+`am_search` and `am_get_drawer` (`recallrate.go:51`), and `AGENTS.md`'s manual traversal (under *"When the tools are present"*) mandates
 `am_get_drawer(id, whole:true)` once per `must.*` edge AS PART OF the wake-up sequence — dozens of
 edges, before the task search. So a protocol-following wake-up flips the latch almost immediately.
-`am_skillset` and `am_status` cannot flip it — nor can `am_bootstrap` (`AGENTS.md:345`),
-`am_list_drawers` (`:368`) or `am_kg_query` (`:369`), none of which are in `recallTools`; an
+`am_skillset` and `am_status` cannot flip it — nor can `am_bootstrap`,
+`am_list_drawers` or `am_kg_query` — all three named in that same traversal, none of them in
+`recallTools`; an
 earlier version of this sentence said "only" of the first two and was over-precise.
 
 ⚠ **That premise has an expiry the entry should name.** The wake-up flips the latch *because*
-`AGENTS.md:357-362` records `am_bootstrap` returning `unknown_term` for this wing, which is what
+`AGENTS.md` records `am_bootstrap` returning `unknown_term` for this wing (*"It can honestly return
+nothing, and you must read that correctly"*), which is what
 makes the manual `am_get_drawer` traversal mandatory today. Once that backfill runs, a compliant
 session may make no `am_get_drawer` call at wake-up and this consequence evaporates. The mis-measurement is the same class as the
 defect being reported, now twice over.)*
@@ -1561,8 +1670,8 @@ ADR-041 exists to move.
 1. **T2's 27.6% baseline measures the weaker thing.** Across 46 sessions it is approximately the
    share of assertions made in sessions that had called a recall tool at all, weighted by how many
    assertions each session made — not a rate of grounded claims.
-2. **The metric has a ceiling any protocol-following session hits trivially.** `AGENTS.md:370`
-   mandates `am_get_drawer(id, whole:true)` once per `must.*` edge as part of the wake-up sequence —
+2. **The metric has a ceiling any protocol-following session hits trivially.** `AGENTS.md`'s manual
+   traversal mandates `am_get_drawer(id, whole:true)` once per `must.*` edge as part of the wake-up sequence —
    dozens of edges, before the task search — and `am_get_drawer` IS a recall tool. So a compliant
    session flips the latch almost immediately and scores 100% before it has recalled anything
    relevant to what it then asserts. It is not vacuous: `am_skillset` and `am_status` cannot flip
