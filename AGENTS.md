@@ -308,6 +308,32 @@ with the whole suite at exit 0: a falsifiability half that shares nothing with t
 gate pins nothing. It resolves a subtest binding on its PARENT only, which the
 declaration says out loud rather than leaving a reader to assume otherwise.
 
+**A POINTER IN PROSE IS WORTH WHAT THE THING IT NAMES IS WORTH, AND MOST OF THIS
+CORPUS'S POINTERS ARE IN PROSE.** `TestEveryCitedADRResolves` reads `.go` and only
+`.go` — a few hundred citations — while 1,175 more sit in ADRs, task files, the
+README and the backlog, where a renamed or withdrawn record leaves a pointer to
+nothing that still reads as provenance. `TestEveryCitedADRResolvesInDocsToo` is a
+sibling rather than a widening, because the Go gate's scope is what lets it need no
+exemptions and docs need three: a Numbering line naming which numbers a PR claims,
+and two records that must SHOW an unresolvable number to explain the gate itself. A
+mention is not a pointer, and telling them apart in prose is the whole difficulty —
+shipped without that list the gate would have been four findings, four false alarms,
+on day one. `TestDocCitedADRExemptionsAreJustified` refuses an entry with no reason
+and one that has stopped earning its place.
+
+**AND A LINE NUMBER IN THE FILE DOING THE CITING CANNOT SURVIVE ITS OWN FILE.** One
+backlog entry cited a sibling bullet and drifted `:690` → `:716` → `:744` → `:763`
+across four review rounds — every correction wrong again by the next, because the
+entry doing the citing kept inserting lines above its target.
+`TestNoDocCitesItsOwnLineNumbers` bans the form outright: cite the heading or quote
+the sentence, both of which survive an insert. It never asks whether a number is
+RIGHT, only whether one was written, so it cannot cry wolf — and the corpus holds
+zero today, which makes it a gate against recurrence rather than a cleanup.
+Line citations into OTHER files stay legal; 55 of those are currently out of bounds
+and that is recorded in `BACKLOG.md` rather than gated, because most point into
+refactored files where the right line is unknowable and "fix them" means 55 guesses
+that drift again.
+
 The same principle covers the gates already in the tree: `internal/doclint`
 (a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`
 (an eval arm that no code path registers appears in no table, silently), and

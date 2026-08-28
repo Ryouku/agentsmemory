@@ -8,6 +8,57 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 `(permanent: <why>)` in its originating ADR because we decided it should never happen.
 
 
+## A pointer in prose is checked by nothing, and most of this corpus's pointers are prose — 2026-08-28
+
+Measured across the tracked doc corpus, after four review rounds in which a majority of findings
+were claims nothing in the tree could contradict.
+
+**The survey** (234 tracked `.md` files):
+
+| pointer form | total | unresolved |
+|---|---|---|
+| `ADR-NNN` citations | 1,219 | 4 |
+| repo-relative `path` refs | 1,239 | 68 |
+| `file:line` refs | 449 | 55 out of bounds, 4 naming no file |
+| a doc citing its OWN line numbers | 0 | — |
+
+**Two of those are now gated, and the other two deliberately are not.**
+
+**Gated — ADR citations in docs.** `TestEveryCitedADRResolvesInDocsToo`. The Go gate reads `.go`
+only, so 1,175 doc citations were unchecked. All four unresolved ones turned out to be MENTIONS
+rather than pointers — a Numbering line saying which numbers an open PR claims, and two records that
+must display an unresolvable number to explain the citation gate itself. Shipped without an
+exemption list this gate would have been **4 findings, 4 false alarms, on day one**, which is how a
+gate gets switched off; this repo has already had one such incident (issue #16, the AGENTS.md gate
+false-positiving on every fresh install). The list carries a reason per entry and
+`TestDocCitedADRExemptionsAreJustified` refuses a blank one or one that no longer applies.
+
+**Gated — a doc citing its own line numbers.** `TestNoDocCitesItsOwnLineNumbers`. Zero today, which
+is the point: this is a gate against recurrence. The form is unsurvivable — one entry's
+self-citation drifted `:690` to `:716` to `:744` to `:763` across four rounds because the entry doing
+the citing kept inserting lines above its own target, and a second sat in ADR-038 pointing at `:665`
+for a receipt that had moved to `:778`. It is syntactic: it never asks whether a number is right,
+only whether one was written, so it cannot produce a false alarm.
+
+**NOT gated — 68 unresolved repo-relative paths.** Most are legitimate FORWARD references: a task
+file naming the files it will create (`cmd/server/abstain_test.go` in ADR-001 T4,
+`internal/palace/anchor_evidence_test.go` in ADR-002 T3, both unexecuted). A gate here is mostly
+false alarms, and telling a planned artifact from a stale one needs the task's status — more
+machinery than the finding is worth.
+
+**NOT gated — 55 `file:line` refs already out of bounds** (the cited file is shorter than the line).
+Real, and the floor of the true number, since a citation pointing at the wrong-but-existing line is
+undetectable. Left as a recorded count rather than a gate because most point into refactored files
+where the correct line is unknowable, so "fix them" means 55 guesses that drift again — the fix this
+corpus has already proved wrong four times over. The cheap half is the ban above: new prose should
+not add to this pile.
+
+**What none of this catches, and it is the larger half.** The two sharpest findings of the last four
+rounds were a sentence that CONCEDED the premise it was meant to reinforce, and a check whose scope
+could not see the defect it was written to prevent. Both are semantic; no linter finds either. The
+mechanical gates retire the pointer and drift classes so review attention goes to the classes only a
+reader can judge.
+
 ## adr-lint cannot express a cross-record dependency — 2026-08-28
 
 **The general finding stands; the instance I filed it with was refuted in review and is corrected
