@@ -1417,39 +1417,50 @@ defect `SupersessionGatedArmFor`'s doc comment says "is how the gate judged a pi
 Neither is a bug in shipped behaviour. Both are gates weaker than their names, which is the
 condition this repository's checks exist to remove.
 
-## The entry point resolves to nothing on every wing — 2026-08-28
+## The entry point looks for a room that exists in no wing — 2026-08-28
 
-`am_bootstrap` and `am_entry_point` exist to solve the cold-start problem the fork letter to
-MemPalace describes: *"you cannot retrieve what you don't know to ask for. The entry point has to be
-reachable by address, not by search."* Measured against the local palace 2026-08-28:
+**Sharpened the same day; the first version of this entry called it a missing backfill, which is
+one of two independent causes and not the decisive one.**
 
-```
-am_bootstrap(wing_agentmemories) → entry_point.resolution "unknown_term", eager null, on_demand null
-am_bootstrap(wing_craft)         → same
-am_entry_point(wing_craft)       → node "", resolution "unknown_term"
-```
+`Service.EntryPoint` resolves `DerivedEdgeSubject(wing, EntryRoom)` — the string
+`room:<wing>/llm_init` (`internal/palace/graphquery.go:471,518`). Measured against the local palace:
 
-Every wing tried, including `wing_craft`, which had three drawers written to it MINUTES BEFORE the
-call. So the mechanism is registered, described, documented in `AGENTS.md` as the one-call
-replacement for the manual traversal, and returns nothing.
+- **`llm_init` appears in 0 of 65 rooms across 16 wings.** The entry tier here is `llm_index`
+  (`wing_agentmemories`, 2 drawers), beside `llm_corrections` and `llm_open_threads`.
+- So `am_entry_point` and `am_bootstrap` return `unknown_term` for every wing, correctly — the node
+  they name is never created because the room they name does not exist.
 
-⚠ **`edge_derived: true` on a write is NOT an entry-point edge.** `am_add_drawer` returns
-`"edge_derived": true, "has_edge": true`, and `am_entry_point` for that same wing then reports
-`node: ""`. Two different edges with similar names; the first reads like evidence for the second and
-is not. Anyone checking whether the derivation runs will hit this.
+**The derived-edge machinery itself is fine.** `room:wing_agentmemories/decisions` resolves
+`matched` with 7 `holds` edges, including every drawer written today. The scheme works; it is
+pointed at a room nobody files into.
 
-**Scope not established.** This was measured on a `mode: local` server (workspace slug `local`).
-Production was validated at v0.0.99 separately and may differ — that is the first thing to check,
-not to assume in either direction.
+**A second, independent gap sits behind the first.** Even with the room name corrected,
+`room:wing_agentmemories/llm_index` resolves `unknown_term`: those two drawers were filed
+2026-08-24 and the earliest derived edge in that wing is 2026-08-27, so they predate the mechanism.
+Fixing only the name leaves it empty; fixing only the backfill leaves it unaddressed.
 
-**Why it matters beyond tidiness.** `AGENTS.md` already tells sessions the one-call path returns
-`unknown_term` here and to use the manual `must.*` walk instead — a walk whose four silent-failure
-modes that same file documents. And the letter to MemPalace advertises this mechanism while its own
-§1.1 finding is "implemented, tested, documented — and unreachable". Sending that with our entry
-point in this state undercuts the letter's thesis.
+**And the corpus already has a working entry point the tools do not consult.**
+`am_kg_query(entity:"must", direction:"outgoing")` returns **8 current facts, `resolution:
+"matched"`** — five `must_load` (`llm_index`, `llm_index_keys`, `llm_open_threads`,
+`llm_corrections`, `human_decisions`) and three `must_load_skill` (`effective-go`,
+`memory-orchestration`, `human-decisions`). The `llm_index` drawer states the convention outright:
+*"WAKE-UP: kg_query(must) outgoing. must_load → am_get_drawer(id, whole=true)."*
 
-**The fix is the backfill** for corpora whose `llm_init` drawers predate the derived edge, which
-`AGENTS.md` already names as filed and not run.
+So there are **two unrelated addressing schemes**: a hand-maintained `must` entity that works, and a
+derived `room:<wing>/llm_init` node that cannot. `am_bootstrap` was built against the second.
+
+**`AGENTS.md` inherits the same error.** Its manual traversal instructs
+`am_list_drawers(wing:"wing_agentmemories", room:"llm_init")`, which returns nothing here — the
+documented fallback for when the one-call path fails names the same absent room.
+
+**Why this is an ADR and not a patch.** Which scheme is canonical is a product decision: adopt
+`must` and teach `EntryPoint` to resolve it; or adopt the derived node, rename the room or the
+constant, and backfill; or keep both with a defined precedence. Picking one silently would strand
+whichever corpus uses the other. Scope caveat: measured on a `mode: local` server — check production
+before assuming it matches.
+
+⚠ `edge_derived: true` on a write is NOT evidence of an entry point. `am_add_drawer` returns it for
+the drawer's own room, and `am_entry_point` for that same wing still says `node: ""`.
 
 ## A `--socket` install's hooks still speak HTTP — 2026-08-28
 
