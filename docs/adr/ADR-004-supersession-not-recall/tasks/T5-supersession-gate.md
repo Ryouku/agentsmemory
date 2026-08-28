@@ -81,3 +81,8 @@ Stop if fewer than `supersessionMinCases` verified, non-vacuous pairs exist once
 - 2026-08-28 · 023c208 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ ./cmd/server/ -run "TestSupersessionGate" -count=1'` · acceptance-sha256:1eb71064269a5192b2883e619203fcc25753f032f52eed87f9146683c046348b
 
 ## Mutation Log
+- 2026-08-28 · f1b7b0e · mutant survived · exit 0 · `internal/palace/evalstats.go` · naming the nearest arm when none reconstructs the served ranking is exactly how the gate came to judge a pipeline nobody runs · acceptance-sha256:1eb71064269a5192b2883e619203fcc25753f032f52eed87f9146683c046348b
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-28 · f1b7b0e* · mutant killed · exit 1 · `internal/palace/evalstats.go` · two defensible treatments of an unretrieved correction that DISAGREE must resolve to unresolved, not to whichever one was computed first — a gate that picks a side silently reports a verdict the evidence does not support · acceptance-sha256:1eb71064269a5192b2883e619203fcc25753f032f52eed87f9146683c046348b
