@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
@@ -70,9 +71,20 @@ type Service struct {
 	priceByPlanCode map[string]string
 	plans           PlanStore
 	subs            *Repo
-	checkout        checkoutAPI   // nil when the active provider is unconfigured
-	webhook         webhookParser // nil when the active provider is unconfigured
-	portal          portalAPI     // nil when the active provider is unconfigured
+	intents         intentRecorder // nil when no intent store is wired; recording is best-effort
+	checkout        checkoutAPI    // nil when the active provider is unconfigured
+	webhook         webhookParser  // nil when the active provider is unconfigured
+	portal          portalAPI      // nil when the active provider is unconfigured
+}
+
+// WithIntents attaches the checkout-intent store, which is what lets a later
+// OpenCollective order be attributed to the workspace that started it (ADR-042).
+// It is optional: with no store, checkouts still work and reconciliation simply has
+// one fewer attribution channel, so a deployment that has not migrated yet degrades
+// rather than breaks.
+func (s *Service) WithIntents(r intentRecorder) *Service {
+	s.intents = r
+	return s
 }
 
 // NewService wires a Service around the provider named by cfg.Provider. The chosen
@@ -135,6 +147,20 @@ func (s *Service) StartCheckout(ctx context.Context, req CheckoutRequest) (strin
 	// Confirm the plan exists in the catalog before charging for it.
 	if _, err := s.plans.PlanByCode(ctx, req.PlanCode); err != nil {
 		return "", fmt.Errorf("%w: %q", ErrUnknownPlan, req.PlanCode)
+	}
+	// Record the intention BEFORE handing the user off, so a contribution that
+	// lands can be traced back to this workspace (ADR-042). Best-effort by design:
+	// a customer must never be blocked from paying because our bookkeeping failed,
+	// and losing the row costs an attribution channel, not the payment.
+	if s.intents != nil {
+		if err := s.intents.Record(ctx, CheckoutIntent{
+			TeamID:   req.TeamID,
+			PlanCode: req.PlanCode,
+			Tag:      intentTag(req.TeamID),
+			Email:    req.CustomerEmail,
+		}); err != nil {
+			log.Printf("billing: recording checkout intent for team %s: %v (checkout continues; this contribution may need manual attribution)", req.TeamID, err)
+		}
 	}
 	return s.checkout.createCheckout(ctx, checkoutInput{
 		PriceID:       priceID,

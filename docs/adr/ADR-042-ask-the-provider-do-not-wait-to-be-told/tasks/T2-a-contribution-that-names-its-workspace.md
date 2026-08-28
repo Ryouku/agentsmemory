@@ -44,7 +44,7 @@ checkout URL, so a later contribution can be attributed to it instead of guessed
 ## Acceptance
 
 ```bash
-go test ./internal/billing/ -run 'TestOpenCollectiveCheckoutCarriesAttribution|TestCheckoutIntentRoundTrips' -count=1 2>&1 | tee /tmp/adr042-t2-new.out && \
+go test ./internal/billing/ -run 'TestOpenCollectiveCheckoutCarriesAttribution|TestOpenCollectiveCheckoutPreservesConfiguredQuery|TestIntentTagIsStableAndURLSafe|TestCheckoutIntentRoundTrips|TestUnknownIntentIsNotFoundRatherThanZero|TestStartCheckoutSurvivesIntentWriteFailure' -count=1 2>&1 | tee /tmp/adr042-t2-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t2-new.out && \
 grep -q "^ok" /tmp/adr042-t2-new.out && \
 go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/... -count=1
@@ -54,10 +54,17 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestOpenCollectiveCheckoutCarriesAttribution` | `internal/billing/opencollective_test.go` | Returned URL keeps the configured tier path and gains `tags`, `email`, `redirect` | — |
+| `TestOpenCollectiveCheckoutCarriesAttribution` | `internal/billing/opencollective_test.go` | Returned URL keeps the configured tier page and gains `tags`, `email`, `redirect` | — |
 | `TestOpenCollectiveCheckoutPreservesConfiguredQuery` | `internal/billing/opencollective_test.go` | A configured URL that already has a query keeps it — appending must not clobber | — |
-| `TestCheckoutIntentRoundTrips` | `internal/billing/intent_test.go` | Recorded intent is found by tag and by email; an unknown tag returns not-found rather than a zero value that reads as a match | — |
-| `TestStartCheckoutSurvivesIntentWriteFailure` | `internal/billing/intent_test.go` | A failing `IntentRepo` still yields a checkout URL | — |
+| `TestIntentTagIsStableAndURLSafe` | `internal/billing/intent_test.go` | The tag is stable per workspace, collision-free across workspaces, needs no URL escaping, and does not leak the raw team id into a public record | — |
+| `TestCheckoutIntentRoundTrips` | `internal/billing/intent_test.go` | A recorded intent is found by both attribution channels, tag and email | — |
+| `TestUnknownIntentIsNotFoundRatherThanZero` | `internal/billing/intent_test.go` | A miss is `ErrRecordNotFound`, never a zero-valued intent whose empty TeamID would read as a match; an EMPTY tag or email matches nothing even when rows exist | — |
+| `TestStartCheckoutSurvivesIntentWriteFailure` | `internal/billing/intent_test.go` | A failing intent store still yields a checkout URL — bookkeeping never blocks a payment | — |
+
+**Pre-existing test amended, not deleted:** `TestOpenCollectiveStartCheckout_ReturnsStaticURL`
+asserted byte equality with the configured URL, which this task deliberately changes. It now asserts
+the tier page itself (scheme, host, path) is unchanged, which is the property that still matters —
+the query is covered by the attribution test above.
 
 ## Reachability
 
@@ -69,6 +76,14 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | 4 — it is used | T4 consumes it; until then nothing measures this |
 
 ## Mutation Log
+
+- 2026-08-28 · 9ffc0d9* · mutant killed · exit 1 · `internal/billing/opencollective.go` · Drops the attribution tag from the checkout URL while keeping the call, so it still compiles. This is the pre-ADR-042 anonymous checkout: every buyer of a plan gets an identical link and no landed contribution can be attributed. · acceptance-sha256:12bb563b974697c0e0ba2b13bfc2281daa741d8fa4ee9b0158e8ff04c7ab62d8
+- 2026-08-28 · 9ffc0d9* · mutant survived · exit 0 · `internal/billing/intent.go` · Disables the empty-tag guard so an untagged order would match any row holding the empty string, attributing a strangers payment to an arbitrary workspace. Rewritten rather than deleted so the function still compiles and the guard branch remains reachable. · acceptance-sha256:12bb563b974697c0e0ba2b13bfc2281daa741d8fa4ee9b0158e8ff04c7ab62d8
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-28 · 9ffc0d9* · mutant killed · exit 1 · `internal/billing/intent.go` · Disables the empty-tag guard. Previously SURVIVED because the test seeded no empty-tag row; the test now seeds one production really creates (CustomerEmail is optional), so the guard is load-bearing. · acceptance-sha256:12bb563b974697c0e0ba2b13bfc2281daa741d8fa4ee9b0158e8ff04c7ab62d8
+- 2026-08-28 · 9ffc0d9* · mutant killed · exit 1 · `internal/billing/intent.go` · Disables the empty-email guard. This is the leg production can actually reach: CustomerEmail is optional, so StartCheckout records intents with email = "" and an order whose contributor email is unreadable would otherwise attribute to one of them. · acceptance-sha256:12bb563b974697c0e0ba2b13bfc2281daa741d8fa4ee9b0158e8ff04c7ab62d8
 
 ## Invariants
 
@@ -83,6 +98,13 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 - The hosted flow may ignore or strip `tags` — that is the ADR's named open risk, resolved by T4's
   data dependency, not here. This task is correct either way: it also records the intent and
   prefills the email, which is the fallback channel.
+- **A mutation caught a real hole during execution, recorded because the fix is the lesson.** The
+  first empty-key mutant SURVIVED: `TestUnknownIntentIsNotFoundRatherThanZero` seeded only a row with
+  a non-empty tag, so removing the guard still returned not-found and the assertion proved nothing.
+  The corpus could not exhibit the defect the test named. It now seeds a row with an empty tag AND an
+  empty email — which production really creates, because `CustomerEmail` is optional on
+  `CheckoutRequest` — and both guards are now killed by mutation. The email leg is the one that is
+  live rather than defensive.
 - `redirect` is validated by Open Collective's `isValidExternalRedirect`; if our URL is rejected the
   user simply stays on Open Collective, which is today's behaviour. No regression.
 
@@ -98,3 +120,4 @@ an implementation one.
 - Any UI showing the intent log.
 
 ## Verification Log
+- 2026-08-28 · 9ffc0d9* · exit 0 · `go test ./internal/billing/ -run 'TestOpenCollectiveCheckoutCarriesAttribution|TestOpenCollectiveCheckoutPreservesConfiguredQuery|TestIntentTagIsStableAndURLSafe|TestCheckoutIntentRoundTrips|TestUnknownIntentIsNotFoundRatherThanZero|TestStartCheckoutSurvivesIntentWriteFailure' -count=1 2>&1 | tee /tmp/adr042-t2-new.out && \ …` · acceptance-sha256:12bb563b974697c0e0ba2b13bfc2281daa741d8fa4ee9b0158e8ff04c7ab62d8
