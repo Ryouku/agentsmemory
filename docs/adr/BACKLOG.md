@@ -8,6 +8,81 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 `(permanent: <why>)` in its originating ADR because we decided it should never happen.
 
 
+## adr-lint cannot express a cross-record dependency — 2026-08-28
+
+**The general finding stands; the instance I filed it with was refuted in review and is corrected
+below. Both halves are kept, because the way the instance was wrong is the more useful lesson.**
+
+**The limitation, verified 2026-08-28 against the quality-harness plugin cache on the authoring machine**, where `adr-lint` on `PATH` resolves to **2.23.0**, and identical in the 2.19.0 and 2.21.0 copies present there — same line numbers in all three. ⚠ A reviewer whose machine carries only 2.19.0 can confirm that copy and nothing else, so read the multi-version claim as "not a version artefact *here*" rather than as reproducible anywhere. The behaviour is what matters and it reproduces on the version everybody has. It is stronger than "the DAG cannot see
+these edges" — the schema forbids writing one:
+
+- `bin/adr-lint:272-276` validates every `Depends-on` entry against `all_stems`, the SIBLING task
+  files of that ADR, and emits *"Depends-on 'X' matches no sibling task file"*. So a cross-record
+  dependency is a hard lint error: the field designed to carry the constraint refuses it.
+- `bin/adr-next:136-160` builds the same edge set filtered to `if d in infos`, this ADR's tasks
+  only. A foreign T-id is discarded silently. Its docstring says this is deliberate — *"Same edge
+  set as adr-lint's DAG, so readiness here cannot disagree"*.
+- The failure direction is what matters: **an unseen edge reads as NO edge**, so `adr-next` prints
+  `ready` rather than `unknown`.
+
+In this corpus **41 of 94 task files (44%) reference a foreign ADR** across 44 distinct pairs. Not
+all imply ordering, but none of them can be represented.
+
+**⚠ THE INSTANCE I USED WAS WRONG, and it is worth reading before reusing this entry.** I claimed
+ADR-002 T3 was gated on ADR-003 T3/T4, quoting ADR-003's Decision. That sentence sits inside a
+paragraph opening *"an earlier draft of this ADR was wrong"* (`ADR-003:68`) — it is **subjunctive**,
+describing a hazard that draft *would have* created and which the accepted design removed at source
+in **T1**, which is `done`. Four things say so, all four pre-existing. The round-1 change
+edited two files and two of the four cited things lived in them; this head edits only `BACKLOG.md`,
+so none of them does now:
+
+- `T3-measure-both-normalizers.md:11-18` — *"the confound the control existed for is gone rather
+  than being controlled for"*. That is 55 lines above where the retracted paragraph was added,
+  in the same file. (The paragraph is gone from this branch, so the file is now byte-identical to
+  `main`; the citation is to what was already there.)
+- `ADR-014:51-53` — T3 is *"a check on a shipped default rather than a gate before one"*.
+- `BACKLOG.md`, the bullet *"ADR-003 T3's two-corpus measurement is now a check, not a gate"* —
+  which reports ADR-014's finding in its own words rather than quoting it. The flip already
+  happened: `internal/config/config.go:374` ships `ClosetBoost: 0`. (No line number on purpose;
+  this entry inserts lines above that bullet, so any number written here is wrong in the tree the
+  entry produces — which is exactly what happened in round 1.)
+- `ADR-002:157` — record B **already carried its own constraint**, and carried it better: scoped to
+  T4 alone and stated as a conditional, *"If T4 ships closet-ON after all"*. T4 shipped closet-OFF,
+  so the condition never fired.
+
+That last one cuts at the thesis I was arguing. I wrote that the constraint "exists only in ADR-003's
+prose"; ADR-002 had it, correctly, all along.
+
+**What survives, and it is not nothing.** Two rules, both earned here:
+
+1. **A quotation carries its mood.** Lifting a sentence out of a subjunctive paragraph turns a hazard
+   that was designed out into one that is live. Before citing a record's Decision, read the sentence
+   that opens its paragraph.
+2. **A record that states a cross-record constraint should state it as a CONDITION with its
+   trigger**, the way `ADR-002:157` does — not as a standing prerequisite. A conditional expires
+   visibly when its condition resolves; a prerequisite has to be remembered and retired by hand, and
+   nobody does.
+
+**Still open for the harness owner:** let `Depends-on` name a qualified foreign task, resolve it
+against the corpus, and make `adr-next` report `blocked: cannot evaluate X` rather than `ready` for
+an edge it could not evaluate. Cycle checking would then need to run over the union rather than per
+record.
+
+⚠ **"A different project, not ours to change" is NOT settled here, and this entry said it was.**
+The section *"The ADR evidence chain depends on a tool outside the repository"* treats the same
+externality as an open decision and names **vendoring the checker into the repo** as one of two
+ways out. And this repo already binds Go tests to a harness artefact twice —
+`internal/mcpserver/recallcue_spec_test.go` (`taskIndexRow` + `statusOfTask`) and
+`clients/claude-code/recallrate_spec_test.go` (`indexRow` :325 + `taskStatus` :328). The gate is
+`status[m.task] == "done"` at `:386`; `:401` reads the same map into `st` and gates on `""` /
+`"pending"` — both are status gates, only `:386` is that expression. Both read an ADR task README's status column. So a
+gate on this side of the boundary is not hypothetical; it is precedent. Whether to add a third is
+a decision, not a foregone no.
+
+*(Found by a reviewer who first "corrected" the count from two to one and then retracted the
+correction: the second precedent implements the same pattern under different identifiers, so a grep
+for the first one's names missed it. Ask which entries exist, not which files contain this string.)*
+
 ## ADR-041 T2 — the recall-before-assertion baseline, measured 2026-08-28
 
 **27.6%** — of 221 no-change assertions across 46 sessions, 61 were preceded by a recall.
