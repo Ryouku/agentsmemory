@@ -1,8 +1,8 @@
 # ADR-037: Carry the why with the code, and gate the citations
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-26
-**Owner:** M
+**Owner:** M (accepted by Zy 2026-08-28)
 **Spec:** None — no spec stage
 **Cross-references:** `AGENTS.md`, PR #64, `internal/doclint`, `internal/repohygiene`, `docs/adr/ADR-019-a-hit-shows-its-matching-regions-and-lets-the-agent-choose.md`
 **Governs:** None — declared by its tasks
