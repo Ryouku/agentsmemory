@@ -48,7 +48,7 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
 ## Acceptance
 
 ```bash
-go test ./internal/billing/ -run 'TestReconcileMapsOrderStatusToEventKind|TestReconcileAttributesByTagOnlyWithAMatchingIntent|TestReconcileLeavesAnUnattributableOrderAlone|TestReconcileIsIdempotent' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
+go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t4-new.out && \
 grep -q "^ok" /tmp/adr042-t4-new.out && \
 go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/... -count=1
@@ -59,10 +59,19 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
 | `TestReconcileMapsOrderStatusToEventKind` | `internal/billing/reconcile_test.go` | All 14 known statuses map as specified, and an unknown status maps to `eventIgnored` rather than to a cancellation | — |
-| `TestReconcileAttributesByTagOnlyWithAMatchingIntent` | `internal/billing/reconcile_test.go` | A tag naming team B with no intent row does NOT upgrade team B | — |
+| `TestReconcileAttributesByTagOnlyWithAMatchingIntent` | `internal/billing/reconcile_test.go` | A tag with no recorded intent does NOT upgrade the workspace it names; the same order DOES activate once the intent exists | — |
+| `TestReconcileAttributesByEmailWhenTheTagIsAbsent` | `internal/billing/reconcile_test.go` | The email fallback attributes when no tag survived — the ADR's answer if `tags` does not round-trip | — |
 | `TestReconcileLeavesAnUnattributableOrderAlone` | `internal/billing/reconcile_test.go` | An order with no tag and an unknown email changes no plan and is counted as unattributed | — |
-| `TestReconcileIsIdempotent` | `internal/billing/reconcile_test.go` | Running the same page twice leaves one subscription row and one plan value | — |
-| `TestReconcileDoesNotResurrectACanceledSubscription` | `internal/billing/reconcile_test.go` | A late `ACTIVE` for an order already recorded canceled does not re-upgrade — the existing `billing.go:218-223` guard still holds on this path | — |
+| `TestReconcileIgnoresAContributionOutsideOurTiers` | `internal/billing/reconcile_test.go` | An ordinary donation (no tier) is not treated as a purchase even when it carries a valid tag | — |
+| `TestReconcileIsIdempotent` | `internal/billing/reconcile_test.go` | Three passes leave one subscription row and one plan value, and `nextChargeDate` populates `CurrentPeriodEnd` | — |
+| `TestReconcileDoesNotResurrectACanceledSubscription` | `internal/billing/reconcile_test.go` | A stale `ACTIVE` for an order already recorded canceled does not re-upgrade — the existing `applyActivated` guard holds on this path too | — |
+| `TestReconcileReturnsTheReadError` | `internal/billing/reconcile_test.go` | A failing order source is an error, not a quiet pass with nothing to do | — |
+
+**Deviation from the ADR's step 2, taken on the ADR's own advice:** `ERROR` is mapped to
+`eventIgnored`, not `eventCanceled`. The ADR's Risks section flagged this exact call and said the
+failure mode of ignoring (a workspace keeps Pro slightly too long) is strictly safer than the failure
+mode of cancelling (a paying customer downgraded mid-retry, which is much harder to notice). Recorded
+here because the ADR's Decision text still lists `REJECTED` and `ERROR` together.
 
 ## Reachability
 
@@ -74,6 +83,10 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | 4 — it is used | `ReconcileReport` counts, logged by T5 |
 
 ## Mutation Log
+
+- 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Accepts a tag without requiring a recorded CheckoutIntent to corroborate it. The tag rides in a user-controlled URL, so this lets anyone credit a payment to any workspace. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Makes a status OpenCollective adds after this was written downgrade every workspace holding such an order — the silent mass-downgrade the default exists to prevent. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Stops requiring the contribution to name one of our sellable tiers, so a 5 EUR one-off donation would activate a 50 EUR/month plan. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 
 ## Invariants
 
@@ -104,3 +117,4 @@ more code is written.
 - Distinguishing `DISPUTED` / `IN_REVIEW` from `eventIgnored` (deferred: Follow-ups, ADR-042).
 
 ## Verification Log
+- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79

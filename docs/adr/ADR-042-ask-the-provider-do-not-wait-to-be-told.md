@@ -126,9 +126,13 @@ Concretely:
    token.
 3. **Reconciliation, not events.** A reconciler maps each order to the existing `providerEvent` —
    `ACTIVE`/`PAID` → `eventActivated`, `CANCELLED`/`EXPIRED`/`REFUNDED`/`REJECTED` →
-   `eventCanceled`, everything else → `eventIgnored` — and calls the existing `applyActivated` /
-   `applyCanceled`. `Order.legacyId` becomes the stable `subscriptionID`, `tier.legacyId` resolves
-   the plan code, and `nextChargeDate` finally populates `CurrentPeriodEnd`.
+   `eventCanceled`, everything else including `ERROR` → `eventIgnored` — and calls the existing
+   `applyActivated` / `applyCanceled`. `Order.legacyId` becomes the stable `subscriptionID`,
+   `tier.legacyId` resolves the plan code, and `nextChargeDate` finally populates
+   `CurrentPeriodEnd`. An UNKNOWN status — one Open Collective adds after this was written — is
+   ignored and logged, never cancelled: a new state name must not be able to downgrade every paying
+   workspace at once. (`ERROR` was moved from the cancel group to the ignore group during execution,
+   on the reasoning in Risks below; recorded in T4.)
 4. **A periodic driver**, off unless configured, gated on a personal token and a collective slug.
 
 **What would make this fail, and whether that data can exist.** The design rests on one claim that
