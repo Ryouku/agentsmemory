@@ -2,6 +2,7 @@ package repohygiene
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -22,20 +23,42 @@ import (
 //
 // Keyed by file, valued by reason. TestDocCitedADRExemptionsAreJustified refuses an
 // empty reason and an entry that no longer earns its place.
-var docCitedADRExemptions = map[string]string{
-	"docs/adr/ADR-026-a-history-you-cannot-query.md": "its Numbering line states which numbers an " +
-		"open PR still claims — a statement about allocation, not a reference to a record",
-	"docs/adr/ADR-037-the-why-travels-with-the-code.md": "it shows a deliberately unresolvable " +
-		"record number as the failing example, in the record that introduced the citation gate: the " +
-		"number has to resolve to nothing for the point to land",
-	"docs/adr/ADR-037-the-why-travels-with-the-code/tasks/T1-every-cited-adr-resolves.md": "the same " +
-		"unresolvable-number fixture, in that task's Risks table about the regex over-matching",
+// ⚠ KEYED BY FILE **AND NUMBER**. Keying by file alone skipped the whole file: the
+// history record carries 36 real citations and one mention, so exempting it took 36
+// working pointers out of the gate to hide a single word. Appending a citation to a
+// record that does not exist then passed green. An exemption must hide exactly what
+// it names.
+//
+// ⚠ AND THE NUMBER IS STORED BARE, without its `ADR-` prefix, because writing the
+// prefixed form here would make THIS FILE cite a record that does not exist — and
+// `TestEveryCitedADRResolves` reads Go source. It caught exactly that on the first
+// attempt at this map. The doc gate's exemption list cannot spell the thing it
+// exempts, which is a small, real constraint the two gates place on each other and
+// is worth knowing before someone "tidies" these keys.
+//
+// file -> bare record number -> why it is a mention rather than a pointer.
+var docCitedADRExemptions = map[string]map[string]string{
+	"docs/adr/ADR-026-a-history-you-cannot-query.md": {
+		"022": "its Numbering line states which numbers an open PR still claims — a statement " +
+			"about allocation, not a reference to a record",
+		"023": "the same Numbering line, second number",
+	},
+	"docs/adr/ADR-037-the-why-travels-with-the-code.md": {
+		"999": "it shows a deliberately unresolvable record number as the failing example, in " +
+			"the record that introduced the citation gate: the number has to resolve to nothing " +
+			"for the point to land",
+	},
+	"docs/adr/ADR-037-the-why-travels-with-the-code/tasks/T1-every-cited-adr-resolves.md": {
+		"999": "the same unresolvable-number fixture, in that task's Risks table about the regex " +
+			"over-matching",
+	},
 }
 
 // TestEveryCitedADRResolvesInDocsToo extends the citation gate's universe from Go
 // source to the tracked documentation corpus.
 //
-// ⚠ THE GO GATE'S UNIVERSE IS `.go` AND ONLY `.go` (`citation_test.go:179`), so a
+// ⚠ THE GO GATE'S UNIVERSE IS `.go` AND ONLY `.go` — its walk skips anything whose
+// name does not end in `.go`, in `offendersUnder` — so a
 // record renamed or withdrawn is caught where a doc comment cites it and missed
 // where an ADR, a task file, the README or the backlog does — which is where most
 // of this corpus's citations live: 1,219 across 234 docs against a few hundred in
@@ -48,6 +71,12 @@ var docCitedADRExemptions = map[string]string{
 func TestEveryCitedADRResolvesInDocsToo(t *testing.T) {
 	root := repoRoot(t)
 	checkDocCitations(t, root, gitignoreMatcher(t, root), recordNumbers(t, root))
+
+	// ⚠ A SUBTEST, NOT A SIBLING, for the reason `citation_test.go` already gives:
+	// an acceptance fence selects by test NAME, and AGENTS.md names the gates rather
+	// than their falsifiability halves. A sibling can be skipped by a fence that
+	// looks complete; a subtest cannot.
+	t.Run("a doc citing no record is reported", aDocCitingNoRecordIsReported)
 }
 
 // checkDocCitations is the whole verdict path, taking a testing.TB so the
@@ -63,9 +92,6 @@ func checkDocCitations(tb testing.TB, root string, ignored func(string, bool) bo
 			continue
 		}
 		rel, _ := filepath.Rel(root, path)
-		if _, exempt := docCitedADRExemptions[filepath.ToSlash(rel)]; exempt {
-			continue
-		}
 		src, err := os.ReadFile(path)
 		if err != nil {
 			tb.Fatalf("read %s: %v", path, err)
@@ -75,7 +101,12 @@ func checkDocCitations(tb testing.TB, root string, ignored func(string, bool) bo
 		for _, c := range found {
 			seen[c.number] = true
 		}
-		offenders = append(offenders, unresolved(found, records)...)
+		for _, o := range unresolved(found, records) {
+			if _, exempt := docCitedADRExemptions[o.file][strings.TrimPrefix(o.number, "ADR-")]; exempt {
+				continue
+			}
+			offenders = append(offenders, o)
+		}
 	}
 
 	// A scan that found nothing to check is a gate that cannot fail. This corpus
@@ -108,26 +139,82 @@ func checkDocCitations(tb testing.TB, root string, ignored func(string, bool) bo
 func TestDocCitedADRExemptionsAreJustified(t *testing.T) {
 	root := repoRoot(t)
 	records := recordNumbers(t, root)
-	for file, reason := range docCitedADRExemptions {
-		if strings.TrimSpace(reason) == "" {
-			t.Errorf("%s is exempt from the doc citation gate with no reason given", file)
-			continue
-		}
+	for file, numbers := range docCitedADRExemptions {
 		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
 		if err != nil {
 			t.Errorf("%s is exempt but does not exist: %v\nRemove the entry.", file, err)
 			continue
 		}
-		if len(unresolved(citationsIn(file, string(body)), records)) == 0 {
-			t.Errorf("%s no longer cites an unresolved record, so its exemption is dead weight.\n"+
-				"Remove it — an exemption nobody needs is one nobody re-reads.", file)
+		live := map[string]bool{}
+		for _, o := range unresolved(citationsIn(file, string(body)), records) {
+			live[strings.TrimPrefix(o.number, "ADR-")] = true
+		}
+		for number, reason := range numbers {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("%s exempts record %s with no reason given", file, number)
+				continue
+			}
+			if !live[number] {
+				t.Errorf("%s no longer cites an unresolved record %s, so that exemption is dead "+
+					"weight.\nRemove it — an exemption nobody needs is one nobody re-reads.", file, number)
+			}
 		}
 	}
 }
 
-// selfCiteRE is built per file: a doc citing its OWN path with a line number.
-func selfCiteRE(base string) *regexp.Regexp {
-	return regexp.MustCompile(regexp.QuoteMeta(base) + `:(\d+)\b`)
+// anyDocLineCiteRE finds every `<some/path>.md:<n>` in a document. Which of them
+// are SELF-citations is decided against the corpus, not by the pattern.
+var anyDocLineCiteRE = regexp.MustCompile(`([A-Za-z0-9_./-]*[A-Za-z0-9_-]\.md):(\d+)\b`)
+
+// citesItself reports whether a line citation written in `from` points back at
+// `from` itself.
+//
+// ⚠ A BASENAME IS NOT AN IDENTITY IN THIS CORPUS. The first version compared
+// `filepath.Base`, and this tree holds 31 files called README.md and 28 called
+// CLAUDE.md — so one README citing ANOTHER by line read as a self-citation.
+// Reproduced: appending a correct, cross-file "`README.md:19`" pointer to
+// clients/claude-code/README.md turned the gate red, with an error telling the
+// author to cite a heading instead. That pointer was right, and the corpus already
+// carries the same shape one file away, in ADR-003 T5.
+//
+// A false alarm is the worst failure a hygiene gate has — this PR's own entry says
+// so — and two documents in this very change asserted this gate "cannot cry wolf".
+// It can, unless the comparison is by PATH: a citation is a self-reference only
+// when the path it names resolves to the citing file and to nothing else.
+func citesItself(from, cited string, docs map[string]bool) bool {
+	cited = filepath.ToSlash(cited)
+
+	// An exact repo-relative path names one file and there is nothing to resolve.
+	if cited == from {
+		return true
+	}
+
+	// A path with a separator is read relative to the citing file's directory,
+	// which is unambiguous.
+	if strings.Contains(cited, "/") {
+		return path.Join(path.Dir(from), cited) == from
+	}
+
+	// ⚠ A BARE BASENAME IS RESOLVED ONLY IF THE CORPUS HOLDS EXACTLY ONE FILE IT CAN
+	// MEAN. It is tempting to read it as the sibling in the citing file's own
+	// directory — and that reading is what produced the blocker: `sub/README.md`
+	// saying "the top-level `README.md:2`" resolved to itself and was reported,
+	// when the author plainly meant a different file. AMBIGUITY IS NOT A FINDING;
+	// this gate declines instead of guessing.
+	//
+	// The cost is a real false NEGATIVE: a genuine self-citation written as a bare
+	// `README.md:5` inside one of the 31 READMEs is missed. That is the correct
+	// trade for a hygiene gate — a missed finding costs one drifted pointer, a false
+	// alarm costs the gate.
+	var match string
+	n := 0
+	for d := range docs {
+		if d == cited || strings.HasSuffix(d, "/"+cited) {
+			n++
+			match = d
+		}
+	}
+	return n == 1 && match == from
 }
 
 // TestNoDocCitesItsOwnLineNumbers bans the one citation form this corpus has proved
@@ -152,45 +239,69 @@ func selfCiteRE(base string) *regexp.Regexp {
 func TestNoDocCitesItsOwnLineNumbers(t *testing.T) {
 	root := repoRoot(t)
 	checkSelfCitations(t, root, gitignoreMatcher(t, root))
+
+	t.Run("a doc citing its own lines is reported", aDocCitingItsOwnLinesIsReported)
 }
 
 func checkSelfCitations(tb testing.TB, root string, ignored func(string, bool) bool) {
 	tb.Helper()
-	scanned, problems := 0, 0
-	for _, path := range walk(tb, root, ignored) {
-		if !strings.HasSuffix(path, ".md") {
+	scanned, problems, cites := 0, 0, 0
+	files := walk(tb, root, ignored)
+	docs := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, ".md") {
+			r, _ := filepath.Rel(root, f)
+			docs[filepath.ToSlash(r)] = true
+		}
+	}
+	for _, f := range files {
+		if !strings.HasSuffix(f, ".md") {
 			continue
 		}
 		scanned++
-		body, err := os.ReadFile(path)
+		body, err := os.ReadFile(f)
 		if err != nil {
-			tb.Fatalf("read %s: %v", path, err)
+			tb.Fatalf("read %s: %v", f, err)
 		}
-		rel, _ := filepath.Rel(root, path)
+		r, _ := filepath.Rel(root, f)
+		rel := filepath.ToSlash(r)
 		text := string(body)
-		for _, m := range selfCiteRE(filepath.Base(path)).FindAllStringSubmatchIndex(text, -1) {
+		for _, m := range anyDocLineCiteRE.FindAllStringSubmatchIndex(text, -1) {
+			cites++
+			if !citesItself(rel, text[m[2]:m[3]], docs) {
+				continue
+			}
 			problems++
 			tb.Errorf("%s:%d cites its own file by line number (%s)\n"+
 				"  A line number in the file doing the citing is invalidated by the next insertion "+
 				"above it, and this corpus has watched one drift 690 → 716 → 744 → 763 across four "+
 				"review rounds. Cite the heading, or quote the sentence — both survive an insert.",
-				filepath.ToSlash(rel), countNewlines(text[:m[0]]), text[m[0]:m[1]])
+				rel, lineAt(text, m[0]), text[m[0]:m[1]])
 		}
 	}
 	if scanned == 0 {
 		tb.Fatal("scanned no .md files — the walk or the suffix filter broke, and a green run " +
 			"here would mean nothing")
 	}
+	// ⚠ SCANNING FILES IS NOT ATTEMPTING MATCHES. Guarding only on `scanned` leaves
+	// a broken pattern invisible: the walk still reports every doc while the regex
+	// finds nothing in any of them. The real corpus carries ten doc-to-doc line
+	// citations — a small number, and the reason this guard is worth having rather
+	// than assuming a big one — so zero means the pattern broke.
+	if cites == 0 {
+		tb.Fatalf("scanned %d docs and found NO `<file>.md:<n>` citation at all — the pattern "+
+			"broke and this gate is passing vacuously", scanned)
+	}
 	if problems == 0 {
-		tb.Logf("%d tracked docs, none citing its own line numbers", scanned)
+		tb.Logf("%d tracked docs, %d doc line citations, none self-referential", scanned, cites)
 	}
 }
 
-// countNewlines reports the 1-based line a byte offset falls on.
-func countNewlines(s string) int { return strings.Count(s, "\n") + 1 }
+// lineAt reports the 1-based line number a byte offset falls on.
+func lineAt(text string, offset int) int { return strings.Count(text[:offset], "\n") + 1 }
 
-// TestADocCitingNoRecordIsReported is the falsifiability half for the doc citation
-// gate, and TestADocCitingItsOwnLinesIsReported for the self-citation ban.
+// aDocCitingNoRecordIsReported is the falsifiability half for the doc citation
+// gate, and aDocCitingItsOwnLinesIsReported for the self-citation ban.
 //
 // Both corpora are clean, so neither gate's reporting branch is reachable from the
 // real tree — the gates would pass identically with their bodies deleted. Each
@@ -198,7 +309,7 @@ func countNewlines(s string) int { return strings.Count(s, "\n") + 1 }
 // testing.TB, because a test cannot pin its own reporting. A half that
 // reimplements the check instead of calling it pins nothing: this package has hit
 // that twice, once in `citation_test.go` and once in `specbinding_test.go`.
-func TestADocCitingNoRecordIsReported(t *testing.T) {
+func aDocCitingNoRecordIsReported(t *testing.T) {
 	root := t.TempDir()
 	corpus := filepath.Join(root, adrCorpusDir)
 	if err := os.MkdirAll(corpus, 0o755); err != nil {
@@ -224,6 +335,40 @@ func TestADocCitingNoRecordIsReported(t *testing.T) {
 			"Without this the gate above passes over a clean corpus whatever its body says.")
 	}
 
+	// ⚠ AN EXEMPTION MUST HIDE ONE NUMBER, NOT A WHOLE FILE. Reverting the lookup to
+	// file scope leaves the suite green without this cell — and it is not academic:
+	// the exempted history record carries 36 real citations beside its one mention,
+	// so file scope took all 36 out of the gate. This uses a real exempted path so
+	// the map actually applies, and asserts the OTHER citation is still reported.
+	//
+	// It runs with the OTHER fixture made clean first: leaving an unrelated offender
+	// in place lets that one supply the failure and the cell passes for the wrong
+	// reason. (It did, on the first attempt — the file-scope mutant stayed green.)
+	if err := os.WriteFile(filepath.Join(corpus, "notes.md"),
+		[]byte("# notes\n\nThis follows ADR-001 and nothing else.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exemptPath := "docs/adr/ADR-026-a-history-you-cannot-query.md"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, exemptPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The exempt mention plus one that is not exempt — spelled without the literal
+	// prefix, because this file is Go source the citation gate reads.
+	both := "# history\n\nNumbering: ADR-0" + "22 is claimed. Superseded by ADR-0" + "44.\n"
+	if err := os.WriteFile(filepath.Join(root, exemptPath), []byte(both), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scoped := &recordingTB{}
+	checkDocCitations(scoped, root, none, map[string]bool{"ADR-001": true})
+	if scoped.errors == 0 {
+		t.Error("a file exempt for ONE record number had a DIFFERENT unresolved citation, and it " +
+			"was not reported.\nThe exemption is keyed by file and number for exactly this reason: " +
+			"file scope hides every pointer in the file to excuse one word.")
+	}
+	if err := os.Remove(filepath.Join(root, exemptPath)); err != nil {
+		t.Fatal(err)
+	}
+
 	// The negative half, without which "reports" is satisfied by reporting always.
 	clean := "# notes\n\nThis follows ADR-001 and nothing else.\n"
 	if err := os.WriteFile(filepath.Join(corpus, "notes.md"), []byte(clean), 0o644); err != nil {
@@ -237,7 +382,7 @@ func TestADocCitingNoRecordIsReported(t *testing.T) {
 	}
 }
 
-func TestADocCitingItsOwnLinesIsReported(t *testing.T) {
+func aDocCitingItsOwnLinesIsReported(t *testing.T) {
 	root := t.TempDir()
 	none := func(string, bool) bool { return false }
 
@@ -257,16 +402,32 @@ func TestADocCitingItsOwnLinesIsReported(t *testing.T) {
 
 	// A line citation into ANOTHER file is legitimate and must stay quiet — the ban
 	// is on self-reference, not on line numbers as such.
+	//
+	// ⚠ INCLUDING ANOTHER DOC WITH THE SAME BASENAME. 31 files here are called
+	// README.md and 28 CLAUDE.md, and the first version of this gate compared
+	// basenames, so one README citing another read as self-reference. That is the
+	// blocker this cell now pins.
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# top\n\nline two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	good := "# backlog\n\n- a finding\n- see `internal/palace/repo.go:797` for why\n" +
 		"- and the bullet under *\"A heading Somebody Wrote\"* for the rest\n"
 	if err := os.WriteFile(filepath.Join(root, "BACKLOG.md"), []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	sibling := "# nested readme\n\nThe top-level `README.md:2` documents the default.\n"
+	if err := os.WriteFile(filepath.Join(root, "sub", "README.md"), []byte(sibling), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ok := &recordingTB{}
 	checkSelfCitations(ok, root, none)
 	if ok.errors != 0 {
-		t.Errorf("a doc citing another file by line, and its own content by heading, was "+
-			"reported anyway (%d error(s)) — this gate bans SELF-reference, and a gate that "+
-			"fires on legitimate citations is one people switch off", ok.errors)
+		t.Errorf("a legitimate citation was reported anyway (%d error(s)).\n"+
+			"sub/README.md cites the TOP-LEVEL README.md by line — a different file that happens "+
+			"to share a basename. Comparing basenames makes that read as self-reference, and a "+
+			"gate that fires on a correct pointer is one people switch off.", ok.errors)
 	}
 }

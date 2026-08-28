@@ -10,54 +10,98 @@ An entry leaves this file in one of two ways: it becomes an ADR, or it is re-tag
 
 ## A pointer in prose is checked by nothing, and most of this corpus's pointers are prose — 2026-08-28
 
-Measured across the tracked doc corpus, after four review rounds in which a majority of findings
-were claims nothing in the tree could contradict.
+Surveyed after four review rounds in which a majority of findings were claims nothing in the tree
+could contradict.
 
-**The survey** (234 tracked `.md` files):
+⚠ **NO FROZEN COUNTS LIVE HERE.** The first draft of this entry carried five, and one was false at
+the commit carrying it — the entry's own prose added three ADR citations to the number it was
+reporting. That is verbatim the recurrence `internal/repohygiene/citation_test.go` already records
+about two shipped counts, with the remedy written beside it: *"a hand-maintained integrity number is
+not a check, it is a second source of truth… the gate logs the live figure on every `-v` run; read
+it there."* A second count differed from a reviewer's by 30% purely because we extracted it with
+different regexes, so these numbers are METHOD-dependent as well as time-dependent. Both live
+figures come from the gates:
 
-| pointer form | total | unresolved |
-|---|---|---|
-| `ADR-NNN` citations | 1,219 | 4 |
-| repo-relative `path` refs | 1,239 | 68 |
-| `file:line` refs | 449 | 55 out of bounds, 4 naming no file |
-| a doc citing its OWN line numbers | 0 | — |
+```bash
+go test ./internal/repohygiene -run 'TestEveryCitedADRResolvesInDocsToo|TestNoDocCitesItsOwnLineNumbers' -v
+```
 
-**Two of those are now gated, and the other two deliberately are not.**
+For the ungated rows, the method is the command rather than the answer:
+
+```bash
+# source file:line citations written in docs, split by whether the file resolves
+python3 - <<'EOF'
+import re,subprocess
+tracked=set(subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split())
+pl=re.compile(r"([A-Za-z0-9_./-]+\.(?:go|sh|yml|yaml)):(\d+)")
+tot=nofile=oob=0
+for d in (t for t in tracked if t.endswith(".md")):
+    for m in pl.finditer(open(d,encoding="utf-8",errors="replace").read()):
+        p,ln=m.group(1),int(m.group(2)); tot+=1
+        c=[t for t in tracked if t==p or t.endswith("/"+p)]
+        if not c: nofile+=1
+        elif ln>sum(1 for _ in open(c[0],encoding="utf-8",errors="replace")): oob+=1
+print(tot,"total,",nofile,"naming no tracked file,",oob,"out of bounds")
+EOF
+```
+
+**Two pointer classes are now gated; two deliberately are not.**
 
 **Gated — ADR citations in docs.** `TestEveryCitedADRResolvesInDocsToo`. The Go gate reads `.go`
-only, so 1,175 doc citations were unchecked. All four unresolved ones turned out to be MENTIONS
-rather than pointers — a Numbering line saying which numbers an open PR claims, and two records that
-must display an unresolvable number to explain the citation gate itself. Shipped without an
-exemption list this gate would have been **4 findings, 4 false alarms, on day one**, which is how a
-gate gets switched off; this repo has already had one such incident (issue #16, the AGENTS.md gate
-false-positiving on every fresh install). The list carries a reason per entry and
-`TestDocCitedADRExemptionsAreJustified` refuses a blank one or one that no longer applies.
+only, so the large majority of this corpus's ADR citations — the ones in ADRs, task files, the README
+and this file — were unchecked. A renamed or withdrawn record leaves a pointer to nothing that still
+reads as provenance.
 
-**Gated — a doc citing its own line numbers.** `TestNoDocCitesItsOwnLineNumbers`. Zero today, which
-is the point: this is a gate against recurrence. The form is unsurvivable — one entry's
-self-citation drifted `:690` to `:716` to `:744` to `:763` across four rounds because the entry doing
-the citing kept inserting lines above its own target, and a second sat in ADR-038 pointing at `:665`
-for a receipt that had moved to `:778`. It is syntactic: it never asks whether a number is right,
-only whether one was written, so it cannot produce a false alarm.
+Every unresolved citation the survey found turned out to be a MENTION rather than a pointer: a
+Numbering line saying which numbers an open PR still claims, and two records that must DISPLAY an
+unresolvable number to explain the citation gate itself. Shipped without an exemption list this gate
+would have been all false alarms on day one, which is how a gate gets switched off; this repo has
+already had one such incident (issue #16, the AGENTS.md gate false-positiving on every fresh
+install). Exemptions are keyed by **file and number** — keying by file alone took 36 working
+pointers out of the gate to hide one word — and `TestDocCitedADRExemptionsAreJustified` refuses a
+blank reason or one that no longer applies.
 
-**NOT gated — 68 unresolved repo-relative paths.** Most are legitimate FORWARD references: a task
-file naming the files it will create (`cmd/server/abstain_test.go` in ADR-001 T4,
-`internal/palace/anchor_evidence_test.go` in ADR-002 T3, both unexecuted). A gate here is mostly
-false alarms, and telling a planned artifact from a stale one needs the task's status — more
-machinery than the finding is worth.
+**Gated — a doc citing its own line numbers.** `TestNoDocCitesItsOwnLineNumbers`. Zero findings, and
+that is the point: a gate against recurrence, not a cleanup. The form cannot survive its own file —
+one entry's self-citation drifted `:690` to `:716` to `:744` to `:763` across four review rounds
+because the entry doing the citing kept inserting lines above its own target, and a second sat in
+ADR-038 pointing at a receipt that had moved.
 
-**NOT gated — 55 `file:line` refs already out of bounds** (the cited file is shorter than the line).
-Real, and the floor of the true number, since a citation pointing at the wrong-but-existing line is
-undetectable. Left as a recorded count rather than a gate because most point into refactored files
-where the correct line is unknowable, so "fix them" means 55 guesses that drift again — the fix this
-corpus has already proved wrong four times over. The cheap half is the ban above: new prose should
-not add to this pile.
+⚠ **A basename is not an identity here.** The first version compared `filepath.Base`, and this tree
+holds 31 files called `README.md` and 28 called `CLAUDE.md` — so one README citing ANOTHER by line
+read as self-reference. Reproduced in review by appending a correct cross-file pointer to a nested
+README and watching the gate go red, with an error telling the author to cite a heading instead.
+Self-reference is now decided by PATH, and **ambiguity is not a finding**: a bare `README.md:5` that
+31 files could mean is left alone. That costs a real false negative and buys the gate's credibility,
+which is the right trade — a missed finding costs one drifted pointer; a false alarm costs the gate.
 
-**What none of this catches, and it is the larger half.** The two sharpest findings of the last four
+**NOT gated — unresolved repo-relative paths.** Most are legitimate FORWARD references: a task file
+naming files it will create (`cmd/server/abstain_test.go` in ADR-001 T4,
+`internal/palace/anchor_evidence_test.go` in ADR-002 T3, both unexecuted). Telling a planned artifact
+from a stale one needs the task's status — more machinery than the finding is worth.
+
+**NOT gated — `file:line` refs whose file does not resolve.** Suggested in review as the cheap
+subclass where the forward-reference objection does not apply. It does not survive reading the four
+instances: `server/session.go:301` and `server/server.go:581` are mcp-go's source, and `up.go:82` is
+goose's — the citing sentence names `goose v3.27.1` beside it. They are deliberate citations into
+pinned third-party source, and a gate over them would be four findings and four false alarms. The
+same shape as the mentions above, one class over.
+
+**NOT gated — `file:line` refs pointing past the end of a file that does exist.** Real, and the floor
+of the true number, since a citation naming the wrong-but-existing line is undetectable. Left as a
+command rather than a gate because most point into refactored files where the correct line is
+unknowable, so "fix them" means guesses that drift again — the fix this corpus has already disproved
+four times.
+
+**Scope, stated honestly.** These two gates cover ADR citations and self-references. By the survey's
+own commands that is well under half of the pointers in the corpus, and the largest ungated class —
+source `file:line` — is the one the title is about. This retires two classes and measures the rest;
+it does not retire the problem.
+
+**What none of it catches, and it is the larger half.** The two sharpest findings of the last four
 rounds were a sentence that CONCEDED the premise it was meant to reinforce, and a check whose scope
-could not see the defect it was written to prevent. Both are semantic; no linter finds either. The
-mechanical gates retire the pointer and drift classes so review attention goes to the classes only a
-reader can judge.
+could not see the defect it was written to prevent. Both semantic; no linter finds either. The
+mechanical gates exist so review attention goes where only a reader can judge.
 
 ## adr-lint cannot express a cross-record dependency — 2026-08-28
 
