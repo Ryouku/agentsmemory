@@ -27,7 +27,7 @@ T2 and T3 are independent of each other and of T1; run them in either order, or 
 
 | ID | Title | Status | Covers | Acceptance |
 |----|-------|--------|--------|------------|
-| T1 | Stop the dashboard promising a provider and a portal it does not have | pending | — | `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription\|TestUpgradeCardDoesNotNameAProviderItMayNotUse'` + full build/vet/suite |
+| T1 | Stop the dashboard promising a provider and a portal it does not have | done | — | `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription\|TestUpgradeCardDoesNotNameAProviderItMayNotUse'` + full build/vet/suite |
 | T2 | Make a contribution name the workspace that started it | pending | — | `go test ./internal/billing/ -run 'TestOpenCollectiveCheckoutCarriesAttribution\|TestCheckoutIntentRoundTrips'` + full build/vet/suite |
 | T3 | Read contributions from the authenticated Open Collective API | pending | — | `go test ./internal/billing/ -run 'TestOCOrderSource...'` + full build/vet/suite |
 | T4 | Turn an order into the plan change the webhook would have made | pending | — | `go test ./internal/billing/ -run 'TestReconcile...'` + full build/vet/suite |

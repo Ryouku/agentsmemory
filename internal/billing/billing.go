@@ -151,6 +151,29 @@ func (s *Service) StartCheckout(ctx context.Context, req CheckoutRequest) (strin
 // before we captured a customer id. The handler treats it as "nothing to manage".
 var ErrNoSubscription = errors.New("billing: no subscription to manage")
 
+// HasRelationship reports whether a workspace has a provider relationship on
+// record, which is the precondition ManageURL needs and the dashboard's only
+// honest basis for offering a "manage plan" control. It deliberately applies the
+// SAME test as ManageURL — either provider id present — because a gate that
+// disagrees with the handler it guards reproduces the defect it was added to fix,
+// just one layer up.
+//
+// This exists because being on a paid plan does NOT imply a relationship was ever
+// recorded: under OpenCollective the plan can be set by the operator's set-plan
+// CLI or by reconciliation, and before ADR-042 nothing wrote a subscriptions row
+// at all, so every activated workspace rendered a portal button whose handler
+// could only fail (ADR-042).
+func (s *Service) HasRelationship(ctx context.Context, teamID string) bool {
+	if s == nil || s.subs == nil {
+		return false
+	}
+	sub, err := s.subs.ByTeam(ctx, teamID)
+	if err != nil {
+		return false
+	}
+	return sub.StripeCustomerID != "" || sub.StripeSubscriptionID != ""
+}
+
 // ManageURL returns a provider-hosted customer-portal URL where the workspace's
 // admin can update payment, download invoices, or cancel. It resolves the
 // workspace's provider relationship from its recorded subscription; any cancel

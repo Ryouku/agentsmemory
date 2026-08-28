@@ -1,7 +1,8 @@
 # ADR-042: Ask the payment provider, do not wait to be told
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-28
+**Accepted:** 2026-08-28 by M — "make it fully automatic, by docs, change adr if needed because currently is completely broken so... nothing to lose?"
 **Owner:** unassigned
 **Spec:** None — no spec stage
 **Cross-references:** docs/adr/ADR-006-knobs-that-do-nothing.md, docs/ARCHITECTURE.md

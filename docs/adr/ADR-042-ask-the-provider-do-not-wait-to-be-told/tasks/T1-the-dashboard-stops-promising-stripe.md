@@ -18,12 +18,19 @@ dashboard.
 
 | File | Change | Why |
 |------|--------|-----|
-| `internal/web/handlers.go` | edit | `canManage` (line 231) gates on plan alone; a workspace with no `subscriptions` row must not be offered a portal. This line is what SELECTS the ManageCard — deleting the new condition is the mutation T1 must be killed by. |
-| `internal/web/views/project.templ` | edit | Line 280 promises "Secure checkout via Stripe … then land back here"; both clauses are false under OpenCollective. |
-| `internal/web/views/project_templ.go` | regenerate | `templ generate` output — the served HTML. Never hand-edited. |
-| `internal/web/views/models.go` | edit | `ProjectVM` needs the field the new `canManage` reads (`HasBillingRelationship`), and its doc comment states why plan alone is insufficient. |
-| `internal/web/handlers_test.go` | add | The gate test. |
+| `internal/web/handlers.go` | edit | `canManage` gated on plan alone; a workspace with no `subscriptions` row must not be offered a portal. This line is what SELECTS the ManageCard. |
+| `internal/billing/billing.go` | edit | Adds `Service.HasRelationship`, applying the SAME test `ManageURL` applies, so the gate cannot disagree with the handler it guards. |
+| `internal/web/views/project.templ` | edit | The hint promised "Secure checkout via Stripe … then land back here"; both clauses are false under OpenCollective. Doc comments on `UpgradeCard`/`ManageCard` corrected too. |
+| `internal/web/views/project_templ.go` | regenerate | `templ generate` output — the served HTML, and the artifact the copy test actually renders. Never hand-edited. |
+| `internal/web/billing_gate_test.go` | add | The gate test, DB-backed so it exercises the real `projectsForUser` path rather than a reimplementation of its logic. |
 | `internal/web/views/upgrade_card_test.go` | add | The copy test. |
+
+**Deviation from the ADR as authored, recorded rather than silently taken:** the ADR's step 2 called
+for a `HasBillingRelationship` field on `ProjectVM`. Not done — the value is consumed one line later
+in the same loop, so a local variable is the smaller diff and a view-model field nothing renders
+would be a field with no reader. `Service.HasRelationship` (step 3) is unchanged and is where the
+reuse lives. The gate test lives in a new `billing_gate_test.go` rather than `handlers_test.go`,
+which does not exist in this package.
 
 ## Ordered Steps
 
@@ -60,11 +67,15 @@ alone would pass on an empty tree.
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestCanManageRequiresARecordedSubscription` | `internal/web/handlers_test.go` | A `pro_monthly` workspace with no `subscriptions` row gets `CanManage == false`; one WITH a row gets `true` | — |
-| `TestUpgradeCardDoesNotNameAProviderItMayNotUse` | `internal/web/views/upgrade_card_test.go` | Rendered `UpgradeCard` HTML contains neither "Stripe" nor a claim the user returns to the dashboard | — |
+| `TestCanManageRequiresARecordedSubscription` | `internal/web/billing_gate_test.go` | A `pro_monthly` workspace with no `subscriptions` row gets `CanManage == false`; one WITH a row gets `true` | — |
+| `TestCanUpgradeIsUnaffectedByTheRelationshipGate` | `internal/web/billing_gate_test.go` | The free-plan upgrade path is untouched — guards against "fixing" CanManage by suppressing both controls | — |
+| `TestUpgradeCardDoesNotNameAProviderItMayNotUse` | `internal/web/views/upgrade_card_test.go` | Rendered `UpgradeCard` HTML names neither provider and makes no claim the user returns to the dashboard | — |
+| `TestUpgradeCardStillExplainsTheHandoff` | `internal/web/views/upgrade_card_test.go` | The hint still exists — guards against passing the test above by deleting the copy | — |
 
-Both must fail when the mechanism is removed. For the first, delete `&& hasRelationship` and watch
-it go red. For the second, restore the old hint string.
+Both mechanisms are proven falsifiable in the Mutation Log below. Note that the first mutant had to
+be `hasRelationship := true` rather than deleting `&& hasRelationship`: the deletion leaves an unused
+variable, so it does not compile, and `adr-verify` correctly graded that attempt `inconclusive`
+rather than crediting a mutant that never ran.
 
 ## Reachability
 
@@ -76,6 +87,13 @@ it go red. For the second, restore the old hint string.
 | 4 — it is used | Observable as the absence of a failing flash; nothing measures this yet |
 
 ## Mutation Log
+
+- 2026-08-28 · 71cfd56* · mutant inconclusive · exit 1 · `internal/web/handlers.go` · Removes the subscription-relationship condition, restoring the exact pre-ADR-042 gate that rendered a Manage button whose handler could only return ErrNoSubscription · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
+  ```
+  the fence failed on a build/parse error, not an assertion
+  ```
+- 2026-08-28 · 71cfd56* · mutant killed · exit 1 · `internal/web/handlers.go` · Makes the relationship lookup always answer yes — the exact pre-ADR-042 behaviour, since gating on the plan alone is equivalent to assuming a relationship exists. Chosen over deleting the condition because that mutant does not compile (unused variable) and so tests nothing. · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
+- 2026-08-28 · 71cfd56* · mutant killed · exit 1 · `internal/web/views/project_templ.go` · Restores the exact shipped falsehood in the GENERATED file, which is what compiles and what the test renders — editing project.templ alone would not reach the test without regeneration, so the mutant targets the artifact actually under test. · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
 
 ## Invariants
 
@@ -104,3 +122,4 @@ implementation detail, and it changes this task's shape.
 - The `getBillingSuccess` copy, which OpenCollective never reaches today and T5 revisits.
 
 ## Verification Log
+- 2026-08-28 · 71cfd56* · exit 0 · `go test ./internal/web/... -run 'TestCanManageRequiresARecordedSubscription|TestUpgradeCardDoesNotNameAProviderItMayNotUse' -count=1 2>&1 | tee /tmp/adr042-t1-new.out && \ …` · acceptance-sha256:24f2adb30f737ebfda1b450193b08050cdf0e794c9356930e360ea8872541f4e
