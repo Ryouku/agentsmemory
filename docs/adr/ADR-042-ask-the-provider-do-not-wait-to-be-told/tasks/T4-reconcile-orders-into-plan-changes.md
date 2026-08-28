@@ -51,7 +51,7 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
 ## Acceptance
 
 ```bash
-go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
+go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t4-new.out && \
 grep -q "^ok" /tmp/adr042-t4-new.out && \
 go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/... -count=1
@@ -72,6 +72,8 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | `TestReconcileDoesNotRevertAnOperatorDowngrade` | `internal/billing/reconcile_idempotence_test.go` | An operator's `set-plan` downgrade survives the next pass — the applied-order ledger, not the provider's unchanged state, is what makes a POLL idempotent | — |
 | `TestReconcileDoesNotGrantARecurringPlanForAOneOff` | `internal/billing/reconcile_idempotence_test.go` | A ONETIME contribution to a recurring tier is ignored, not treated as a subscription that never expires | — |
 | `TestEmailFallbackRefusesAnAmbiguousMatch` | `internal/billing/reconcile_idempotence_test.go` | Two workspaces sharing one email attribute to NEITHER, instead of to whichever clicked Upgrade last | — |
+| `TestLedgerRecordsOnlyDecisionsActuallyTaken` | `internal/billing/reconcile_idempotence_test.go` | An activation the stale-re-delivery guard declines writes NO ledger row — the ledger records what the server did, not what it refused to do | — |
+| `TestApplyIsIdempotentWithoutTheLedger` | `internal/billing/reconcile_idempotence_test.go` | Repeated application of the SAME event converges — held with the ledger deliberately absent, because the ledger otherwise short-circuits the very passes this is about | — |
 
 ### Review findings from PR #96, reproduced before fixing
 
@@ -97,6 +99,30 @@ whichever they clicked last. Worse given registration performs no email verifica
 ambiguous match — the file's own "when neither resolves, the answer is we do not know", applied to a
 case it had been resolving by guessing. ⚠ Worth naming: this is the channel that carries everything if
 the tag round-trip fails, so the "fallback" framing understated it.
+
+### Self-review findings, same PR
+
+Reviewing my own work after the round above — structurally the weakest kind of review, and it still
+found two things.
+
+**F2 — `TestReconcileIsIdempotent` stopped measuring idempotence.** Measured: pass 2 returns
+`Ignored:1` and never reaches `applyActivated`, because the ledger short-circuits it. So its
+three-pass loop asserts about ONE application. It does still go red under a broken-upsert mutant, but
+via its incidental `CurrentPeriodEnd` assertion rather than the row count the test is named for —
+the multi-pass structure is inert either way. `TestApplyIsIdempotentWithoutTheLedger` restores the
+property directly, with the ledger absent, and asserts every pass genuinely reaches the apply so it
+cannot quietly become a skip-test in turn.
+
+**N1/N2 — the ledger recorded decisions that were not taken.** `applyActivated` now reports whether
+it ACTED, and `applyCanceled` reports WHICH workspace it downgraded. A verified event the
+stale-re-delivery guard declines, and a cancellation for an order belonging to somebody else's
+integration, are both successes that changed nothing — neither is written to the ledger now, so no
+false entry and no empty `team_id`. The webhook path discards both values, which is why it still
+returns 200 on a delivery it deliberately ignored.
+
+**N3** — the migration comment now states the three behaviours an operator cannot guess from the
+schema: rows are written only when something happened, the lookup fails OPEN, and deleting a row is
+the supported way to force a re-apply.
 
 **A1** — the `recover` sat at the function boundary, so a panic ended the LOOP, not the pass: the process
 survived and activation was dead until redeploy. Moved inside the pass. **A2** — orders are now sorted
@@ -129,6 +155,13 @@ here because the ADR's Decision text still lists `REJECTED` and `ERROR` together
 - 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Removes the applied-order ledger check, restoring the reviewed defect: a still-PAID order re-applies every pass, silently reverting an operators set-plan downgrade within one interval. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
 - 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/intent.go` · Lets MatchByEmail resolve when several workspaces share the address, restoring the reviewed defect: the payment lands on whichever workspace clicked Upgrade last. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
 - 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Drops the recurrence check so a ONETIME contribution to a monthly tier grants Pro — which upstream never transitions away from, so it would be permanent. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 7d1ac1e* · mutant killed · exit 1 · `internal/billing/repo.go` · Breaks the subscription upserts convergence. This is the property TestReconcileIsIdempotent was named for and stopped measuring once the ledger short-circuited its later passes; TestApplyIsIdempotentWithoutTheLedger holds it directly. · acceptance-sha256:9c3f775c0d86d8b369ef1ea454c3d315a291a3e60b3435361bb395cee408844c
+- 2026-08-28 · 7d1ac1e* · mutant survived · exit 0 · `internal/billing/reconcile.go` · Marks an activation the stale-re-delivery guard declined as applied, putting a false entry in the ledger — a record of a decision the server refused to take. · acceptance-sha256:9c3f775c0d86d8b369ef1ea454c3d315a291a3e60b3435361bb395cee408844c
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-28 · 7d1ac1e* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Marks an activation the stale-re-delivery guard declined as applied, putting a false entry in the ledger. Previously SURVIVED: the behaviour was fixed and nothing tested it. · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
+- 2026-08-28 · 7d1ac1e* · mutant killed · exit 1 · `internal/billing/repo.go` · Breaks the subscription upserts convergence — the property TestReconcileIsIdempotent was named for and stopped measuring once the ledger short-circuited its later passes. · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
 
 ## Invariants
 
@@ -159,6 +192,8 @@ more code is written.
 - Distinguishing `DISPUTED` / `IN_REVIEW` from `eventIgnored` (deferred: Follow-ups, ADR-042).
 
 ## Verification Log
-- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
-- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
-- 2026-08-28 · 66ebe2c* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 66ebe2c* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:9c3f775c0d86d8b369ef1ea454c3d315a291a3e60b3435361bb395cee408844c
+- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4

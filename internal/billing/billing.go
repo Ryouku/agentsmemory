@@ -254,9 +254,14 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, headers htt
 	}
 	switch evt.kind {
 	case eventActivated:
-		return s.applyActivated(ctx, evt)
+		// The webhook path keeps no ledger, so it discards what the apply reports:
+		// a delivery the stale-re-delivery guard declines is still a successful 200,
+		// which is what stops the provider retrying an event we deliberately ignored.
+		_, err := s.applyActivated(ctx, evt)
+		return err
 	case eventCanceled:
-		return s.applyCanceled(ctx, evt)
+		_, err := s.applyCanceled(ctx, evt)
+		return err
 	default:
 		return nil
 	}
@@ -267,9 +272,14 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, headers htt
 // back inside the signed event), so they are trustworthy here in a way the
 // browser's success redirect is not. OpenCollective never reaches this path: it
 // has no signed webhook, so activation is operator-driven via the set-plan CLI.
-func (s *Service) applyActivated(ctx context.Context, evt providerEvent) error {
+// It reports whether it ACTED. A verified event that the stale-re-delivery guard
+// declines is a success that changed nothing, and the two are different facts: a
+// polling caller records what it applied, and recording a decision it did not take
+// would put a false entry in that ledger (PR #96 self-review, N1). The webhook
+// caller has no ledger and ignores the bool.
+func (s *Service) applyActivated(ctx context.Context, evt providerEvent) (applied bool, err error) {
 	if evt.teamID == "" || evt.planCode == "" {
-		return fmt.Errorf("billing: activated event missing team_id/plan_code")
+		return false, fmt.Errorf("billing: activated event missing team_id/plan_code")
 	}
 	// Guard against a stale or out-of-order re-delivery: if this exact provider
 	// subscription is already recorded as canceled for the team, a late "activated"
@@ -280,18 +290,18 @@ func (s *Service) applyActivated(ctx context.Context, evt providerEvent) error {
 	if evt.subscriptionID != "" {
 		if existing, err := s.subs.ByTeam(ctx, evt.teamID); err == nil &&
 			existing.Status == "canceled" && existing.StripeSubscriptionID == evt.subscriptionID {
-			return nil
+			return false, nil
 		}
 	}
 	plan, err := s.plans.PlanByCode(ctx, evt.planCode)
 	if err != nil {
-		return fmt.Errorf("billing: resolve plan %q: %w", evt.planCode, err)
+		return false, fmt.Errorf("billing: resolve plan %q: %w", evt.planCode, err)
 	}
 	// Flip the effective plan (idempotent: same plan id on re-delivery).
 	if err := s.plans.SetTeamPlan(ctx, evt.teamID, plan.ID); err != nil {
-		return fmt.Errorf("billing: set team plan: %w", err)
+		return false, fmt.Errorf("billing: set team plan: %w", err)
 	}
-	return s.subs.Upsert(ctx, Subscription{
+	return true, s.subs.Upsert(ctx, Subscription{
 		TeamID:               evt.teamID,
 		PlanID:               plan.ID,
 		Status:               "active",
@@ -303,24 +313,28 @@ func (s *Service) applyActivated(ctx context.Context, evt providerEvent) error {
 // applyCanceled downgrades a workspace back to the free plan when its subscription
 // ends. The subscription id is the stable key, so we look up which workspace it
 // belongs to; an unknown id (we never recorded it) is a no-op.
-func (s *Service) applyCanceled(ctx context.Context, evt providerEvent) error {
+// It returns the workspace it downgraded, or the empty string when there was
+// nothing of ours to act on. A polling caller needs to tell those apart: it records
+// what it applied and to whom, and an empty team means the contribution belongs to
+// somebody else's integration (PR #96 self-review, N2).
+func (s *Service) applyCanceled(ctx context.Context, evt providerEvent) (teamID string, err error) {
 	// A cancellation with no subscription id has no stable key to attribute it. Never
 	// query on the empty string: the subscriptions table's pre-provider rows default
 	// stripe_subscription_id to '' and would match, downgrading the wrong workspace.
 	if evt.subscriptionID == "" {
-		return nil
+		return "", nil
 	}
 	existing, err := s.subs.ByStripeSubID(ctx, evt.subscriptionID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil // nothing of ours to downgrade
+		return "", nil // nothing of ours to downgrade
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := s.plans.SetTeamPlan(ctx, existing.TeamID, tenant.FreePlanID); err != nil {
-		return fmt.Errorf("billing: downgrade team plan: %w", err)
+		return "", fmt.Errorf("billing: downgrade team plan: %w", err)
 	}
 	existing.PlanID = tenant.FreePlanID
 	existing.Status = "canceled"
-	return s.subs.Upsert(ctx, existing)
+	return existing.TeamID, s.subs.Upsert(ctx, existing)
 }

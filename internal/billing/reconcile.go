@@ -222,11 +222,19 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 				rep.Unattributed++
 				continue
 			}
-			if err := r.svc.applyActivated(ctx, providerEvent{
+			applied, err := r.svc.applyActivated(ctx, providerEvent{
 				kind: eventActivated, teamID: teamID, planCode: planCode,
 				customerID: o.FromAccountSlug, subscriptionID: o.ID,
-			}); err != nil {
+			})
+			if err != nil {
 				log.Printf("billing: reconcile activate order %s: %v", o.ID, err)
+				continue
+			}
+			if !applied {
+				// The stale-re-delivery guard declined it — a success that changed
+				// nothing. Not recorded: the ledger says what this server DID, and
+				// writing an entry here would claim a decision it refused to take.
+				rep.Ignored++
 				continue
 			}
 			// nextChargeDate is the paid-through date; recording it is what finally
@@ -240,13 +248,21 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 			// A cancellation needs no attribution: the order id is the stable key and
 			// applyCanceled looks the workspace up by it. An id we never recorded is a
 			// no-op there, which is the correct answer for someone else's contribution.
-			if err := r.svc.applyCanceled(ctx, providerEvent{
+			downgraded, err := r.svc.applyCanceled(ctx, providerEvent{
 				kind: eventCanceled, subscriptionID: o.ID,
-			}); err != nil {
+			})
+			if err != nil {
 				log.Printf("billing: reconcile cancel order %s: %v", o.ID, err)
 				continue
 			}
-			r.markApplied(ctx, o, "")
+			if downgraded == "" {
+				// A cancellation for an order we never recorded — somebody else's
+				// contribution to the same collective. Nothing happened, so nothing is
+				// written to the ledger and no empty team id is stored with it.
+				rep.Ignored++
+				continue
+			}
+			r.markApplied(ctx, o, downgraded)
 			rep.Canceled++
 		}
 	}

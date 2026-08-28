@@ -19,6 +19,23 @@
 -- Keyed on the order's publicId and carrying the status that was applied, so a
 -- genuine transition (ACTIVE -> CANCELLED) is still acted on while a repeat of the
 -- same state is skipped.
+--
+-- OPERATOR NOTES, because the behaviour is not guessable from the schema:
+--
+--   * A row is written ONLY when something actually happened. An order that could
+--     not be attributed, one the stale-re-delivery guard declined, and a
+--     cancellation for an order belonging to somebody else's integration all leave
+--     no row — so they are re-examined next pass rather than being silently
+--     skipped forever.
+--   * The lookup FAILS OPEN. If reading this table errors, reconciliation treats
+--     the order as not-yet-applied and proceeds. Re-applying is idempotent and at
+--     worst redundant; failing closed would silently stop activating paying
+--     customers on a database hiccup, which is the more expensive direction.
+--   * DELETING A ROW makes that order eligible again. That is the supported way to
+--     force a re-apply after fixing something by hand — there is no CLI for it.
+--   * Dropping this table entirely is safe and reverts to the pre-ledger behaviour:
+--     every pass re-applies the provider's current state, including over an
+--     operator's manual change. See the ADR's Rollback section.
 
 -- +goose Up
 CREATE TABLE IF NOT EXISTS billing_applied_orders (

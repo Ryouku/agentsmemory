@@ -134,6 +134,16 @@ Concretely:
    workspace at once. (`ERROR` was moved from the cancel group to the ignore group during execution,
    on the reasoning in Risks below; recorded in T4.)
 4. **A periodic driver**, off unless configured, gated on a personal token and a collective slug.
+5. **A ledger of what was already applied.** Every order this server acts on is recorded as
+   `(order id, status)`, and an order whose status has not changed since it was applied is skipped.
+   This is what makes a POLL idempotent, as opposed to idempotent within one pass — and it is the
+   part that was missing from the first version of this decision. A webhook fires once per event, so
+   "apply what the event says" is safe. A poll sees the same order every interval forever, and
+   without a record of what was already done the only remaining invariant is "the provider's state
+   has not changed" — which is not idempotence at all, it is re-asserting a past decision over any
+   local change made since. Concretely, it reverted an operator's `set-plan` downgrade within one
+   interval (found in review; see Consequences). A row is written only when something actually
+   happened, so an unattributable order is re-examined next pass rather than skipped forever.
 
 **What would make this fail, and whether that data can exist.** The design rests on one claim that
 is *not* yet verified: that a `tags` value placed on the contribution URL survives to
@@ -196,6 +206,7 @@ unchanged — delta: none.
 | `OPENCOLLECTIVE_RECONCILE_INTERVAL` (env) | new — poll period, default `15m` | operator | `billingConfig()` → reconciler driver |
 | `OPENCOLLECTIVE_API_URL` (env) | new — override for tests/staging, default `https://api.opencollective.com/graphql/v2` | operator | `ocOrderSource` |
 | `billing_checkout_intents` (table) | new — migration `00034` | T1 | reconciler (T3), attribution fallback |
+| `billing_applied_orders` (table) | new — migration `00035`; the ledger that keeps a poll idempotent | T4 | reconciler (T4) |
 | `subscriptions` rows under OpenCollective | behaviour change — rows now exist where none could before | reconciler (T3) | `ManageURL`, `canManage` (T5) |
 | Contribution checkout URL | now carries `tags`, `email`, `redirect` query parameters | `createCheckout` (T1) | Open Collective hosted flow |
 | `Config.Provider == "opencollective"` | unchanged | operator | unchanged |
@@ -245,6 +256,17 @@ sequential.
   financial data. It is read-only and scoped to one account, but it is a new secret to hold.
 - **Neutral:** the manual `set-plan` path is untouched and remains the operator override, including
   for a contribution that arrives with no usable attribution.
+- **Corrected in review, and the correction is the most useful thing in this record.** The first
+  version of this decision had reconciliation feed the existing `applyActivated`/`applyCanceled`
+  and treated their webhook-era idempotence as sufficient. It was not: `set-plan` writes only
+  `teams.plan_id`, so the subscription row still read `active`, the guard did not fire, the order was
+  still `PAID` upstream, and every pass put the workspace back on Pro with a routine "1 activated" in
+  the log — the operator's documented rollback and the reconciler fought, and the reconciler won
+  fifteen minutes later. The same root cause let a `ONETIME` contribution grant a recurring plan
+  permanently, with `Frequency` decoded and read by nothing. Both are closed by decision point 5 and
+  an explicit recurrence check. ★The general lesson, worth more than the fix: **when a pull replaces
+  a push, ask what made the old path safe. If the answer is "it only ran once", that property is gone
+  and nothing tells you.**
 
 ## Out of Scope
 
@@ -273,8 +295,11 @@ Required — this adds persistent state, an external integration and a new secre
 
 1. Unset `OPENCOLLECTIVE_PERSONAL_TOKEN`. The reconciler is not constructed, the goroutine does not
    start, and activation returns to manual `set-plan`. No code change, no redeploy beyond the env.
-2. The `billing_checkout_intents` table has a goose `-- +goose Down` in migration `00034` that drops
-   it. Nothing else reads it.
+2. The two tables this decision adds each have a goose `-- +goose Down`: `00034` drops
+   `billing_checkout_intents` and `00035` drops `billing_applied_orders`. Nothing else reads either.
+   ⚠ Dropping `00035` alone, while reconciliation is still running, reverts to the behaviour that
+   made it necessary: every pass re-applies the provider's current state, over any manual change an
+   operator has made since. Stop the reconciler (step 1) before dropping it, or drop both.
 3. Rows the reconciler already wrote into `subscriptions` are correct records of real payments and
    are deliberately **not** rolled back. `teams.plan_id` values it set are reversible with
    `set-plan --slug <s> --plan personal`.
