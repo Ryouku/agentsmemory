@@ -18,13 +18,18 @@ observations, not requirements — they motivate the Facts below and are cited b
 
 | ID | Observation | Evidence |
 |----|-------------|----------|
-| M-1 | F-7 | An agent reaches for Bash roughly 20× more often than the palace. |
-| M-2 | F-8 | An agent writes to the palace more than it reads from it. |
-| M-3 | F-9 | A search hit discloses a small fraction of the memory it names. |
-| M-4 | F-10 | Memories fragment at a fixed character boundary sized for the embedder. |
-| M-5 | F-11 | A superseded record can outrank the record that corrected it. |
-| M-6 | F-12 | Filing a correction as a new drawer leaves the incorrect record current. |
-| M-7 | F-13 | Ended records are already excluded from default reads. |
+| M-1 | An agent reaches for Bash roughly 20× more often than the palace. | session `ee8f1fc1` — 7,521 Bash calls against 369 palace calls |
+| M-2 | An agent writes to the palace more than it reads from it. | same session — 226 writes, 143 reads; `am_search` 52 of 8,256 tool calls |
+| M-3 | `content_coverage` counts only the primary window, not the `regions` also disclosed, so a caller deciding whether it needs a second call decides on an under-reported number. | `internal/mcpserver/drawers.go:929`; regions rendered separately at `:859` |
+| M-3b | Disclosure is 23–27%, not the ~3% this spec first reported. The earlier figure came from a query passing `snippet_chars: 90` — it measured the caller's own parameter. | re-measured 2026-08-28: 401–404 content runes + 403–408 region runes over 3,053–3,505-rune memories; matches ADR-019's measured median of 25% |
+| M-4 | Memories fragment at a fixed boundary sized for the embedder. | `internal/palace/chunk.go:20` — `ChunkSize = 1600` (~400 bge-m3 tokens) |
+| M-5 | Four unlinked records about one subject were all CURRENT and all returned on one page, so a reader met three superseded framings beside the correct one. | one query, 2026-08-28; none had been ended, so none was filtered |
+| M-5b | ⚠ **RETRACTED — no rank inversion was demonstrated.** An earlier version claimed the wrong record outranked its correction, citing distances 0.334 against 0.355. Distance does not decide order, and on re-reading the same response the CORRECT framing came back **first**. M-5 stands; the ordering claim does not. | ADR-028:17 — *"the score that decides the order is not the score that is shown"*; the cited response, re-read |
+| M-6 | Filing a correction with `am_add_drawer` leaves the incorrect record CURRENT, while `am_update_drawer` ends and links it. The cheap path produces the competing corpus. | 4 corrections filed to one finding, 0 records ended; `am_update_drawer` advertises the correct behaviour at `internal/mcpserver/drawers.go:463` |
+| M-7 | An ended record is ALREADY absent from a default page, not merely outranked. | `include_history` defaults false at `internal/mcpserver/drawers.go:431`; `survivorsFrom` at `internal/palace/memory_search.go:70`; ADR-038 |
+| M-8 | Corrections are already ATTACHED to hits — retracts/supersedes/qualifies edges reach the reader today. | `internal/palace/memory_search.go:275`; wire field at `internal/mcpserver/drawers.go:761` |
+| M-9 | `supersedeInto` writes the successor then ends predecessor chunks one at a time, without atomicity or a compare-and-swap. | `internal/palace/supersede.go:84-124` |
+| M-10 | `am_search` has `limit` but no offset or cursor, so a withheld hit cannot be resumed by paging. | `internal/mcpserver/drawers.go:786-800` |
 
 ## Goal
 
@@ -189,6 +194,8 @@ And the gate names the rule change rather than reporting a comparison
 - Should a memory larger than the response budget be returnable at all, or always partial-with-fetch-id? · owner: Zy · blocks: F-2
 - Is `am_search` gaining a cursor in scope, or is `am_get_drawer` the only completion path? · owner: Zy · blocks: F-2
 - Does F-3's atomicity requirement belong in this spec or as an amendment to ADR-038, which owns supersession? · owner: Zy · blocks: F-3
+- ⚠ Does anything here touch ORDERING? ADR-004's Decision reserves "any RANKING use of a graph read" behind issue #34's `justified` verdict, which is still open, and ADR-036 T5 shipped "marked, never hidden and never demoted" deliberately. F-3 is now a write-side invariant and does not demote — but an ADR must not reintroduce ordering without that verdict. · owner: Zy · blocks: F-3
+- Does the red-binding lane stay behind `-tags readcostspec`, or do the bindings land in the same PR as the ADR that turns them green? · owner: Zy · blocks: all
 
 
 ## Verify

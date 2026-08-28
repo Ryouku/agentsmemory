@@ -1,3 +1,16 @@
+//go:build readcostspec
+
+// These bindings are DELIBERATELY RED and gated behind a build tag, so `go test
+// ./...` — which CI runs on every push to main (.github/workflows/build.yml:65) —
+// stays green while they wait for their ADR. Collect them with:
+//
+//	go test -tags readcostspec ./...
+//
+// The repository already uses this shape for `contractaxis`. Gating rather than
+// deleting keeps them collectable, which is what @spec means: the test exists and
+// fails, it just is not in the default lane. Remove the tag in the commit that
+// turns them green.
+
 package repohygiene
 
 import "testing"
