@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/mcpprotocol"
@@ -870,6 +871,7 @@ func (i *Installer) registerStopHook() error {
 	}
 	hooksFile := filepath.Join(i.targetDir, i.kit.hooksFile)
 	plans := i.hookPlans()
+	i.warnIfRepointing(hooksFile)
 
 	if i.dryRun {
 		for _, p := range plans {
@@ -1000,6 +1002,83 @@ func (i *Installer) hookPlans() []hookPlan {
 			note:  "registered SessionStart hook (a fresh context starts with a recall already done)",
 		},
 	)
+}
+
+// hookCommandURL is the endpoint baked into an installed hook command, or "" when
+// the command carries none.
+// ⚠ NOT ANCHORED. It used to carry a leading ^ from when it was handed one command
+// string at a time; scanning the raw hooks file, nothing sits at position 0, so the
+// anchored form matched nothing and warned nobody — on every agent.
+var hookCommandURL = regexp.MustCompile(regexp.QuoteMeta(mcpprotocol.MCPURLEnvVar) + `='([^']*)'`)
+
+// warnIfRepointing says so out loud when this install is about to send the hooks
+// at a DIFFERENT server than the one they currently talk to.
+//
+// ⚠ THIS IS THE LOUDEST THING THE INSTALLER DOES, and it exists because the
+// silent version cost a whole session. `install --agent claude` with no --mcp-url
+// takes the hosted default, and the default wins over whatever is already
+// configured: on 2026-08-28 that repointed five working hooks from a local server
+// to the hosted one, every hook went mute because the local token did not
+// authenticate there, and NOTHING said a word. The symptom looked like broken
+// hooks; the cause was a re-install.
+//
+// It reports and does not decide. Which URL wins is upgrade semantics — someone
+// migrating local→hosted needs the new one to take effect — and changing that is
+// a separate decision. Being told is what was missing.
+func (i *Installer) warnIfRepointing(hooksFile string) {
+	raw, err := os.ReadFile(hooksFile)
+	if err != nil {
+		return // no existing hooks file: nothing to repoint, and a fresh install says enough
+	}
+	// ⚠ THE RAW TEXT, NOT A PARSED DOCUMENT. This first unmarshalled JSON, which
+	// made it silently useless for codex — whose hooks live in config.toml, so the
+	// unmarshal failed and the function returned having warned nobody. A warning
+	// that exists for one agent and quietly not for another is the reachability
+	// defect this repository is named for. The assignment we are looking for has
+	// the same shape in every format because WE wrote it, so match that instead of
+	// the container around it.
+	seen := map[string]bool{}
+	for _, m := range hookCommandURL.FindAllStringSubmatch(string(raw), -1) {
+		if m[1] != "" {
+			seen[m[1]] = true
+		}
+	}
+	for existing := range seen {
+		if existing == i.mcpURL {
+			continue
+		}
+		i.warn("this install REPOINTS your hooks: they currently talk to %s, and will now talk "+
+			"to %s. If that is not what you meant, re-run with --mcp-url %s (or --local for "+
+			"a server on this machine) — a hook pointed at a server it cannot authenticate "+
+			"to goes silent rather than failing loudly.",
+			redactURL(existing), redactURL(i.mcpURL), redactURL(existing))
+	}
+}
+
+// redactURL renders an endpoint for display with anything secret removed.
+//
+// ⚠ THE WARNING PRINTS A URL THAT CAME OUT OF A USER-CONTROLLED FILE. An endpoint
+// may legitimately carry credentials — userinfo, or a signed query — and this
+// message goes to a terminal and very often into a log or a pasted bug report.
+// Control characters are stripped too: the source is a file anyone can edit, and
+// a warning is the wrong place to let it drive a terminal.
+func redactURL(raw string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, raw)
+	u, err := url.Parse(clean)
+	if err != nil || u.Host == "" {
+		return "(an endpoint that does not parse)"
+	}
+	shown := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
+	out := shown.String()
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		out += " (credentials removed)"
+	}
+	return out
 }
 
 // shellQuote renders one literal POSIX-shell argument. Hook commands are stored
