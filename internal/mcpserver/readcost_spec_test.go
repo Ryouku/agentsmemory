@@ -56,3 +56,14 @@ func TestF4ChunkingCreatesNoReassemblyObligation(t *testing.T) {
 		"h.Drawer.Content in place of the memory's content, so a match in a later chunk returns only "+
 		"that chunk")
 }
+
+func TestF7APageReportsWhatItWithheld(t *testing.T) {
+	t.Fatalf(readCostNotYetBuilt, "F-7 (UC1-S4): a page must report how many hits it withheld. "+
+		"`am_search` has limit but no offset or cursor (drawers.go:786-800, M-10) and the spec "+
+		"declines to add one (Non-Goals, Grill Log 8), so the count is the ONLY evidence a withheld "+
+		"hit existed — without it a page cut short by the response budget is indistinguishable from "+
+		"an exhausted corpus. This is a NEW obligation restored from old F-2, kept as its own fact so "+
+		"the scope increase is visible rather than folded into an existing binding. Kill it by "+
+		"reporting zero withheld on a page that was cut, or by counting hits dropped for relevance "+
+		"as withheld — the count is about the BUDGET, not about ranking, which this spec does not touch")
+}
