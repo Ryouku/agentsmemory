@@ -182,14 +182,28 @@ func TestDockerfileCrossCompilesRatherThanEmulates(t *testing.T) {
 // the sibling is doing. pr-image.yml is deliberately NOT included: it builds the
 // same commit that build.yml already race-tests on the pull_request trigger, so
 // a third run would buy nothing and cost a full emulated image build.
+//
+// The explicit -timeout is pinned as part of the same contract, because losing
+// it does not degrade the gate — it BREAKS the build. go test allows 10 minutes
+// per package and the instrumented suite exceeds that on a CI runner: the first
+// run of this step died at exactly 600s with "test timed out", with no data race
+// anywhere in the log. Anyone deleting the flag would reproduce that, so the
+// flag is contract rather than tuning.
 func TestCIRunsTheRaceDetector(t *testing.T) {
 	for _, workflow := range []string{
 		".github/workflows/build.yml",
 		".github/workflows/release.yml",
 	} {
-		if content := withoutComments(readRepoFile(t, workflow)); !strings.Contains(content, "go test -race ./...") {
+		content := withoutComments(readRepoFile(t, workflow))
+		if !strings.Contains(content, "go test -race") {
 			t.Errorf("%s does not run the race detector; an unsynchronised access "+
 				"would reach production without any CI path objecting", workflow)
+			continue
+		}
+		if !strings.Contains(content, "-timeout=") {
+			t.Errorf("%s runs -race without an explicit -timeout; the default is 10 "+
+				"minutes per package and the instrumented suite exceeds it on a runner, "+
+				"so the job fails with a timeout that reads like a hung test", workflow)
 		}
 	}
 }

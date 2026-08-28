@@ -53,8 +53,10 @@ jobs:
       # says which one failed. This workflow carries its own gate rather than
       # leaning on build.yml because the two run independently by design — a tag
       # publishes from here whatever the sibling workflow is doing.
+      # -timeout for the same reason as build.yml: the default is 10 minutes PER
+      # PACKAGE and the instrumented suite exceeds it on a CI runner.
       - name: Race
-        run: go test -race ./...
+        run: go test -race -timeout=30m ./...
 
       # The runtime stage installs packages, so its layer EXECUTES on the target
       # architecture; without QEMU the arm64 build dies with "exec format error".
