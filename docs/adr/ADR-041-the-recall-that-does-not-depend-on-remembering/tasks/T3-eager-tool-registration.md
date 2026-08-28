@@ -1,7 +1,7 @@
 # Task ADR-041-T3: Register the tools so the first call needs no lookup
 
 **Depends-on:** T2
-**Covers:** F-9, F-10, F-12, F-13, F-14, UC3-S1, UC3-S2
+**Covers:** F-9, F-10, F-12, F-13, UC3-S1, UC3-S2
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
 **Produces:** `compliance-dependence order` — the shipping order, recorded before the first mechanism ships
@@ -21,7 +21,7 @@ The `am_*` tools are reachable on the first call, with no schema round-trip in f
 |------|--------|-----|
 | `internal/mcpserver/server.go` | edit | Registration; its body is pinned by `classifyToolMutationPatch` |
 | `internal/mcptest/mcp_contract_axis_test.go` | edit | Re-cut the stored mutant patch this edit invalidates |
-| `internal/mcpserver/recallcue_spec_test.go` | edit | `TestF14…` turns green |
+| ~~`internal/mcpserver/recallcue_spec_test.go`~~ | none | `TestF14…` was DELETED with F-14, withdrawn 2026-08-28. This row is kept struck through rather than removed, because the premise it recorded — that this server could change the outcome — is the thing the task disproved |
 | `tasks/README.md` | edit | The ordering is recorded here BEFORE this ships (F-13) |
 
 ## Ordered Steps
@@ -35,7 +35,7 @@ The `am_*` tools are reachable on the first call, with no schema round-trip in f
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go test ./internal/mcpserver/ -run "TestF14" -count=1 -v && go test -tags contractaxis ./internal/mcptest 2>&1 | tee /tmp/acc.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/acc.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go test ./clients/claude-code/ -run "^(TestF9OneMechanismPerMeasurementWindow|TestF10EveryResultIsRecordedEitherWay|TestF12EachMechanismNamesTheFailureItAddresses|TestF13MechanismsAreOrderedByComplianceDependence)$" -count=1 -v 2>&1 | tee /tmp/acc.out; grep -q "^=== RUN" /tmp/acc.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/acc.out'
 ```
 
 ⚠ The fence proves the mechanism exists and is selected. The measured delta is a sign-off line:
@@ -46,7 +46,6 @@ falls (F-10).
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestF14NoSchemaLookupBeforeTheFirstCall` | `internal/mcpserver/recallcue_spec_test.go` | no lookup precedes the first call | F-14 |
 | `TestMCPContractAxis` | `internal/mcptest/mcp_contract_axis_test.go` | the re-cut mutant still applies and is killed | — |
 
 ## STOPPED — the mechanism is not the server's to perform, 2026-08-28
@@ -72,9 +71,15 @@ a policy applied to MCP tools as a class. There is no field in the protocol to o
 the Affected Files table's premise — that `internal/mcpserver/server.go` could change this — was
 wrong when the task was written.
 
-**F-14 is therefore not implementable as stated** and its binding stays red. That is a spec
-correction, not a task failure: the fact asserts an outcome the system cannot produce, so it needs
-re-scoping or withdrawing by the owner rather than an implementation.
+**F-14 is therefore not implementable as stated** and was **WITHDRAWN by Zy on 2026-08-28**. That is
+a spec correction, not a task failure: the fact asserted an outcome the system cannot produce. The
+withdrawal and its reasoning are recorded in the spec's `## Withdrawn facts` section.
+
+⚠ **The Acceptance fence changed with it.** It named `TestF14`, and a `-run` pattern matching a test
+that no longer exists exits 0 — the fence would have passed vacuously, which is the trap this repo
+names in its own guidance. It now runs the tests for the facts T3 still carries (F-9, F-10, F-12,
+F-13). The contract-axis half went too: it was there to re-cut the stored mutant this task's code
+change would have invalidated, and there is no code change.
 
 **What the finding is worth, because it is not nothing.** The one surface that reaches an agent
 WITHOUT a lookup is the `instructions` field on the handshake — it is not deferred and cannot be.
@@ -89,7 +94,7 @@ before shipping precisely so a mechanism that fails cannot be quietly promoted p
 
 | Rung | How this task shows it |
 |------|------------------------|
-| 1 — exists | `TestF14…` |
+| 1 — exists | nothing; `TestF14…` was deleted with F-14. **No rung applies:** the mechanism is not this server's to build, which is the finding rather than a gap in it |
 | 2 — something selects it | registration is the selection; the contract axis drives the live surface |
 | 3 — the caller can discover it | the client sees schemas at connect — that IS the change |
 | 4 — it is used | the rate after this ships, against T2 |
@@ -117,3 +122,4 @@ Stop if the harness does not honour eager registration. Deferring the tool list 
 - Changing which tools exist
 
 ## Verification Log
+- 2026-08-28 · human-observed · STOPPED per this task's own Stop Condition, 2026-08-28: the harness defers EVERY MCP server regardless of size — a two-tool server is deferred — so eager registration is not the server's to perform and F-14 is not implementable as stated. decision blocked — the fact needs re-scoping or withdrawing by the owner, not an implementation. Evidence in this file's STOPPED section.

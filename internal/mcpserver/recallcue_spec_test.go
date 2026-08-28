@@ -47,49 +47,57 @@ func statusOfTask(t *testing.T, id string) string {
 	return ""
 }
 
-// skipWhileBlocked skips only while the owning task is recorded blocked, and
-// fails the moment it is recorded done without the real assertion being written.
-func skipWhileBlocked(t *testing.T, task, fact, recorded string) {
-	t.Helper()
-	switch st := statusOfTask(t, task); st {
-	case "blocked", "pending":
-		t.Skipf("%s is unbound because %s is recorded %q: %s", fact, task, st, recorded)
-	case "done":
-		t.Fatalf("%s is recorded done, so the mechanism SHIPPED — but %s is still a stub. "+
-			"Write the real assertion: a mechanism that ships without its spec binding is "+
-			"exactly the untested capability this spec exists to prevent", task, fact)
-	default:
-		t.Fatalf("%s is recorded %q, which this binding does not know how to read", task, st)
-	}
-}
-
+// TestF11InstructionsNameTheClassOfClaimNotTheDuty is ADR-041 T6's gate: the
+// handshake names the CLASS OF CLAIM that needs a recall, and gives no bare order
+// to recall.
+//
+// ⚠ THE BARE IMPERATIVE WAS MEASURED NOT TO WORK, which is why replacing it is the
+// mechanism rather than softening it. "RECALL BEFORE YOU ACT" sat at the top of
+// every handshake and did not fire on the session that wrote this spec; ADR-017
+// measured the same thing from the other side — the whole protocol delivered to a
+// subagent produced 0 recalls in 5 dispatches, one short paragraph produced 5. An
+// instruction competes with every other instruction in the context. A NAME for a
+// class of claim is something the agent can notice itself about to make.
+//
+// ⚠ IT REPLACES RATHER THAN ADDS (F-8, and the F-7 ceiling). Prose added to a
+// document the agent already receives in full is not a mechanism under this spec,
+// so this test also fails if the imperative survives beside the cue.
 func TestF11InstructionsNameTheClassOfClaimNotTheDuty(t *testing.T) {
-	// ⚠ THIS RUNS BEFORE THE SKIP, and the order is the whole point. Written after
-	// it, this assertion is unreachable: t.Skipf returns, and the check silently
-	// never runs — a test that cannot fail, which is the exact defect this
-	// repository keeps shipping. It was written that way first and caught by
-	// mutating the string below and watching the test stay green.
-	//
-	// It pins the PREMISE F-11 rests on: the bare imperative is what F-11 exists to
-	// replace. If it ever leaves serverInstructions by some other route, the fact's
-	// motivation changed and it needs re-reading rather than re-skipping.
-	if !strings.Contains(serverInstructions, "RECALL BEFORE YOU ACT") {
-		t.Errorf("serverInstructions no longer carries the bare imperative F-11 was written " +
-			"against; the fact's premise has changed and it needs re-stating")
+	// The duty, in every form the old text used. A cue that leaves the order in
+	// place has added a paragraph, which F-8 says is not a mechanism.
+	for _, imperative := range []string{
+		"RECALL BEFORE YOU ACT",
+		"before reading code",
+	} {
+		if strings.Contains(serverInstructions, imperative) {
+			t.Errorf("serverInstructions still carries the bare imperative %q. F-11 replaces the "+
+				"order with a name for the class of claim; keeping both is the added paragraph "+
+				"F-8 rules out as a mechanism", imperative)
+		}
 	}
 
-	skipWhileBlocked(t, "T6", "F-11 (and UC2-S1)",
-		"serverInstructions must name the CLASS OF CLAIM that requires a recall — an assertion "+
-			"that nothing changed — and must not carry a bare instruction to recall before "+
-			"acting. The bare form is there today and did not fire on the session that wrote "+
-			"this spec. It is candidate #4 of four, the MOST compliance-dependent, so F-8's "+
-			"caveat applies and it ships last")
-}
+	// The class itself, in the three shapes F-2 defines it by. These are what an
+	// agent has to recognise itself about to write.
+	// ⚠ EACH SHAPE MUST BE UNIQUE TO THE CUE. "never" alone is credited by the
+	// pre-existing "never a safe default" in the unchanged scope paragraph — the
+	// substring-credit class AGENTS.md names, where a check passes on text it is not
+	// about. The phrase from the cue is what is asserted.
+	for _, shape := range []string{"still works a given way", "does not do something", "never decided"} {
+		// Case-insensitive: the handshake may emphasise a shape in caps, and a gate that
+		// fails on capitalisation is a gate about typography.
+		if !strings.Contains(strings.ToLower(serverInstructions), shape) {
+			t.Errorf("serverInstructions does not name the %q shape. F-2's countable unit is a "+
+				"claim that NOTHING CHANGED, and an agent cannot notice itself making one if "+
+				"the handshake never says what one looks like", shape)
+		}
+	}
 
-func TestF14NoSchemaLookupBeforeTheFirstCall(t *testing.T) {
-	skipWhileBlocked(t, "T3", "F-14",
-		"the am_* tools would be registered so no schema lookup is needed before the first call. "+
-			"MEASURED 2026-08-28 and NOT IMPLEMENTABLE AS STATED: deferral is a property of the "+
-			"HARNESS, not of the server — a two-tool MCP server is deferred just the same, so no "+
-			"registration choice this server makes can remove the lookup. T3 records the finding")
+	// The reason, without which the class is a list of words. Source cannot show
+	// that nothing changed, because a fix looks identical to code that was always
+	// right — that is the whole argument for asking the palace instead.
+	if !strings.Contains(serverInstructions, "always") {
+		t.Error("serverInstructions names the class but not why source cannot settle it: a fix " +
+			"looks identical to code that was ALWAYS right, which is the one thing reading the " +
+			"tree cannot tell you and the reason this class is the palace's to answer")
+	}
 }

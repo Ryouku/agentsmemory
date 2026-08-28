@@ -5,7 +5,14 @@
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
 **Produces:** none
-**Consumes:** `recall baseline` (T2), `compliance-dependence order` (T3)
+**Consumes:** `recall baseline` (T2)
+
+⚠ **The `compliance-dependence order` edge to T3 was removed on 2026-08-28, when F-14 was
+withdrawn.** The ordering itself is delivered and unchanged — T3's step 2 recorded it in
+`tasks/README.md` BEFORE any code, which is exactly what F-13 requires and what its test reads. What
+went with F-14 is T3's mechanism, and a task that can never complete cannot be a dependency: every
+mechanism after it would wait forever on a decision already made. The ordering is an ADR-level
+artifact in the README, not a thing this task waits for.
 **Data dependency:** needs REAL SESSIONS for the after-measurement — the fence below proves the
 mechanism works, never that it moved the rate. The delta is recorded in the sign-off.
 
@@ -33,7 +40,7 @@ A source search whose subject is behaviour meets a cue before the belief is writ
 ## Acceptance
 
 ```bash
-docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go test ./clients/claude-code/ -run "TestPreToolUseCueFiresOncePerSubsystem|TestPreToolUseHookIsRegistered" -count=1 -v 2>&1 | tee /tmp/acc.out; ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/acc.out'
+docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go test ./clients/claude-code/ -run "TestPreToolUseCueFiresOncePerSubsystem|TestPreToolUseHookIsRegistered" -count=1 -v 2>&1 | tee /tmp/acc.out; grep -q "^=== RUN" /tmp/acc.out && ! grep -qE "no tests to run|^FAIL|^--- FAIL" /tmp/acc.out'
 ```
 
 ⚠ The fence proves the mechanism exists and is selected. The measured delta is a sign-off line:

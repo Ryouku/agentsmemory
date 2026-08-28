@@ -305,6 +305,80 @@ record, is a decision this entry files rather than makes.
 
 ## ADR-041 T2 — the recall-before-assertion baseline, measured 2026-08-28
 
+⚠ **RE-TAKEN 2026-08-28 UNDER v3.** "Preceded" now means A RECALL SINCE THE LAST USER TURN, decided
+by Zy from the measured distribution of all three candidate readings. Under v2 it meant "this
+session touched the palace at some earlier point" — a latch that flipped at the first recall and
+never reset, which nobody chose; it is simply what the code computed. Rates under the two are NOT
+comparable, which is what the version stamp is for, and the v2 figure is kept below rather than
+deleted because it is what the earlier evidence proved.
+
+**7.6%** — of 341 no-change assertions across 24 sessions, 26 had a recall since the user turn that
+asked for the work.
+
+| | |
+|---|---|
+| transcripts scanned | 48 |
+| sessions with at least one assertion | 24 |
+| assertions | 341 |
+| preceded by a recall (since the last user turn) | 26 |
+| **rate** | **7.6%** |
+| classifier | v3 |
+
+Cross-readings on the same corpus, so the choice stays auditable: v2's latched reading **52.8%**;
+since the last compaction **43.4%**; within 100 tool calls 28.7%, within 50 17.6%, within 25 12.3%,
+within 10 **7.3%**, within 5 5.3%, within 1 1.8%.
+
+The user-turn reading lands within half a point of the within-10-calls window from a completely
+different derivation, which is the only evidence any particular window is more than a number
+someone picked. `TestTheRecordedBaselineNamesTheVersionTheCodeStamps` pins the `classifier` row
+above to the constant the code stamps, so a future redefinition cannot ship without re-taking this.
+
+### T6 shipped 2026-08-28, into a window it shares with T4
+
+T6 shipped — `serverInstructions` names the class of claim and carries no imperative — and was
+verified against the RUNNING server rather than the build log: the live handshake returns 1194 bytes
+carrying `WHAT SOURCE CANNOT SETTLE` and not `RECALL BEFORE YOU ACT`.
+
+**The before-state, re-taken with the shipped binary at the moment the window opened**, and it
+reproduces the baseline exactly, as it must — every transcript on disk predates T6 by minutes:
+
+| | |
+|---|---|
+| sessions with at least one assertion | 24 |
+| assertions | 341 |
+| preceded (since the last user turn) | 26 = **7.6%** |
+| made before ANY recall | 161 = 47.2% |
+| recall calls | 128 |
+| classifier | v3 |
+
+⚠ **AND IT IS NOT A CLEAN WINDOW — F-9 IS VIOLATED IN FACT.** Raised in review and confirmed against
+source: T4's recall hook is registered on `SessionStart` UNCONDITIONALLY, so on a hosted install it
+went live the same day, hours before T6. T4's record reads `blocked`, but that describes the record
+rather than the deployment — it is `blocked` only because it is mute on a `--local` install. Two
+mechanisms went live after the 7.6% baseline was taken, so **no delta from this window is
+attributable to either of them.**
+
+Nothing is un-shipped to manufacture a window that is already spent. The next clean one needs a
+fresh JOINT baseline taken with both live — which `observed_at` now makes computable — and then
+exactly one further mechanism. F-10 records what happened, and this is what happened.
+
+**The after-measurement therefore cannot be a T6 delta.** What it can be is a joint after-state, and
+it still needs real sessions with `minBaselineSessions = 20` as the floor.
+
+⚠ **AND THE STORE COULD NOT HAVE SEPARATED THE TWO WINDOWS.** Asked at the moment the window opened
+how the after-measurement would know which rows were after, the answer was: it would not. Every
+observation was UNDATED, so a store holding both windows answers "the rate over everything ever
+recorded" and nothing else — the delta F-10 requires is not computable from it. The whole
+before/ship-one/after design rested on a field that did not exist.
+
+`observed_at` (RFC3339 UTC) is on every observation now, pinned by
+`TestAnObservationCanBePlacedInAMeasurementWindow` with two mutants: the clock read from the wrong
+place, and a format nothing can parse. Additive, so `preceded_by_recall` and the v3 stamp are
+untouched. Rows written before today carry no `observed_at`, which is the correct reading — they are
+the pre-T6 window by construction.
+
+### Superseded: the v2 baseline, 2026-08-28
+
 **27.6%** — of 221 no-change assertions across 46 sessions, 61 were preceded by a recall.
 
 | | |
@@ -313,7 +387,7 @@ record, is a decision this entry files rather than makes.
 | assertions | 221 |
 | preceded by a recall | 61 |
 | **rate** | **27.6%** |
-| classifier | v2 |
+| classifier-v2 | v2 |
 | **precision** | **48%** (12/25 hand-judged, 2026-08-27) |
 | window | 2026-08-01 .. 2026-08-28 |
 
@@ -668,6 +742,25 @@ fix because it changes which ids exist. **ADR-038 (Proposed, 2026-08-27) removes
 splits the id that dedupes from the id that refers, so re-chunking no longer invalidates anything
 pointing at a drawer. It does NOT do the re-chunking; the open question it leaves is what happens to
 a reference pointing at a non-parent chunk that a re-chunk deletes. See `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`.
+
+## `adr-next` announces a task the corpus records as impossible — 2026-08-28
+
+Scanned every ADR with a tasks directory, comparing what `adr-next --all` calls READY against the
+status its own `tasks/README.md` carries. **One live disagreement:** ADR-041 T3 is `blocked` in the
+README and READY to `adr-next`.
+
+The cause is that `adr-next` models two states — done and not-done — and derives done from a
+Verification Log entry whose `acceptance-sha256` matches the current fence. `blocked` is not a state
+it can represent, so a task recorded as impossible, with the evidence for that sitting in its own
+file, is announced as the next thing to do. T3's Stop Condition fired and was honoured; a session
+following the banner would rebuild against it.
+
+This is the same shape as the finding that 9 `done` tasks read as not-done for want of a digest, and
+it has the same consequence: **the corpus tells sessions to do work it has already settled.**
+
+`adr-next` is in quality-harness, not this repository, so this is filed under the entry below rather
+than fixed here. What IS repo-side, and is done: T3's stop is now a tool-written Verification Log
+entry rather than only prose, so the evidence chain carries it.
 
 ## The ADR evidence chain depends on a tool outside the repository
 
@@ -1862,12 +1955,82 @@ the assertion's subject — changes what the number means. Options, cheapest fir
 - Record more without deciding: also emit `recalls`, `assertions_before_first_recall`, and the
   distance in tool calls from each assertion back to the nearest preceding recall. Additive, it
   re-reads existing transcripts, and it lets the window be chosen from data rather than guessed.
+  **DONE 2026-08-28 — see the distribution below.**
 - Reset the latch at a boundary (user message, or compaction) and re-take the baseline.
 - Bind "preceded" to subject relatedness — the honest reading of the spec's intent, and much the
   hardest to implement.
 
 **The baseline must be re-taken under whatever definition wins.** A rate is only comparable with
 another measured the same way; T2's number cannot be carried over.
+
+### The additive option shipped, and the distribution is what the decision was waiting for
+
+`Observation` now carries `recalls`, `assertions_before_first_recall`, and `preceded_within` —
+cumulative counts of assertions whose NEAREST preceding recall was within 1, 5, 10, 25, 50 or 100
+tool calls. `preceded_by_recall` is deliberately UNCHANGED, latch and all, so T2's rate stays
+comparable under F-16: nothing here redefines the number, it measures what a redefinition would have
+to choose between. `classifierVersion` is unchanged for the same reason — neither `assertionShape`
+nor `assertionSubject` moved.
+
+`TestPrecededCannotSeeProximityAndTheObservationCan` is the gate, and it is written as the pair of
+sessions the old field cannot separate: one recall then a wall of claims, versus a recall before
+each claim. **Both score 100% on `preceded`.** Four mutants die on it — the distance never updating,
+every window credited unconditionally, `recalls` never counted, and `assertions_before_first_recall`
+never counted.
+
+Measured 2026-08-28 over 48 local session transcripts — 24 carrying at least one assertion, 341
+assertions, classifier v2. Re-run it rather than trusting these numbers; the corpus grows daily:
+
+All three candidate definitions are measured, not just the tool-call windows:
+
+| reading of "preceded" | rate |
+|---|---|
+| the latched field — *"this session touched the palace at some earlier point"* | **52.8%** |
+| a recall since the last COMPACTION | 43.4% |
+| nearest recall within 100 tool calls | 28.7% |
+| within 50 | 17.6% |
+| within 25 | 12.3% |
+| **a recall since the last USER TURN** | **7.6%** |
+| within 10 | 7.3% |
+| within 5 | 5.3% |
+| within 1 — the claim made immediately after asking | 1.8% |
+
+47.2% of assertions are made before ANY recall in the session.
+
+⚠ **The user-turn reading first measured a clean 0.0%, and the zero was the instrument.**
+Claude Code records every TOOL RESULT as a `"type": "user"` line — 11,055 of 11,704 in one real
+transcript — so taking those for user turns reset the boundary after nearly every tool call and a
+recall could almost never be after one. A rate of exactly zero over a corpus yielding 52.8% by
+another reading is an instrument fault until proven otherwise, and it is a fixture now
+(`tool-results-are-not-user-turns.jsonl`). The same investigation found that a line whose content is
+a bare STRING — a plain user turn — failed to unmarshal and was silently dropped by the
+malformed-line skip: 600 of them in that transcript.
+
+**Comparability was checked rather than asserted.** Re-running the whole corpus before and after the
+parsing fix leaves `assertions` at 341, `preceded_by_recall` at 180 and the session count at 24,
+byte-identical — so the shipped field, and T2's baseline with it, is untouched under F-16.
+
+Two things follow, and they are why this mattered rather than being tidy-up:
+
+1. **The reported rate and the strictest honest reading differ by a factor of about 29.** Every
+   window is a defensible definition of "preceded". The latched field is the one nobody chose — it
+   is simply what a flag with no reset computes.
+2. **There is headroom, which the old number denied.** The latch saturates on any protocol-following
+   session, so T4, T5 and T6 could only ever measure as "no effect" — the instrument would have
+   faithfully recorded four nulls under F-10. Against a 1.8-12% proximity rate they have somewhere
+   to move.
+
+**Still a decision, and deliberately left open here:** which reading becomes the definition.
+Choosing one voids every rate taken under another. The table above is what that choice should be
+made from; this entry does not make it.
+
+What the table shows, said once so the next reader does not have to re-derive it: the three
+boundary-free tool-call windows spread across an order of magnitude with no natural break, which is
+what a proxy looks like. The two BOUNDARY readings do have meanings — "did the agent ask about the
+work it was just given" (7.6%) and "did it ask after its context was replaced" (43.4%) — and the
+first of those lands almost exactly on the within-10-calls window, from a completely different
+derivation. That agreement is the only evidence here that any particular window is more than a
+number someone picked.
 
 ## Two tests name a property their fixtures never drive — 2026-08-28
 
