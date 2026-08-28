@@ -56,7 +56,7 @@ func TestEndToEndOpenCollectiveActivation(t *testing.T) {
 
 	// 3. One reconcile pass.
 	rec := NewReconciler(svc, NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory"),
-		NewIntentRepo(gdb), map[string]string{"pro-monthly": "pro_monthly"})
+		NewIntentRepo(gdb), map[string]string{"pro-monthly": "pro_monthly"}).WithLedger(NewAppliedOrderRepo(gdb))
 	rep, err := rec.ReconcileOnce(context.Background())
 	if err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)

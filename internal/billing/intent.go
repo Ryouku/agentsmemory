@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base32"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,8 +50,15 @@ func NewIntentRepo(db *gorm.DB) *IntentRepo { return &IntentRepo{db: db} }
 // workspace. It is a truncated base32 SHA-256 of the workspace id: stable, so a
 // contribution made today still matches the intent recorded when the button was
 // clicked; URL-safe without escaping, because it goes into a query string; and
-// one-way, because the tag is world-readable on the public contribution record and
-// the raw workspace id should not be.
+// preimage-resistant, so the raw workspace id is not recoverable from a tag that is
+// world-readable on a public contribution record.
+//
+// ⚠ It is a HASH, NOT A MAC. There is no secret, so anyone holding a workspace id
+// can compute that workspace's tag — do not read "preimage-resistant" as
+// "unforgeable" (PR #96 review, A3). It does not need to be unforgeable: the tag
+// only selects WHICH intent to look for, and an intent this server recorded is what
+// makes the attribution credible. The worst a forged tag achieves is paying for
+// somebody else's workspace.
 //
 // ⚠ It is an ATTRIBUTION HINT, never an authorization. The tag travels in a URL the
 // user controls, so anyone can present any tag. Reconciliation must therefore also
@@ -90,11 +98,46 @@ func (r *IntentRepo) MatchByTag(ctx context.Context, tag, planCode string) (Chec
 // tag. It is weaker than the tag — a contributor may pay under a different address —
 // so a miss here is a genuine "cannot attribute", not a reason to guess. An empty
 // email is refused for the same reason as an empty tag.
+//
+// ⚠ It REFUSES AN AMBIGUOUS MATCH, and that is the point of it. Nothing ties an
+// intent to the account that actually paid, so this lookup ranges over every
+// workspace. Returning the newest of several meant one email with two workspaces
+// sent the payment to whichever clicked Upgrade last — an ordinary support ticket
+// for anyone with a personal and a team workspace, and worse than that given
+// registration performs no email verification, so an address can be claimed by
+// someone who does not own it (PR #96 review, B2).
+//
+// Refusing costs nothing when there is no ambiguity, and when there is, "we do not
+// know" is the honest answer — the same answer this package already gives when
+// neither channel resolves. The order then lands in the unattributed bucket for an
+// operator to settle with `set-plan`.
 func (r *IntentRepo) MatchByEmail(ctx context.Context, email, planCode string) (CheckoutIntent, error) {
 	if email == "" {
 		return CheckoutIntent{}, gorm.ErrRecordNotFound
 	}
-	return r.first(ctx, "email = ? AND plan_code = ?", email, planCode)
+	var rows []CheckoutIntent
+	if err := r.db.WithContext(ctx).
+		Where("email = ? AND plan_code = ?", email, planCode).
+		Distinct("team_id").
+		Find(&rows).Error; err != nil {
+		return CheckoutIntent{}, err
+	}
+	teams := map[string]struct{}{}
+	for _, row := range rows {
+		teams[row.TeamID] = struct{}{}
+	}
+	switch len(teams) {
+	case 0:
+		return CheckoutIntent{}, gorm.ErrRecordNotFound
+	case 1:
+		// Exactly one workspace ever asked to buy this plan with this address, so the
+		// match is unambiguous. Re-read the newest row for that workspace so callers
+		// get a fully populated record.
+		return r.first(ctx, "email = ? AND plan_code = ?", email, planCode)
+	default:
+		return CheckoutIntent{}, fmt.Errorf("%w: %d workspaces have an open %s intent for that email; attributing none",
+			gorm.ErrRecordNotFound, len(teams), planCode)
+	}
 }
 
 // first returns the newest matching intent, or gorm.ErrRecordNotFound. Newest wins

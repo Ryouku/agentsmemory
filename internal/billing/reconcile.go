@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -63,6 +64,64 @@ type intentMatcher interface {
 	MatchByEmail(ctx context.Context, email, planCode string) (CheckoutIntent, error)
 }
 
+// AppliedOrder records that a provider order was acted on in a particular state.
+type AppliedOrder struct {
+	OrderID   string `gorm:"primaryKey"`
+	Status    string
+	TeamID    string
+	AppliedAt string
+}
+
+// TableName pins the gorm model to the goose-managed table.
+func (AppliedOrder) TableName() string { return "billing_applied_orders" }
+
+// AppliedOrderRepo is the ledger of orders reconciliation has already acted on.
+// It is what makes a POLLING reconciler idempotent over time, as opposed to
+// idempotent within one pass.
+//
+// A webhook fires once per event, so "apply what the event says" is safe. A poll
+// sees the same order every interval forever, so without this the only idempotence
+// is "the provider's state has not changed" — which re-asserts a past decision over
+// any local change made since it. That is not theoretical: it silently reverted an
+// operator's `set-plan` downgrade on the next pass (PR #96 review, B1).
+type AppliedOrderRepo struct{ db *gorm.DB }
+
+// NewAppliedOrderRepo constructs the ledger over an open gorm connection.
+func NewAppliedOrderRepo(db *gorm.DB) *AppliedOrderRepo { return &AppliedOrderRepo{db: db} }
+
+// AlreadyApplied reports whether this exact (order, status) pair has been acted on.
+// A genuine transition — ACTIVE then later CANCELLED — is NOT already applied and
+// still takes effect; only a repeat of the same state is skipped.
+//
+// A lookup error answers false: failing open re-applies a decision that is at worst
+// redundant, where failing closed would silently stop activating paying customers.
+func (r *AppliedOrderRepo) AlreadyApplied(ctx context.Context, orderID, status string) bool {
+	if r == nil || orderID == "" {
+		return false
+	}
+	var row AppliedOrder
+	if err := r.db.WithContext(ctx).Where("order_id = ?", orderID).First(&row).Error; err != nil {
+		return false
+	}
+	return row.Status == status
+}
+
+// MarkApplied records that an order was acted on in this state, replacing any
+// earlier state for the same order.
+func (r *AppliedOrderRepo) MarkApplied(ctx context.Context, orderID, status, teamID string) error {
+	if r == nil || orderID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Exec(`
+		INSERT INTO billing_applied_orders (order_id, status, team_id, applied_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(order_id) DO UPDATE SET
+			status     = excluded.status,
+			team_id    = excluded.team_id,
+			applied_at = excluded.applied_at`,
+		orderID, status, teamID, time.Now().UTC().Format(time.RFC3339)).Error
+}
+
 // ReconcileReport counts what one pass saw. It exists so the caller can log a
 // number rather than a silence: "0 orders" and "the call failed" must never produce
 // the same log line, which is the same empty-reads-as-an-answer trap the order
@@ -83,7 +142,16 @@ type Reconciler struct {
 	svc            *Service
 	orders         orderSource
 	intents        intentMatcher
+	applied        *AppliedOrderRepo // what this server has already acted on
 	planByTierSlug map[string]string // Open Collective tier slug -> our plan code
+}
+
+// WithLedger attaches the applied-order ledger, which is what stops a poll from
+// re-applying a decision every interval. Optional so a Reconciler can still be
+// constructed in a test without one; production always has it.
+func (r *Reconciler) WithLedger(a *AppliedOrderRepo) *Reconciler {
+	r.applied = a
+	return r
 }
 
 // NewReconciler builds a Reconciler. planByTierSlug maps the provider's tier slugs
@@ -113,6 +181,11 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 		return rep, err
 	}
 	rep.Seen = len(orders)
+	// Oldest first, so when one workspace has several orders the NEWEST state is the
+	// one applied last and the pass converges on it. Without this the outcome depends
+	// on the order the API happened to return: an old CANCELLED processed after a new
+	// ACTIVE would end the pass with the workspace downgraded (PR #96 review, A2).
+	sort.SliceStable(orders, func(i, j int) bool { return orders[i].CreatedAt < orders[j].CreatedAt })
 	for _, o := range orders {
 		kind := kindForStatus(o.Status)
 		if kind == eventIgnored {
@@ -126,8 +199,24 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 			rep.Ignored++
 			continue
 		}
+		// Already acted on in this exact state: skip. This is what keeps a POLL
+		// idempotent over time rather than only within a pass — see AppliedOrderRepo.
+		if r.applied.AlreadyApplied(ctx, o.ID, o.Status) {
+			rep.Ignored++
+			continue
+		}
 		switch kind {
 		case eventActivated:
+			// A recurring plan needs a recurring contribution. A ONETIME order to a
+			// monthly tier stays PAID upstream forever, so granting Pro from one would
+			// grant it for as long as the collective exists — and nothing expires it,
+			// because CurrentPeriodEnd is recorded and read by nothing (PR #96 review,
+			// B1). Ignored and logged rather than half-honoured.
+			if o.Frequency != "" && o.Frequency != "MONTHLY" && o.Frequency != "YEARLY" {
+				log.Printf("billing: contribution %s is %s to the recurring tier %q; ignoring — a one-off does not buy a subscription, activate manually with `set-plan` if that is the intent", o.ID, o.Frequency, o.TierSlug)
+				rep.Ignored++
+				continue
+			}
 			teamID, attributed := r.attribute(ctx, o, planCode)
 			if !attributed {
 				rep.Unattributed++
@@ -145,6 +234,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 			if o.NextChargeDate != "" {
 				r.recordPeriodEnd(ctx, teamID, o.NextChargeDate)
 			}
+			r.markApplied(ctx, o, teamID)
 			rep.Activated++
 		case eventCanceled:
 			// A cancellation needs no attribution: the order id is the stable key and
@@ -156,6 +246,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 				log.Printf("billing: reconcile cancel order %s: %v", o.ID, err)
 				continue
 			}
+			r.markApplied(ctx, o, "")
 			rep.Canceled++
 		}
 	}
@@ -208,29 +299,53 @@ func (r *Reconciler) attribute(ctx context.Context, o providerOrder, planCode st
 //   - The first pass runs immediately, so a restart picks up anything that arrived
 //     while the process was down rather than waiting a full interval.
 func (r *Reconciler) Run(ctx context.Context, every time.Duration) {
-	defer func() {
-		if v := recover(); v != nil {
-			log.Printf("billing: reconcile loop panicked and stopped: %v; activation is manual until restart", v)
-		}
-	}()
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		rep, err := r.ReconcileOnce(ctx)
-		switch {
-		case ctx.Err() != nil:
-			return
-		case err != nil:
-			log.Printf("billing: reconcile failed: %v (retrying in %s)", err, every)
-		default:
-			log.Printf("billing: reconciled %d order(s): %d activated, %d canceled, %d ignored, %d unattributed",
-				rep.Seen, rep.Activated, rep.Canceled, rep.Ignored, rep.Unattributed)
-		}
+		// ⚠ The recover is INSIDE the loop, per pass. At the function boundary it
+		// caught the panic and then returned — so the process survived and the loop
+		// was gone, with one log line and nothing to restart it. Activation would be
+		// dead until someone redeployed (PR #96 review, A1). Losing a pass is
+		// recoverable; losing the loop is not, and both look identical in a log.
+		r.runOnce(ctx, every)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// runOnce performs a single pass and reports it, converting a panic into a lost
+// pass rather than a lost loop.
+func (r *Reconciler) runOnce(ctx context.Context, every time.Duration) {
+	defer func() {
+		if v := recover(); v != nil {
+			log.Printf("billing: reconcile pass panicked: %v (the loop continues; this pass applied nothing)", v)
+		}
+	}()
+	rep, err := r.ReconcileOnce(ctx)
+	switch {
+	case ctx.Err() != nil:
+		return
+	case err != nil:
+		log.Printf("billing: reconcile failed: %v (retrying in %s)", err, every)
+	default:
+		log.Printf("billing: reconciled %d order(s): %d activated, %d canceled, %d ignored, %d unattributed",
+			rep.Seen, rep.Activated, rep.Canceled, rep.Ignored, rep.Unattributed)
+	}
+}
+
+// markApplied records that an order was acted on, so the next pass skips it. A
+// failure is logged and not fatal: the cost is re-applying next interval, which is
+// the pre-ledger behaviour, and refusing to continue would stop other workspaces
+// being activated over a bookkeeping error.
+func (r *Reconciler) markApplied(ctx context.Context, o providerOrder, teamID string) {
+	if err := r.applied.MarkApplied(ctx, o.ID, o.Status, teamID); err != nil {
+		log.Printf("billing: recording applied order %s: %v (it may be re-applied next pass)", o.ID, err)
 	}
 }
 

@@ -65,7 +65,11 @@ func startOpenCollectiveReconciler(ctx context.Context, cfg billing.Config, svc 
 		&http.Client{Timeout: ocReconcileHTTPTimeout},
 		cfg.OpenCollectiveAPIURL, cfg.OpenCollectivePersonalToken, cfg.OpenCollectiveSlug,
 	)
-	rec := billing.NewReconciler(svc, orders, billing.NewIntentRepo(gdb), ocTierPlanCodes)
+	// The ledger is what keeps a POLL idempotent over time: without it every pass
+	// re-applies a decision the provider has not changed, which silently reverted an
+	// operator's `set-plan` downgrade fifteen minutes later.
+	rec := billing.NewReconciler(svc, orders, billing.NewIntentRepo(gdb), ocTierPlanCodes).
+		WithLedger(billing.NewAppliedOrderRepo(gdb))
 
 	log.Printf("billing: opencollective reconciliation ON — polling %s for collective %q every %s",
 		cfg.OpenCollectiveAPIURL, cfg.OpenCollectiveSlug, cfg.ReconcileInterval)

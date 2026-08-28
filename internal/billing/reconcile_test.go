@@ -30,7 +30,7 @@ func newReconcileEnv(t *testing.T, build func(teamID string) []providerOrder) (*
 	svc, _, _, gdb, teamID := newTestEnv(t)
 	intents := NewIntentRepo(gdb)
 	svc.intents = intents
-	r := NewReconciler(svc, stubOrders{orders: build(teamID)}, intents, ocTierMap)
+	r := NewReconciler(svc, stubOrders{orders: build(teamID)}, intents, ocTierMap).WithLedger(NewAppliedOrderRepo(gdb))
 	return r, svc, gdb, teamID
 }
 

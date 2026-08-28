@@ -20,6 +20,9 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
 | `internal/billing/reconcile.go` | add | The mapper and the reconcile pass. |
 | `internal/billing/billing.go` | edit | Expose `applyActivated`/`applyCanceled` to the reconciler within the package; add nothing public. |
 | `internal/billing/reconcile_test.go` | add | Mapping, attribution, idempotency and refusal tests. |
+| `db/migrations/00035_billing_applied_orders.sql` | add | The applied-order ledger (review B1). Version `00035` union-checked free across `origin/main`, every remote branch and all open PR heads. |
+| `internal/billing/reconcile_idempotence_test.go` | add | The three reproductions of the PR #96 review findings. |
+| `internal/billing/intent.go` | edit | `MatchByEmail` refuses an ambiguous match (review B2); the `intentTag` comment stops implying unforgeability (review A3). |
 
 ## Ordered Steps
 
@@ -32,7 +35,7 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
    `IN_REVIEW`, `PAUSED` → `eventIgnored`. Write the mapping as a table keyed by the enum string and
    default UNKNOWN statuses to `eventIgnored` plus a log line — a status Open Collective adds later
    must never be silently read as a cancellation.
-3. Resolve the plan code from `TierLegacyID` using the configured tier→plan map, not from the
+3. Resolve the plan code from the tier SLUG using the configured tier→plan map, not from the
    amount. An unknown tier is `eventIgnored` with a log line.
 4. Attribute in this order, and stop at the first hit: (a) a `tags` value that matches a
    `billing_checkout_intents` row for that plan; (b) `FromAccountEmail` matching an intent row's
@@ -48,7 +51,7 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
 ## Acceptance
 
 ```bash
-go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
+go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t4-new.out && \
 grep -q "^ok" /tmp/adr042-t4-new.out && \
 go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/... -count=1
@@ -66,6 +69,40 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | `TestReconcileIsIdempotent` | `internal/billing/reconcile_test.go` | Three passes leave one subscription row and one plan value, and `nextChargeDate` populates `CurrentPeriodEnd` | — |
 | `TestReconcileDoesNotResurrectACanceledSubscription` | `internal/billing/reconcile_test.go` | A stale `ACTIVE` for an order already recorded canceled does not re-upgrade — the existing `applyActivated` guard holds on this path too | — |
 | `TestReconcileReturnsTheReadError` | `internal/billing/reconcile_test.go` | A failing order source is an error, not a quiet pass with nothing to do | — |
+| `TestReconcileDoesNotRevertAnOperatorDowngrade` | `internal/billing/reconcile_idempotence_test.go` | An operator's `set-plan` downgrade survives the next pass — the applied-order ledger, not the provider's unchanged state, is what makes a POLL idempotent | — |
+| `TestReconcileDoesNotGrantARecurringPlanForAOneOff` | `internal/billing/reconcile_idempotence_test.go` | A ONETIME contribution to a recurring tier is ignored, not treated as a subscription that never expires | — |
+| `TestEmailFallbackRefusesAnAmbiguousMatch` | `internal/billing/reconcile_idempotence_test.go` | Two workspaces sharing one email attribute to NEITHER, instead of to whichever clicked Upgrade last | — |
+
+### Review findings from PR #96, reproduced before fixing
+
+Ryouku requested changes with two defects, both reproduced by their own probe and then **independently
+reproduced here** before anything was changed — a finding is a hypothesis, and this is payment code.
+All three reproductions were red, and are the three tests added above.
+
+**B1 — a poll is not a webhook, and the idempotence that was enough for one is not enough for the other.**
+`set-plan` writes only `teams.plan_id`, and `applyActivated`'s only re-delivery guard is "the
+subscription row says canceled". After an operator downgrades, the row still reads `active` and the
+order is still `PAID` upstream, so every pass re-applied it — reverting the operator's rollback within
+one interval, with a routine "1 activated" in the log. The ADR's own parenthetical ("a processed-event-id
+ledger would generalise this") turned out to be load-bearing here in a way it was not for Stripe: a
+webhook fires once, a poll fires forever. Fixed with migration `00035_billing_applied_orders` — an
+`(order id, status)` ledger, so a genuine transition still applies and a repeat of the same state does
+not. The same root cause made a ONETIME contribution grant Pro permanently, with `Frequency` decoded
+and read by nothing; that is now an explicit refusal.
+
+**B2 — the email fallback attributed by who clicked last, across every workspace.** `MatchByEmail` was
+scoped to `(email, plan)` and ordered `created_at DESC` with nothing tying an intent to the payer, so
+one person with a personal and a team workspace, clicking both and paying once, sent the money to
+whichever they clicked last. Worse given registration performs no email verification. It now refuses an
+ambiguous match — the file's own "when neither resolves, the answer is we do not know", applied to a
+case it had been resolving by guessing. ⚠ Worth naming: this is the channel that carries everything if
+the tag round-trip fails, so the "fallback" framing understated it.
+
+**A1** — the `recover` sat at the function boundary, so a panic ended the LOOP, not the pass: the process
+survived and activation was dead until redeploy. Moved inside the pass. **A2** — orders are now sorted
+oldest-first so the newest state applies last, rather than the outcome depending on API page order.
+**A3** — `intentTag`'s comment called it "one-way" inside a paragraph about authorization; it is a hash,
+not a MAC, and the comment now says so and says why that is acceptable here.
 
 **Deviation from the ADR's step 2, taken on the ADR's own advice:** `ERROR` is mapped to
 `eventIgnored`, not `eventCanceled`. The ADR's Risks section flagged this exact call and said the
@@ -89,6 +126,9 @@ here because the ADR's Decision text still lists `REJECTED` and `ERROR` together
 - 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Stops requiring the contribution to name one of our sellable tiers, so a 5 EUR one-off donation would activate a 50 EUR/month plan. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 - 2026-08-28 · eec2269* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Accepts a tag without requiring a recorded CheckoutIntent to corroborate it, letting anyone credit a payment to any workspace. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 - 2026-08-28 · eec2269* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Makes a status OpenCollective adds later downgrade every workspace holding such an order. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Removes the applied-order ledger check, restoring the reviewed defect: a still-PAID order re-applies every pass, silently reverting an operators set-plan downgrade within one interval. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/intent.go` · Lets MatchByEmail resolve when several workspaces share the address, restoring the reviewed defect: the payment lands on whichever workspace clicked Upgrade last. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 66ebe2c* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Drops the recurrence check so a ONETIME contribution to a monthly tier grants Pro — which upstream never transitions away from, so it would be permanent. · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
 
 ## Invariants
 
@@ -119,5 +159,6 @@ more code is written.
 - Distinguishing `DISPUTED` / `IN_REVIEW` from `eventIgnored` (deferred: Follow-ups, ADR-042).
 
 ## Verification Log
-- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
-- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 66ebe2c* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d

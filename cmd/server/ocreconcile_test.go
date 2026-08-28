@@ -50,7 +50,21 @@ func TestOpenCollectiveActivationIsReachable(t *testing.T) {
 			ast.Inspect(file, func(n ast.Node) bool {
 				if as, ok := n.(*ast.AssignStmt); ok {
 					for i, rhs := range as.Rhs {
-						if isCallTo(rhs, "billing", "NewReconciler") && i < len(as.Lhs) {
+						// Search the WHOLE right-hand side, not just its outermost call.
+						// The construction is legitimately wrapped in builder calls
+						// (`NewReconciler(...).WithLedger(...)`), and an earlier version of
+						// this gate inspected only the top level — so adding the ledger made
+						// it report the wiring as absent when the wiring was right there.
+						// A gate should fail when the WIRING goes, not when its SHAPE changes.
+						found := false
+						ast.Inspect(rhs, func(inner ast.Node) bool {
+							if isCallTo(inner, "billing", "NewReconciler") {
+								found = true
+								return false
+							}
+							return true
+						})
+						if found && i < len(as.Lhs) {
 							constructs = true
 							if id, ok := as.Lhs[i].(*ast.Ident); ok {
 								reconcilerVar = id.Name
