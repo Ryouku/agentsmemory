@@ -37,6 +37,8 @@ An agent reads from the palace without first deciding whether the read is worth 
 | Working agent | system | Answer "what was decided / what was corrected" without a second round trip |
 | Record author | system | File a correction that supersedes the record it corrects, not one that competes with it |
 | Measurement owner | human role | Know whether a mechanism moved read behaviour, before spending a window on it |
+| Concurrent correction author | system | Correct a record without racing another session into two competing current claims |
+| External MCP client | external service | Read hits without depending on chunk-level fields |
 
 ## Use Cases
 
@@ -61,71 +63,90 @@ An agent reads from the palace without first deciding whether the read is worth 
 - **Failure paths:** a. at step 3, a mechanism is marked done with no baseline recorded → the gate fails; b. at any step, the counting rule changes after collection → the baseline is invalidated and must be retaken
 - **Postconditions:** every quoted rate names the rule it was measured under.
 
+### UC-3: Measurement owner quotes a rate
+
+- **Trigger:** a read rate is about to be quoted or compared · **Preconditions:** a baseline exists
+- **Main flow:**
+  1. The baseline names the counting rule by content.
+  2. The current rule is compared against it.
+  3. The rate is quoted with the rule it was measured under.
+- **Failure paths:** a. the rule's content differs from the baseline's → refuse the comparison and name the change
+- **Postconditions:** no rate is quoted across a rule change.
+
 ## Scenarios
 
-### UC1-S1 [happy] A recall hit arrives disclosed enough to act on [@spec] → `internal/palace/readcost_spec_test.go::TestF1AHitIsDisclosedAboveTheFloor`
+### UC1-S1 [happy] A hit reports every range it disclosed [@spec] → `internal/mcpserver/readcost_spec_test.go::TestF1CoverageCountsEveryDisclosedRange`
 
 ```gherkin
-Given a palace holding memories longer than one chunk
-When an agent issues one recall that matches them
-Then every returned hit discloses its memory above the coverage floor
-And no hit requires a second call to be acted on
+Given a memory long enough to be disclosed as a window plus regions
+When a caller issues one recall that matches text in several places
+Then the reported coverage counts the primary window and every region returned
+And a caller comparing it against a threshold is comparing against the truth
 ```
 
-### UC1-S2 [failure] A constrained budget returns fewer memories, not fragments [@spec] → `internal/palace/readcost_spec_test.go::TestF2FewerWholeNotMoreFragments`
+### UC1-S2 [failure] A partial hit says so, and says how to complete it [@spec] → `internal/mcpserver/readcost_spec_test.go::TestF2NoHitIsSilentlyPartial`
 
 ```gherkin
-Given a response budget too small to disclose every match above the floor
-When an agent issues one recall
-Then fewer memories are returned, each above the floor
-And the response reports how many were withheld
+Given a memory larger than the response budget allows to be disclosed whole
+When a caller issues one recall that matches it
+Then the hit is marked partial, reports the memory's full length
+And carries the id that fetches the remainder
 ```
 
-### UC1-S3 [failure] A superseded memory never outranks its correction [@spec] → `internal/palace/readcost_spec_test.go::TestF3SupersededNeverOutranksItsCorrection`
-
-```gherkin
-Given a memory that has been superseded by a later record
-When a recall matches both
-Then the superseding record ranks above the superseded one
-And the superseded hit is marked as superseded
-```
-
-### UC1-S4 [happy] A memory is returned as one unit [@spec] → `internal/palace/readcost_spec_test.go::TestF4AMemoryIsOneUnitToItsCaller`
+### UC1-S3 [happy] A caller never joins chunks [@spec] → `internal/mcpserver/readcost_spec_test.go::TestF4ChunkingCreatesNoReassemblyObligation`
 
 ```gherkin
 Given a memory several times longer than the chunk size
-When a recall matches text inside it
-Then one hit is returned carrying the whole memory
-And no chunk index is required to reassemble it
+When a recall matches text inside its last chunk
+Then one hit is returned whose content is the memory's content
+And no caller-side reassembly is required to obtain it
 ```
 
-### UC2-S1 [happy] The counting rule is published before the baseline is collected [@spec] → `internal/palace/readcost_spec_test.go::TestF5CountingRuleIsAnArtifactBeforeCollection`
+### UC2-S1 [happy] A correction leaves one current successor [@spec] → `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor`
 
 ```gherkin
-Given a proposed mechanism that intends to change read behaviour
-When the baseline is collected
-Then the counting rule already exists as a committed artifact
-And it names what a read is and the window it is attributed to
+Given a memory that a later record corrects
+When the correction is written through the advertised correction operation
+Then exactly one record about that subject is current
+And it is linked to the ended predecessor
 ```
 
-### UC2-S2 [failure] A mechanism marked done with no baseline fails the gate [@spec] → `internal/palace/readcost_spec_test.go::TestF5NoMechanismShipsBeforeItsBaseline`
+### UC2-S2 [failure] A correction that fails part-way leaves no fork [@spec] → `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor`
 
 ```gherkin
-Given no baseline record exists under the published counting rule
-When a mechanism task is marked done
-Then the gate fails and names the missing baseline
+Given a correction whose predecessor spans several chunks
+When ending one of those chunks fails, or a second correction races it
+Then the operation does not leave two competing current records
+And the failure is reported rather than half-applied
+```
+
+### UC3-S1 [happy] A baseline names the rule it was measured under [@spec] → `internal/repohygiene/readrule_spec_test.go::TestF5ABaselineNamesItsCountingRule`
+
+```gherkin
+Given a counting rule committed as an artifact
+When a baseline is recorded
+Then the baseline names that rule by its content, not by description
+```
+
+### UC3-S2 [failure] A rate quoted across a rule change is refused [@spec] → `internal/repohygiene/readrule_spec_test.go::TestF6ARuleChangeInvalidatesItsBaselines`
+
+```gherkin
+Given a baseline recorded under one counting rule
+When the counting rule's content changes
+Then that baseline is invalid and a rate quoted from it is a defect
+And the gate names the rule change rather than reporting a comparison
 ```
 
 ## Facts
 
 | ID | Assertion (invariant / behavior) | Test (`path::name`) | Tag | Cmd (optional) |
 |----|----------------------------------|---------------------|-----|----------------|
-| F-1 | A recall discloses enough of each memory to be acted on without a second call; a hit below a stated coverage floor is a defect, not a preview. | `internal/palace/readcost_spec_test.go::TestF1AHitIsDisclosedAboveTheFloor` | @spec | |
-| F-2 | When the budget cannot disclose every hit above the floor, a recall returns fewer memories whole rather than more as fragments, and reports the withheld count. | `internal/palace/readcost_spec_test.go::TestF2FewerWholeNotMoreFragments` | @spec | |
-| F-3 | A recall marks a hit whose memory has been superseded, and a superseded memory never outranks the record that superseded it. | `internal/palace/readcost_spec_test.go::TestF3SupersededNeverOutranksItsCorrection` | @spec | |
-| F-4 | A memory is returned to a caller as one unit; chunking is an embedding-time detail that never reaches the read contract. | `internal/palace/readcost_spec_test.go::TestF4AMemoryIsOneUnitToItsCaller` | @spec | |
-| F-5 | No mechanism ships before a baseline is recorded, and the counting rule — what a read is, and the window it is attributed to — is a committed artifact fixed before collection. | `internal/palace/readcost_spec_test.go::TestF5CountingRuleIsAnArtifactBeforeCollection` | @spec | |
-| F-6 | Changing the counting rule invalidates the baseline taken under it, the way changing a fence invalidates its recorded evidence. | `internal/palace/readcost_spec_test.go::TestF5NoMechanismShipsBeforeItsBaseline` | @spec | |
+| F-1 | A hit's reported coverage counts every disclosed range — the primary window and every returned region — so a caller deciding whether it needs a second call decides on the truth. | `internal/mcpserver/readcost_spec_test.go::TestF1CoverageCountsEveryDisclosedRange` | @spec | |
+| F-2 | No hit is silently partial: a hit that does not carry its whole memory reports that, its full length, and the id that fetches the rest. | `internal/mcpserver/readcost_spec_test.go::TestF2NoHitIsSilentlyPartial` | @spec | |
+| F-3 | An advertised correction leaves exactly ONE current successor, linked to the ended predecessor — including under partial failure and concurrent correction. | `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor` | @spec | |
+| F-4 | Chunking creates no reassembly obligation: a caller never has to join chunks to obtain a memory's content. Chunk metadata may remain as diagnostics. | `internal/mcpserver/readcost_spec_test.go::TestF4ChunkingCreatesNoReassemblyObligation` | @spec | |
+| F-5 | No mechanism ships before a baseline is recorded, and the baseline names the counting rule it was measured under by content, not by description. | `internal/repohygiene/readrule_spec_test.go::TestF5ABaselineNamesItsCountingRule` | @spec | |
+| F-6 | Changing the counting rule invalidates every baseline taken under the previous one; a rate quoted across a rule change is a defect. | `internal/repohygiene/readrule_spec_test.go::TestF6ARuleChangeInvalidatesItsBaselines` | @spec | |
 
 ## Domain
 
@@ -139,6 +160,9 @@ Then the gate fails and names the missing baseline
 | `am_get_drawer` (`whole` parameter) | modify | agents following `AGENTS.md`'s read guidance |
 | Recall ranking with respect to supersession | modify | every recall caller |
 | The counting rule artifact | add | whoever quotes a read rate |
+| `am_update_drawer` / `supersedeInto` atomicity | modify | any writer correcting a memory |
+| `am_list_drawers`, `am_bootstrap` | modify | same disclosure reporting as `am_search` |
+| `snippet_chars`, `regions`, `memory_id`, `chunks_matched` | retain | ADR-024 compatibility — F-4 does not remove them |
 
 ## Non-Goals
 
@@ -156,9 +180,15 @@ Then the gate fails and names the missing baseline
 | Returning whole memories inflates response size for long records | Med | Med | The floor is on disclosure, not on count; the budget still bounds the response and reports what it withheld |
 | Supersession ranking is gamed by a chain of corrections, each superseding the last | Low | Med | F-3 constrains order, not count; a chain resolves to its head, which is the intended reading |
 | The new counting rule is itself insensitive, repeating ADR-041's failure | Med | High | F-5 requires the rule to be an artifact fixed before collection, and a stated demonstration that a relevance-improving mechanism moves it |
-| Callers depend on `chunk_index` / `parent_id` today | Med | Med | Contracts Touched names them; deprecate to diagnostics rather than removing |
+| Callers depend on `chunk_index` / `parent_id` today | Med | Med | F-4 retains them as diagnostics; a repo-wide search found no production consumer, but external clients cannot be ruled out |
+| A memory larger than the response budget can never be whole | High | Med | F-2 makes it explicitly partial with its full length and fetch id, rather than silently fragmentary. `am_search` has no cursor, so completion is `am_get_drawer`, not paging |
+| F-3's atomicity requirement is larger than it looks | Med | High | `supersedeInto` is not atomic and has no compare-and-swap; the fact names partial failure and concurrency deliberately so the ADR cannot scope them away |
 
 ## Open Questions
+
+- Should a memory larger than the response budget be returnable at all, or always partial-with-fetch-id? · owner: Zy · blocks: F-2
+- Is `am_search` gaining a cursor in scope, or is `am_get_drawer` the only completion path? · owner: Zy · blocks: F-2
+- Does F-3's atomicity requirement belong in this spec or as an amendment to ADR-038, which owns supersession? · owner: Zy · blocks: F-3
 
 
 ## Verify
