@@ -52,10 +52,12 @@ An agent reads from the palace without first deciding whether the read is worth 
 - **Trigger:** the agent is about to assert something about this repository whose subject resolves in the working tree · **Preconditions:** the palace holds at least one relevant memory
 - **Main flow:**
   1. The agent issues one recall.
-  2. Each hit arrives disclosed above the coverage floor, whole rather than chunked.
-  3. Any hit whose memory was superseded is marked, and ranks below the record that superseded it.
-  4. The agent acts without a second call.
-- **Failure paths:** a. at step 2, the response budget cannot disclose every hit above the floor → return fewer memories whole and report the withheld count; b. at step 3, a superseded memory would outrank its successor → the successor ranks first and the superseded hit is marked
+  2. Each hit either carries its whole memory, or reports that it does not, with its full length and the id that fetches the rest.
+  3. Each hit reports every range it disclosed, so the "do I need a second call?" decision is made on the truth rather than an under-count.
+  4. The agent acts without a second call, or knows exactly what a second call would get.
+- **Failure paths:** a. at step 2, a memory does not fit the response budget → the hit is explicitly partial, carrying its full length and its fetch id, rather than silently fragmentary (F-2); b. at step 3, a hit disclosed more than its primary window → coverage counts every disclosed range, not just the first (F-1)
+
+  ⚠ **Ordering is deliberately absent from this use case.** An earlier draft had step 3 demote a superseded hit below its correction, on a measurement now RETRACTED (M-5b). Marking already ships and is unchanged (M-8); an ended record is already absent from a default page (M-7). Any *ordering* effect stays behind ADR-004's open issue #34 — see Open Questions.
 - **Postconditions:** the agent has acted on whole, current content, or knows exactly what was withheld.
 
 ### UC-2: Measurement owner establishes the baseline before a mechanism ships
@@ -148,7 +150,7 @@ And the gate names the rule change rather than reporting a comparison
 |----|----------------------------------|---------------------|-----|----------------|
 | F-1 | A hit's reported coverage counts every disclosed range — the primary window and every returned region — so a caller deciding whether it needs a second call decides on the truth. | `internal/mcpserver/readcost_spec_test.go::TestF1CoverageCountsEveryDisclosedRange` | @spec | |
 | F-2 | No hit is silently partial: a hit that does not carry its whole memory reports that, its full length, and the id that fetches the rest. | `internal/mcpserver/readcost_spec_test.go::TestF2NoHitIsSilentlyPartial` | @spec | |
-| F-3 | An advertised correction leaves exactly ONE current successor, linked to the ended predecessor — including under partial failure and concurrent correction. | `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor` | @spec | |
+| F-3 | An advertised correction leaves exactly ONE current successor, linked to the ended predecessor — including under partial failure and concurrent correction. ⚠ This constrains past a deliberate choice: `supersede.go:84-87` writes the successor FIRST *"so a failure leaves the old memory current rather than leaving the team with nothing"*. That trade is the two-current-records state this fact forbids; the ADR has to say which it wants, not assume. | `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor` | @spec | |
 | F-4 | Chunking creates no reassembly obligation: a caller never has to join chunks to obtain a memory's content. Chunk metadata may remain as diagnostics. | `internal/mcpserver/readcost_spec_test.go::TestF4ChunkingCreatesNoReassemblyObligation` | @spec | |
 | F-5 | No mechanism ships before a baseline is recorded, and the baseline names the counting rule it was measured under by content, not by description. | `internal/repohygiene/readrule_spec_test.go::TestF5ABaselineNamesItsCountingRule` | @spec | |
 | F-6 | Changing the counting rule invalidates every baseline taken under the previous one; a rate quoted across a rule change is a defect. | `internal/repohygiene/readrule_spec_test.go::TestF6ARuleChangeInvalidatesItsBaselines` | @spec | |
@@ -161,9 +163,9 @@ And the gate names the rule change rather than reporting a comparison
 
 | Surface | Change | Consumers |
 |---------|--------|-----------|
-| `am_search` hit shape (`content_truncated`, `content_coverage`, `chunk_index`, `parent_id`) | modify | every MCP client; the bootstrap protocol |
+| `am_search` hit shape (`content_truncated`, `content_coverage`) | modify | every MCP client; the bootstrap protocol |
+| `am_get_drawer` view shape (`chunk_index`, `parent_id`) | retain | callers reading a drawer directly — these live on `drawerView` (`drawers.go:110`, `:113`), NOT on `searchHitView` (`:683`) |
 | `am_get_drawer` (`whole` parameter) | modify | agents following `AGENTS.md`'s read guidance |
-| Recall ranking with respect to supersession | modify | every recall caller |
 | The counting rule artifact | add | whoever quotes a read rate |
 | `am_update_drawer` / `supersedeInto` atomicity | modify | any writer correcting a memory |
 | `am_list_drawers`, `am_bootstrap` | modify | same disclosure reporting as `am_search` |
@@ -181,9 +183,9 @@ And the gate names the rule change rather than reporting a comparison
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| A coverage floor plus whole memories shrinks a page from ten hits to three | High | Med | F-2 makes the trade explicit and requires the withheld count, so a short page is legible rather than silently narrow |
-| Returning whole memories inflates response size for long records | Med | Med | The floor is on disclosure, not on count; the budget still bounds the response and reports what it withheld |
-| Supersession ranking is gamed by a chain of corrections, each superseding the last | Low | Med | F-3 constrains order, not count; a chain resolves to its head, which is the intended reading |
+| Returning whole memories shrinks a page from ten hits to three | High | Med | F-2 makes each hit's completeness explicit, so a short page is legible rather than silently narrow. ⚠ Whether the PAGE should also report how many hits it withheld is unbound — old F-2 carried that obligation and the recast one does not; raised in Open Questions |
+| Returning whole memories inflates response size for long records | Med | Med | The requirement is on disclosure per hit, not on hit count; the budget still bounds the response |
+| A chain of corrections, each superseding the last, leaves an ambiguous head | Low | Med | F-3 constrains the write side only — exactly one current successor per correction — so a chain resolves to one head by construction. It says nothing about order, and after M-5b's retraction this spec makes no ordering claim at all |
 | The new counting rule is itself insensitive, repeating ADR-041's failure | Med | High | F-5 requires the rule to be an artifact fixed before collection, and a stated demonstration that a relevance-improving mechanism moves it |
 | Callers depend on `chunk_index` / `parent_id` today | Med | Med | F-4 retains them as diagnostics; a repo-wide search found no production consumer, but external clients cannot be ruled out |
 | A memory larger than the response budget can never be whole | High | Med | F-2 makes it explicitly partial with its full length and fetch id, rather than silently fragmentary. `am_search` has no cursor, so completion is `am_get_drawer`, not paging |
@@ -195,6 +197,7 @@ And the gate names the rule change rather than reporting a comparison
 - Is `am_search` gaining a cursor in scope, or is `am_get_drawer` the only completion path? · owner: Zy · blocks: F-2
 - Does F-3's atomicity requirement belong in this spec or as an amendment to ADR-038, which owns supersession? · owner: Zy · blocks: F-3
 - ⚠ Does anything here touch ORDERING? ADR-004's Decision reserves "any RANKING use of a graph read" behind issue #34's `justified` verdict, which is still open, and ADR-036 T5 shipped "marked, never hidden and never demoted" deliberately. F-3 is now a write-side invariant and does not demote — but an ADR must not reintroduce ordering without that verdict. · owner: Zy · blocks: F-3
+- Should a page report how many hits it withheld? Old F-2 required a withheld count; recasting F-2 around partial-marking dropped it and nothing carries it now. `am_search` has no cursor (M-10), so a withheld hit is unresumable — which argues for the count, but it is a new obligation rather than a restated one. · owner: Zy · blocks: F-2
 - Does the red-binding lane stay behind `-tags readcostspec`, or do the bindings land in the same PR as the ADR that turns them green? · owner: Zy · blocks: all
 
 
@@ -209,9 +212,9 @@ spec-verify --spec docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md
 | # | Question | Fact | Decision |
 |---|----------|------|----------|
 | 0 | Scouted measurements presented as one batch for veto | non-behavioral | Accepted without amendment; they are observations, recorded under Problem > Evidence as M-1..M-7 rather than as Facts requiring bindings |
-| 1 | Must a hit be actionable without a second call? | F-1 | Accept — 3% coverage measured, and partial content was acted on twice in one session |
+| 1 | Must a hit be actionable without a second call? | F-1 | Accept — partial content was acted on twice in one session, and `content_coverage` under-reports what was disclosed (M-3). ⚠ The "3% coverage" figure this row was accepted on is RETRACTED (M-3b): it was the caller's own `snippet_chars: 90` read back. Real disclosure is 23–27%. The under-count is the fact; the headline number was wrong |
 | 2 | Under a constrained budget, fewer whole or more fragments? | F-2 | Accept — fewer whole, plus a withheld count; a fragment that cannot be acted on has negative value |
-| 3 | Must a superseded memory be marked and prevented from outranking its correction? | F-3 | Accept — measured 0.334 superseded above 0.355 correction on the same query |
+| 3 | Must a superseded memory be marked and prevented from outranking its correction? | F-3 | Accept as asked, then AMENDED after review. The ranking half rested on M-5b, now RETRACTED — distance does not decide order and the correct record in fact came back first. Marking already ships (M-8) and an ended record is already absent (M-7), so neither needed deciding. What survived is M-6: the cheap correction path leaves the wrong record CURRENT. F-3 was re-pointed at that — a write-side invariant, no ordering — and the ordering question is deferred to ADR-004 #34 |
 | 4 | Is a memory one unit to its caller, or N chunks? | F-4 | Accept — chunking is an embedding-time detail; it may remain the matching unit |
 | 5 | What is the success criterion, and what stops it being insensitive? | F-5, F-6 | Accept — the counting rule is an artifact fixed before collection, and changing it invalidates the baseline |
 | 6 | Does this spec wait on the entry-point decision? | non-behavioral | Proceed independently; recorded in Non-Goals, with amendment named if a new read path lands |
