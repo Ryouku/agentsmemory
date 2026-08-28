@@ -300,9 +300,13 @@ is proved by a test nothing runs. Demonstrated 2026-08-28: renaming one binding 
 binding with `go/parser` rather than by running anything, so a deliberately-red
 binding parked behind a build tag is checked exactly like a green one — which is
 the property that matters, because during `@spec` no bound test passes by
-definition. `TestASpecBindingThatNamesNothingIsCaught` drives the same logic over a
-fixture that IS broken, since a corpus with zero broken bindings cannot exercise the
-branch that reports one.
+definition. `TestASpecBindingThatNamesNothingIsCaught` drives `unresolvedBindings` — the same
+function, not a copy — over fixtures that ARE broken, since a corpus with zero
+broken bindings cannot exercise the branch that reports one. Its first draft
+reimplemented the loop, and severing the real resolution check then left it green
+with the whole suite at exit 0: a falsifiability half that shares nothing with the
+gate pins nothing. It resolves a subtest binding on its PARENT only, which the
+declaration says out loud rather than leaving a reader to assume otherwise.
 
 The same principle covers the gates already in the tree: `internal/doclint`
 (a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`

@@ -9,7 +9,9 @@
 
 Measured on session `ee8f1fc1`, one long working session in this repository: **7,521 Bash calls against 369 palace calls**, and of those 369, **226 writes against 143 reads**. The agent writes to the palace more than it reads from it. `am_search` ran 52 times in 8,256 tool calls.
 
-The palace's competitor is not "no memory" — it is `grep`, which is faster and reports what the code *does* rather than what someone once said about it. Three measured properties make a read expensive to justify: a hit discloses ~3% of the memory it names, memories fragment at a 1,600-character boundary, and a superseded record can outrank the record that corrected it.
+The palace's competitor is not "no memory" — it is `grep`, which is faster and reports what the code *does* rather than what someone once said about it. Three measured properties make a read expensive to justify: a hit's reported coverage UNDER-COUNTS what it disclosed, so the "do I need a second call?" decision is made on a wrong number (M-3); memories fragment at a 1,600-character boundary (M-4); and the cheap way to file a correction leaves the record it corrects CURRENT, so one page can carry four competing framings of one finding (M-5, M-6).
+
+⚠ Two earlier versions of this paragraph are retracted and the retractions are below: it claimed a hit discloses **~3%** (M-3b — that was the caller's own `snippet_chars: 90` read back; real disclosure is 23–27%) and that **a superseded record can outrank its correction** (M-5b — distance does not decide order, and the correct record in fact came back first). They are named here rather than quietly deleted because this document's own argument is that a correction must be as reachable as the thing it corrects.
 
 ### Evidence
 
@@ -60,25 +62,33 @@ An agent reads from the palace without first deciding whether the read is worth 
   ⚠ **Ordering is deliberately absent from this use case.** An earlier draft had step 3 demote a superseded hit below its correction, on a measurement now RETRACTED (M-5b). Marking already ships and is unchanged (M-8); an ended record is already absent from a default page (M-7). Any *ordering* effect stays behind ADR-004's open issue #34 — see Open Questions.
 - **Postconditions:** the agent has acted on whole, current content, or knows exactly what was withheld.
 
-### UC-2: Measurement owner establishes the baseline before a mechanism ships
+### UC-2: Record author files a correction
 
-- **Trigger:** a mechanism intended to change read behaviour is proposed · **Preconditions:** none
+- **Trigger:** an author has found a filed record to be wrong · **Preconditions:** the record exists and is current
+- **Main flow:**
+  1. The author files the correction against the record it corrects.
+  2. The corrected record is ended and linked to its successor.
+  3. Exactly one current record remains on that subject.
+- **Failure paths:** a. at step 2, the write fails part-way → no fork is left: either the predecessor is still current alone, or the successor is current alone, never both; b. a concurrent author corrects the same record → one of them wins and the other is refused, rather than both succeeding into two current claims
+- **Postconditions:** a reader of a default page meets one framing of the subject, not several.
+
+  ⚠ **This use case is why UC2-S1 and UC2-S2 sit here.** They were originally filed under the
+  measurement use case, whose flow they do not describe, while the `Record author` actor had no use
+  case at all. The scenarios did not move; the heading did.
+
+### UC-3: Measurement owner establishes a baseline and quotes a rate
+
+- **Trigger:** a mechanism intended to change read behaviour is proposed, or a read rate is about to be quoted · **Preconditions:** none for the baseline; a recorded baseline before any quote
 - **Main flow:**
   1. The counting rule is written down as an artifact — what a read is, and the window it is attributed to.
-  2. The baseline is collected under that published rule.
-  3. Only then may a mechanism ship.
-- **Failure paths:** a. at step 3, a mechanism is marked done with no baseline recorded → the gate fails; b. at any step, the counting rule changes after collection → the baseline is invalidated and must be retaken
-- **Postconditions:** every quoted rate names the rule it was measured under.
+  2. The baseline is collected under that published rule, naming it by content.
+  3. Only then may a mechanism ship; and any later rate is quoted with the rule it was measured under, after comparing that rule against the baseline's.
+- **Failure paths:** a. a mechanism is marked done with no baseline recorded → the gate fails; b. the counting rule's content differs from the baseline's → the baseline is invalidated, the comparison is refused, and the change is named
+- **Postconditions:** every quoted rate names the rule it was measured under, and no rate is quoted across a rule change.
 
-### UC-3: Measurement owner quotes a rate
-
-- **Trigger:** a read rate is about to be quoted or compared · **Preconditions:** a baseline exists
-- **Main flow:**
-  1. The baseline names the counting rule by content.
-  2. The current rule is compared against it.
-  3. The rate is quoted with the rule it was measured under.
-- **Failure paths:** a. the rule's content differs from the baseline's → refuse the comparison and name the change
-- **Postconditions:** no rate is quoted across a rule change.
+  ⚠ **One use case rather than two, deliberately.** Establishing a baseline and quoting a rate were
+  split, which left each half with a single scenario and neither with both a happy and a failure
+  path — the split was in the prose only, since F-5 and F-6 are two halves of one obligation.
 
 ## Scenarios
 
@@ -164,7 +174,7 @@ And the gate names the rule change rather than reporting a comparison
 | Surface | Change | Consumers |
 |---------|--------|-----------|
 | `am_search` hit shape (`content_truncated`, `content_coverage`) | modify | every MCP client; the bootstrap protocol |
-| `am_get_drawer` view shape (`chunk_index`, `parent_id`) | retain | callers reading a drawer directly — these live on `drawerView` (`drawers.go:110`, `:113`), NOT on `searchHitView` (`:683`) |
+| `chunk_index`, `parent_id` | retain | **every recall caller, not only `am_get_drawer`.** Declared on `drawerView` (`drawers.go:110`, `:113`) and reaching the wire on BOTH shapes, because `searchHitView` EMBEDS `drawerView` bare (`:684`) and Go promotes an embedded struct's JSON fields. `ChunkIndex` carries no `omitempty`, so every `am_search` hit already has it; `internal/mcptest/regions_test.go:193-199` reads `hit["chunk_index"]` over the real MCP transport |
 | `am_get_drawer` (`whole` parameter) | modify | agents following `AGENTS.md`'s read guidance |
 | The counting rule artifact | add | whoever quotes a read rate |
 | `am_update_drawer` / `supersedeInto` atomicity | modify | any writer correcting a memory |
@@ -213,7 +223,7 @@ spec-verify --spec docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md
 |---|----------|------|----------|
 | 0 | Scouted measurements presented as one batch for veto | non-behavioral | Accepted without amendment; they are observations, recorded under Problem > Evidence as M-1..M-7 rather than as Facts requiring bindings |
 | 1 | Must a hit be actionable without a second call? | F-1 | Accept — partial content was acted on twice in one session, and `content_coverage` under-reports what was disclosed (M-3). ⚠ The "3% coverage" figure this row was accepted on is RETRACTED (M-3b): it was the caller's own `snippet_chars: 90` read back. Real disclosure is 23–27%. The under-count is the fact; the headline number was wrong |
-| 2 | Under a constrained budget, fewer whole or more fragments? | F-2 | Accept — fewer whole, plus a withheld count; a fragment that cannot be acted on has negative value |
+| 2 | Under a constrained budget, fewer whole or more fragments? | F-2 | Accept — fewer whole; a fragment that cannot be acted on has negative value. ⚠ Accepted as "plus a withheld count", which recasting F-2 around partial-marking dropped: nothing carries that obligation now, and it is an Open Question rather than a silent loss |
 | 3 | Must a superseded memory be marked and prevented from outranking its correction? | F-3 | Accept as asked, then AMENDED after review. The ranking half rested on M-5b, now RETRACTED — distance does not decide order and the correct record in fact came back first. Marking already ships (M-8) and an ended record is already absent (M-7), so neither needed deciding. What survived is M-6: the cheap correction path leaves the wrong record CURRENT. F-3 was re-pointed at that — a write-side invariant, no ordering — and the ordering question is deferred to ADR-004 #34 |
 | 4 | Is a memory one unit to its caller, or N chunks? | F-4 | Accept — chunking is an embedding-time detail; it may remain the matching unit |
 | 5 | What is the success criterion, and what stops it being insensitive? | F-5, F-6 | Accept — the counting rule is an artifact fixed before collection, and changing it invalidates the baseline |

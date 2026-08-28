@@ -1,6 +1,7 @@
 package repohygiene
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,9 +12,18 @@ import (
 	"testing"
 )
 
-// specBindingRE matches the `path/to/file_test.go::TestName` form a spec's Facts
-// table and scenario headings use to bind an assertion to the test that proves it.
-var specBindingRE = regexp.MustCompile(`([A-Za-z0-9_./-]+_test\.go)::(Test[A-Za-z0-9_]+)`)
+// specBindingRE matches the `path/to/file_test.go::<test function>` form a spec's
+// Facts table and scenario headings use to bind an assertion to the test that
+// proves it.
+//
+// ⚠ THE SUBTEST HALF IS RESOLVED ON ITS PARENT AND NOTHING MORE. A binding may
+// name `…::TestParent/the_case`, and this matches `TestParent`, checks that the
+// parent function is declared, and says nothing about whether the subtest exists
+// — go/parser sees `t.Run` names as string literals, not declarations. No spec
+// binds a subtest today, so it is latent; it is named here rather than left for a
+// reader to assume the gate covers more than it does, because a gate whose name
+// claims more than it covers is worse than a narrower one. Found in review.
+var specBindingRE = regexp.MustCompile(`([A-Za-z0-9_./-]+_test\.go)::(Test[A-Za-z0-9_]+)(/\S*)?`)
 
 // TestEverySpecBindingNamesATestThatExists closes the one hole a spec's own gate
 // cannot see.
@@ -66,36 +76,22 @@ func TestEverySpecBindingNamesATestThatExists(t *testing.T) {
 		return names, nil
 	}
 
-	checked := 0
+	checked, problems := 0, 0
 	for _, spec := range specs {
 		body, err := os.ReadFile(spec)
 		if err != nil {
 			t.Fatalf("read %s: %v", spec, err)
 		}
 		rel, _ := filepath.Rel(root, spec)
-		seen := map[string]bool{}
-		for _, m := range specBindingRE.FindAllStringSubmatch(string(body), -1) {
-			binding := m[0]
-			if seen[binding] {
-				continue
-			}
-			seen[binding] = true
-			checked++
-
-			file := filepath.Join(root, filepath.FromSlash(m[1]))
-			names, err := testsIn(file)
-			if err != nil {
-				t.Errorf("%s binds %s, but %s cannot be read: %v\n"+
-					"A binding is the only route from an assertion to its proof. A path that "+
-					"does not resolve reads as provenance and is worth nothing.", rel, binding, m[1], err)
-				continue
-			}
-			if !names[m[2]] {
-				t.Errorf("%s binds %s, but %s declares no func %s\n"+
-					"spec-verify checks the binding is PRESENT, never that it RESOLVES, so this "+
-					"stayed [PASS] while the fact was proved by nothing. Rename the binding or "+
-					"add the stub — a failing stub is the correct @spec state.", rel, binding, m[1], m[2])
-			}
+		found, unresolved := unresolvedBindings(string(body), root, testsIn)
+		checked += found
+		for _, u := range unresolved {
+			problems++
+			t.Errorf("%s: %s\n"+
+				"A binding is the only route from an assertion to its proof, and `spec-verify` "+
+				"checks it is PRESENT, never that it RESOLVES — so this stays [PASS] while the "+
+				"fact is proved by nothing. Rename the binding or add the stub; a failing stub is "+
+				"the correct @spec state.", rel, u)
 		}
 	}
 
@@ -113,40 +109,73 @@ func TestEverySpecBindingNamesATestThatExists(t *testing.T) {
 	}
 }
 
+// unresolvedBindings is the whole judgement, in one place, so the falsifiability
+// half below drives THIS code rather than a copy of it. It returns how many
+// distinct bindings it looked at and a message per binding that does not resolve.
+//
+// The first draft had the subtest reimplement the loop with its own map. Severing
+// the reporting branch here then left that subtest green and the whole suite at
+// exit 0 — the gate was unpinned and its own comment claimed otherwise. Found in
+// review; it is the same defect this file exists to catch, one level up.
+func unresolvedBindings(spec, root string, testsIn func(string) (map[string]bool, error)) (int, []string) {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range specBindingRE.FindAllStringSubmatch(spec, -1) {
+		if seen[m[0]] {
+			continue
+		}
+		seen[m[0]] = true
+		names, err := testsIn(filepath.Join(root, filepath.FromSlash(m[1])))
+		if err != nil {
+			out = append(out, fmt.Sprintf("binds %s, but %s cannot be read: %v", m[0], m[1], err))
+			continue
+		}
+		if !names[m[2]] {
+			out = append(out, fmt.Sprintf("binds %s, but %s declares no func %s", m[0], m[1], m[2]))
+		}
+	}
+	return len(seen), out
+}
+
 // TestASpecBindingThatNamesNothingIsCaught is the falsifiability half.
 //
 // A corpus with zero broken bindings cannot exercise the branch that reports one,
 // so the gate above would pass identically if its check were deleted. This drives
-// the same logic over a fixture that IS broken, through a substitutable
-// testing.TB, because a test cannot pin its own reporting.
+// unresolvedBindings — the same function, not a copy — over a fixture that IS
+// broken, so severing the resolution check fails here too.
 func TestASpecBindingThatNamesNothingIsCaught(t *testing.T) {
 	dir := t.TempDir()
 	src := "package x\n\nimport \"testing\"\n\nfunc TestRealOne(t *testing.T) {}\n"
 	if err := os.WriteFile(filepath.Join(dir, "sample_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]bool{}
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filepath.Join(dir, "sample_test.go"), nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range f.Decls {
-		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil {
-			names[fn.Name.Name] = true
+	testsIn := func(path string) (map[string]bool, error) {
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return nil, err
 		}
+		names := map[string]bool{}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil {
+				names[fn.Name.Name] = true
+			}
+		}
+		return names, nil
 	}
 
 	spec := "| F-1 | thing | `sample_test.go::TestRealOne` | @spec |\n" +
-		"| F-2 | other | `sample_test.go::TestRenamedAway` | @spec |\n"
-	var missing []string
-	for _, m := range specBindingRE.FindAllStringSubmatch(spec, -1) {
-		if !names[m[2]] {
-			missing = append(missing, m[0])
-		}
+		"| F-2 | other | `sample_test.go::TestRenamedAway` | @spec |\n" +
+		"| F-3 | gone  | `absent_test.go::TestNoSuchFile` | @spec |\n"
+	found, problems := unresolvedBindings(spec, dir, testsIn)
+	if found != 3 {
+		t.Errorf("saw %d distinct bindings, want 3 — the extraction is what the verdict rests on", found)
 	}
-	if len(missing) != 1 || !strings.Contains(missing[0], "TestRenamedAway") {
-		t.Errorf("the check did not catch a binding naming no declared test: missing=%v\n"+
-			"Without this the gate above passes over a clean corpus whatever its body says.", missing)
+	if len(problems) != 2 {
+		t.Fatalf("caught %d unresolved bindings, want 2 (a renamed test and a missing file): %v\n"+
+			"Without this the gate above passes over a clean corpus whatever its body says.",
+			len(problems), problems)
+	}
+	if !strings.Contains(problems[0], "TestRenamedAway") || !strings.Contains(problems[1], "absent_test.go") {
+		t.Errorf("the two problems are not the two planted ones: %v", problems)
 	}
 }
