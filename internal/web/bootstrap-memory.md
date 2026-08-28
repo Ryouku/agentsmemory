@@ -931,7 +931,7 @@ test of the whole thing, and it is worth repeating monthly.
 **Recall** · `am_search` · `am_get_drawer(id, whole=true)` · `am_list_drawers(wing, room)` to
 ENUMERATE · `am_check_duplicate` before filing · `am_diary_read`
 
-**Write** · `am_add_drawer` `am_update_drawer` `am_delete_drawer` `am_diary_write`
+**Write** · `am_add_drawer` `am_update_drawer` `am_invalidate_drawer` `am_diary_write`
 `am_update_skill` `am_mine`
 
 **Taxonomy** · `am_list_wings` `am_list_rooms` `am_get_taxonomy` `am_memories_filed_away`
