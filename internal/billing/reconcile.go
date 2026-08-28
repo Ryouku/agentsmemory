@@ -80,17 +80,22 @@ type ReconcileReport struct {
 // it to the same applyActivated / applyCanceled the Stripe webhook uses, so there is
 // exactly one implementation of "what a payment does to a workspace" (ADR-042).
 type Reconciler struct {
-	svc          *Service
-	orders       orderSource
-	intents      intentMatcher
-	planByTierID map[int]string // Open Collective tier legacyId -> our plan code
+	svc            *Service
+	orders         orderSource
+	intents        intentMatcher
+	planByTierSlug map[string]string // Open Collective tier slug -> our plan code
 }
 
-// NewReconciler builds a Reconciler. planByTierID maps the provider's tier ids onto
-// our sellable plan codes; an order naming a tier that is not in the map is ignored,
-// because we cannot say what was bought.
-func NewReconciler(svc *Service, orders orderSource, intents intentMatcher, planByTierID map[int]string) *Reconciler {
-	return &Reconciler{svc: svc, orders: orders, intents: intents, planByTierID: planByTierID}
+// NewReconciler builds a Reconciler. planByTierSlug maps the provider's tier slugs
+// onto our sellable plan codes; an order naming a tier that is not in the map is
+// ignored, because we cannot say what was bought.
+//
+// Keyed on the SLUG rather than the numeric tier id: both identify a tier, but only
+// the slug is in Open Collective's published schema (`Tier.legacyId` works and is
+// absent from introspection on both prod and staging, checked 2026-08-28), and a
+// slug is legible in a log line where a bare integer is not.
+func NewReconciler(svc *Service, orders orderSource, intents intentMatcher, planByTierSlug map[string]string) *Reconciler {
+	return &Reconciler{svc: svc, orders: orders, intents: intents, planByTierSlug: planByTierSlug}
 }
 
 // ReconcileOnce reads every incoming contribution and applies the ones it can
@@ -114,7 +119,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 			rep.Ignored++
 			continue
 		}
-		planCode, ok := r.planByTierID[o.TierLegacyID]
+		planCode, ok := r.planByTierSlug[o.TierSlug]
 		if !ok {
 			// A contribution outside our sellable tiers — an ordinary donation. Not an
 			// error, and not something to act on.

@@ -42,7 +42,7 @@ func TestEndToEndOpenCollectiveActivation(t *testing.T) {
 		resp := map[string]any{"data": map[string]any{"account": map[string]any{"orders": map[string]any{
 			"totalCount": 1,
 			"nodes": []any{map[string]any{
-				"legacyId": 998877, "status": "ACTIVE", "frequency": "MONTHLY",
+				"publicId": "or_e2eTestOrder001", "status": "ACTIVE", "frequency": "MONTHLY",
 				"createdAt": "2026-08-28T10:00:00Z", "nextChargeDate": "2026-09-28T10:00:00Z",
 				"amount":      map[string]any{"value": 50, "currency": "EUR"},
 				"tier":        map[string]any{"legacyId": 104934, "slug": "pro-monthly"},
@@ -56,7 +56,7 @@ func TestEndToEndOpenCollectiveActivation(t *testing.T) {
 
 	// 3. One reconcile pass.
 	rec := NewReconciler(svc, NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory"),
-		NewIntentRepo(gdb), map[int]string{104934: "pro_monthly"})
+		NewIntentRepo(gdb), map[string]string{"pro-monthly": "pro_monthly"})
 	rep, err := rec.ReconcileOnce(context.Background())
 	if err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
@@ -73,7 +73,7 @@ func TestEndToEndOpenCollectiveActivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ByTeam: %v", err)
 	}
-	if sub.StripeSubscriptionID != "998877" {
+	if sub.StripeSubscriptionID != "or_e2eTestOrder001" {
 		t.Fatalf("order id not recorded: %+v", sub)
 	}
 	if sub.CurrentPeriodEnd != "2026-09-28T10:00:00Z" {

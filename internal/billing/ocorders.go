@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -15,10 +14,17 @@ import (
 // package-level constant rather than a string built at the call site so a schema
 // change has exactly one place to be fixed.
 //
-// Every field was confirmed against the live schema on 2026-08-28 by running the
-// query and, separately, by asking for a field that does not exist — which returns
-// GRAPHQL_VALIDATION_FAILED. That makes this a real schema read rather than a query
-// whose unknown fields are silently ignored.
+// Every field here appears in the PUBLISHED schema, checked by introspection on
+// 2026-08-28 against both api.opencollective.com and api-staging.opencollective.com.
+// That is a stricter bar than "the query validates", and it was chosen after the
+// looser one nearly shipped a latent break:
+//
+// ⚠ `Order.legacyId` and `Tier.legacyId` both WORK and are both ABSENT from
+// introspection on both environments. A field the schema does not publish carries no
+// contract and can be withdrawn without a deprecation cycle — so keying a durable
+// subscription id on one was a dependency with no promise behind it. The first draft
+// did exactly that. `publicId` (e.g. "or_3P8Gkau6N93wF4XwejU71") and `tier.slug` are
+// published, so this query now uses only those.
 //
 // filter: INCOMING selects contributions TO this account, excluding anything it
 // contributed elsewhere. Paging is by offset; the API reports totalCount, but the
@@ -29,13 +35,13 @@ const ocOrdersQuery = `query ($slug: String!, $limit: Int!, $offset: Int!) {
     orders(limit: $limit, offset: $offset, filter: INCOMING) {
       totalCount
       nodes {
-        legacyId
+        publicId
         status
         frequency
         createdAt
         nextChargeDate
         amount { value currency }
-        tier { legacyId slug }
+        tier { slug }
         fromAccount { slug name type ... on Individual { email } }
         tags
       }
@@ -74,10 +80,10 @@ const ocMaxPages = 20
 // providerEvent: this says what the provider reports, providerEvent says what we
 // decided it means.
 type providerOrder struct {
-	ID               string   // the order's legacyId, stringified — the stable lifecycle key
+	ID               string   // the order's publicId ("or_…") — the stable lifecycle key
 	Status           string   // Open Collective's OrderStatus, mapped by the reconciler
 	Frequency        string   // ONETIME | MONTHLY | YEARLY
-	TierLegacyID     int      // 0 when the contribution names no tier
+	TierSlug         string   // e.g. "pro-monthly"; empty when the contribution names no tier
 	AmountValue      float64  // in Currency units, not cents
 	Currency         string   //
 	Tags             []string // carries our attribution tag when the checkout set one
@@ -132,7 +138,7 @@ type ocOrdersResponse struct {
 			Orders struct {
 				TotalCount int `json:"totalCount"`
 				Nodes      []struct {
-					LegacyID       int64   `json:"legacyId"`
+					PublicID       string  `json:"publicId"`
 					Status         string  `json:"status"`
 					Frequency      string  `json:"frequency"`
 					CreatedAt      string  `json:"createdAt"`
@@ -142,8 +148,7 @@ type ocOrdersResponse struct {
 						Currency string  `json:"currency"`
 					} `json:"amount"`
 					Tier *struct {
-						LegacyID int    `json:"legacyId"`
-						Slug     string `json:"slug"`
+						Slug string `json:"slug"`
 					} `json:"tier"`
 					FromAccount *struct {
 						Slug  string  `json:"slug"`
@@ -234,7 +239,7 @@ func (s *ocOrderSource) fetchPage(ctx context.Context, offset int) ([]providerOr
 	out := make([]providerOrder, 0, len(nodes))
 	for _, n := range nodes {
 		o := providerOrder{
-			ID:          strconv.FormatInt(n.LegacyID, 10),
+			ID:          n.PublicID,
 			Status:      n.Status,
 			Frequency:   n.Frequency,
 			AmountValue: n.Amount.Value,
@@ -243,7 +248,7 @@ func (s *ocOrderSource) fetchPage(ctx context.Context, offset int) ([]providerOr
 			CreatedAt:   n.CreatedAt,
 		}
 		if n.Tier != nil {
-			o.TierLegacyID = n.Tier.LegacyID
+			o.TierSlug = n.Tier.Slug
 		}
 		if n.FromAccount != nil {
 			o.FromAccountSlug = n.FromAccount.Slug

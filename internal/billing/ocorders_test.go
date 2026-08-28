@@ -28,6 +28,33 @@ func ocFixtureServer(t *testing.T, fixture string, status int) *httptest.Server 
 	return srv
 }
 
+// TestOCQueryUsesOnlyPublishedFields keeps the order query off fields Open
+// Collective does not publish in its schema.
+//
+// `Order.legacyId` and `Tier.legacyId` both RESOLVE and both are ABSENT from
+// introspection, on production and staging alike (checked 2026-08-28). A field the
+// schema does not publish carries no contract: it can be withdrawn without a
+// deprecation cycle, and nothing would warn us. The first draft of this client keyed
+// the durable subscription id on `Order.legacyId`, which would have worked right up
+// until it didn't — and by then there would have been rows referring to it.
+//
+// The check is a substring scan of the query constant rather than a live
+// introspection call, deliberately: it must run hermetically in CI, and the risk
+// being guarded is someone reintroducing the convenient hidden field, not the schema
+// changing under us. `publicId` and `tier.slug` are the published equivalents.
+func TestOCQueryUsesOnlyPublishedFields(t *testing.T) {
+	if strings.Contains(ocOrdersQuery, "legacyId") {
+		t.Error("ocOrdersQuery selects legacyId, which resolves but is absent from Open Collective's published schema — use publicId (orders) and tier.slug (tiers), which are introspectable and therefore contracted")
+	}
+	// The published replacements must actually be the ones in use, or this gate
+	// would pass on a query that selects neither and silently returns nothing.
+	for _, want := range []string{"publicId", "slug"} {
+		if !strings.Contains(ocOrdersQuery, want) {
+			t.Errorf("ocOrdersQuery does not select %q: the published identifier is what the reconciler keys on", want)
+		}
+	}
+}
+
 // TestOCOrderSourceDecodesAPage pins the mapping from Open Collective's Order onto
 // providerOrder. Every field named here was confirmed present on the live schema
 // 2026-08-28 (an unknown field returns GRAPHQL_VALIDATION_FAILED, so the field list
@@ -47,14 +74,14 @@ func TestOCOrderSourceDecodesAPage(t *testing.T) {
 	}
 
 	first := got[0]
-	if first.ID != "998001" {
-		t.Errorf("ID = %q, want the order's legacyId as a string", first.ID)
+	if first.ID != "or_3P8Gkau6N93wF4XwejU71" {
+		t.Errorf("ID = %q, want the order's publicId — the PUBLISHED identifier, not the introspection-hidden legacyId", first.ID)
 	}
 	if first.Status != "ACTIVE" {
 		t.Errorf("Status = %q", first.Status)
 	}
-	if first.TierLegacyID != 104934 {
-		t.Errorf("TierLegacyID = %d, want the pro-monthly tier", first.TierLegacyID)
+	if first.TierSlug != "pro-monthly" {
+		t.Errorf("TierSlug = %q, want the pro-monthly tier", first.TierSlug)
 	}
 	if first.AmountValue != 50 || first.Currency != "EUR" {
 		t.Errorf("amount = %v %s", first.AmountValue, first.Currency)
@@ -73,8 +100,8 @@ func TestOCOrderSourceDecodesAPage(t *testing.T) {
 	// panicking — an order made outside a tier is a real thing on a donations
 	// platform, and it is exactly what an unattributable contribution looks like.
 	third := got[2]
-	if third.TierLegacyID != 0 {
-		t.Errorf("null tier decoded to %d, want 0", third.TierLegacyID)
+	if third.TierSlug != "" {
+		t.Errorf("null tier decoded to %q, want empty", third.TierSlug)
 	}
 	if third.FromAccountEmail != "" || len(third.Tags) != 0 {
 		t.Errorf("null email/tags decoded to %q/%v, want empty", third.FromAccountEmail, third.Tags)

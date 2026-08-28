@@ -20,7 +20,7 @@ func (s stubOrders) listOrders(context.Context) ([]providerOrder, error) { retur
 
 // ocTierMap is the tier->plan mapping used throughout these tests, matching the
 // live tier ids read 2026-08-28.
-var ocTierMap = map[int]string{104934: "pro_monthly", 104935: "pro_annual"}
+var ocTierMap = map[string]string{"pro-monthly": "pro_monthly", "pro-yearly": "pro_annual"}
 
 // newReconcileEnv wires a Reconciler over a migrated in-memory DB with one team.
 // The orders are built by a callback because most of them need the team id in a
@@ -77,7 +77,7 @@ func TestReconcileMapsOrderStatusToEventKind(t *testing.T) {
 func TestReconcileAttributesByTagOnlyWithAMatchingIntent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "9001", Status: "ACTIVE", TierLegacyID: 104934,
+			ID: "or_test9001", Status: "ACTIVE", TierSlug: "pro-monthly",
 			Tags: []string{intentTag(teamID)}, FromAccountSlug: "jane",
 		}}
 	})
@@ -113,7 +113,7 @@ func TestReconcileAttributesByTagOnlyWithAMatchingIntent(t *testing.T) {
 func TestReconcileAttributesByEmailWhenTheTagIsAbsent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "9002", Status: "ACTIVE", TierLegacyID: 104934,
+			ID: "or_test9002", Status: "ACTIVE", TierSlug: "pro-monthly",
 			Tags: nil, FromAccountEmail: "buyer@example.com",
 		}}
 	})
@@ -136,7 +136,7 @@ func TestReconcileAttributesByEmailWhenTheTagIsAbsent(t *testing.T) {
 func TestReconcileLeavesAnUnattributableOrderAlone(t *testing.T) {
 	r, svc, _, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "9003", Status: "ACTIVE", TierLegacyID: 104934,
+			ID: "or_test9003", Status: "ACTIVE", TierSlug: "pro-monthly",
 			Tags: nil, FromAccountEmail: "stranger@example.com",
 		}}
 	})
@@ -158,7 +158,7 @@ func TestReconcileLeavesAnUnattributableOrderAlone(t *testing.T) {
 func TestReconcileIgnoresAContributionOutsideOurTiers(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "9004", Status: "PAID", TierLegacyID: 0,
+			ID: "or_test9004", Status: "PAID", TierSlug: "",
 			Tags: []string{intentTag(teamID)},
 		}}
 	})
@@ -181,7 +181,7 @@ func TestReconcileIgnoresAContributionOutsideOurTiers(t *testing.T) {
 func TestReconcileIsIdempotent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "9005", Status: "ACTIVE", TierLegacyID: 104934,
+			ID: "or_test9005", Status: "ACTIVE", TierSlug: "pro-monthly",
 			Tags: []string{intentTag(teamID)}, FromAccountSlug: "jane",
 			NextChargeDate: "2026-09-20T09:11:02Z",
 		}}
@@ -216,15 +216,15 @@ func TestReconcileIsIdempotent(t *testing.T) {
 func TestReconcileDoesNotResurrectACanceledSubscription(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{
-			{ID: "9006", Status: "CANCELLED", TierLegacyID: 104934},
-			{ID: "9006", Status: "ACTIVE", TierLegacyID: 104934, Tags: []string{intentTag(teamID)}},
+			{ID: "or_test9006", Status: "CANCELLED", TierSlug: "pro-monthly"},
+			{ID: "or_test9006", Status: "ACTIVE", TierSlug: "pro-monthly", Tags: []string{intentTag(teamID)}},
 		}
 	})
 	recordIntent(t, gdb, teamID, "pro_monthly", "jane@example.com")
 
 	// Seed the workspace as an active subscriber of that order.
 	if err := svc.subs.Upsert(context.Background(), Subscription{
-		TeamID: teamID, PlanID: "plan_pro_monthly", Status: "active", StripeSubscriptionID: "9006",
+		TeamID: teamID, PlanID: "plan_pro_monthly", Status: "active", StripeSubscriptionID: "or_test9006",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

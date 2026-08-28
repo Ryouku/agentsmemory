@@ -11,20 +11,24 @@ import (
 	"gorm.io/gorm"
 )
 
-// ocTierPlanCodes maps Open Collective's tier ids onto our sellable plan codes.
+// ocTierPlanCodes maps Open Collective's tier slugs onto our sellable plan codes.
 //
-// The ids are the ones already embedded in the OPENCOLLECTIVE_CHECKOUT_* URLs an
-// operator configures — 104934 is .../contribute/pro-monthly-104934/checkout — and
-// were confirmed against the live API on 2026-08-28, which reported exactly two
-// tiers on the ai-agents-memory project: pro-monthly at EUR 50/month and pro-yearly
-// at EUR 500/year.
+// The slugs are the ones already embedded in the OPENCOLLECTIVE_CHECKOUT_* URLs an
+// operator configures — .../contribute/pro-monthly-104934/checkout — and were
+// confirmed against the live API on 2026-08-28, which reported exactly two tiers on
+// the ai-agents-memory project: pro-monthly at EUR 50/month and pro-yearly at EUR
+// 500/year.
+//
+// Keyed on the slug rather than the numeric tier id because only the slug is in the
+// PUBLISHED schema: `Tier.legacyId` resolves but is absent from introspection on
+// both production and staging, so it is a working field with no contract behind it.
 //
 // ⚠ A contribution naming any OTHER tier, or no tier at all, is an ordinary
 // donation. The reconciler ignores it rather than guessing a plan from the amount,
 // because guessing would let a EUR 5 one-off buy a EUR 50/month subscription.
-var ocTierPlanCodes = map[int]string{
-	104934: "pro_monthly",
-	104935: "pro_annual",
+var ocTierPlanCodes = map[string]string{
+	"pro-monthly": "pro_monthly",
+	"pro-yearly":  "pro_annual",
 }
 
 // ocReconcileHTTPTimeout bounds a single GraphQL call. The loop owns its own

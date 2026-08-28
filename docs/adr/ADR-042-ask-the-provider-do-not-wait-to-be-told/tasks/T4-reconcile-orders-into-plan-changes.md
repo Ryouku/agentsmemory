@@ -87,6 +87,8 @@ here because the ADR's Decision text still lists `REJECTED` and `ERROR` together
 - 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Accepts a tag without requiring a recorded CheckoutIntent to corroborate it. The tag rides in a user-controlled URL, so this lets anyone credit a payment to any workspace. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 - 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Makes a status OpenCollective adds after this was written downgrade every workspace holding such an order — the silent mass-downgrade the default exists to prevent. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 - 2026-08-28 · 366dd22* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Stops requiring the contribution to name one of our sellable tiers, so a 5 EUR one-off donation would activate a 50 EUR/month plan. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Accepts a tag without requiring a recorded CheckoutIntent to corroborate it, letting anyone credit a payment to any workspace. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Makes a status OpenCollective adds later downgrade every workspace holding such an order. · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
 
 ## Invariants
 
@@ -118,3 +120,4 @@ more code is written.
 
 ## Verification Log
 - 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
