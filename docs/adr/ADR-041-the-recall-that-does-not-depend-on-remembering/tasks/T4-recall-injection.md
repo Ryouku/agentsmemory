@@ -117,14 +117,32 @@ lives in `agentsmemory.env` authenticated as "local" and was refused. Fixed: the
 when the environment supplies one.
 
 That fix does not make the mechanism reachable everywhere, and the record must not imply it does.
-**On a Claude HOSTED install the hook still cannot authenticate at all.** That path puts the token
-in the MCP registration's `Authorization` header (`installer.go:1194`), which the CLI does not read,
-and writes no `agentsmemory.env` — only `registerCodexMCP` writes one, because `codex mcp add` has
-no static-header flag. So T4 is installed, registered, gated and **inert for the primary audience**.
 
-Closing that would mean writing a bearer token into a new file on the Claude path, reversing a
-documented choice; that is an ADR-level decision and it is filed in `BACKLOG.md`, not taken here.
-Reachable today: a `--local` install, and any install carrying an `agentsmemory.env`.
+**⚠ CORRECTION, same day.** This section first said the hook was inert on a Claude HOSTED install
+because "the token lives in the MCP registration's `Authorization` header, which the CLI does not
+read". **That is false.** `tokenFromClaudeJSON` reads exactly that header; it is wired at
+`clients/claude-code/mcpcall.go:222` and its doc comment says so. I asserted that something DOES
+NOT happen without checking — the precise failure shape this ADR exists to measure — and shipped it
+into the record, the backlog, PR #84 and the palace before catching it.
+
+**The real gap is narrower, and it is the `--local` install.** `aiagentmemory mcp` resolves a token
+from `--token`, `$AGENTSMEMORY_TOKEN`, an `agentsmemory.env` file, or the `.claude.json`
+registration header. `--local` populates none of them — `--help` says "no token is prompted for",
+and `registerClaudeMCP` adds the header only when a token is non-empty — so the CLI refuses with
+"no workspace token found" against a server that accepts no credentials at all. A client-side gate
+with nothing behind it. Filed in `BACKLOG.md` with three options.
+
+**Verified 2026-08-28 end to end**, from the INSTALLED path rather than the tree: with
+`AGENTSMEMORY_TOKEN` present in `agentsmemory.env`, the hook speaks on a working branch
+(`query: <branch> graph.go`, one hit from room `decisions`); on the default branch with a clean tree
+it is correctly silent, because the query is the bare branch name and falls under the 8-character
+floor; with no credential it is silent rather than noisy.
+
+**A SEPARATE DEFECT FOUND THE SAME WAY.** `install --agent claude` without `--mcp-url` or `--local`
+silently REPOINTED all five existing hooks from `http://localhost:8080/mcp` to the hosted default,
+because the default wins over what is already configured. Every hook on that machine went mute, and
+nothing said so. An install that rewrites a working configuration to a default is destructive, and
+it is not this task's to fix — recorded here because it is how the confusion above started.
 
 **So T4 does not read `done` on the strength of a green fence.** The sign-off must carry the
 measured delta (F-10) *and* name the population the mechanism cannot reach — a gate that passes

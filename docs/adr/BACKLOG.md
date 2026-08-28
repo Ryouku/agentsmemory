@@ -1398,23 +1398,33 @@ as the deferral so the pointer has a receiving end.
   softened to "end the loser and keep going", `merge_wing` becomes an ending operation performed by
   an agent and the surface question reopens.
 
-## A Claude hosted install gives its hooks no credential — 2026-08-28
+## A `--local` install gives its hooks no credential — 2026-08-28
 
-ADR-041 T4's recall hook shells out to `aiagentmemory mcp search`. The CLI resolves a workspace
-token from `--token`, `$AGENTSMEMORY_TOKEN`, or an `agentsmemory.env` file. A Claude install writes
-none of them: `registerClaudeMCP` puts the token in the MCP registration's `Authorization` header
-(`clients/claude-code/installer.go:1194`), which the CLI does not read. Only `registerCodexMCP`
-writes `agentsmemory.env`, and it does so because `codex mcp add` has no static-header flag.
+**CORRECTED the same day, and the correction is the point.** This entry first claimed the CLI does
+not read the token from the Claude MCP registration's `Authorization` header, and that a HOSTED
+install was therefore the broken case. That is false. `tokenFromClaudeJSON` reads exactly that
+header, it is wired at `clients/claude-code/mcpcall.go:222`, and its doc comment says so. The claim
+was an assertion that something DOES NOT happen, published without checking — the exact failure
+shape ADR-041 exists to measure, committed while writing ADR-041.
 
-**Consequence, measured 2026-08-28 on a hosted install:** the hook is written, registered on
-`SessionStart`, gated by `TestEveryInjectingHookIsOnAnInjectingEvent`, and cannot authenticate. It
-exits silently, because "no credential configured" is a state an operator cannot act on at every
-session start. T4 is therefore reachable on a `--local` install and on any install carrying an
-`agentsmemory.env`, and inert on a Claude hosted install — the primary audience.
+**The real gap, verified 2026-08-28.** `aiagentmemory mcp` resolves a workspace token from
+`--token`, `$AGENTSMEMORY_TOKEN`, an `agentsmemory.env` file, or the agent's `.claude.json`
+registration header. A `--local` install populates NONE of them: `--help` says of `--local` that
+"no token is prompted for", and `registerClaudeMCP` adds an `Authorization` header only when a token
+is non-empty. So the CLI refuses with "no workspace token found" — against a local server that
+accepts no credentials at all. Every hook that shells out to `mcp` is silent on a `--local` install,
+including ADR-041 T4's recall hook.
 
-**Why it is filed rather than fixed:** closing it means writing a bearer token into a new
-plaintext file on the Claude path, which reverses a documented choice and is a credential-storage
-decision, not a bug fix. Options to weigh: write `agentsmemory.env` on the Claude path too (0600,
-mirroring codex); teach the CLI to read the token from the MCP registration; or give hooks a
-credential-free read path. Any of them is an ADR.
+It is a client-side gate with nothing behind it: the server does not want the token the CLI insists
+on having.
+
+**Options.** Have `--local` write `agentsmemory.env` with the token the server was started with (or
+a placeholder when it was started with none); or let `mcp` skip the token requirement when the
+endpoint is loopback; or have the hook pass a placeholder only for a loopback URL — note the hook
+USED to pass `--token …:-local` unconditionally, which broke every install that resolves its
+credential elsewhere, so any placeholder must be conditional on the URL.
+
+**Workaround that works today:** write `AGENTSMEMORY_TOKEN=<token-or-any-string>` into
+`agentsmemory.env` in the config dir (0600). Verified: the CLI then reports
+`token from …/agentsmemory.env` and the recall hook speaks.
 
