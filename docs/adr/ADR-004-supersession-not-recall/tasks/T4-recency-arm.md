@@ -79,5 +79,6 @@ Stop if the arm cannot be expressed without a tuned constant that the sweep does
 - 2026-08-20 · b5d8df1 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestRecencyArm" -count=1'`
 - 2026-08-20 · 598b21c · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestRecencyArm" -count=1'`
 - 2026-08-20 · d080f2f · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestRecencyArm" -count=1'`
+- 2026-08-28 · 282ebde · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestRecencyArm" -count=1'` · acceptance-sha256:fb971f709459cd10031f9b3f51f7919449486cb59eb552eaa31a0d81e442c37e
 
 ## Mutation Log
