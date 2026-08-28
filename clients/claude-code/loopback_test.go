@@ -243,6 +243,28 @@ func TestAnInstallSaysSoWhenItRepointsYourHooks(t *testing.T) {
 		t.Errorf("re-installing against the SAME endpoint warned anyway: %q\n"+
 			"A warning that fires on every install is one people stop reading.", quiet)
 	}
+
+	// ⚠ THE CALL SITE, NOT ONLY THE HELPER. Everything above calls
+	// warnIfRepointing directly, so severing installer.go:874 left the whole
+	// package green — the warning existed and nothing invoked it. Its sibling
+	// warnSocketHooksCannotReachTheServer had the identical hole, found in review
+	// of this branch; this is the same pin on the other member of the pair, so the
+	// class is covered rather than the instance.
+	t.Run("the install path itself warns, not just the helper", func(t *testing.T) {
+		inst, _, dir := newTestInstaller(t, false)
+		write(t, dir, "http://localhost:8080/mcp")
+		inst.mcpURL = "https://aiagentmemory.dev/mcp"
+		buf := &bytes.Buffer{}
+		inst.out = buf
+		if err := inst.registerStopHook(); err != nil {
+			t.Fatalf("register hooks: %v", err)
+		}
+		if !strings.Contains(buf.String(), "REPOINTS") {
+			t.Errorf("an install that moved the hooks to another server said nothing: %q\n"+
+				"The warning is only worth having if the install path reaches it — delete its "+
+				"call and this is the assertion that must go red.", buf.String())
+		}
+	})
 }
 
 // TestAWaivedCredentialDoesNotTravelThroughARedirect closes the hole the
@@ -294,4 +316,68 @@ func TestAWaivedCredentialDoesNotTravelThroughARedirect(t *testing.T) {
 		cancel()
 		redirector.Close()
 	}
+}
+
+// TestASocketInstallSaysItsHooksCannotReachTheServer pins the one thing that was
+// missing from a documented install shape.
+//
+// ⚠ THE HOOKS ARE HTTP AND A SOCKET-ONLY SERVER HAS NO PORT. `--socket`
+// registers the MCP over the stdio bridge and leaves i.mcpURL alone;
+// `hookCommand` exports that URL, and only that URL, into every hook. And
+// `listenerFor` binds EITHER the socket OR the TCP address — never both. So the
+// endpoint every hook carries is a port nothing listens on.
+//
+// The failure is SILENT, which is why saying so is worth a test: a hook that
+// cannot connect exits quietly, and quiet is what a hook with nothing to report
+// looks like. PR #85 moved this failure from "no token" to "connection refused"
+// without making it visible.
+func TestASocketInstallSaysItsHooksCannotReachTheServer(t *testing.T) {
+	warn := func(t *testing.T, socket string) string {
+		t.Helper()
+		inst, _, _ := newTestInstaller(t, false)
+		inst.socket = socket
+		buf := &bytes.Buffer{}
+		inst.out = buf
+		inst.warnSocketHooksCannotReachTheServer()
+		return buf.String()
+	}
+
+	got := warn(t, "/tmp/agentsmemory.sock")
+	if !strings.Contains(got, "CANNOT reach") {
+		t.Errorf("a --socket install said nothing about its hooks: %q\n"+
+			"They carry an HTTP endpoint a socket-only server never binds, and a hook that "+
+			"cannot connect goes quiet — indistinguishable from one with nothing to say.", got)
+	}
+	if !strings.Contains(got, mcpURLEnvVar) {
+		t.Errorf("the warning does not name the variable the hooks actually carry: %q", got)
+	}
+
+	// The other half, and without it "warns" is satisfied by warning always. A
+	// TCP install's hooks reach the server perfectly well.
+	if quiet := warn(t, ""); quiet != "" {
+		t.Errorf("a non-socket install warned anyway: %q\n"+
+			"A warning that fires on every install is one people learn to skip.", quiet)
+	}
+
+	// ⚠ THE CALL SITE, NOT THE FUNCTION. Everything above invokes
+	// warnSocketHooksCannotReachTheServer directly, so deleting the ONE line in
+	// registerStopHook that actually calls it left the whole package green —
+	// found in review. That is precisely the defect this warning exists to
+	// prevent, one level out: the mechanism that makes a silent failure loud was
+	// itself silent if severed. A hook is reached by its registration and a
+	// warning by its call site; testing the component is not testing the wiring.
+	t.Run("the install path itself warns, not just the helper", func(t *testing.T) {
+		inst, _, _ := newTestInstaller(t, false)
+		inst.socket = "/tmp/agentsmemory.sock"
+		buf := &bytes.Buffer{}
+		inst.out = buf
+		if err := inst.registerStopHook(); err != nil {
+			t.Fatalf("register hooks: %v", err)
+		}
+		if !strings.Contains(buf.String(), "CANNOT reach") {
+			t.Errorf("installing hooks for a --socket install said nothing: %q\n"+
+				"The warning is only worth having if the install path reaches it — delete its "+
+				"call and this is the assertion that must go red.", buf.String())
+		}
+	})
 }

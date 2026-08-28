@@ -1741,28 +1741,67 @@ expose the mismatch.
 
 ## A `--socket` install's hooks still speak HTTP — 2026-08-28
 
-Found by an independent review of PR #85, not by our own tests.
+Found by an independent review of PR #85; verified from source and made VISIBLE 2026-08-28, not
+fixed.
 
-`--socket` registers the agent's MCP over stdio against a Unix socket and "replaces `--mcp-url`"
-(`clients/claude-code/installer.go`, socket branch). It does not change `i.mcpURL`, and
-`hookCommand` exports that value into every hook command. So a socket-only install produces hooks
-that still talk HTTP: the recall hook shells out to `aiagentmemory mcp` and verify/stats use `curl`,
-all aimed at a TCP endpoint that a socket-only server never binds (`cmd/server/listen.go` binds only
-the socket when `SocketPath` is set).
+`--socket` registers the agent's MCP over the stdio bridge and does not change `i.mcpURL`.
+`hookCommand` (`clients/claude-code/installer.go:1133`) exports that URL — and only that URL — into
+every hook command; the socket is never written into one. `listenerFor` (`cmd/server/listen.go:33`)
+binds EITHER the socket OR the TCP address, never both. So every hook a socket-only install writes
+carries an endpoint nothing is listening on.
 
-**PR #85 changes the symptom without fixing this.** Before it, those hooks failed on token
-resolution; after it, loopback token resolution SUCCEEDS and they fail on connection instead. Either
-way a documented install shape produces hooks that cannot reach their palace — and because a hook's
-healthy state is silence, nothing reports it.
+**PR #85 changed the symptom, not the cause**: before it those hooks failed on token resolution,
+after it they fail on connection. Either way a documented install shape produces hooks that cannot
+reach their palace — and because a hook's healthy state is silence, nothing reported it.
 
-**Options.** Teach `hookCommand` to export the socket and give the recall/verify/stats paths a
-socket transport; or have `--socket` refuse to install hooks it knows cannot work, saying so; or
-register an HTTP listener alongside the socket. The first is the only one that leaves the install
-whole.
+**Now it says so.** `warnSocketHooksCannotReachTheServer` warns during a `--socket` install, naming
+the variable the hooks carry and why it cannot work, pinned by
+`TestASocketInstallSaysItsHooksCannotReachTheServer` — including a subtest that drives
+`registerStopHook` rather than the helper, so deleting the CALL SITE goes red. That subtest was
+added after review: the first version tested the function directly, so removing the one line that
+invokes it left the whole package green. The mechanism built to make a silent failure loud was
+itself silent if severed — the same defect one level out. **Its sibling `warnIfRepointing`
+(`installer.go:874`) had the identical hole and is now pinned the same way**, because the class is
+"a warning whose only test calls it directly", not this one warning; verified 2026-08-28 by
+severing that call site and watching the new subtest go red. That is the cheap half: the failure is
+no longer silent.
 
-Whichever is chosen, the check must be a test that starts a socket-only server and drives a
-GENERATED hook — the existing socket tests assert the registration, which is the half that already
-works.
+**The real fix is new capability and a product decision, so it stays here.** The `socket` flag
+belongs to `install`; the `mcp` subcommand has NO socket flag and only dials HTTP (`dialMCP`), while
+verify and stats use `curl`. Making hooks work over a socket means either giving `mcp` a
+unix-socket transport and exporting the socket into hook commands, or having a socket-served server
+also bind a loopback port. Which one is right depends on whether hooks should follow the bridge or
+the server should always be reachable over TCP — nobody has decided that.
+
+A third option was listed here before the warning shipped and is dropped on purpose rather than
+forgotten: **have `--socket` refuse to install hooks it knows cannot work.** The warning does the
+same job without the cost — a refusal removes every hook from a socket install, so an operator
+who wanted the MCP over a socket silently loses capabilities that have nothing to do with the
+transport. On a Claude install that is **six registered events** (Stop, SessionStart×2,
+SubagentStart, SubagentStop, SessionEnd, `installer.go:960-1005`) across **five** of the six scripts
+in `hooks/`; the sixth, `agentsmemory-stats.sh`, is SOURCED by the session-end hook rather than
+registered, so calling it a hook is loose. ⚠ Six is CLAUDE-ONLY: `hookPlans` returns after the Stop
+plan for any other kit (`installer.go:963-965`), so a codex `--socket` install registers one event
+and pi registers none.
+
+Four of the five contact the server. `agentsmemory-subagent-start-hook.sh` deliberately does not —
+it reads stdin, `$AGENTSMEMORY_WING` and `.aiagentmemory`, then prints a fixed JSON envelope, with
+"no dependency on the binary, the server, or the network" and "deliberately NOT `am_status`: that is
+a network call on the dispatch path" in its own comments (`:39`, `:52`). Verified: no `curl`, no
+`http`, no invocation of the binary anywhere in it.
+
+**That hook is the argument, not an exception to it.** An earlier version of this paragraph said
+"all of them contact the server, so the argument is if anything understated" — which asserts every
+hook IS transport-coupled and therefore CONCEDES the premise it was meant to reinforce. The cleanest
+instance of a capability a `--socket` refusal would take away for no transport-related reason is the
+one hook that needs no transport at all. (`agentsmemory-stop-hook.sh` is a partial second: its
+primary job is the exit-2 persist nudge, which needs no server; the `/stats` call is an explicit
+optional extra, `:137`.) Saying so and installing them is strictly more
+recoverable than not installing them. Named here so the next reader does not re-propose it as new.
+
+**Whatever is chosen, the check must drive a GENERATED hook against a socket-only server.** The
+existing socket tests assert the registration, which is the half that already works; the new warning
+test asserts the warning, which is not the same as asserting the hook connects.
 
 ## A `--local` install gives its hooks no credential — 2026-08-28
 
