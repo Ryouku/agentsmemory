@@ -315,3 +315,10 @@ Required — this adds persistent state, an external integration and a new secre
 - [ ] An operator view listing contributions the reconciler could not attribute (from Out of Scope).
 - [ ] Re-read the webhook signature question if Open Collective ships signed deliveries; that would
       supersede this record's central premise.
+- [ ] **Run the test suite under `-race` in CI.** Nothing in this repository does: every workflow
+      runs a bare `go test ./...`, no other ADR fence asks for it, and there is no Makefile target.
+      The suite is race-clean today — verified with `go test -race ./...` on 2026-08-28, exit 0 — so
+      this is a gap in ENFORCEMENT rather than a defect, and it went unnoticed until this ADR added
+      the first goroutine anyone had reason to ask about. T5's fence now runs `-race` over the loop
+      tests it owns; making it repo-wide is a policy change and belongs to its own record rather
+      than to a payments PR.

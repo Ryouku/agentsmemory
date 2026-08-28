@@ -51,7 +51,7 @@ and apply it through the existing `applyActivated` / `applyCanceled` — never a
 ## Acceptance
 
 ```bash
-go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
+go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t4-new.out && \
 grep -q "^ok" /tmp/adr042-t4-new.out && \
 go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/... -count=1
@@ -73,6 +73,7 @@ go build ./... && go vet ./... && go test ./internal/billing/ ./internal/web/...
 | `TestReconcileDoesNotGrantARecurringPlanForAOneOff` | `internal/billing/reconcile_idempotence_test.go` | A ONETIME contribution to a recurring tier is ignored, not treated as a subscription that never expires | — |
 | `TestEmailFallbackRefusesAnAmbiguousMatch` | `internal/billing/reconcile_idempotence_test.go` | Two workspaces sharing one email attribute to NEITHER, instead of to whichever clicked Upgrade last | — |
 | `TestLedgerRecordsOnlyDecisionsActuallyTaken` | `internal/billing/reconcile_idempotence_test.go` | An activation the stale-re-delivery guard declines writes NO ledger row — the ledger records what the server did, not what it refused to do | — |
+| `TestUnknownFrequencyIsNotTreatedAsRecurring` | `internal/billing/reconcile_idempotence_test.go` | An order whose recurrence the provider did not state is refused, not admitted — `Order.frequency` is nullable, so this is a real state | — |
 | `TestApplyIsIdempotentWithoutTheLedger` | `internal/billing/reconcile_idempotence_test.go` | Repeated application of the SAME event converges — held with the ledger deliberately absent, because the ledger otherwise short-circuits the very passes this is about | — |
 
 ### Review findings from PR #96, reproduced before fixing
@@ -120,6 +121,16 @@ integration, are both successes that changed nothing — neither is written to t
 false entry and no empty `team_id`. The webhook path discards both values, which is why it still
 returns 200 on a delivery it deliberately ignored.
 
+**Third-pass finding — a production guard had been weakened to fit its fixtures.** The recurrence
+check read `o.Frequency != "" && …`, admitting an order whose recurrence the provider never stated.
+That was not a decision: nine test fixtures omitted the field, and the guard had been written around
+them. `Order.frequency` is NULLABLE in the published schema, so an absent value is a state the API
+can really produce — and admitting it defeated the guard in exactly the case it exists for. Measured
+against real staging data the same day: **38 of 40 contributions were `ONETIME`**, so the case the
+guard rejects is the COMMON one and almost every fixture was implicitly recurring. The escape is
+gone, the fixtures now carry realistic frequencies, and `TestUnknownFrequencyIsNotTreatedAsRecurring`
+holds it.
+
 **N3** — the migration comment now states the three behaviours an operator cannot guess from the
 schema: rows are written only when something happened, the lookup fails OPEN, and deleting a row is
 the supported way to force a re-apply.
@@ -162,6 +173,8 @@ here because the ADR's Decision text still lists `REJECTED` and `ERROR` together
   ```
 - 2026-08-28 · 7d1ac1e* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Marks an activation the stale-re-delivery guard declined as applied, putting a false entry in the ledger. Previously SURVIVED: the behaviour was fixed and nothing tested it. · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
 - 2026-08-28 · 7d1ac1e* · mutant killed · exit 1 · `internal/billing/repo.go` · Breaks the subscription upserts convergence — the property TestReconcileIsIdempotent was named for and stopped measuring once the ledger short-circuited its later passes. · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
+- 2026-08-28 · b1e94c3* · mutant killed · exit 1 · `internal/billing/reconcile.go` · Restores the empty-frequency escape: an order whose recurrence the provider never stated activates a recurring plan. Order.frequency is nullable, so this is a real API state, and admitting it defeats the guard in the one case it exists for. · acceptance-sha256:d63f852f3f6f801e2994afb220eff0bff0121307c17dd40a9dd1906dbbd56fbe
+- 2026-08-28 · b1e94c3* · mutant killed · exit 1 · `internal/billing/repo.go` · Breaks the subscription upserts convergence — the property the ledger short-circuited out of TestReconcileIsIdempotent. · acceptance-sha256:d63f852f3f6f801e2994afb220eff0bff0121307c17dd40a9dd1906dbbd56fbe
 
 ## Invariants
 
@@ -192,8 +205,9 @@ more code is written.
 - Distinguishing `DISPUTED` / `IN_REVIEW` from `eventIgnored` (deferred: Follow-ups, ADR-042).
 
 ## Verification Log
-- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
-- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
-- 2026-08-28 · 66ebe2c* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
-- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:9c3f775c0d86d8b369ef1ea454c3d315a291a3e60b3435361bb395cee408844c
-- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
+- 2026-08-28 · 366dd22* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · eec2269* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:8640ad4200592ff8c3bfa110ea7da8fb3e4f338d58f7592f9ace2de253f21f79
+- 2026-08-28 · 66ebe2c* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:fe873043ebf0b97330de17ca68cada502005fc9a2ec560378b72f5259496fe9d
+- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:9c3f775c0d86d8b369ef1ea454c3d315a291a3e60b3435361bb395cee408844c
+- 2026-08-28 · 7d1ac1e* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:82bc092f9dab4720da8023160c4f3fa1935f38bbf55ca9c027307e57ccd222e4
+- 2026-08-28 · b1e94c3* · exit 0 · `go test ./internal/billing/ -run 'TestReconcile|TestEmailFallbackRefusesAnAmbiguousMatch|TestApplyIsIdempotentWithoutTheLedger|TestLedgerRecordsOnlyDecisionsActuallyTaken|TestUnknownFrequencyIsNotTreatedAsRecurring' -count=1 2>&1 | tee /tmp/adr042-t4-new.out && \ …` · acceptance-sha256:d63f852f3f6f801e2994afb220eff0bff0121307c17dd40a9dd1906dbbd56fbe

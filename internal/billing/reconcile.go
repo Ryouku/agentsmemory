@@ -212,7 +212,16 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileReport, error)
 			// grant it for as long as the collective exists — and nothing expires it,
 			// because CurrentPeriodEnd is recorded and read by nothing (PR #96 review,
 			// B1). Ignored and logged rather than half-honoured.
-			if o.Frequency != "" && o.Frequency != "MONTHLY" && o.Frequency != "YEARLY" {
+			//
+			// ⚠ An ABSENT frequency is treated as not-recurring, not as permission.
+			// `Order.frequency` is nullable in the published schema, so "we cannot tell
+			// whether this recurs" is a state the API can really produce — and admitting
+			// it would defeat this guard in precisely the case it exists for. The cost of
+			// refusing is a log line and one `set-plan`; the cost of admitting is a
+			// permanent plan nobody is billed for and nobody notices. An earlier version
+			// let an empty value through, which was not a decision — it was nine test
+			// fixtures that omitted the field.
+			if o.Frequency != "MONTHLY" && o.Frequency != "YEARLY" {
 				log.Printf("billing: contribution %s is %s to the recurring tier %q; ignoring — a one-off does not buy a subscription, activate manually with `set-plan` if that is the intent", o.ID, o.Frequency, o.TierSlug)
 				rep.Ignored++
 				continue

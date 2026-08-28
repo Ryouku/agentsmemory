@@ -171,6 +171,39 @@ func TestApplyIsIdempotentWithoutTheLedger(t *testing.T) {
 	}
 }
 
+// TestUnknownFrequencyIsNotTreatedAsRecurring pins the tightened recurrence guard.
+//
+// `Order.frequency` is NULLABLE in Open Collective's published schema, so "we cannot
+// tell whether this recurs" is a state the API can genuinely produce. An earlier
+// version admitted it — `o.Frequency != "" && …` — which defeated the guard in
+// exactly the case it exists for. That escape was not a decision: it was nine test
+// fixtures that omitted the field, and the production code had been shaped to keep
+// them green.
+//
+// Refusing costs a log line and one `set-plan`. Admitting costs a plan granted for
+// as long as the collective exists, that nobody is billed for and nobody notices.
+func TestUnknownFrequencyIsNotTreatedAsRecurring(t *testing.T) {
+	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
+		return []providerOrder{{
+			// No Frequency: a null from the provider, not a one-off.
+			ID: "or_nofreq", Status: "ACTIVE", TierSlug: "pro-monthly",
+			Tags: []string{intentTag(teamID)},
+		}}
+	})
+	recordIntent(t, gdb, teamID, "pro_monthly", "jane@example.com")
+
+	rep, err := r.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if rep.Activated != 0 {
+		t.Errorf("an order with no stated recurrence activated a recurring plan: %+v", rep)
+	}
+	if got := teamPlanID(t, svc.subs.db, teamID); got != tenant.FreePlanID {
+		t.Fatalf("unknown recurrence granted a plan: %q", got)
+	}
+}
+
 // TestEmailFallbackRefusesAnAmbiguousMatch reproduces B2: MatchByEmail is scoped to
 // (email, plan) across EVERY workspace and ordered created_at DESC, so with one
 // email and two workspaces the payment lands on whichever clicked Upgrade last.

@@ -77,7 +77,7 @@ func TestReconcileMapsOrderStatusToEventKind(t *testing.T) {
 func TestReconcileAttributesByTagOnlyWithAMatchingIntent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "or_test9001", Status: "ACTIVE", TierSlug: "pro-monthly",
+			ID: "or_test9001", Status: "ACTIVE", Frequency: "MONTHLY", TierSlug: "pro-monthly",
 			Tags: []string{intentTag(teamID)}, FromAccountSlug: "jane",
 		}}
 	})
@@ -113,7 +113,7 @@ func TestReconcileAttributesByTagOnlyWithAMatchingIntent(t *testing.T) {
 func TestReconcileAttributesByEmailWhenTheTagIsAbsent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "or_test9002", Status: "ACTIVE", TierSlug: "pro-monthly",
+			ID: "or_test9002", Status: "ACTIVE", Frequency: "MONTHLY", TierSlug: "pro-monthly",
 			Tags: nil, FromAccountEmail: "buyer@example.com",
 		}}
 	})
@@ -136,7 +136,7 @@ func TestReconcileAttributesByEmailWhenTheTagIsAbsent(t *testing.T) {
 func TestReconcileLeavesAnUnattributableOrderAlone(t *testing.T) {
 	r, svc, _, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "or_test9003", Status: "ACTIVE", TierSlug: "pro-monthly",
+			ID: "or_test9003", Status: "ACTIVE", Frequency: "MONTHLY", TierSlug: "pro-monthly",
 			Tags: nil, FromAccountEmail: "stranger@example.com",
 		}}
 	})
@@ -158,7 +158,7 @@ func TestReconcileLeavesAnUnattributableOrderAlone(t *testing.T) {
 func TestReconcileIgnoresAContributionOutsideOurTiers(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "or_test9004", Status: "PAID", TierSlug: "",
+			ID: "or_test9004", Status: "PAID", Frequency: "ONETIME", TierSlug: "",
 			Tags: []string{intentTag(teamID)},
 		}}
 	})
@@ -181,7 +181,7 @@ func TestReconcileIgnoresAContributionOutsideOurTiers(t *testing.T) {
 func TestReconcileIsIdempotent(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{{
-			ID: "or_test9005", Status: "ACTIVE", TierSlug: "pro-monthly",
+			ID: "or_test9005", Status: "ACTIVE", Frequency: "MONTHLY", TierSlug: "pro-monthly",
 			Tags: []string{intentTag(teamID)}, FromAccountSlug: "jane",
 			NextChargeDate: "2026-09-20T09:11:02Z",
 		}}
@@ -216,8 +216,8 @@ func TestReconcileIsIdempotent(t *testing.T) {
 func TestReconcileDoesNotResurrectACanceledSubscription(t *testing.T) {
 	r, svc, gdb, teamID := newReconcileEnv(t, func(teamID string) []providerOrder {
 		return []providerOrder{
-			{ID: "or_test9006", Status: "CANCELLED", TierSlug: "pro-monthly"},
-			{ID: "or_test9006", Status: "ACTIVE", TierSlug: "pro-monthly", Tags: []string{intentTag(teamID)}},
+			{ID: "or_test9006", Status: "CANCELLED", Frequency: "MONTHLY", TierSlug: "pro-monthly"},
+			{ID: "or_test9006", Status: "ACTIVE", Frequency: "MONTHLY", TierSlug: "pro-monthly", Tags: []string{intentTag(teamID)}},
 		}
 	})
 	recordIntent(t, gdb, teamID, "pro_monthly", "jane@example.com")
