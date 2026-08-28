@@ -1417,50 +1417,53 @@ defect `SupersessionGatedArmFor`'s doc comment says "is how the gate judged a pi
 Neither is a bug in shipped behaviour. Both are gates weaker than their names, which is the
 condition this repository's checks exist to remove.
 
-## The entry point looks for a room that exists in no wing — 2026-08-28
+## The local palace is seeded without the `llm_init` spine — 2026-08-28
 
-**Sharpened the same day; the first version of this entry called it a missing backfill, which is
-one of two independent causes and not the decisive one.**
+**Third framing, and the two before it were wrong in opposite directions. Recorded because the
+correction is the finding.**
 
-`Service.EntryPoint` resolves `DerivedEdgeSubject(wing, EntryRoom)` — the string
-`room:<wing>/llm_init` (`internal/palace/graphquery.go:471,518`). Measured against the local palace:
+`Service.EntryPoint` resolves `DerivedEdgeSubject(wing, EntryRoom)` = `room:<wing>/llm_init`
+(`internal/palace/graphquery.go:471,518`), so `am_bootstrap` and `am_entry_point` return
+`unknown_term` for every wing of the local palace.
 
-- **`llm_init` appears in 0 of 65 rooms across 16 wings.** The entry tier here is `llm_index`
-  (`wing_agentmemories`, 2 drawers), beside `llm_corrections` and `llm_open_threads`.
-- So `am_entry_point` and `am_bootstrap` return `unknown_term` for every wing, correctly — the node
-  they name is never created because the room they name does not exist.
+**What is actually missing is the room, and only locally.** `am_list_rooms(wing:"*")` returns 65
+rooms across 16 wings with no `llm_init`. ADR-027 §"Existing Primitives Audit" states the opposite
+about production, as an accepted record: *"the general form is already running in production at the
+top level. The `llm_init` root is a spine that stores no list of its contents; the `must.*` KG edges
+are the parts; the bootstrap reads the spine and traverses. That mechanism has carried every session
+in this wing since 2026-08-24."*
 
-**The derived-edge machinery itself is fine.** `room:wing_agentmemories/decisions` resolves
-`matched` with 7 `holds` edges, including every drawer written today. The scheme works; it is
-pointed at a room nobody files into.
+**`must` and `llm_init` are ONE scheme, not two.** An earlier version of this entry called them
+"two unrelated addressing schemes" — wrong. `am_kg_query(entity:"must", direction:"outgoing")`
+resolves `matched` with 8 current facts here (five `must_load` → `llm_index`, `llm_index_keys`,
+`llm_open_threads`, `llm_corrections`, `human_decisions`; three `must_load_skill`). Those ARE the
+`must.*` edges ADR-027 describes. The local palace holds the KG half and not the spine drawer's
+room, which is the half `EntryPoint` keys on.
 
-**A second, independent gap sits behind the first.** Even with the room name corrected,
-`room:wing_agentmemories/llm_index` resolves `unknown_term`: those two drawers were filed
-2026-08-24 and the earliest derived edge in that wing is 2026-08-27, so they predate the mechanism.
-Fixing only the name leaves it empty; fixing only the backfill leaves it unaddressed.
+**And the first version was wrong too**, in the other direction: it called this a missing derived-edge
+backfill. The derived machinery works — `room:wing_agentmemories/decisions` resolves `matched` with
+7 `holds` edges including every drawer written today.
 
-**And the corpus already has a working entry point the tools do not consult.**
-`am_kg_query(entity:"must", direction:"outgoing")` returns **8 current facts, `resolution:
-"matched"`** — five `must_load` (`llm_index`, `llm_index_keys`, `llm_open_threads`,
-`llm_corrections`, `human_decisions`) and three `must_load_skill` (`effective-go`,
-`memory-orchestration`, `human-decisions`). The `llm_index` drawer states the convention outright:
-*"WAKE-UP: kg_query(must) outgoing. must_load → am_get_drawer(id, whole=true)."*
+**So the likely cause is seeding, not code.** This local corpus appears to carry what was shared
+through skills — the `llm_index` routing drawers, filed 2026-08-24 citing `setup.md §4.3` and
+`§6` and saying *"Update in place when minting"* — without the `llm_init` spine that production has.
+The constant is probably right and the local palace is probably incomplete.
 
-So there are **two unrelated addressing schemes**: a hand-maintained `must` entity that works, and a
-derived `room:<wing>/llm_init` node that cannot. `am_bootstrap` was built against the second.
+**What to actually do, in order:**
+1. **Verify against production.** Everything above is a `mode: local` server, workspace slug
+   `local`. If prod resolves `am_entry_point(wing_agentmemories)` to a node, the code is fine and
+   this is purely a dev-seeding gap. That single call settles it and nothing else should be decided
+   before it.
+2. If prod also returns `unknown_term`, ADR-027's production claim has gone stale and needs a
+   correction — it is load-bearing for the bootstrap design.
+3. Either way, a local palace that cannot bootstrap makes every dev session run the manual `must.*`
+   walk, whose four silent-failure modes `AGENTS.md` documents at length. Seeding a spine locally is
+   cheap and would exercise the path we ship.
 
-**`AGENTS.md` inherits the same error.** Its manual traversal instructs
-`am_list_drawers(wing:"wing_agentmemories", room:"llm_init")`, which returns nothing here — the
-documented fallback for when the one-call path fails names the same absent room.
-
-**Why this is an ADR and not a patch.** Which scheme is canonical is a product decision: adopt
-`must` and teach `EntryPoint` to resolve it; or adopt the derived node, rename the room or the
-constant, and backfill; or keep both with a defined precedence. Picking one silently would strand
-whichever corpus uses the other. Scope caveat: measured on a `mode: local` server — check production
-before assuming it matches.
-
-⚠ `edge_derived: true` on a write is NOT evidence of an entry point. `am_add_drawer` returns it for
-the drawer's own room, and `am_entry_point` for that same wing still says `node: ""`.
+⚠ Two traps worth keeping, both paid for here: `edge_derived: true` on `am_add_drawer` is NOT
+evidence of an entry point — it reports an edge for the drawer's OWN room, and `am_entry_point` for
+that same wing still returns `node: ""`. And `AGENTS.md`'s manual fallback instructs
+`am_list_drawers(room:"llm_init")`, which returns nothing on a palace seeded like this one.
 
 ## A `--socket` install's hooks still speak HTTP — 2026-08-28
 
