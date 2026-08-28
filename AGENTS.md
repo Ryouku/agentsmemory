@@ -252,6 +252,26 @@ is what stops a new script from being invisible to it, and
 `TestANonInjectedChannelIsJustified` refuses a quieter channel without a written
 reason, so the declaration cannot become the dodge.
 
+**A REGISTRATION IS THE OTHER HALF OF A HOOK, AND NO TEST CAN SEE THE ONE ON DISK.**
+`TestEveryInjectingHookIsOnAnInjectingEvent` gates the installer's PLAN; the
+`settings.json` in front of an operator — hand-edited, copied from another config
+dir with `--copy`, or written by an older install — is gated by nothing.
+`aiagentmemory doctor` reads that file, finds every registration naming a script
+that declares `# hook-output: stdout-injected`, and exits non-zero on three states:
+installed and registered by no event, registered on an event whose stdout goes to
+the debug log, or unable to run. `TestDoctorIsRegistered` covers the rung the
+command's own tests cannot: they build their own root, so all of them passed with
+`doctorCommand(),` deleted from `main.go`.
+
+⚠ **It does NOT fail on silence, and that limit is the finding.** Both shipped
+injecting hooks are silent when healthy — the verify hook prints only on drift, the
+recall hook only when the palace has something for the branch — so an earlier
+version that called zero bytes MUTE failed on a correct install. One run cannot tell
+healthy silence from muteness, and resolving that in an exit code is a guess wearing
+a check. `TestDoctorDoesNotFailOnSilence` keeps it out. What closes the gap instead
+costs nothing: each hook writes what it asked and what came back to stderr, which no
+event injects, and `doctor` prints it verbatim so a human judges the silence.
+
 **A corpus check an operator can run.** Every finding behind ADR-038 — 27 drifted
 rows, 39 of 41 anchored drawers one re-file from losing their pin, 16 facts naming
 a drawer that no longer existed — was produced by a throwaway script and by nothing
@@ -346,6 +366,28 @@ pinned third-party source, which is what this corpus's apparently-dangling ones 
 Source `file:line` refs pointing past the end of a real file are recorded in
 `BACKLOG.md` as a command rather than gated, because most point into refactored
 files where the right line is unknowable.
+
+**AN ACCEPTANCE THAT REPORTS ITS VERDICT IN PROSE IS READ BY NOTHING.** Every acceptance
+route here reports a verdict a tool can act on — an exit code plus a fence digest,
+and a task is done only when both match. The human-observed route carries neither:
+`adr-next` counts such an entry done on its GRAMMAR, date and marker and `.+`, so
+any text after the marker reads as success. Measured 2026-08-28: ADR-001 T3 signed
+off *"decision BLOCKED — neither ship nor withdraw … T4/T5/T6 not started"* and
+every routing tool answered `done T3` / `READY T1`, with `adr-lint` passing over a
+README that still said `pending`. T3's Stop Condition says *"Stop the ADR — not
+just this task"*; the stop is stated in three sections and read by none of them.
+The half that is ours was a missing vocabulary, not a lax regex — T3's acceptance
+hint offered `decision <ship|withdraw>`, two values, and the run reached a third.
+`TestAHumanObservedSignOffAgreesWithTheIndex` requires each human sign-off to name
+`ship`, `withdraw` or `blocked` and requires the sibling README to carry the status
+it maps to. `TestASignOffThatSaysStopIsCaught` drives the same function over
+fixtures that are wrong, sharing the comparison rather than copying it — the first
+draft reimplemented it, and severing the real check left the subtest green. The same shape
+recurred one file over: `TestAHumanObservedSignOffAgreesWithTheIndex`'s first version pinned only its
+comparison helper, so severing the CALL to it left the suite at exit 0 while the gate printed that
+every sign-off agreed with its index — over a corpus where one did not. Both now route the verdict
+through a `testing.TB` the falsifiability half substitutes, which is the only form that catches a
+severed call site.
 
 The same principle covers the gates already in the tree: `internal/doclint`
 (a doc comment must document the declaration it sits on), `TestEveryDeclaredArmIsRegistered`

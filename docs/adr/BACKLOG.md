@@ -190,7 +190,194 @@ a decision, not a foregone no.
 correction: the second precedent implements the same pattern under different identifiers, so a grep
 for the first one's names missed it. Ask which entries exist, not which files contain this string.)*
 
+## A human sign-off that said STOP reads to every routing tool as PROCEED — 2026-08-28
+
+Found by checking what ADR-001 T3 decided before executing anything downstream of it.
+
+**The observation.** `docs/adr/ADR-001-recall-answers-or-abstains/tasks/T3-run-the-gate.md` holds
+one human-observed sign-off ending *"eval --calibrate --gate exit 1; no threshold on the curve
+clears both bars … decision BLOCKED — neither ship nor withdraw, because the preflight names this
+corpus unfit to decide; T4/T5/T6 not started"*. Against that:
+
+- `adr-next ADR-001 --all` prints **`done T3`** and **`READY T1`**.
+- `tasks/README.md` said **`pending`** for the same task, so the index and the router disagreed and
+  neither said `blocked`.
+- `adr-lint ADR-001` **PASSES** over that divergence. Its README↔evidence check is one-directional:
+  it rejects `done` without evidence, never `pending` with it.
+- `work-next` named ADR-001's remaining tasks as the next work in the whole repository.
+
+So every tool that routes work pointed an executor at T1 — the first step of the sequence T3 had
+just forbidden. The record is not vague about this. T3's **Stop Condition** says *"Stop the ADR —
+not just this task"* and *"a gate that cannot fail authorises T4–T6 on a verdict that means
+nothing"*; its **Out of Scope** says T4/T5/T6 start only *"until this task's log holds a `ship`
+sign-off"*. The stop is stated three times in three sections and read by nothing.
+
+**The cause, verified in source** (`bin/adr-next:96-106`; read on the authoring machine's plugin
+cache, where `adr-lint` on `PATH` resolves to 2.23.0 and the 2.19.0 and 2.21.0 copies present there
+are byte-identical here — ⚠ a reviewer carrying only one of those can confirm that one, and 2.19.0
+is the version everybody has):
+
+```python
+VLOG_HUMAN_RE = re.compile(r"^- \d{4}-\d{2}-\d{2} · human-observed · .+$")
+...
+if human and VLOG_HUMAN_RE.match(line):
+    return True
+```
+
+A human sign-off is counted done by its **grammar**: date, marker, and `.+`. Every other acceptance
+route reports a verdict the tooling reads — a tool-written entry carries an exit code and a fence
+digest, and a task is done only when both match. The human route carries neither, so any text after
+the marker reads as success, including text that says to stop. `adr-lint` skips the same path
+explicitly (`evidenced_task_ids`: `if inf.get("human"): continue`).
+
+**The half that is ours, and it is the more useful half.** The schema had no representation for
+*"ran, and the answer is stop"*. T3's own acceptance hint prescribes `decision <ship|withdraw>` —
+**two** values — and the run reached a third. The executor recorded it correctly and it landed in
+free text because there was nowhere else for it to go.
+
+`TestAHumanObservedSignOffAgreesWithTheIndex` (`internal/repohygiene/humansignoff_test.go`) now
+requires every human sign-off to name EXACTLY ONE outcome from `ship` / `withdraw` / `blocked`,
+requires the sibling README to carry the status that outcome maps to (`done` / `failed` / `blocked`),
+and requires the FENCED TEMPLATE in the task's Acceptance section — the command an operator copies,
+not the prose around it — to offer all three — because the defect was a template prescribing
+two values, and a gate demanding three beside a template offering two reproduces the dead end for
+the next operator. It derives its universe from the corpus. ADR-001 T3's row now reads `blocked` and
+its hint reads `decision <ship|withdraw|blocked>`.
+
+**And this is a class rather than a one-off, which answers "why gate for a single case".** ADR-004's
+supersession gate reached the identical third state on 2026-08-24 — recorded in the palace as
+*"REFUSED — NOT 'no' … the gate could not answer. Those are different facts"* — a run that completed,
+produced a third outcome, and had two slots to record it in. Issue #34 has been open on that
+ambiguity since, before this finding existed. Two ADRs, two routes, one missing value.
+
+⚠ **Exactly one, because no position rule works.** Three were tried: first match rejected a valid
+sign-off ("…the decision is recorded in evidence/x.md; decision ship" → "is"), last match rejected
+its mirror, and last-in-vocabulary admitted a FALSE PASS on the very failure this entry is about — a
+verdict of BLOCKED indexed `done` passed the gate because a later "do not record decision ship"
+clause won. Position was standing in for grammar. Counting refuses to guess instead: two outcome
+DIFFERENT outcome words is reported rather than resolved.
+
+⚠ **That is a cost, not a claim that a reader cannot resolve it.** The earlier wording said an entry
+a machine cannot resolve is one a reader cannot resolve either, and this gate's own fixture is the
+counter-example: *"decision blocked — saturated; the decision withdraw option was considered and
+rejected"*, indexed `blocked`, reads unambiguously to a person and is rejected here — because "was
+considered and rejected" is exactly the clause a machine cannot read. It is a deliberate casualty.
+
+⚠ **DISTINCT words, not occurrences.** Counting occurrences rejected one verdict stated twice —
+*"decision ship; recorded in evidence/x.md; per the stop condition T4 starts only on a decision
+ship"* — which is what an author writes when the entry names the index it just updated. A false
+alarm on a correct sign-off is what killed both position rules, and it nearly arrived again inside
+the fix for them.
+
+⚠ **The floor: it reads only the `decision <word>` template form.** A verdict in prose beside one
+template mention — *"the decision is blocked … do not record decision ship until the corpus grows"* —
+resolves to `ship` and passes. The remedy is to state the verdict in template form, and the gate
+cannot say so, because recognising that shape is the thing it cannot do.
+
+⚠ **`blocked` now carries three meanings across three tools**, and `statusForDecision`'s doc comment
+is where that is written down: `adr-next --all` prints it for a task whose DEPENDENCIES are unmet,
+`adr-lint:636-646` treats it as externally blocked with a green fence, and this gate means the task
+RAN and its verdict was stop. No task is in two of those states today, so nothing conflicts — but a
+reader comparing tools should know the word is overloaded.
+
+⚠ **What this does NOT fix, stated plainly: `adr-next` still prints `done T3` / `READY T1`.** The
+gate makes the corpus self-consistent and makes a future divergence fail a command; it cannot change
+what a tool in another tree computes from the task file. An executor who trusts `adr-next` over the
+README is still routed into forbidden work — and `/adr-execute`'s own instructions tell them to,
+because where the two disagree the task files are supposed to win.
+
+**Still open for the harness owner:** count a human-observed entry as done only when it names a
+success outcome, and report a recorded stop as `blocked` rather than `done`. That is a four-line
+change to `is_done` plus a vocabulary. It shares the externality question with two entries that both
+resolve in this file: *"The ADR evidence chain depends on a tool outside the repository"* and
+*"adr-lint cannot express a cross-record dependency"*. Three findings in one external tool is itself
+an argument that the vendoring option deserves a decision.
+
+*(This sentence has now been wrong in both directions. It first cited the third entry by a heading
+that existed only in its own paragraph — a pointer to nothing. The correction said the entry "lands
+with PR #91 and is NOT in this file yet", which went false the moment #91 merged, nine lines above
+the heading it claimed was absent. A cross-reference written in the future tense expires; one
+written by quoted heading does not, which is the rule this file already carries.)*
+
+**Not taken here, because it is the owner's:** ADR-001 is `Accepted` and its own T3 said to stop the
+ADR. Whether that means re-running T3 against a corpus that is not saturated, or withdrawing the
+record, is a decision this entry files rather than makes.
+
 ## ADR-041 T2 — the recall-before-assertion baseline, measured 2026-08-28
+
+⚠ **RE-TAKEN 2026-08-28 UNDER v3.** "Preceded" now means A RECALL SINCE THE LAST USER TURN, decided
+by Zy from the measured distribution of all three candidate readings. Under v2 it meant "this
+session touched the palace at some earlier point" — a latch that flipped at the first recall and
+never reset, which nobody chose; it is simply what the code computed. Rates under the two are NOT
+comparable, which is what the version stamp is for, and the v2 figure is kept below rather than
+deleted because it is what the earlier evidence proved.
+
+**7.6%** — of 341 no-change assertions across 24 sessions, 26 had a recall since the user turn that
+asked for the work.
+
+| | |
+|---|---|
+| transcripts scanned | 48 |
+| sessions with at least one assertion | 24 |
+| assertions | 341 |
+| preceded by a recall (since the last user turn) | 26 |
+| **rate** | **7.6%** |
+| classifier | v3 |
+
+Cross-readings on the same corpus, so the choice stays auditable: v2's latched reading **52.8%**;
+since the last compaction **43.4%**; within 100 tool calls 28.7%, within 50 17.6%, within 25 12.3%,
+within 10 **7.3%**, within 5 5.3%, within 1 1.8%.
+
+The user-turn reading lands within half a point of the within-10-calls window from a completely
+different derivation, which is the only evidence any particular window is more than a number
+someone picked. `TestTheRecordedBaselineNamesTheVersionTheCodeStamps` pins the `classifier` row
+above to the constant the code stamps, so a future redefinition cannot ship without re-taking this.
+
+### T6 shipped 2026-08-28, into a window it shares with T4
+
+T6 shipped — `serverInstructions` names the class of claim and carries no imperative — and was
+verified against the RUNNING server rather than the build log: the live handshake returns 1194 bytes
+carrying `WHAT SOURCE CANNOT SETTLE` and not `RECALL BEFORE YOU ACT`.
+
+**The before-state, re-taken with the shipped binary at the moment the window opened**, and it
+reproduces the baseline exactly, as it must — every transcript on disk predates T6 by minutes:
+
+| | |
+|---|---|
+| sessions with at least one assertion | 24 |
+| assertions | 341 |
+| preceded (since the last user turn) | 26 = **7.6%** |
+| made before ANY recall | 161 = 47.2% |
+| recall calls | 128 |
+| classifier | v3 |
+
+⚠ **AND IT IS NOT A CLEAN WINDOW — F-9 IS VIOLATED IN FACT.** Raised in review and confirmed against
+source: T4's recall hook is registered on `SessionStart` UNCONDITIONALLY, so on a hosted install it
+went live the same day, hours before T6. T4's record reads `blocked`, but that describes the record
+rather than the deployment — it is `blocked` only because it is mute on a `--local` install. Two
+mechanisms went live after the 7.6% baseline was taken, so **no delta from this window is
+attributable to either of them.**
+
+Nothing is un-shipped to manufacture a window that is already spent. The next clean one needs a
+fresh JOINT baseline taken with both live — which `observed_at` now makes computable — and then
+exactly one further mechanism. F-10 records what happened, and this is what happened.
+
+**The after-measurement therefore cannot be a T6 delta.** What it can be is a joint after-state, and
+it still needs real sessions with `minBaselineSessions = 20` as the floor.
+
+⚠ **AND THE STORE COULD NOT HAVE SEPARATED THE TWO WINDOWS.** Asked at the moment the window opened
+how the after-measurement would know which rows were after, the answer was: it would not. Every
+observation was UNDATED, so a store holding both windows answers "the rate over everything ever
+recorded" and nothing else — the delta F-10 requires is not computable from it. The whole
+before/ship-one/after design rested on a field that did not exist.
+
+`observed_at` (RFC3339 UTC) is on every observation now, pinned by
+`TestAnObservationCanBePlacedInAMeasurementWindow` with two mutants: the clock read from the wrong
+place, and a format nothing can parse. Additive, so `preceded_by_recall` and the v3 stamp are
+untouched. Rows written before today carry no `observed_at`, which is the correct reading — they are
+the pre-T6 window by construction.
+
+### Superseded: the v2 baseline, 2026-08-28
 
 **27.6%** — of 221 no-change assertions across 46 sessions, 61 were preceded by a recall.
 
@@ -200,7 +387,7 @@ for the first one's names missed it. Ask which entries exist, not which files co
 | assertions | 221 |
 | preceded by a recall | 61 |
 | **rate** | **27.6%** |
-| classifier | v2 |
+| classifier-v2 | v2 |
 | **precision** | **48%** (12/25 hand-judged, 2026-08-27) |
 | window | 2026-08-01 .. 2026-08-28 |
 
@@ -555,6 +742,25 @@ fix because it changes which ids exist. **ADR-038 (Proposed, 2026-08-27) removes
 splits the id that dedupes from the id that refers, so re-chunking no longer invalidates anything
 pointing at a drawer. It does NOT do the re-chunking; the open question it leaves is what happens to
 a reference pointing at a non-parent chunk that a re-chunk deletes. See `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`.
+
+## `adr-next` announces a task the corpus records as impossible — 2026-08-28
+
+Scanned every ADR with a tasks directory, comparing what `adr-next --all` calls READY against the
+status its own `tasks/README.md` carries. **One live disagreement:** ADR-041 T3 is `blocked` in the
+README and READY to `adr-next`.
+
+The cause is that `adr-next` models two states — done and not-done — and derives done from a
+Verification Log entry whose `acceptance-sha256` matches the current fence. `blocked` is not a state
+it can represent, so a task recorded as impossible, with the evidence for that sitting in its own
+file, is announced as the next thing to do. T3's Stop Condition fired and was honoured; a session
+following the banner would rebuild against it.
+
+This is the same shape as the finding that 9 `done` tasks read as not-done for want of a digest, and
+it has the same consequence: **the corpus tells sessions to do work it has already settled.**
+
+`adr-next` is in quality-harness, not this repository, so this is filed under the entry below rather
+than fixed here. What IS repo-side, and is done: T3's stop is now a tool-written Verification Log
+entry rather than only prose, so the evidence chain carries it.
 
 ## The ADR evidence chain depends on a tool outside the repository
 
@@ -1749,12 +1955,82 @@ the assertion's subject — changes what the number means. Options, cheapest fir
 - Record more without deciding: also emit `recalls`, `assertions_before_first_recall`, and the
   distance in tool calls from each assertion back to the nearest preceding recall. Additive, it
   re-reads existing transcripts, and it lets the window be chosen from data rather than guessed.
+  **DONE 2026-08-28 — see the distribution below.**
 - Reset the latch at a boundary (user message, or compaction) and re-take the baseline.
 - Bind "preceded" to subject relatedness — the honest reading of the spec's intent, and much the
   hardest to implement.
 
 **The baseline must be re-taken under whatever definition wins.** A rate is only comparable with
 another measured the same way; T2's number cannot be carried over.
+
+### The additive option shipped, and the distribution is what the decision was waiting for
+
+`Observation` now carries `recalls`, `assertions_before_first_recall`, and `preceded_within` —
+cumulative counts of assertions whose NEAREST preceding recall was within 1, 5, 10, 25, 50 or 100
+tool calls. `preceded_by_recall` is deliberately UNCHANGED, latch and all, so T2's rate stays
+comparable under F-16: nothing here redefines the number, it measures what a redefinition would have
+to choose between. `classifierVersion` is unchanged for the same reason — neither `assertionShape`
+nor `assertionSubject` moved.
+
+`TestPrecededCannotSeeProximityAndTheObservationCan` is the gate, and it is written as the pair of
+sessions the old field cannot separate: one recall then a wall of claims, versus a recall before
+each claim. **Both score 100% on `preceded`.** Four mutants die on it — the distance never updating,
+every window credited unconditionally, `recalls` never counted, and `assertions_before_first_recall`
+never counted.
+
+Measured 2026-08-28 over 48 local session transcripts — 24 carrying at least one assertion, 341
+assertions, classifier v2. Re-run it rather than trusting these numbers; the corpus grows daily:
+
+All three candidate definitions are measured, not just the tool-call windows:
+
+| reading of "preceded" | rate |
+|---|---|
+| the latched field — *"this session touched the palace at some earlier point"* | **52.8%** |
+| a recall since the last COMPACTION | 43.4% |
+| nearest recall within 100 tool calls | 28.7% |
+| within 50 | 17.6% |
+| within 25 | 12.3% |
+| **a recall since the last USER TURN** | **7.6%** |
+| within 10 | 7.3% |
+| within 5 | 5.3% |
+| within 1 — the claim made immediately after asking | 1.8% |
+
+47.2% of assertions are made before ANY recall in the session.
+
+⚠ **The user-turn reading first measured a clean 0.0%, and the zero was the instrument.**
+Claude Code records every TOOL RESULT as a `"type": "user"` line — 11,055 of 11,704 in one real
+transcript — so taking those for user turns reset the boundary after nearly every tool call and a
+recall could almost never be after one. A rate of exactly zero over a corpus yielding 52.8% by
+another reading is an instrument fault until proven otherwise, and it is a fixture now
+(`tool-results-are-not-user-turns.jsonl`). The same investigation found that a line whose content is
+a bare STRING — a plain user turn — failed to unmarshal and was silently dropped by the
+malformed-line skip: 600 of them in that transcript.
+
+**Comparability was checked rather than asserted.** Re-running the whole corpus before and after the
+parsing fix leaves `assertions` at 341, `preceded_by_recall` at 180 and the session count at 24,
+byte-identical — so the shipped field, and T2's baseline with it, is untouched under F-16.
+
+Two things follow, and they are why this mattered rather than being tidy-up:
+
+1. **The reported rate and the strictest honest reading differ by a factor of about 29.** Every
+   window is a defensible definition of "preceded". The latched field is the one nobody chose — it
+   is simply what a flag with no reset computes.
+2. **There is headroom, which the old number denied.** The latch saturates on any protocol-following
+   session, so T4, T5 and T6 could only ever measure as "no effect" — the instrument would have
+   faithfully recorded four nulls under F-10. Against a 1.8-12% proximity rate they have somewhere
+   to move.
+
+**Still a decision, and deliberately left open here:** which reading becomes the definition.
+Choosing one voids every rate taken under another. The table above is what that choice should be
+made from; this entry does not make it.
+
+What the table shows, said once so the next reader does not have to re-derive it: the three
+boundary-free tool-call windows spread across an order of magnitude with no natural break, which is
+what a proxy looks like. The two BOUNDARY readings do have meanings — "did the agent ask about the
+work it was just given" (7.6%) and "did it ask after its context was replaced" (43.4%) — and the
+first of those lands almost exactly on the within-10-calls window, from a completely different
+derivation. That agreement is the only evidence here that any particular window is more than a
+number someone picked.
 
 ## Two tests name a property their fixtures never drive — 2026-08-28
 
