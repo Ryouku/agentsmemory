@@ -88,5 +88,6 @@ Stop if the distractor cannot be ranked without re-running retrieval for it — 
 - 2026-08-20 · 8a89e42 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
 - 2026-08-20 · 15d2f91 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
 - 2026-08-20 · a5f94cb · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'`
+- 2026-08-28 · 8864647 · exit 0 · `docker run --rm -v "$PWD":/src -v agentsmemory-gocache:/root/.cache/go-build -v agentsmemory-mod:/go/pkg/mod -w /src golang:1.26-alpine sh -c 'go vet ./... && go test ./internal/palace/ -run "TestSupersessionRanks|TestStaleAboveRate" -count=1'` · acceptance-sha256:5c0c69b789adac4019f0c5b7f543f0cfa6f6321cf57364184b0feba8c1410005
 
 ## Mutation Log
