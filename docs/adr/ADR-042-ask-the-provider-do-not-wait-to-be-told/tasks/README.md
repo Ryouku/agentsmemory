@@ -29,7 +29,7 @@ T2 and T3 are independent of each other and of T1; run them in either order, or 
 |----|-------|--------|--------|------------|
 | T1 | Stop the dashboard promising a provider and a portal it does not have | done | — | `go test ./internal/web/...` over its 4 named tests + full build/vet/suite (see the task file for the exact fence) |
 | T2 | Make a contribution name the workspace that started it | done | — | `go test ./internal/billing/` over its 6 named tests + full build/vet/suite (see the task file for the exact fence) |
-| T3 | Read contributions from the authenticated Open Collective API | pending | — | `go test ./internal/billing/ -run 'TestOCOrderSource...'` + full build/vet/suite |
+| T3 | Read contributions from the authenticated Open Collective API | done | — | `go test ./internal/billing/ -run 'TestOCOrderSource...'` (4 tests) + full build/vet/suite |
 | T4 | Turn an order into the plan change the webhook would have made | pending | — | `go test ./internal/billing/ -run 'TestReconcile...'` + full build/vet/suite |
 | T5 | Wire the reconciler so something actually selects it | pending | — | `go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable'` + the config/doc gate family + `go test ./...` |
 

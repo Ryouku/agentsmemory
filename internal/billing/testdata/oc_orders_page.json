@@ -1,0 +1,44 @@
+{
+  "data": {
+    "account": {
+      "orders": {
+        "totalCount": 3,
+        "nodes": [
+          {
+            "legacyId": 998001,
+            "status": "ACTIVE",
+            "frequency": "MONTHLY",
+            "createdAt": "2026-08-20T09:11:02Z",
+            "nextChargeDate": "2026-09-20T09:11:02Z",
+            "amount": { "value": 50, "currency": "EUR" },
+            "tier": { "legacyId": 104934, "slug": "pro-monthly" },
+            "fromAccount": { "slug": "jane-doe", "name": "Jane Doe", "type": "INDIVIDUAL", "email": "jane@example.com" },
+            "tags": ["am-7r7p2vqqufn7j6wb"]
+          },
+          {
+            "legacyId": 998002,
+            "status": "CANCELLED",
+            "frequency": "YEARLY",
+            "createdAt": "2026-07-02T14:00:00Z",
+            "nextChargeDate": null,
+            "amount": { "value": 500, "currency": "EUR" },
+            "tier": { "legacyId": 104935, "slug": "pro-yearly" },
+            "fromAccount": { "slug": "acme-org", "name": "Acme", "type": "ORGANIZATION", "email": null },
+            "tags": []
+          },
+          {
+            "legacyId": 998003,
+            "status": "PAID",
+            "frequency": "ONETIME",
+            "createdAt": "2026-08-25T08:00:00Z",
+            "nextChargeDate": null,
+            "amount": { "value": 5, "currency": "EUR" },
+            "tier": null,
+            "fromAccount": { "slug": "incognito", "name": "Incognito", "type": "INDIVIDUAL", "email": null },
+            "tags": null
+          }
+        ]
+      }
+    }
+  }
+}

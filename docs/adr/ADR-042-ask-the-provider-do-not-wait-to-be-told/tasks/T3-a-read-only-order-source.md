@@ -19,8 +19,9 @@ so nothing downstream needs to know GraphQL.
 |------|--------|-----|
 | `internal/billing/provider.go` | edit | Declare `orderSource` beside the three existing seams, with a doc comment saying why this one is a READ (the other three are writes or verification). |
 | `internal/billing/ocorders.go` | add | The GraphQL client and decoder. |
-| `internal/billing/testdata/oc_orders_page.json` | add | Recorded response fixture, shaped from the live schema read 2026-08-28. |
+| `internal/billing/testdata/oc_orders_page.json` | add | Recorded response fixture, shaped from the live schema read 2026-08-28. Deliberately carries a null tier, a null email, null tags and a null nextChargeDate — the awkward shapes the API really produces. |
 | `internal/billing/testdata/oc_orders_empty.json` | add | The zero-orders response — the case that must not read as an error. |
+| `internal/billing/testdata/oc_orders_errors.json` | add | A GraphQL refusal: HTTP 200 carrying `errors` AND `data.account: null`. This is the shape that otherwise decodes to an empty page and reports success. |
 | `internal/billing/ocorders_test.go` | add | Decoder + auth-header + error-vs-empty tests. |
 
 ## Ordered Steps
@@ -58,7 +59,13 @@ go build ./... && go vet ./... && go test ./internal/billing/ -count=1
 | `TestOCOrderSourceDecodesAPage` | `internal/billing/ocorders_test.go` | Fixture decodes to `providerOrder`s with tier id, status, tags and amount intact | — |
 | `TestOCOrderSourceDistinguishesEmptyFromError` | `internal/billing/ocorders_test.go` | Zero orders returns `(empty, nil)`; a 200 carrying `errors[]` returns a non-nil error | — |
 | `TestOCOrderSourceSendsPersonalTokenHeader` | `internal/billing/ocorders_test.go` | The `Personal-Token` header is present and carries the configured value | — |
-| `TestOCOrderSourceNeverLogsTheToken` | `internal/billing/ocorders_test.go` | An error from a failing server does not contain the token value | — |
+| `TestOCOrderSourceNeverLogsTheToken` | `internal/billing/ocorders_test.go` | No error constructor contains the token — table-driven over ALL FOUR failure paths (graphql errors, HTTP status, nil account, undecodable body) | — |
+
+**A mutation caught a real hole here too, recorded because the shape recurs.** The token-leak mutant
+first SURVIVED: the test used a 401 carrying `errors[]`, and since the errors block is checked before
+the status, the HTTP-status error constructor was never reached. A leak test that covers one of
+several error constructors proves nothing about the others — the test is now table-driven over all
+four, and the mutant is killed.
 
 ## Reachability
 
@@ -70,6 +77,14 @@ go build ./... && go vet ./... && go test ./internal/billing/ -count=1
 | 4 — it is used | T5's reconcile log line reports the order count; nothing measures it before that |
 
 ## Mutation Log
+
+- 2026-08-28 · a78864d* · mutant killed · exit 1 · `internal/billing/ocorders.go` · Stops checking the GraphQL errors[] block, so a refused query decodes to an empty page and reports success — a permissions failure would read as "nobody has paid" forever and no plan would ever activate. · acceptance-sha256:42ca0fa57407b1ba7858136a5d9f9656aa391525ae480f6d2c7b3ff223fdaeba
+- 2026-08-28 · a78864d* · mutant killed · exit 1 · `internal/billing/ocorders.go` · Sends the query anonymously. The call still succeeds against a public collective, so nothing behavioural notices — only an explicit header assertion does, which is why that test exists. · acceptance-sha256:42ca0fa57407b1ba7858136a5d9f9656aa391525ae480f6d2c7b3ff223fdaeba
+- 2026-08-28 · a78864d* · mutant survived · exit 0 · `internal/billing/ocorders.go` · Puts the read-only financial credential into an error string that the reconcile driver logs every pass, which would place it in every downstream log aggregator. · acceptance-sha256:42ca0fa57407b1ba7858136a5d9f9656aa391525ae480f6d2c7b3ff223fdaeba
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-28 · a78864d* · mutant killed · exit 1 · `internal/billing/ocorders.go` · Puts the read-only credential into an error the driver logs every pass. Previously SURVIVED: the leak test only exercised the errors[] path, which is checked BEFORE the status, so this constructor never ran. The test is now table-driven over all four failure paths. · acceptance-sha256:42ca0fa57407b1ba7858136a5d9f9656aa391525ae480f6d2c7b3ff223fdaeba
 
 ## Invariants
 
@@ -97,3 +112,4 @@ account slug we query.
 - Constructing the client from config — T5.
 
 ## Verification Log
+- 2026-08-28 · a78864d* · exit 0 · `go test ./internal/billing/ -run 'TestOCOrderSourceDecodesAPage|TestOCOrderSourceDistinguishesEmptyFromError|TestOCOrderSourceSendsPersonalTokenHeader|TestOCOrderSourceNeverLogsTheToken' -count=1 2>&1 | tee /tmp/adr042-t3-new.out && \ …` · acceptance-sha256:42ca0fa57407b1ba7858136a5d9f9656aa391525ae480f6d2c7b3ff223fdaeba
