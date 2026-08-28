@@ -48,6 +48,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # The race detector is a separate step, not a flag on the run above: the
+      # two answer different questions, and keeping them apart means a red build
+      # says which one failed. This workflow carries its own gate rather than
+      # leaning on build.yml because the two run independently by design — a tag
+      # publishes from here whatever the sibling workflow is doing.
+      - name: Race
+        run: go test -race ./...
+
       # The runtime stage installs packages, so its layer EXECUTES on the target
       # architecture; without QEMU the arm64 build dies with "exec format error".
       # Only that small apk layer is emulated — the Go build is cross-compiled by

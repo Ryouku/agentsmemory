@@ -163,6 +163,37 @@ func TestDockerfileCrossCompilesRatherThanEmulates(t *testing.T) {
 	)
 }
 
+// TestCIRunsTheRaceDetector fails when a CI path stops running the race
+// detector.
+//
+// Nothing in this repository ran `-race` until this landed: not a workflow, not
+// an ADR acceptance fence, not a Makefile. The suite was measured race-clean at
+// the time, so this closes an ENFORCEMENT gap rather than fixing a defect — the
+// distinction matters because it says what the gate is for. It is not here to
+// keep today's suite passing; it is here so that the first change to introduce
+// an unsynchronised access fails in CI instead of in production. The gap was
+// found by a human asking "do we always run tests with -race?" during review of
+// a change that added the first goroutine anyone had reason to ask about, and
+// two review passes over that change had not thought to ask.
+//
+// Both paths are pinned. build.yml is the always-on net (every push, every PR,
+// and version tags too); release.yml carries its own copy because the workflows
+// are independent by design and a tag publishes from there regardless of what
+// the sibling is doing. pr-image.yml is deliberately NOT included: it builds the
+// same commit that build.yml already race-tests on the pull_request trigger, so
+// a third run would buy nothing and cost a full emulated image build.
+func TestCIRunsTheRaceDetector(t *testing.T) {
+	for _, workflow := range []string{
+		".github/workflows/build.yml",
+		".github/workflows/release.yml",
+	} {
+		if content := withoutComments(readRepoFile(t, workflow)); !strings.Contains(content, "go test -race ./...") {
+			t.Errorf("%s does not run the race detector; an unsynchronised access "+
+				"would reach production without any CI path objecting", workflow)
+		}
+	}
+}
+
 // withoutComments drops whole-line comments so a contract check reads
 // configuration rather than the prose describing it.
 //
