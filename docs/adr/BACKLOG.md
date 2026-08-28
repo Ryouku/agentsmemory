@@ -28,20 +28,32 @@ go test ./internal/repohygiene -run 'TestEveryCitedADRResolvesInDocsToo|TestNoDo
 
 For the ungated rows, the method is the command rather than the answer:
 
+⚠ **The first version of this command could not reproduce its own answer**, and that is worth
+keeping visible because it inverted the argument it was published to make. `tracked` was a `set` and
+the resolver took `c[0]` from it, so a bare basename with more than one candidate — a third of the
+references in this corpus — resolved to whichever file the set happened to yield. Six verbatim runs
+on one clean tree returned six different figures for the third number. A frozen count is at least
+falsifiable; a method that returns a different answer each run is worse than the number it replaced.
+
+It sorts now, and it no longer resolves an ambiguous basename at all — the same rule the Go gate
+adopted: 31 `README.md` in this tree means a basename is not an identity, so an ambiguous reference
+is reported as its own class rather than guessed into one of the other two.
+
 ```bash
 # source file:line citations written in docs, split by whether the file resolves
 python3 - <<'EOF'
 import re,subprocess
-tracked=set(subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split())
+tracked=sorted(subprocess.run(["git","ls-files"],capture_output=True,text=True).stdout.split())
 pl=re.compile(r"([A-Za-z0-9_./-]+\.(?:go|sh|yml|yaml)):(\d+)")
-tot=nofile=oob=0
+tot=nofile=amb=oob=0
 for d in (t for t in tracked if t.endswith(".md")):
     for m in pl.finditer(open(d,encoding="utf-8",errors="replace").read()):
         p,ln=m.group(1),int(m.group(2)); tot+=1
         c=[t for t in tracked if t==p or t.endswith("/"+p)]
         if not c: nofile+=1
+        elif len(c)>1: amb+=1          # a basename several files can mean: never guessed
         elif ln>sum(1 for _ in open(c[0],encoding="utf-8",errors="replace")): oob+=1
-print(tot,"total,",nofile,"naming no tracked file,",oob,"out of bounds")
+print(tot,"total,",nofile,"naming no tracked file,",amb,"ambiguous,",oob,"out of bounds")
 EOF
 ```
 
@@ -1584,15 +1596,17 @@ it inherited the flag. The number is an artifact, not an achievement.
 *(Two corrections, and the second is the same error one layer further out. First: an earlier version
 said "#3 of 8,256", which was the first PALACE call — `am_skillset` — not the first RECALL call.
 Second: the correction then claimed the latch "cannot flip on a wake-up call". `recallTools` is
-`am_search` and `am_get_drawer` (`recallrate.go:51`), and `AGENTS.md:370` mandates
+`am_search` and `am_get_drawer` (`recallrate.go:51`), and `AGENTS.md`'s manual traversal (under *"When the tools are present"*) mandates
 `am_get_drawer(id, whole:true)` once per `must.*` edge AS PART OF the wake-up sequence — dozens of
 edges, before the task search. So a protocol-following wake-up flips the latch almost immediately.
-`am_skillset` and `am_status` cannot flip it — nor can `am_bootstrap` (`AGENTS.md:345`),
-`am_list_drawers` (`:368`) or `am_kg_query` (`:369`), none of which are in `recallTools`; an
+`am_skillset` and `am_status` cannot flip it — nor can `am_bootstrap`,
+`am_list_drawers` or `am_kg_query` — all three named in that same traversal, none of them in
+`recallTools`; an
 earlier version of this sentence said "only" of the first two and was over-precise.
 
 ⚠ **That premise has an expiry the entry should name.** The wake-up flips the latch *because*
-`AGENTS.md:357-362` records `am_bootstrap` returning `unknown_term` for this wing, which is what
+`AGENTS.md` records `am_bootstrap` returning `unknown_term` for this wing (*"It can honestly return
+nothing, and you must read that correctly"*), which is what
 makes the manual `am_get_drawer` traversal mandatory today. Once that backfill runs, a compliant
 session may make no `am_get_drawer` call at wake-up and this consequence evaporates. The mis-measurement is the same class as the
 defect being reported, now twice over.)*
@@ -1606,8 +1620,8 @@ ADR-041 exists to move.
 1. **T2's 27.6% baseline measures the weaker thing.** Across 46 sessions it is approximately the
    share of assertions made in sessions that had called a recall tool at all, weighted by how many
    assertions each session made — not a rate of grounded claims.
-2. **The metric has a ceiling any protocol-following session hits trivially.** `AGENTS.md:370`
-   mandates `am_get_drawer(id, whole:true)` once per `must.*` edge as part of the wake-up sequence —
+2. **The metric has a ceiling any protocol-following session hits trivially.** `AGENTS.md`'s manual
+   traversal mandates `am_get_drawer(id, whole:true)` once per `must.*` edge as part of the wake-up sequence —
    dozens of edges, before the task search — and `am_get_drawer` IS a recall tool. So a compliant
    session flips the latch almost immediately and scores 100% before it has recalled anything
    relevant to what it then asserts. It is not vacuous: `am_skillset` and `am_status` cannot flip

@@ -342,7 +342,7 @@ reproduced it with a correct cross-file pointer. Self-reference is decided by PA
 now, and ambiguity is declined rather than reported: a bare `README.md:5` that 31
 files could mean is left alone, which costs a real false negative and buys the
 gate's credibility. Line citations into OTHER files stay legal, including into
-pinned third-party source, which is what the four apparently-dangling ones are.
+pinned third-party source, which is what this corpus's apparently-dangling ones are.
 Source `file:line` refs pointing past the end of a real file are recorded in
 `BACKLOG.md` as a command rather than gated, because most point into refactored
 files where the right line is unknowable.

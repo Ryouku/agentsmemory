@@ -16,18 +16,28 @@ import (
 // `TestEveryCitedADRResolves` needs no such list because Go source has no reason to
 // discuss a number it is not referring to. Docs do: a Numbering line says which
 // numbers are taken, and a record about the citation gate has to show what a
-// failing citation looks like. Measured 2026-08-28: 1,219 ADR references across 234
-// tracked docs, four unresolved, and ALL FOUR are mentions. A gate shipped without
-// this list would have been 4/4 false alarms on day one — which is how a gate gets
-// switched off, and this repository has already had one such incident.
+// failing citation looks like. Every unresolved citation in this corpus at the time
+// the gate was written was a MENTION, not a pointer — so a gate shipped without this
+// list would have been a false alarm on every single one on day one, which is how a
+// gate gets switched off, and this repository has already had one such incident.
 //
-// Keyed by file, valued by reason. TestDocCitedADRExemptionsAreJustified refuses an
-// empty reason and an entry that no longer earns its place.
-// ⚠ KEYED BY FILE **AND NUMBER**. Keying by file alone skipped the whole file: the
-// history record carries 36 real citations and one mention, so exempting it took 36
-// working pointers out of the gate to hide a single word. Appending a citation to a
-// record that does not exist then passed green. An exemption must hide exactly what
-// it names.
+// ⚠ NO COUNT HERE, DELIBERATELY. The figures this comment carried were the
+// origin/main figures, frozen into a comment dated with the head's date — the exact
+// mechanism `citation_test.go` records against itself. `go test ./internal/repohygiene
+// -run TestEveryCitedADRResolvesInDocsToo -v` prints the live ones on every run.
+//
+// Keyed by file AND NUMBER, valued by reason. TestDocCitedADRExemptionsAreJustified
+// refuses an empty reason and an entry that no longer earns its place.
+//
+// ⚠ THE NUMBER IS HALF THE KEY, and this comment used to say "keyed by file" above a
+// correction saying it was not — the superseded sentence left standing with the
+// correction stacked under it, which is the drift class this whole file exists to
+// gate, one file in. Keying by file alone skipped the whole file: the
+// history record carries dozens of real citations beside the mentions exempted here
+// — the two entries below are the whole exemption — so file scope took every one of
+// those working pointers out of the gate to hide two words. Appending a citation to
+// a record that does not exist then passed green. An exemption must hide exactly
+// what it names.
 //
 // ⚠ AND THE NUMBER IS STORED BARE, without its `ADR-` prefix, because writing the
 // prefixed form here would make THIS FILE cite a record that does not exist — and
@@ -60,9 +70,11 @@ var docCitedADRExemptions = map[string]map[string]string{
 // ⚠ THE GO GATE'S UNIVERSE IS `.go` AND ONLY `.go` — its walk skips anything whose
 // name does not end in `.go`, in `offendersUnder` — so a
 // record renamed or withdrawn is caught where a doc comment cites it and missed
-// where an ADR, a task file, the README or the backlog does — which is where most
-// of this corpus's citations live: 1,219 across 234 docs against a few hundred in
-// source. A pointer to nothing reads as provenance wherever it is written.
+// where an ADR, a task file, the README or the backlog does — which is where the
+// large majority of this corpus's citations live. A pointer to nothing reads as
+// provenance wherever it is written. Both universes are counted in the `-v` output
+// of each gate rather than written down here, because a count written down is false
+// at the commit that carries it.
 //
 // This is a sibling rather than a widening of the existing gate on purpose:
 // `AGENTS.md` describes that gate's universe, its Go-only scope is what makes it
@@ -285,9 +297,11 @@ func checkSelfCitations(tb testing.TB, root string, ignored func(string, bool) b
 	}
 	// ⚠ SCANNING FILES IS NOT ATTEMPTING MATCHES. Guarding only on `scanned` leaves
 	// a broken pattern invisible: the walk still reports every doc while the regex
-	// finds nothing in any of them. The real corpus carries ten doc-to-doc line
-	// citations — a small number, and the reason this guard is worth having rather
-	// than assuming a big one — so zero means the pattern broke.
+	// finds nothing in any of them. The real corpus carries barely a dozen doc-to-doc
+	// line citations — small enough that the guard is worth having rather than
+	// assuming a big number — so zero means the pattern broke. The live figure is in
+	// this test's own `-v` log; it is not written here, because a count in a comment
+	// is false at the commit that carries it.
 	if cites == 0 {
 		tb.Fatalf("scanned %d docs and found NO `<file>.md:<n>` citation at all — the pattern "+
 			"broke and this gate is passing vacuously", scanned)
@@ -337,8 +351,9 @@ func aDocCitingNoRecordIsReported(t *testing.T) {
 
 	// ⚠ AN EXEMPTION MUST HIDE ONE NUMBER, NOT A WHOLE FILE. Reverting the lookup to
 	// file scope leaves the suite green without this cell — and it is not academic:
-	// the exempted history record carries 36 real citations beside its one mention,
-	// so file scope took all 36 out of the gate. This uses a real exempted path so
+	// the exempted history record carries dozens of real citations beside the mentions
+	// exempted from it, so file scope took every one of them out of the gate. This
+	// uses a real exempted path so
 	// the map actually applies, and asserts the OTHER citation is still reported.
 	//
 	// It runs with the OTHER fixture made clean first: leaving an unrelated offender
