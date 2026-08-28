@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 
@@ -48,11 +49,23 @@ type Config struct {
 	StripeSecretKey     string
 	StripeWebhookSecret string
 
-	// OpenCollective wiring (used when Provider == "opencollective"). No API
-	// credentials exist — the checkout is a static contribution URL — but the
-	// project page is the stable manage/cancel surface (OpenCollective has no
-	// pre-authenticated customer portal).
+	// OpenCollective wiring (used when Provider == "opencollective"). The checkout
+	// itself is a static contribution URL and needs no credentials; the project page
+	// is the stable manage/cancel surface (OpenCollective has no pre-authenticated
+	// customer portal).
 	OpenCollectiveProjectURL string
+
+	// Reconciliation wiring (ADR-042). OpenCollective sends no signed webhook, so a
+	// payment is learned by ASKING its GraphQL API on a schedule. All four are read
+	// only on the opencollective branch — the mode that is running — per ADR-006.
+	//
+	// An unset personal token disables reconciliation entirely: no goroutine, no
+	// outbound call, and activation stays the operator's set-plan. That is the
+	// rollback path, and it needs no code change.
+	OpenCollectivePersonalToken string        // read-only token; enables reconciliation
+	OpenCollectiveSlug          string        // whose orders to read, e.g. "ai-agents-memory"
+	OpenCollectiveAPIURL        string        // GraphQL endpoint; overridable for tests/staging
+	ReconcileInterval           time.Duration // how often to poll
 }
 
 // PlanStore is the slice of tenant state billing needs: resolve a sellable plan

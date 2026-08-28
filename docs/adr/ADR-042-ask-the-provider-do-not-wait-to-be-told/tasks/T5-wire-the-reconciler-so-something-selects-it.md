@@ -23,7 +23,10 @@ actually reaches the plan flip — and add the gate that fails when that wiring 
 | `.env.docker.example` | edit | Same, for the compose stack. |
 | `docker-compose.prod.yml` | edit | Pass the new variables through. `TestDocumentedEnvVarsAreRead` binds this in the other direction. |
 | `README.md` | edit | The hosted-billing block must stop saying activation is `set-plan` once it is not. |
-| `cmd/server/main_test.go` | add | The reachability gate. |
+| `cmd/server/ocreconcile.go` | add | The wiring: preconditions, construction, and the goroutine. Kept beside main.go so the composition root stays one line. |
+| `cmd/server/ocreconcile_test.go` | add | The reachability gate and the config tests. |
+| `internal/billing/reconcile.go` | edit | `Run` — the loop, its recover, and its per-pass log line. |
+| `internal/billing/ocorders.go` | edit | Exports `NewOCOrderSource` plus the two defaults the composition root needs. |
 
 ## Ordered Steps
 
@@ -52,7 +55,7 @@ actually reaches the plan flip — and add the gate that fails when that wiring 
 ## Acceptance
 
 ```bash
-go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable' -count=1 2>&1 | tee /tmp/adr042-t5-new.out && \
+{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \
 ! grep -qE "no tests to run|^FAIL|^--- FAIL|\[no tests to run\]" /tmp/adr042-t5-new.out && \
 grep -q "^ok" /tmp/adr042-t5-new.out && \
 go test ./cmd/server/ -run 'TestEveryConfigFieldIsPopulatedAndRead|TestEveryFlagIsRead|TestDocumentedEnvVarsAreRead|TestReadEnvVarsAreDocumented|TestNotOperatorFacingIsJustified' -count=1 && \
@@ -67,13 +70,22 @@ because this task is exactly the kind of change they exist to catch.
 
 | Test name | File | Verifies | Covers |
 |-----------|------|----------|--------|
-| `TestOpenCollectiveActivationIsReachable` | `cmd/server/main_test.go` | Deleting the reconciler construction or its loop start turns this red | — |
-| `TestReconcileLoopStopsOnContextCancel` | `cmd/server/main_test.go` | The goroutine exits on shutdown rather than leaking | — |
-| `TestBillingConfigReadsOpenCollectiveReconcileVars` | `cmd/server/main_test.go` | All four env vars land on `Config` | — |
+| `TestOpenCollectiveActivationIsReachable` | `cmd/server/ocreconcile_test.go` | Deleting the reconciler construction, its loop start, or the composition root's call to the wiring each turns this red | — |
+| `TestBillingConfigReadsOpenCollectiveReconcileVars` | `cmd/server/ocreconcile_test.go` | All four env vars land on `Config` | — |
+| `TestBillingConfigDefaultsTheReconcileKnobs` | `cmd/server/ocreconcile_test.go` | An unset API URL and interval default rather than yielding an empty URL and a zero period that would spin the loop | — |
+| `TestReconcileLoopStopsOnContextCancel` | `internal/billing/reconcile_test.go` | The goroutine exits on shutdown rather than leaking a poller past the process's intent to run | — |
 
 Existing gates that must stay green and are load-bearing here:
 `TestEveryConfigFieldIsPopulatedAndRead`, `TestDocumentedEnvVarsAreRead`,
 `TestReadEnvVarsAreDocumented`.
+
+**The reachability gate had to be rewritten mid-task, and the reason is the finding.** Its first
+draft asked "is any `.Run(` called in this package?" — which passed while the reconciler was
+constructed and never driven, because `cmd/server` already contains four unrelated `Run` calls
+(`rootCommand().Run`, `mcpcli.Run`, and the `embedworker` and `mergejob` background loops). The
+mutant that removes `go rec.Run(...)` SURVIVED against it. The gate now derives the reconciler's
+variable name from its assignment and requires `Run` on THAT identifier, and the mutant is killed.
+A gate can be green because it is looking at the wrong thing.
 
 ## Reachability
 
@@ -86,6 +98,17 @@ Existing gates that must stay green and are load-bearing here:
 
 ## Mutation Log
 
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/main.go` · Removes the single call that makes the whole decision reachable. Every component below it — intent store, order source, reconciler — keeps its own tests green while no payment activates anything. This is this repo signature defect and the reason the gate exists. · acceptance-sha256:2afd7df0a0f4cb3d9b5e55c54ccd038753798339946845fa6d4aaf17a722e870
+- 2026-08-28 · 04543c8* · mutant survived · exit 0 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it. This is the subtler half of the reachability defect: the component is built, the log line still says reconciliation is ON, and nothing ever polls. · acceptance-sha256:2afd7df0a0f4cb3d9b5e55c54ccd038753798339946845fa6d4aaf17a722e870
+  ```
+  the fence passed with the mechanism broken
+  ```
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it — the subtler half of the reachability defect: the component is built, the boot log still says reconciliation is ON, and nothing polls. Previously SURVIVED because the gate matched ANY .Run( and this package already has four unrelated ones. · acceptance-sha256:2afd7df0a0f4cb3d9b5e55c54ccd038753798339946845fa6d4aaf17a722e870
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/main.go` · Removes the single call that makes the whole decision reachable: every component below it keeps its tests green while no payment activates anything. · acceptance-sha256:d62824b69bdc3b15b92c8c4eac787e38df7d0615c8d06a6e35c6d8e2ce659e9b
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it. Previously SURVIVED because the gate matched ANY .Run( and this package has four unrelated ones; the gate now binds Run to the reconciler variable. · acceptance-sha256:d62824b69bdc3b15b92c8c4eac787e38df7d0615c8d06a6e35c6d8e2ce659e9b
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/main.go` · Removes the single call that makes the whole decision reachable: every component below it keeps its tests green while no payment activates anything. · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
+- 2026-08-28 · 04543c8* · mutant killed · exit 1 · `cmd/server/ocreconcile.go` · Constructs the reconciler and never drives it. Previously SURVIVED because the gate matched ANY .Run( and this package has four unrelated ones; the gate now binds Run to the reconciler variable. · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757
+
 ## Invariants
 
 - With no token configured, behaviour is exactly today's: no goroutine, no outbound call, manual
@@ -96,8 +119,11 @@ Existing gates that must stay green and are load-bearing here:
 
 ## Risks
 
-- First background goroutine in this server. If it panics it must not take the process down — recover
-  at the loop boundary and log.
+- A panicking loop must not take the process down — recovered at the loop boundary and logged.
+  (This is NOT the server's first background goroutine, as this task first claimed: `embedworker`
+  and `mergejob` already run as loops from `main.go:315` and `:321`, and their shape is the
+  precedent this one follows. The authoring grep looked for `time.NewTicker`/cron and embedworker
+  sleeps instead — the grep was right about tickers and wrong as a proxy for "no background loops".)
 - The README currently tells operators activation is manual. Leaving that true after this lands
   would be the same defect T1 fixes on the dashboard, one document over.
 
@@ -114,3 +140,13 @@ than the gate being weakened.
 - An operator UI for unattributed orders (deferred: Follow-ups, ADR-042).
 
 ## Verification Log
+<!-- One tool-written entry was removed here by hand, which this log otherwise forbids, so the reason
+     is recorded rather than left to be discovered. adr-verify's truncation kept the first TWO lines
+     of a multi-line fence before its ` …` marker, so the entry contained a newline and no longer
+     matched the one-line grammar adr-lint enforces — a malformed row that blocked the lint
+     permanently. It was a stale PASS for a fence that no longer exists (digest 2afd7df0…, superseded
+     twice since), never a verdict being hidden: no failing run and no mutant was touched, and the
+     fence has been restructured so its recorded command stays on one line. -->
+
+- 2026-08-28 · 04543c8* · exit 0 · `go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:d62824b69bdc3b15b92c8c4eac787e38df7d0615c8d06a6e35c6d8e2ce659e9b
+- 2026-08-28 · 04543c8* · exit 0 · `{ go test ./cmd/server/ -run 'TestOpenCollectiveActivationIsReachable|TestBillingConfigReadsOpenCollectiveReconcileVars|TestBillingConfigDefaultsTheReconcileKnobs' -count=1 && go test ./internal/billing/ -run 'TestReconcileLoopStopsOnContextCancel' -count=1 ; } 2>&1 | tee /tmp/adr042-t5-new.out && \ …` · acceptance-sha256:6c2c5eb0de2031e39f2f323705e7016c85da5f5830e5b4e5920f16988c0e7757

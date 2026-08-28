@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -187,6 +188,45 @@ func (r *Reconciler) attribute(ctx context.Context, o providerOrder, planCode st
 	}
 	log.Printf("billing: contribution %s (%s) matches no checkout intent; left for manual attribution with `set-plan`", o.ID, planCode)
 	return "", false
+}
+
+// Run drives ReconcileOnce until the context is cancelled. It is the only loop in
+// this server, so its failure behaviour is stated rather than assumed:
+//
+//   - A reconcile error is LOGGED and retried at the next tick, never fatal. A
+//     payment provider being unreachable must not take the server down.
+//   - A panic is recovered at the loop boundary for the same reason: one malformed
+//     order must not kill the process.
+//   - Every pass logs its counts. "0 orders" and "the call failed" are different
+//     lines, because a silent zero is indistinguishable from a working system with
+//     no customers — which is exactly the state this project is in today.
+//   - The first pass runs immediately, so a restart picks up anything that arrived
+//     while the process was down rather than waiting a full interval.
+func (r *Reconciler) Run(ctx context.Context, every time.Duration) {
+	defer func() {
+		if v := recover(); v != nil {
+			log.Printf("billing: reconcile loop panicked and stopped: %v; activation is manual until restart", v)
+		}
+	}()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		rep, err := r.ReconcileOnce(ctx)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			log.Printf("billing: reconcile failed: %v (retrying in %s)", err, every)
+		default:
+			log.Printf("billing: reconciled %d order(s): %d activated, %d canceled, %d ignored, %d unattributed",
+				rep.Seen, rep.Activated, rep.Canceled, rep.Ignored, rep.Unattributed)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // recordPeriodEnd stores the paid-through date on the workspace's subscription. It

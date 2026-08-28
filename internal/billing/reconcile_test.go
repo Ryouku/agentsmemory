@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/atvirokodosprendimai/agentsmemory/internal/tenant"
 
@@ -232,6 +233,28 @@ func TestReconcileDoesNotResurrectACanceledSubscription(t *testing.T) {
 	}
 	if got := teamPlanID(t, svc.subs.db, teamID); got != tenant.FreePlanID {
 		t.Fatalf("a stale ACTIVE resurrected a canceled subscription: plan = %q", got)
+	}
+}
+
+// TestReconcileLoopStopsOnContextCancel: the loop is bound to the server's
+// lifecycle, so cancelling that context must end the goroutine rather than leak it
+// past the process's intent to run. Without this, shutdown would leave a poller
+// hitting a third-party API.
+func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
+	svc, _, _, gdb, _ := newTestEnv(t)
+	r := NewReconciler(svc, stubOrders{}, NewIntentRepo(gdb), ocTierMap)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	// A long interval: if the loop only noticed cancellation on the next tick, this
+	// would hang and the test would time out rather than pass slowly.
+	go func() { r.Run(ctx, time.Hour); close(done) }()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile loop did not stop within 5s of its context being cancelled")
 	}
 }
 

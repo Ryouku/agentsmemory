@@ -36,7 +36,7 @@ func ocFixtureServer(t *testing.T, fixture string, status int) *httptest.Server 
 // nextChargeDate.
 func TestOCOrderSourceDecodesAPage(t *testing.T) {
 	srv := ocFixtureServer(t, "oc_orders_page.json", http.StatusOK)
-	src := newOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
+	src := NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
 
 	got, err := src.listOrders(context.Background())
 	if err != nil {
@@ -89,7 +89,7 @@ func TestOCOrderSourceDecodesAPage(t *testing.T) {
 func TestOCOrderSourceDistinguishesEmptyFromError(t *testing.T) {
 	t.Run("genuinely empty is a success", func(t *testing.T) {
 		srv := ocFixtureServer(t, "oc_orders_empty.json", http.StatusOK)
-		src := newOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
+		src := NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
 		got, err := src.listOrders(context.Background())
 		if err != nil {
 			t.Fatalf("an empty collective must not be an error: %v", err)
@@ -104,7 +104,7 @@ func TestOCOrderSourceDistinguishesEmptyFromError(t *testing.T) {
 	// sees an empty list and reports success.
 	t.Run("errors on a 200 is a failure, not an empty page", func(t *testing.T) {
 		srv := ocFixtureServer(t, "oc_orders_errors.json", http.StatusOK)
-		src := newOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
+		src := NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
 		got, err := src.listOrders(context.Background())
 		if err == nil {
 			t.Fatalf("a GraphQL errors[] payload returned %d orders and no error", len(got))
@@ -116,7 +116,7 @@ func TestOCOrderSourceDistinguishesEmptyFromError(t *testing.T) {
 
 	t.Run("a non-200 is a failure", func(t *testing.T) {
 		srv := ocFixtureServer(t, "oc_orders_empty.json", http.StatusInternalServerError)
-		src := newOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
+		src := NewOCOrderSource(srv.Client(), srv.URL, "tok", "ai-agents-memory")
 		if _, err := src.listOrders(context.Background()); err == nil {
 			t.Fatal("HTTP 500 returned no error")
 		}
@@ -139,7 +139,7 @@ func TestOCOrderSourceSendsPersonalTokenHeader(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	src := newOCOrderSource(srv.Client(), srv.URL, "s3cret-token", "ai-agents-memory")
+	src := NewOCOrderSource(srv.Client(), srv.URL, "s3cret-token", "ai-agents-memory")
 	if _, err := src.listOrders(context.Background()); err != nil {
 		t.Fatalf("listOrders: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestOCOrderSourceNeverLogsTheToken(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			src := newOCOrderSource(srv.Client(), srv.URL, token, "ai-agents-memory")
+			src := NewOCOrderSource(srv.Client(), srv.URL, token, "ai-agents-memory")
 			_, err := src.listOrders(context.Background())
 			if err == nil {
 				t.Fatalf("%s returned no error", tc.name)

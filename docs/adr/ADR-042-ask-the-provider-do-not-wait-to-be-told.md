@@ -231,8 +231,14 @@ sequential.
 - **Positive:** the plan-flip logic stays in one place. The reconciler produces `providerEvent` and
   calls the same two functions the Stripe webhook does, so there is no second implementation to
   drift.
-- **Negative:** the server acquires its first background goroutine and its first outbound dependency
-  on a third-party API. A reconcile failure must be logged and retried, never fatal.
+- **Negative:** the server acquires an outbound dependency on a third-party payment API. A reconcile
+  failure must be logged and retried, never fatal.
+  <!-- CORRECTED during execution: this bullet first read "its first background goroutine". False —
+  cmd/server/main.go already starts embedworker and mergejob as background loops (main.go:315, :321).
+  The authoring grep looked for time.NewTicker/cron and embedworker sleeps instead, so the grep was
+  right about tickers and wrong as a proxy for "no background loops". Those two are the precedent
+  this loop's shape follows rather than a novelty it introduces. -->
+- **Negative:** a bounded but real risk that the poll interval delays activation; see below.
 - **Negative:** activation is now eventually-consistent with a worst case of one interval (default
   15 minutes), where a signed webhook would be seconds. Accepted: see Alternatives.
 - **Negative:** a personal token becomes a production secret with read access to the collective's

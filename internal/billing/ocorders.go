@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ocOrdersQuery asks for the collective's incoming contributions. It is one
@@ -41,6 +42,20 @@ const ocOrdersQuery = `query ($slug: String!, $limit: Int!, $offset: Int!) {
     }
   }
 }`
+
+// DefaultOpenCollectiveAPIURL is the public GraphQL v2 endpoint, verified live on
+// 2026-08-28. It is exported so the composition root can default the knob rather
+// than duplicating the literal, and it is overridable so a test or a staging
+// environment can point elsewhere.
+const DefaultOpenCollectiveAPIURL = "https://api.opencollective.com/graphql/v2"
+
+// DefaultReconcileInterval is how often orders are re-read when the operator sets
+// no period. Fifteen minutes is chosen against the measured authenticated rate
+// limit of 100 requests/minute — one pass costs a handful of requests, so this is
+// three orders of magnitude inside the budget — and against the product: on a
+// EUR 50/month plan, minutes of activation latency cost nothing, while a tighter
+// loop would buy latency nobody asked for at the price of more API traffic.
+const DefaultReconcileInterval = 15 * time.Minute
 
 // ocPageSize is how many orders are requested per call. Small enough that one page
 // covers any realistic day's contributions on this project, large enough that a
@@ -90,10 +105,14 @@ type ocOrderSource struct {
 	slug   string
 }
 
-// newOCOrderSource builds the order source. The http.Client is injected so the
-// caller owns the timeout — this runs on a background loop and must never be able
-// to hang it forever.
-func newOCOrderSource(client *http.Client, apiURL, token, slug string) *ocOrderSource {
+// NewOCOrderSource builds the order source for the composition root. The
+// http.Client is injected so the caller owns the timeout — this runs on a
+// background loop and must never be able to hang it forever.
+//
+// Exported (unlike the three write seams, which are constructed inside NewService)
+// because reconciliation is assembled in cmd/server: the loop, its client and its
+// lifecycle context belong to the process, not to the billing service.
+func NewOCOrderSource(client *http.Client, apiURL, token, slug string) *ocOrderSource {
 	if client == nil {
 		client = http.DefaultClient
 	}
