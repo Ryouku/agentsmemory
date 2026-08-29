@@ -1,6 +1,6 @@
 # Spec: Make a palace read as cheap to justify as a grep
 
-> **Date:** 2026-08-28 · **Status:** Draft
+> **Date:** 2026-08-28 · **Status:** Ready-for-ADR
 > **Owner:** Zy · **Becomes:** ADR-NNN (allocate at merge)
 > **Gate:** Status may become Ready-for-ADR only after `spec-verify --spec docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` exits 0.
 > **Cross-references:** `docs/adr/ADR-041-the-recall-that-does-not-depend-on-remembering.md` (owns pushed recall; its instrument's limits are inherited below), `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md` (ended records already excluded from default reads), `docs/adr/ADR-010-supersede-do-not-overwrite.md`, `docs/adr/ADR-017-a-subagent-is-a-session.md` (prose is the weakest lever), `internal/palace/chunk.go`, `internal/palace/memory_search.go`, `internal/mcpserver/drawers.go`
@@ -12,6 +12,12 @@ Measured on session `ee8f1fc1`, one long working session in this repository: **7
 The palace's competitor is not "no memory" — it is `grep`, which is faster and reports what the code *does* rather than what someone once said about it. Three measured properties make a read expensive to justify: a hit's reported coverage UNDER-COUNTS what it disclosed, so the "do I need a second call?" decision is made on a wrong number (M-3); memories fragment at a 1,600-character boundary (M-4); and the cheap way to file a correction leaves the record it corrects CURRENT, so one page can carry four competing framings of one finding (M-5, M-6).
 
 ⚠ Two earlier versions of this paragraph are retracted and the retractions are below: it claimed a hit discloses **~3%** (M-3b — that was the caller's own `snippet_chars: 90` read back; real disclosure is 23–27%) and that **a superseded record can outrank its correction** (M-5b — distance does not decide order, and the correct record in fact came back first). They are named here rather than quietly deleted because this document's own argument is that a correction must be as reachable as the thing it corrects.
+
+⚠ **AMENDED 2026-08-28, after the questions above were resolved: COST WAS NEVER THE BINDING CONSTRAINT, and this section's framing said it was.** ESTIMATED the same evening in output tokens — the currency an agent actually spends, as distinct from context, which is what a result consumes. An `am_search` emission costs ~30 output tokens, an `am_get_drawer` ~45, a content-bearing drawer write ~400, a diary entry ~525. ⚠ **These are BPE arithmetic, not a counter reading: no instrument reports a turn's output-token count back to the model that emitted it, so treat them as ±20% and take the ORDERING as the claim** — a read sits one to two orders of magnitude below a write, and that gap survives an error far larger than 20%. The word in the first draft of this paragraph was "Measured", which is the overclaim this document retracts M-3b for. A read is one of the cheapest actions available; the mandatory write side is roughly **10×** the entire read-side protocol. And in the very session that produced this amendment — under an explicit instruction to recall more — the ratio measured **6 searches against 18 writes, 3.0 writes per read**, worse than the 1.9 in M-2. Reads are not rare because they are expensive.
+
+**What M-1..M-10 actually establish is LEGIBILITY, not price.** A `grep`'s advantage is not that it is cheap; it is that its output is complete and self-evidently complete — you never wonder what it withheld. Every fact below is that property: coverage under-counts what was disclosed (F-1), a hit can be silently partial (F-2), a page can be silently short (F-7), one page can carry several current framings (F-3). The heading is kept as written because this document's argument is that a correction must be as reachable as the thing it corrects; the ADR this becomes should take its title from this paragraph rather than from the heading — the number is allocated at merge, per the header, so it is deliberately not written here.
+
+**And the two are causally linked, which is the reason this amendment is not merely a rewording.** Because a small read cannot be trusted today — coverage under-reports, a partial hit does not say so, a short page does not say so — the rational defensive read is `snippet_chars: 0` or `whole: true`, which is the EXPENSIVE one. So the facts below do not make reading cheaper; they make a SMALL read trustworthy, which is what turns "read freely" from advice into a strategy an agent can run. Cheapness follows from legibility here, never the other way round.
 
 ### Evidence
 
@@ -57,9 +63,9 @@ An agent reads from the palace without first deciding whether the read is worth 
   2. Each hit either carries its whole memory, or reports that it does not, with its full length and the id that fetches the rest.
   3. Each hit reports every range it disclosed, so the "do I need a second call?" decision is made on the truth rather than an under-count.
   4. The agent acts without a second call, or knows exactly what a second call would get.
-- **Failure paths:** a. at step 2, a memory does not fit the response budget → the hit is explicitly partial, carrying its full length and its fetch id, rather than silently fragmentary (F-2); b. at step 3, a hit disclosed more than its primary window → coverage counts every disclosed range, not just the first (F-1)
+- **Failure paths:** a. at step 2, a memory does not fit the response budget → the hit is explicitly partial, carrying its full length and its fetch id, rather than silently fragmentary (F-2); b. at step 3, a hit disclosed more than its primary window → coverage counts every disclosed range, not just the first (F-1); c. at step 1, the budget forced hits off the page → the page says how many it withheld, so a short page is legible as short (F-7)
 
-  ⚠ **Ordering is deliberately absent from this use case.** An earlier draft had step 3 demote a superseded hit below its correction, on a measurement now RETRACTED (M-5b). Marking already ships and is unchanged (M-8); an ended record is already absent from a default page (M-7). Any *ordering* effect stays behind ADR-004's open issue #34 — see Open Questions.
+  ⚠ **Ordering is deliberately absent from this use case.** An earlier draft had step 3 demote a superseded hit below its correction, on a measurement now RETRACTED (M-5b). Marking already ships and is unchanged (M-8); an ended record is already absent from a default page (M-7). Any *ordering* effect stays behind ADR-004's open issue #34, whose `justified` verdict is still open — confirmed 2026-08-28 against ADR-004's amendment of 2026-08-26, which narrowed the categorical wiring bar but expressly kept the gate on *any RANKING use of a graph read*. Resolved as a Non-Goal rather than left open (Grill Log 10).
 - **Postconditions:** the agent has acted on whole, current content, or knows exactly what was withheld.
 
 ### UC-2: Record author files a correction
@@ -119,6 +125,15 @@ Then one hit is returned whose content is the memory's content
 And no caller-side reassembly is required to obtain it
 ```
 
+### UC1-S4 [failure] A short page says it is short [@spec] → `internal/mcpserver/readcost_spec_test.go::TestF7APageReportsWhatItWithheld`
+
+```gherkin
+Given more matching memories than the response budget can carry whole
+When a caller issues one recall
+Then the page reports how many hits it withheld
+And a caller can tell a short page from an exhausted corpus without a second query
+```
+
 ### UC2-S1 [happy] A correction leaves one current successor [@spec] → `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor`
 
 ```gherkin
@@ -159,11 +174,12 @@ And the gate names the rule change rather than reporting a comparison
 | ID | Assertion (invariant / behavior) | Test (`path::name`) | Tag | Cmd (optional) |
 |----|----------------------------------|---------------------|-----|----------------|
 | F-1 | A hit's reported coverage counts every disclosed range — the primary window and every returned region — so a caller deciding whether it needs a second call decides on the truth. | `internal/mcpserver/readcost_spec_test.go::TestF1CoverageCountsEveryDisclosedRange` | @spec | |
-| F-2 | No hit is silently partial: a hit that does not carry its whole memory reports that, its full length, and the id that fetches the rest. | `internal/mcpserver/readcost_spec_test.go::TestF2NoHitIsSilentlyPartial` | @spec | |
-| F-3 | An advertised correction leaves exactly ONE current successor, linked to the ended predecessor — including under partial failure and concurrent correction. ⚠ This constrains past a deliberate choice: `supersede.go:84-87` writes the successor FIRST *"so a failure leaves the old memory current rather than leaving the team with nothing"*. That trade is the two-current-records state this fact forbids; the ADR has to say which it wants, not assume. | `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor` | @spec | |
+| F-2 | No hit is silently partial: a hit that does not carry its whole memory reports that, its full length, and the id that fetches the rest. A memory larger than the response budget is ALWAYS partial-with-fetch-id — never returned whole by growing the budget for it — and the completion path is `am_get_drawer`, never paging: `am_search` gains no cursor (resolved 2026-08-28, Grill Log 7 and 8). | `internal/mcpserver/readcost_spec_test.go::TestF2NoHitIsSilentlyPartial` | @spec | |
+| F-3 | An advertised correction leaves exactly ONE current successor, linked to the ended predecessor — including under partial failure and concurrent correction. ⚠ This constrains past a deliberate choice: `supersede.go:84-87` writes the successor FIRST *"so a failure leaves the old memory current rather than leaving the team with nothing"*. That trade is the two-current-records state this fact forbids; the ADR has to say which it wants, not assume. ⚠ The atomicity requirement is OWNED HERE and does not amend ADR-038, which owns identity rather than the write's atomicity (resolved 2026-08-28, Grill Log 9). And it is a WRITE-SIDE invariant only: nothing in this spec touches ordering, which stays behind ADR-004 issue #34's still-open `justified` verdict (Grill Log 10). | `internal/palace/readcost_spec_test.go::TestF3ACorrectionLeavesOneCurrentSuccessor` | @spec | |
 | F-4 | Chunking creates no reassembly obligation: a caller never has to join chunks to obtain a memory's content. Chunk metadata may remain as diagnostics. | `internal/mcpserver/readcost_spec_test.go::TestF4ChunkingCreatesNoReassemblyObligation` | @spec | |
-| F-5 | No mechanism ships before a baseline is recorded, and the baseline names the counting rule it was measured under by content, not by description. | `internal/repohygiene/readrule_spec_test.go::TestF5ABaselineNamesItsCountingRule` | @spec | |
+| F-5 | No mechanism ships before a baseline is recorded, and the baseline names the counting rule it was measured under by content, not by description. ⚠ The rule counts **reads ACTED ON WITHOUT A SECOND CALL**, not read FREQUENCY — fixed 2026-08-28, before any collection, per this fact's own requirement and Grill Log 13. Frequency is what the ADR-041 instrument already counts, it is not what F-1/F-2/F-7 deliver, and a mechanism that made every hit trustworthy could leave it unmoved. | `internal/repohygiene/readrule_spec_test.go::TestF5ABaselineNamesItsCountingRule` | @spec | |
 | F-6 | Changing the counting rule invalidates every baseline taken under the previous one; a rate quoted across a rule change is a defect. | `internal/repohygiene/readrule_spec_test.go::TestF6ARuleChangeInvalidatesItsBaselines` | @spec | |
+| F-7 | A page reports how many hits it withheld. With no cursor (M-10) a withheld hit is unresumable, so the count is the only evidence it existed — a short page must be legible as short rather than read as "that is all there is". | `internal/mcpserver/readcost_spec_test.go::TestF7APageReportsWhatItWithheld` | @spec | |
 
 ## Domain
 
@@ -188,12 +204,15 @@ And the gate names the rule change rather than reporting a comparison
 - **Deciding which entry-point layer is canonical.** Filed at `BACKLOG.md`, "Four spellings of one entry point"; an ADR-level decision. This spec proceeds independently — F-1..F-6 hold whichever layer wins. If that decision materialises a new read path, F-1 and F-2 extend to it by amendment.
 - **Raising any number the ADR-041 instrument reports.** That instrument latches once per session and cannot see what a proximity mechanism changes; see `BACKLOG.md`.
 - **Changing what matches.** Chunking may remain the embedding and matching unit; F-4 constrains what a caller receives, not how retrieval finds it.
+- **A cursor or offset on `am_search`.** Resolved 2026-08-28: `am_get_drawer` is the only completion path, so F-2's "the id that fetches the rest" is the whole contract and F-7's withheld count is the only thing a caller learns about hits it did not get. A second resumption contract for the same job is the cost this spec exists to avoid.
+- **ORDERING, in any form.** Resolved 2026-08-28 and stated as a boundary rather than an omission: ADR-004's gate on *"any RANKING use of a graph read"* survived its 2026-08-26 amendment intact, and issue #34's `justified` verdict is still open. F-3 is a write-side invariant; F-1, F-2 and F-7 are disclosure. Nothing here demotes, promotes or reorders anything, and the ADR this spec becomes may not introduce ordering without that verdict.
+- **Landing the bindings green in the same PR as the ADR.** Resolved 2026-08-28: the red lane stays behind `-tags readcostspec`, collected with `go test -tags readcostspec ./...`. CI runs `go test ./...` on every push to main, and a deliberately-red binding in the default lane makes the tree's own signal unreadable — the failure this repository has already paid for. The tag comes off in the commit that turns each binding green.
 
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| Returning whole memories shrinks a page from ten hits to three | High | Med | F-2 makes each hit's completeness explicit, so a short page is legible rather than silently narrow. ⚠ Whether the PAGE should also report how many hits it withheld is unbound — old F-2 carried that obligation and the recast one does not; raised in Open Questions |
+| Returning whole memories shrinks a page from ten hits to three | High | Med | F-2 makes each hit's completeness explicit, so a short page is legible rather than silently narrow. F-7 now carries the page-level half — old F-2's withheld-count obligation, dropped when F-2 was recast around partial-marking and restored 2026-08-28 as its own fact rather than smuggled back into F-2 |
 | Returning whole memories inflates response size for long records | Med | Med | The requirement is on disclosure per hit, not on hit count; the budget still bounds the response |
 | A chain of corrections, each superseding the last, leaves an ambiguous head | Low | Med | F-3 constrains the write side only — exactly one current successor per correction — so a chain resolves to one head by construction. It says nothing about order, and after M-5b's retraction this spec makes no ordering claim at all |
 | The new counting rule is itself insensitive, repeating ADR-041's failure | Med | High | F-5 requires the rule to be an artifact fixed before collection, and a stated demonstration that a relevance-improving mechanism moves it |
@@ -203,13 +222,7 @@ And the gate names the rule change rather than reporting a comparison
 
 ## Open Questions
 
-- Should a memory larger than the response budget be returnable at all, or always partial-with-fetch-id? · owner: Zy · blocks: F-2
-- Is `am_search` gaining a cursor in scope, or is `am_get_drawer` the only completion path? · owner: Zy · blocks: F-2
-- Does F-3's atomicity requirement belong in this spec or as an amendment to ADR-038, which owns supersession? · owner: Zy · blocks: F-3
-- ⚠ Does anything here touch ORDERING? ADR-004's Decision reserves "any RANKING use of a graph read" behind issue #34's `justified` verdict, which is still open, and ADR-036 T5 shipped "marked, never hidden and never demoted" deliberately. F-3 is now a write-side invariant and does not demote — but an ADR must not reintroduce ordering without that verdict. · owner: Zy · blocks: F-3
-- Should a page report how many hits it withheld? Old F-2 required a withheld count; recasting F-2 around partial-marking dropped it and nothing carries it now. `am_search` has no cursor (M-10), so a withheld hit is unresumable — which argues for the count, but it is a new obligation rather than a restated one. · owner: Zy · blocks: F-2
-- Does the red-binding lane stay behind `-tags readcostspec`, or do the bindings land in the same PR as the ADR that turns them green? · owner: Zy · blocks: all
-
+<!-- All six resolved by Zy, 2026-08-28. Each is recorded in Grill Log rows 7-12 with the Fact or Non-Goal that now carries it; none was closed by deletion. -->
 
 ## Verify
 
@@ -228,3 +241,10 @@ spec-verify --spec docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md
 | 4 | Is a memory one unit to its caller, or N chunks? | F-4 | Accept — chunking is an embedding-time detail; it may remain the matching unit |
 | 5 | What is the success criterion, and what stops it being insensitive? | F-5, F-6 | Accept — the counting rule is an artifact fixed before collection, and changing it invalidates the baseline |
 | 6 | Does this spec wait on the entry-point decision? | non-behavioral | Proceed independently; recorded in Non-Goals, with amendment named if a new read path lands |
+| 7 | Should a memory larger than the response budget be returnable at all, or always partial-with-fetch-id? | F-2 | ALWAYS partial-with-fetch-id, resolved 2026-08-28. Growing the budget for one long record makes the partial flag conditional on record size, which is the same "is this all of it?" question F-2 exists to remove. Written into F-2 rather than left as a gloss |
+| 8 | Is `am_search` gaining a cursor, or is `am_get_drawer` the only completion path? | F-2 | `am_get_drawer` only. A cursor is a second resumption contract for a job F-2's fetch id already does, and M-10 records that there is no offset today — so this is declining new surface, not preserving old. Recorded as a Non-Goal; the consequence is that a withheld hit is unresumable, which is exactly why row 11 lands |
+| 9 | Does F-3's atomicity requirement belong here or as an ADR-038 amendment? | F-3 | Here. ADR-038 owns IDENTITY — the opaque id, `content_key`, ended-not-overwritten. `supersedeInto`'s lack of atomicity and compare-and-swap (M-9) is a read-cost defect: it is what lets one page carry two current framings of one subject (M-5, M-6). Amending ADR-038 would move the fact away from the evidence that motivates it |
+| 10 | Does anything here touch ORDERING? | F-3 | No, and it is now a stated Non-Goal rather than an open question. Checked 2026-08-28 against ADR-004's 2026-08-26 amendment (owner sign-off, M: *"P1 - i agree with change"*): the bar was narrowed to permit read-path ANNOTATION and expressly KEPT on *"any RANKING use of a graph read"*, with issue #34's verdict still gating it. F-3 is write-side; F-1/F-2/F-7 are disclosure. The ADR may not reintroduce ordering without #34 |
+| 11 | Should a page report how many hits it withheld? | F-7 | Yes — as its own fact. It is a NEW obligation, not a restatement, so folding it back into F-2 would have hidden a scope increase inside an existing binding. With no cursor (row 8) the count is the only evidence a withheld hit existed, and without it a short page reads as an exhausted corpus |
+| 13 | What quantity does F-5's counting rule count? | F-5 | Reads ACTED ON WITHOUT A SECOND CALL. Fixed 2026-08-28 before collection, which is F-5's own requirement and the only moment it is cheap — F-6 makes every baseline taken under a superseded rule void. Read FREQUENCY was the obvious choice and is rejected on evidence: reads cost ~30 ESTIMATED output tokens against ~400-525 for a write — BPE arithmetic at ±20%, so the ordering is the claim and not the magnitude — meaning price is not why they are rare; and `am_recall_stats` MEASURED 6 searches against 18 writes, 3.0 per read, over a two-hour window under an explicit instruction to read more. The second figure is a counter reading and the first is not, and they are labelled differently on purpose. A frequency rule would repeat ADR-041's failure in a new location — counting the quantity that is easy to count rather than the one being claimed |
+| 12 | Does the red-binding lane stay behind `-tags readcostspec`? | non-behavioral | Stays behind the tag. CI runs `go test ./...` on every push to main; a deliberately-red binding in the default lane makes the tree's own signal unreadable, and this repository has already paid for a green-looking gate. The tag comes off per binding, in the commit that turns it green |
