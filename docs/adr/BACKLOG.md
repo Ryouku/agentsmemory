@@ -2305,8 +2305,16 @@ question.
 
 ## The palace enforces its most expensive action and leaves its cheapest optional — 2026-08-28
 
-Measured in OUTPUT tokens, which is the currency an agent spends, as distinct from context, which is
-what a result consumes. The two were conflated in every earlier discussion here and the conclusions
+⚠ **ESTIMATED, NOT MEASURED, AND THE FIRST VERSION OF THIS LINE SAID "Measured".** Every figure in the
+table below is BPE arithmetic done by the model that emits the tokens, and **that model cannot count
+its own output as it generates it** — no instrument in this tree or in the harness reports a turn's
+output-token count back to it. Call it ±20% and treat the ORDERING as the finding rather than any
+single number: a read is one or two orders of magnitude below a write, and that gap survives an error
+far larger than 20%. A ratio quoted from these as though it came from a counter is the defect this
+file has retracted before.
+
+The distinction the figures are about is real regardless: OUTPUT tokens are what an agent EMITS, as
+distinct from context, which is what a result CONSUMES. The two were conflated in every earlier discussion here and the conclusions
 invert when they are separated.
 
 | what the model emits | output tokens |
@@ -2356,7 +2364,9 @@ Nobody has checked, and this entry deliberately makes no claim about the answer.
 **The measurement, stated precisely enough to be run:** join `search_events` (or whatever durably
 records which memories a page returned) against the drawer table, over the whole corpus, and report
 the fraction of drawers with at least one recall, split by wing and by room. `wing_agentmemories`
-holds 1,077 drawers of which 719 are in `sessions` — bulk-mined transcripts — so the split matters:
+held 1,080 drawers on 2026-08-29, of which 719 are in `sessions` — bulk-mined transcripts — so the
+split matters (the total was 1,077 twelve hours earlier and drifts with every write, which is why it
+carries a date; the `sessions` figure has not moved because nothing has re-mined):
 a low overall figure driven entirely by mined sessions means something different from a low figure in
 `decisions`.
 
