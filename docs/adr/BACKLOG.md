@@ -2366,6 +2366,50 @@ written only by `Search`, so a drawer reached by `am_get_drawer`, by `am_bootstr
 traversal is invisible to it and would score as never-read while being read constantly. A figure
 taken without that check measures the telemetry's coverage and reports it as the corpus's value.
 
+⚠ **CORRECTED 2026-08-29, THE MORNING AFTER, AND THE ENTRY ABOVE IS THE THING IT WARNS ABOUT.** The
+join it prescribes has no left side. `search_events` (`db/migrations/00021_search_events.sql`) records
+`hits` as an INTEGER COUNT — nine columns, no drawer ids, no key that reaches the drawer table — and
+`drawers` (`db/migrations/00006_drawers.sql`) has no usage column at all; the two `last_used_at`
+columns in this tree belong to API keys and WebAuthn credentials. So nothing anywhere records WHICH
+memories a page returned, and the measurement is not merely un-run, it is unrunnable. The paragraph
+directly above says to establish that the instrument can see a positive before trusting a zero. It
+was written without checking that the instrument exists.
+
+**IT IS NOT NEW WORK, WHICH IS THE USEFUL HALF.** `ADR-028` already owns this and already designed
+it: its **T3 — record the fetch against the recall and report the ratio** — is exactly the durable
+join, deferred with a written trigger rather than forgotten. `search_id` is minted by `Search`, is
+the primary key of the `search_events` row, reaches the wire on every page, and is accepted by
+`am_get_drawer`, whose own schema says it "is recorded on the request's trace span, not yet stored
+durably". The instrument is one write short. So the right move is not a new table and not a new
+record; it is ADR-028's own deferred task, and proposing either would have created the contested
+state `adr-state` reports.
+
+⚠ **BUT ITS TRIGGER CANNOT FIRE, AND THAT IS A SECOND FINDING.** T3 starts on *"the first week in
+which `am_get_drawer` receives a non-empty `search_id` from any client other than a test."* Nothing
+in this repository passes one: grepping `clients/`, `hooks/` and `internal/` for `search_id` finds
+the server-side reader, the schema declaration and the response emitter — **no sender**. The only
+clients are agents, and the only thing asking an agent to pass it is a tool description.
+
+**Measured on the session that wrote this entry:** it called `am_get_drawer` twice, with that schema
+loaded, and passed `search_id` neither time. That is ADR-017's finding arriving from the other side —
+prose is the weakest lever — and it is this repository's defect class inverted: not a capability that
+is finished and unreachable, but one that is **reachable and unused, gating work that waits on its
+use**. A trigger conditioned on a behaviour nothing produces is a task that never starts, and nothing
+reports that either.
+
+**AND T3 ANSWERS THE NARROWER QUESTION.** Recording the fetch measures which drawers an agent went on
+to READ — implicit relevance. This entry asks which were ever SURFACED, read or not, and a drawer
+returned on a page and ignored still cost the corpus its retrieval. The entry above conflated the two.
+The surfaced question needs a row per hit per search; the fetched question needs the join that is
+already half-built. **They are different measurements and only the second is designed.** Which one
+answers "is this corpus worth accumulating" is the surfaced one — so the cheap half-built path does
+not close this entry, it narrows it.
+
+**What is actually open, in order:** make one client pass `search_id` — which is also the honest test
+of whether a tool description changes agent behaviour at all, and it costs one argument; then ADR-028
+T3's trigger fires on its own terms and its owner decides; then, separately, whether the surfaced
+question earns a row per hit. None of that is decided here.
+
 **Why it reorders work rather than adding to it.** If the fraction is high, the corpus is earning its
 keep and the read-side facts in `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` are the right
 next thing. If it is low, the constraint is not retrieval quality at all — it is that we are writing
