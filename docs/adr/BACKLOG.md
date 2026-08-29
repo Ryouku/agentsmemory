@@ -2302,3 +2302,150 @@ measurement: dropping stale hits shrinks an already-scarce payload, and a stale 
 worthless — it is evidence that something changed, which is occasionally the most useful thing in
 the page. The choice is between dropping them and labelling them, and that is F-10's kind of
 question.
+
+## The palace enforces its most expensive action and leaves its cheapest optional — 2026-08-28
+
+⚠ **ESTIMATED, NOT MEASURED, AND THE FIRST VERSION OF THIS LINE SAID "Measured".** Every figure in the
+table below is BPE arithmetic done by the model that emits the tokens, and **that model cannot count
+its own output as it generates it** — no instrument in this tree or in the harness reports a turn's
+output-token count back to it. Call it ±20% and treat the ORDERING as the finding rather than any
+single number: a read is one or two orders of magnitude below a write, and that gap survives an error
+far larger than 20%. A ratio quoted from these as though it came from a counter is the defect this
+file has retracted before.
+
+The distinction the figures are about is real regardless: OUTPUT tokens are what an agent EMITS, as
+distinct from context, which is what a result CONSUMES. The two were conflated in every earlier discussion here and the conclusions
+invert when they are separated.
+
+| what the model emits | output tokens |
+|---|---|
+| `am_skillset` / `am_status`, no arguments | ~15 |
+| `am_search(query, wing)` | ~30 |
+| `am_get_drawer(id, whole:true)` | ~45 |
+| a content-bearing `am_add_drawer` (~1,500 runes) | ~400 |
+| a diary entry | ~525 |
+| deliberating which drawers to fetch | 500–1,500 |
+
+**So the Stop hook's three mandatory content-bearing writes cost ~1,400–2,000 output tokens per
+session, roughly 10× the entire read-side protocol, and every read is optional.** Nothing fails when
+a session skips recall; a session that files nothing is reminded until it does.
+
+⚠ **AND THE ONE INSTRUMENT THAT WOULD PRICE THAT MANDATE IS INERT HERE.** `recall-observe` (ADR-041
+T1) has written `recall-observations.jsonl` for exactly ONE project on this machine and NOT for this
+repository, despite six transcripts. The 7.6% baseline in this file was produced by a hand-run scan,
+not by the mechanism built to produce it. `agentsmemory_recall_observe` is invoked only from
+`clients/claude-code/hooks/agentsmemory-stats.sh`, which is SOURCED by the session-end hook rather
+than registered, needs `aiagentmemory` on PATH and `$TRANSCRIPT` set, and exits 0 silently on every
+failure path (deliberately — ADR-041 T1, spec F-5). One of those preconditions is not holding and
+nothing reports which.
+
+**The change this argues for is a predicate, not advice.** "Write less" cannot be enforced by asking.
+The Stop hook already sees the session's tool history: a session that recalled nothing and decided
+nothing has nothing worth filing, and a session that made a decision does. Same hook, conditional
+instead of unconditional three.
+
+**Not taken here, because it is a decision rather than a fix.** It changes what the corpus
+accumulates, which is a product question, and it should not be made before the measurement below
+says whether the accumulation is worth anything. Filed rather than done.
+
+**One number that would make this urgent or moot:** see the next entry.
+
+## Nothing measures whether a filed drawer is ever read — 2026-08-28
+
+`am_recall_stats` reports searches, `answered_pct`, drawers held and the queries that found nothing.
+It does not report, and nothing in the tree reports, **what fraction of filed drawers has ever been
+returned by any search.**
+
+At the write-to-read ratios this repository keeps measuring — 1.9:1 across one long session, and
+**3.0:1** (6 searches against 18 writes) in the two-hour window on 2026-08-28 during which an agent
+was explicitly instructed to recall more — the median drawer may never have been returned to anyone.
+Nobody has checked, and this entry deliberately makes no claim about the answer.
+
+**The measurement, stated precisely enough to be run:** join `search_events` (or whatever durably
+records which memories a page returned) against the drawer table, over the whole corpus, and report
+the fraction of drawers with at least one recall, split by wing and by room. `wing_agentmemories`
+held 1,080 drawers on 2026-08-29, of which 719 are in `sessions` — bulk-mined transcripts — so the
+split matters (the total was 1,077 twelve hours earlier and drifts with every write, which is why it
+carries a date; the `sessions` figure has not moved because nothing has re-mined):
+a low overall figure driven entirely by mined sessions means something different from a low figure in
+`decisions`.
+
+⚠ **BEFORE RUNNING IT, ESTABLISH THAT THE INSTRUMENT CAN SEE A POSITIVE.** This repository's rule,
+earned seven times over on 2026-08-28: run the canary before trusting any zero. `search_events` is
+written only by `Search`, so a drawer reached by `am_get_drawer`, by `am_bootstrap`, or by a
+traversal is invisible to it and would score as never-read while being read constantly. A figure
+taken without that check measures the telemetry's coverage and reports it as the corpus's value.
+
+⚠ **CORRECTED 2026-08-29, THE MORNING AFTER, AND THE ENTRY ABOVE IS THE THING IT WARNS ABOUT.** The
+join it prescribes has no left side. `search_events` (`db/migrations/00021_search_events.sql:16-26`,
+plus `00023` `00026` `00029`) records `hits` as an INTEGER COUNT and carries **no drawer identity of
+any kind** — no id, no key reaching the drawer table. ⚠ An earlier version of this correction said
+"nine columns"; the base migration declares TEN and two later ones add more, so the count is dropped
+rather than repaired — it was brittle, it was wrong, and it was load-bearing for nothing. The
+conclusion it was offered in support of is unchanged and is what matters: the row records HOW MANY
+hits a page returned and never WHICH. And
+`drawers` (`db/migrations/00006_drawers.sql`) has no usage column at all; the two `last_used_at`
+columns in this tree belong to API keys and WebAuthn credentials. So nothing anywhere records WHICH
+memories a page returned, and the measurement is not merely un-run, it is unrunnable. The paragraph
+directly above says to establish that the instrument can see a positive before trusting a zero. It
+was written without checking that the instrument exists.
+
+**IT IS NOT NEW WORK, WHICH IS THE USEFUL HALF.** `ADR-028` already owns this and already designed
+it: its **T3 — record the fetch against the recall and report the ratio** — is exactly the durable
+join, deferred with a written trigger rather than forgotten. `search_id` is minted by `Search`, is
+the primary key of the `search_events` row, reaches the wire on every page, and is accepted by
+`am_get_drawer`, whose own schema says it "is recorded on the request's trace span, not yet stored
+durably". The instrument is one write short. So the right move is not a new table and not a new
+record; it is ADR-028's own deferred task, and proposing either would have created the contested
+state `adr-state` reports.
+
+⚠ **BUT ITS TRIGGER CANNOT FIRE, AND THAT IS A SECOND FINDING.** T3 starts on *"the first week in
+which `am_get_drawer` receives a non-empty `search_id` from any client other than a test."* Nothing
+in this repository passes one: grepping `clients/`, `hooks/` and `internal/` for `search_id` finds
+the server-side reader, the schema declaration and the response emitter — **no sender**. The only
+clients are agents, and the only thing asking an agent to pass it is a tool description.
+
+**Measured on the session that wrote this entry:** it called `am_get_drawer` twice, with that schema
+loaded, and passed `search_id` neither time. That is ADR-017's finding arriving from the other side —
+prose is the weakest lever — and it is this repository's defect class inverted: not a capability that
+is finished and unreachable, but one that is **reachable and unused, gating work that waits on its
+use**. A trigger conditioned on a behaviour nothing produces is a task that never starts, and nothing
+reports that either.
+
+**AND T3 ANSWERS THE NARROWER QUESTION.** Recording the fetch measures which drawers an agent went on
+to READ — implicit relevance. This entry asks which were ever SURFACED, read or not, and a drawer
+returned on a page and ignored still cost the corpus its retrieval. The entry above conflated the two.
+The surfaced question needs a row per hit per search; the fetched question needs the join that is
+already half-built. **They are different measurements and only the second is designed.** Which one
+answers "is this corpus worth accumulating" is the surfaced one — so the cheap half-built path does
+not close this entry, it narrows it.
+
+⚠ **AND NO FIRST-PARTY CLIENT CAN SATISFY THAT TRIGGER, BECAUSE NONE CALLS `am_get_drawer` AT ALL.**
+Checked 2026-08-29 across `clients/claude-code/hooks/` — six scripts, none fetches a drawer; the
+recall hook searches and prints. So the trigger is not waiting on wiring that somebody forgot. It is
+conditioned entirely on an AGENT choosing to pass an optional argument it read in a tool description,
+which is the weakest lever this repository has measured (ADR-017: the full protocol produced 0 recalls
+in 5 dispatches, one short paragraph produced 5).
+
+**The trigger has now been met, and meeting it demonstrated the second half of the problem.** On
+2026-08-29 this session issued `am_search`, took the returned `search_id` (`964069852bd5cae2572fa9a9`)
+and passed it to `am_get_drawer` — a non-test client sending a non-empty `search_id`, which is exactly
+what ADR-028 T3 waits for. **Nothing recorded that it happened.** `annotateSearchID`
+(`internal/mcpserver/drawers.go:368-374`) puts it on a trace span and the span is sampled, so the
+condition "the first week `am_get_drawer` receives a non-empty `search_id`" is now TRUE and
+UNOBSERVABLE to anyone who goes looking. A trigger whose satisfaction leaves no durable trace cannot
+start the task it gates, however many times it fires.
+
+**What is actually open, in order.** (1) ADR-028 T3's owner decides whether to persist the join
+directly rather than wait on a trigger that cannot be observed — the trigger was reasonable when
+written and is not reachable as specified. (2) Separately, whether the SURFACED question — which
+drawers a page returned, read or not — earns a row per hit per search; it is the one that answers "is
+this corpus worth accumulating", and it is undesigned. Nothing here decides either, and this entry
+should not be read as authorising a schema change.
+
+**Why it reorders work rather than adding to it.** If the fraction is high, the corpus is earning its
+keep and the read-side facts in `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` are the right
+next thing. If it is low, the constraint is not retrieval quality at all — it is that we are writing
+material nobody will read, and every read-side improvement optimises retrieval over a corpus that
+should be smaller. That would promote the entry above and demote the spec, and it is the only
+measurement on this page that can do that.
