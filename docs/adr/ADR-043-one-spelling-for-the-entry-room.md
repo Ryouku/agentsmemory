@@ -4,7 +4,7 @@
 **Date:** 2026-08-28
 **Owner:** unassigned
 **Spec:** None — no spec stage. `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` names this decision in its Non-Goals ("Deciding which entry-point layer is canonical … an ADR-level decision") and proceeds independently of it; this record is that decision, not an implementation of that spec.
-**Cross-references:** `docs/adr/BACKLOG.md` (§"Four spellings of one entry point, and the served document teaches a fifth"), `docs/adr/ADR-027-a-maintained-document-is-a-set-of-records.md`, `docs/adr/ADR-036-a-recall-that-answers.md` (T7, T8), `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`, `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md`, `internal/palace/graphquery.go`, `internal/palace/bootstrap.go`, `internal/web/bootstrap-memory.md`, `AGENTS.md`, `README.md`, `model/draf1.md`
+**Cross-references:** `docs/adr/BACKLOG.md` (§"Four spellings of one entry point, and the served document teaches a fifth"), `docs/adr/ADR-027-a-maintained-document-is-a-set-of-records.md`, `docs/adr/ADR-036-a-recall-that-answers.md` (T7, T8), `docs/adr/ADR-038-refer-by-the-id-and-end-instead-of-overwrite.md`, `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md`, `internal/palace/graphquery.go`, `internal/palace/bootstrap.go`, `internal/web/bootstrap-memory.md`, `AGENTS.md`, `README.md`, `model/draf1.md`, and — in flight and unmerged, so named by PR rather than by number — PR #75 (a store you address by name), PR #77 (the schema carries the pairing), PR #79 (the seeded playbook routes to an entry protocol)
 **Governs:**
 - type: path
   pattern: "internal/web/bootstrap-memory.md"
@@ -28,7 +28,7 @@ single argument for the direction taken. Five test files also name the room
 because the constant does not change. -->
 
 **Enforced-by:** None — no gate exists at authoring time, and naming one that does not resolve is the rot this header exists to prevent. T1 produces `internal/repohygiene/entryroom_test.go::TestTheServedDocumentTeachesTheRoomTheCodeResolves`, whose universe is the two real artifacts (the constant parsed from `internal/palace/graphquery.go`, the room names read from the served document) rather than a list kept beside them; this header is updated to name it when T1 lands.
-**Invalidates:** **ADR-036 T8's scoping, narrowly and deliberately.** T8 put the `must.*` / `ref.*` vocabulary explicitly out of scope for `Bootstrap`, which was correct for T8's goal (replace a 13-call client protocol with one call) and is not correct once the entry room is populated by backfill: a containment edge alone makes `am_entry_point` answer `matched` while returning only the root room's own drawers. T2 amends that scoping and nothing else in ADR-036; ADR-036 remains authoritative over the entry-point API, and this record does not re-decide T7's derived-edge design. Otherwise: ADR-027 is Accepted and this record USES its model (an `llm_init` root spine, an `llm_index` routing drawer) rather than changing it. ADR-038 is untouched — no id is recomputed here. Checked by grepping every record in `docs/adr` for `llm_init`, `llm_index` and `EntryRoom` (4 records, all listed above).
+**Invalidates:** **ADR-036 T8's scoping, narrowly and deliberately.** T8 put the `must.*` / `ref.*` vocabulary explicitly out of scope for `Bootstrap`, which was correct for T8's goal (replace a 13-call client protocol with one call) and is not correct once the entry room is populated by backfill: a containment edge alone makes `am_entry_point` answer `matched` while returning only the root room's own drawers. T2 amends that scoping and nothing else in ADR-036; ADR-036 remains authoritative over the entry-point API, and this record does not re-decide T7's derived-edge design. Otherwise: ADR-027 is Accepted and this record USES its model (an `llm_init` root spine, an `llm_index` routing drawer) rather than changing it. ADR-038 is untouched — no id is recomputed here. Checked by grepping every record in `docs/adr` for `llm_init`, `llm_index` and `EntryRoom` — 4 records, all listed above. ⚠ **THAT GREP IS INCOMPLETE BY CONSTRUCTION AND THE FIRST VERSION OF THIS HEADER DID NOT SAY SO.** Two proposed records exist only on unmerged branches and are invisible to any search of this tree: the record on PR #75 (*"a store you address by name"*, changes-requested) and the record on PR #77 (*"the schema carries the pairing"*, draft). The first decides the same question this one does and is now argued in Alternatives; the second is adjacent. Their numbers are deliberately not written here — they do not exist on `main`, and `TestEveryCitedADRResolvesInDocsToo` correctly refuses a citation to a record that cannot be opened. A reviewer checking this header should re-run the grep against open PRs, not only the tree.
 **Served-path change:** An agent that calls `am_bootstrap` or `am_entry_point` on `wing_agentmemories` gets its mandatory tier instead of `unknown_term`, and a new agent reading `/bootstrap-memory` is taught the room the server actually resolves instead of one it does not.
 
 ## Context
@@ -138,6 +138,28 @@ are covered by the served document's correction going forward, not retroactively
   FALSE reachability. `am_entry_point` would answer `matched` while returning only the root room's own
   drawers, never the mandatory tier the manual protocol traverses — this repository's characteristic
   defect, delivered by the fix for it.
+- **Replace derived addressing entirely with a store you address by NAME** — the record proposed on
+  PR #75 (unmerged, changes-requested 2026-08-27), which gives the palace flat-dotted chosen keys so
+  `read("root")` and `read("must.*")` work without any of this. **Not rejected — SEQUENCED, and this
+  is the alternative a reviewer will reach for first.** Three reasons it does not displace this
+  record. (a) Its own falsifier is downstream of this one: that record says to check ADR-036 F-16
+  first, and F-16 cannot be checked on the motivating wing while the entry point returns
+  `unknown_term`, which is exactly what T3 fixes. (b) It needs a new MCP tool and a new table; this
+  record needs no new surface at all and changes one served document plus two drawers. (c) They
+  compose rather than collide — if name-addressing lands, the `must.*` edges T3 writes become one
+  client of it rather than dead weight, because the tier is the same tier either way. **What would
+  make this record the wrong one:** if name-addressing ships first, T1's document correction should
+  teach `read("root")` instead of a seeded room, and T3's migration is wasted work. That is a
+  sequencing decision across two authors and it belongs to the owner, not to this record.
+- **Route the seeded playbook to a `start-here` skill** — proposed on PR #79 (unmerged). Rejected as
+  the canonical entry point on the measurement this repository already has: a skill is prose, ADR-017
+  measured the full protocol producing **0 recalls in 5 dispatches** against **5** for one short
+  paragraph, and ADR-041 F-8 rejects prose as a mechanism outright. It would also be a fifth spelling
+  beside the four this record exists to collapse. ⚠ **But it fixes a real and DIFFERENT defect that
+  this record does not touch**, and rejecting it as the entry point is not rejecting the PR: a fresh
+  or restored database gets a seeded playbook that names no entry protocol at all, which is a silent
+  failure on every self-hosted install. The two are compatible — that PR makes the playbook name a
+  way in, this record makes the way in resolve.
 - **Declare the served document canonical for onboarding and the code canonical for the API, and
   document the split.** Rejected because it is the current state, written down. A new agent would keep
   building corpora the server cannot resolve, and the split is invisible from either side.
