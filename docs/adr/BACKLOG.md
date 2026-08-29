@@ -2154,9 +2154,9 @@ Independent read by a different-lineage advisor found most of the evidence below
 **Verified locally:** `am_kg_query(entity:"room:wing_agentmemories/llm_init", status:"all")` returns
 `unknown_term`, `unresolved: "entity"` — so this workspace never held that node, not even ended.
 
-### Decided 2026-08-28 — ADR-043 takes the `llm_init` layer, and two obligations are received here
+### Proposed 2026-08-28 by ADR-043 (NOT accepted) — take the `llm_init` layer; two obligations received here
 
-`docs/adr/ADR-043-one-spelling-for-the-entry-room.md` (Proposed) decides this entry: `llm_init` is the
+`docs/adr/ADR-043-one-spelling-for-the-entry-room.md` (Proposed, unassigned, unaccepted) PROPOSES for this entry: `llm_init` is the
 canonical entry room, the served onboarding document is the outlier and is corrected, and `llm_index`
 keeps ADR-027's job as a routing drawer filed UNDER the root rather than instead of it.
 
@@ -2198,6 +2198,13 @@ its drawers were ever stamped. If it returns drawers, follow with
 `am_kg_query(entity:"<root drawer id>", direction:"outgoing")` and check the subject/predicate/object
 shapes — that is what separates the canonical root-ID/`must.*`/drawer-ID protocol from this corpus's
 `must`/`must_load*`/label one.
+
+⚠ **SUPERSEDED 2026-08-29 BY THE SECTION BELOW, WHICH IS A PROPOSAL AND NOT YET AN ACCEPTANCE.** The
+paragraph that follows was written while nothing had decided this, and it is kept because the options
+it lays out are still the options. What has changed is that ADR-043 now PROPOSES one of them; the
+record is `Proposed` with no owner assigned, and two competing records are open on PRs #75 and #79, so
+the decision remains open until somebody signs it. Read the heading below as "proposed by ADR-043",
+never as "decided".
 
 **The product decision, unmade:** which layer is canonical. Adopting the served document contradicts
 `EntryRoom`, `AGENTS.md`, `model/draf1.md` and ADR-027. Adopting the model leaves the served document

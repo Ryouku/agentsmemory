@@ -1,41 +1,39 @@
-# Task ADR-043-T3: Read the hosted palace, then seed this repository's entry point
+# Task ADR-043-T3: Read the hosted palace and classify what it holds
 
-**Depends-on:** T1, T2
+**Depends-on:** none
 **Covers:** none — no spec
 **Estimated scope:** M (multi-file)
 **Owner:** unassigned
-**Produces:** the `wing_agentmemories` `llm_init` root drawer and its `must.*` edges
-**Consumes:** `Bootstrap` returning `must.*` targets outside the root room (T2)
-**Data dependency:** needs a live hosted palace for step 1, and the local palace (`http://localhost:8080/mcp`) for steps 3-6. Neither is reachable from a clean checkout, which is why Acceptance is human-observed and the sign-off records what the run was taken against.
+**Produces:** the hosted classification — `canonical` | `label` | `nothing` — recorded in `BACKLOG.md`, which T4 consumes and which can stop this record
+**Consumes:** none
+**Data dependency:** needs a live hosted palace. Not reachable from a clean checkout, which is why Acceptance is human-observed and the sign-off records the workspace the read was taken against.
 
 ## Goal
 
-Resolve ADR-036 T7's 25-node claim against the hosted palace first, then seed `wing_agentmemories` with the canonical root so `AGENTS.md`'s documented traversal is executable.
+Resolve ADR-036 T7's 25-node claim against the hosted palace, and record the answer, BEFORE any other task spends effort on a direction it could refute.
+
+⚠ **This task exists as its own dependency-free task because an earlier draft made it step 1 of the seeding task, which ran third.** That ordering let T1 and T2 land before anybody learned whether the direction survives contact with the hosted deployment — and this task's whole purpose is to be able to stop the record. A stopping condition that runs after two thirds of the work is not one.
 
 ## Affected Files
 
 | File | Change | Why |
 |------|--------|-----|
-| `docs/adr/BACKLOG.md` | edit | §"Four spellings of one entry point" records the answer to step 1 whichever way it falls, and the deferral this ADR files against it |
-| `docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-seed-the-corpus-after-reading-the-hosted-palace.md` | edit | The sign-off line, written by `adr-verify --human` |
+| `docs/adr/BACKLOG.md` | edit | §"Four spellings of one entry point" records the classification whichever way it falls — including "nothing", which would mean ADR-036 T7's observation was a fixture |
+| `docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-read-the-hosted-palace-and-classify.md` | edit | The sign-off line, written by `adr-verify --human` |
 | `docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/README.md` | edit | The status cell the sign-off maps onto — `done` for ship, `failed` for withdraw, `blocked` for blocked |
 
-No source file changes. What SELECTS the seeded data is `Bootstrap`'s `must.*` walk from T2; without
-T2 this task writes drawers nothing reads, which is why `Depends-on` names it.
+No source file changes and no palace writes. This task only READS the hosted workspace and records
+what it found; T4 is where anything is written, and T4 depends on this task's recorded answer.
 
 ## Ordered Steps
 
 1. **Read the hosted palace before writing anything anywhere.** `am_list_drawers(wing: "wing_agentmemories", room: "llm_init")` against the hosted workspace, then — if it returns drawers — `am_kg_query(entity: "<root drawer id>", direction: "outgoing")` and record the subject/predicate/object shapes. This is the discriminator `BACKLOG.md` names, and it is used instead of `am_entry_point`, which cannot tell "no such room" from "drawers filed before derived containment edges shipped".
 2. Classify the result into exactly one of three, and record it in `BACKLOG.md` with the date and the workspace it was taken against: **canonical shape** (root-id → `must.*` → drawer-id) → the decision is confirmed and this is the local palace's catch-up; **label shape** (the local corpus's `must` → `must_load` → label) → the deployments have diverged, STOP; **nothing** → ADR-036 T7's observation was a fixture, record that, and continue.
-3. On confirm-or-nothing only: file the root drawer into `wing_agentmemories` room `llm_init`, content opening `WHAT MUST I LOAD AT THE START OF A SESSION?`, following the §4.3 that T1 corrected.
-4. Add `must.*` facts from that root drawer's own id to the drawer ids of the mandatory tier — the two `llm_index` drawers (`0715011203df…`, `8814ff9f0f…`), `llm_open_threads`, `llm_corrections`, `human-decisions`. Ids, not labels.
-5. Supersede the label-shaped `must` → `must_load` facts with `am_kg_supersede` rather than invalidating and re-adding: the two-call sequence ends the old value at day precision and leaves both values in effect for the rest of the day, and leaves the graph with zero current values if the session dies between them.
-6. Verify by calling `am_bootstrap(wing: "wing_agentmemories")` and confirming it returns the mandatory tier — not `unknown_term`, and not the root room's own drawers alone. Then run `AGENTS.md`'s documented traversal by hand and confirm step 1 of it now returns drawers, which it does not today.
-7. Sign off with `adr-verify --human`, recording the workspace, the date, the counts before and after, and the decision word.
+3. If the classification is **label shape**, STOP and hand the record to the owner: the deployments have diverged and migrating either one strands the other. If it is **canonical** or **nothing**, record that and release T4.
 
 ## Acceptance
 
-Acceptance is human-observed: an operator runs the six steps above against the two named palaces and
+Acceptance is human-observed: an operator runs the three steps above against the two named palaces and
 signs off with `adr-verify <this file> --human "<one line>"`, using exactly one of the three decision
 words. All three templates are given, because a template that offers only the happy word is how an
 honest third outcome ends up in free text no tool reads — measured 2026-08-28 in this corpus, where
@@ -45,19 +43,19 @@ tool answered `done`.
 The migration ran and the entry point answers:
 
 ```bash
-adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-seed-the-corpus-after-reading-the-hosted-palace.md --human "hosted read <date>: <canonical|nothing>; local seeded <N> must.* edges from root <id>; am_bootstrap returns <M> tier drawers; decision ship"
+adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-read-the-hosted-palace-and-classify.md --human "hosted read <date>, workspace <slug>: <canonical|nothing>; T4 released; decision ship"
 ```
 
 The hosted palace holds the label shape, so the deployments have diverged and nothing was written:
 
 ```bash
-adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-seed-the-corpus-after-reading-the-hosted-palace.md --human "hosted read <date>: label shape, deployments diverged, nothing written; decision blocked"
+adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-read-the-hosted-palace-and-classify.md --human "hosted read <date>: label shape, deployments diverged, nothing written; decision blocked"
 ```
 
 The hosted read shows the record's direction was wrong rather than merely stalled:
 
 ```bash
-adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-seed-the-corpus-after-reading-the-hosted-palace.md --human "hosted read <date>: <what was found>; ADR-043's direction does not hold; decision withdraw"
+adr-verify docs/adr/ADR-043-one-spelling-for-the-entry-room/tasks/T3-read-the-hosted-palace-and-classify.md --human "hosted read <date>: <what was found>; ADR-043's direction does not hold; decision withdraw"
 ```
 
 `blocked` and `withdraw` are different outcomes and both are offered deliberately: one says the
