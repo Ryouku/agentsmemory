@@ -1377,6 +1377,7 @@ ADR-028 ships the two halves that cross the tool boundary — `search_id` return
 accepted by `am_get_drawer`, and `blended_score` on every hit. These three are what it deliberately
 did not ship, each with the reason it was held back rather than the intention to get to it.
 
+- ✅ **DONE 2026-08-29 — record the fetch against the recall.** Shipped as ADR-028 T3: `drawer_fetches`, `RecordFetch`, and `fetches` / `recalls_fetched` published on `am_recall_stats` so the write is observable through a served tool. The RATIO is not shipped and is now ADR-028 T4, because its denominator is recalls THAT WERE LOGGED and it needs `profile_id` beside it. ⚠ **The trigger below fired and could not be observed** — a non-test client sent a `search_id` on 2026-08-29 and nothing recorded it, since the id reached only a sampled span, and no first-party client calls `am_get_drawer` at all. The original text is kept because the trigger's failure mode is worth more than the trigger was.
 - **Record the fetch against the recall, and report the ratio.** The consuming half of primitive #3:
   a fetch that names a `search_id` is a relevance click, and the ratio of recalls followed by a fetch
   is the first usage signal this palace has ever had. Held back because the precondition does not
