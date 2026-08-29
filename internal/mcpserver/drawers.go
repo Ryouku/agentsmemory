@@ -391,13 +391,35 @@ func annotateSearchID(ctx context.Context, req mcp.CallToolRequest) {
 	telemetry.Annotate(ctx, attribute.String("am.search_id", sid))
 }
 
+// recordFetchJoin durably records that a fetch returned something, against the
+// recall the caller named.
+//
+// Sibling of annotateSearchID rather than an extension of it, deliberately.
+// That function's whole contract is "the id reaches the span", which needs no
+// storage and is tested without a palace; widening its signature to carry a team
+// and a service would cost that test its independence. This one needs both, and
+// runs only where a fetch has already SUCCEEDED — a request for an id that does
+// not resolve is not a click, and recording one would put misses in the
+// numerator of every ratio derived from the table (ADR-028 T3).
+func recordFetchJoin(ctx context.Context, drawers *palace.Service, teamID string, req mcp.CallToolRequest, drawerID string, whole bool) {
+	sid := strings.TrimSpace(req.GetString("search_id", ""))
+	if sid == "" {
+		return
+	}
+	// Validity is re-checked here rather than assumed from the span annotator:
+	// the two run independently, and a durable row is worth more care than an
+	// attribute. RecordFetch refuses a malformed id too — this is belt and
+	// braces on the value that reaches storage.
+	drawers.RecordFetch(ctx, teamID, sid, drawerID, whole)
+}
+
 // registerGetDrawer: fetch one drawer by id.
 func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.Service) {
 	tool := newTool("get_drawer",
 		mcp.WithDescription("Fetch a drawer by its id. A memory longer than ~1600 characters is stored as several chunks and a search returns the ONE that matched; pass whole=true to get every chunk of that memory, in order, so you can read the note as it was written."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("The drawer id returned by am_add_drawer or am_search.")),
 		mcp.WithBoolean("whole", mcp.Description("Return every chunk of the memory this drawer belongs to, in order, instead of just this one. Any chunk's id works — you do not need the first.")),
-		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is recorded on the request's trace span, not yet stored durably — pass it and nothing changes in what you get back, which is what lets clients adopt it before the durable join lands.")),
+		mcp.WithString("search_id", mcp.Description("Optional: the search_id of the am_search page that led you to this memory. It is recorded on the request's trace span AND, since ADR-028 T3, durably against the drawer this call returned — so the recall that sent you here becomes a relevance signal. Nothing changes in what you get back. A fetch that does not resolve records nothing, and an id that is not the shape am_search mints is refused rather than stored.")),
 		mcp.WithBoolean("include_history", mcp.Description("Also return memories that have been RETRACTED or superseded (default false). Off by default because an ended record keeps its embedding: without the filter a withdrawn claim competes with the correction that replaced it, and can outrank it. Turn it on to audit what a wing used to say. Every returned record carries valid_to and ended_reason, so history is never mistaken for current, plus superseded_by when something replaced it — and a CURRENT record carries supersedes and superseded_reason naming what it replaced and why, so a session about to redo a rejected thing sees that without asking for history.")),
 	)
 	reg.add(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -438,6 +460,12 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 			for _, c := range chunks {
 				views = append(views, toView(c))
 			}
+			// One fetch, not one per chunk: a caller asking for a whole memory
+			// read ONE memory, and counting its chunks would weight long notes
+			// higher in every count derived from this.
+			if len(chunks) > 0 {
+				recordFetchJoin(ctx, drawers, t.TeamID, req, chunks[0].ID, true)
+			}
 			return jsonResult(map[string]any{"chunks": views, "count": len(views)}), nil
 		}
 		get := drawers.Get
@@ -448,6 +476,7 @@ func registerGetDrawer(reg *registrar, drawers *palace.Service, usageSvc *usage.
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		recordFetchJoin(ctx, drawers, t.TeamID, req, d.ID, false)
 		return jsonResult(toView(d)), nil
 	})
 }
