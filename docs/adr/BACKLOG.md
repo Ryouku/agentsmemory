@@ -2377,8 +2377,13 @@ traversal is invisible to it and would score as never-read while being read cons
 taken without that check measures the telemetry's coverage and reports it as the corpus's value.
 
 ⚠ **CORRECTED 2026-08-29, THE MORNING AFTER, AND THE ENTRY ABOVE IS THE THING IT WARNS ABOUT.** The
-join it prescribes has no left side. `search_events` (`db/migrations/00021_search_events.sql`) records
-`hits` as an INTEGER COUNT — nine columns, no drawer ids, no key that reaches the drawer table — and
+join it prescribes has no left side. `search_events` (`db/migrations/00021_search_events.sql:16-26`,
+plus `00023` `00026` `00029`) records `hits` as an INTEGER COUNT and carries **no drawer identity of
+any kind** — no id, no key reaching the drawer table. ⚠ An earlier version of this correction said
+"nine columns"; the base migration declares TEN and two later ones add more, so the count is dropped
+rather than repaired — it was brittle, it was wrong, and it was load-bearing for nothing. The
+conclusion it was offered in support of is unchanged and is what matters: the row records HOW MANY
+hits a page returned and never WHICH. And
 `drawers` (`db/migrations/00006_drawers.sql`) has no usage column at all; the two `last_used_at`
 columns in this tree belong to API keys and WebAuthn credentials. So nothing anywhere records WHICH
 memories a page returned, and the measurement is not merely un-run, it is unrunnable. The paragraph
@@ -2415,10 +2420,28 @@ already half-built. **They are different measurements and only the second is des
 answers "is this corpus worth accumulating" is the surfaced one — so the cheap half-built path does
 not close this entry, it narrows it.
 
-**What is actually open, in order:** make one client pass `search_id` — which is also the honest test
-of whether a tool description changes agent behaviour at all, and it costs one argument; then ADR-028
-T3's trigger fires on its own terms and its owner decides; then, separately, whether the surfaced
-question earns a row per hit. None of that is decided here.
+⚠ **AND NO FIRST-PARTY CLIENT CAN SATISFY THAT TRIGGER, BECAUSE NONE CALLS `am_get_drawer` AT ALL.**
+Checked 2026-08-29 across `clients/claude-code/hooks/` — six scripts, none fetches a drawer; the
+recall hook searches and prints. So the trigger is not waiting on wiring that somebody forgot. It is
+conditioned entirely on an AGENT choosing to pass an optional argument it read in a tool description,
+which is the weakest lever this repository has measured (ADR-017: the full protocol produced 0 recalls
+in 5 dispatches, one short paragraph produced 5).
+
+**The trigger has now been met, and meeting it demonstrated the second half of the problem.** On
+2026-08-29 this session issued `am_search`, took the returned `search_id` (`964069852bd5cae2572fa9a9`)
+and passed it to `am_get_drawer` — a non-test client sending a non-empty `search_id`, which is exactly
+what ADR-028 T3 waits for. **Nothing recorded that it happened.** `annotateSearchID`
+(`internal/mcpserver/drawers.go:368-374`) puts it on a trace span and the span is sampled, so the
+condition "the first week `am_get_drawer` receives a non-empty `search_id`" is now TRUE and
+UNOBSERVABLE to anyone who goes looking. A trigger whose satisfaction leaves no durable trace cannot
+start the task it gates, however many times it fires.
+
+**What is actually open, in order.** (1) ADR-028 T3's owner decides whether to persist the join
+directly rather than wait on a trigger that cannot be observed — the trigger was reasonable when
+written and is not reachable as specified. (2) Separately, whether the SURFACED question — which
+drawers a page returned, read or not — earns a row per hit per search; it is the one that answers "is
+this corpus worth accumulating", and it is undesigned. Nothing here decides either, and this entry
+should not be read as authorising a schema change.
 
 **Why it reorders work rather than adding to it.** If the fraction is high, the corpus is earning its
 keep and the read-side facts in `docs/specs/2026-08-28-a-read-as-cheap-as-a-grep.md` are the right
